@@ -1,0 +1,47 @@
+# Python缓存文件和字节码
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 构建和分发目录
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 单元测试/覆盖率报告
+.pytest_cache/
+.cache
+.nox/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# 调试目录（特别忽略您提到的try目录）
+try/
+
+# 环境相关
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# 编辑器或IDE特定文件（可选，按需添加）
+.vscode/
+.idea/

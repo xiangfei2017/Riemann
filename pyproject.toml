@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "riemann"
+version = "0.1.0"
+description = "A Python library providing automatic differentiation for tensor computation and basic building blocks for neural networks."
+readme = "README.md"
+authors = [
+    { name = "Fei Xiang", email = "xfeix@outlook.com" }
+]
+license = "BSD-3-Clause"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["automatic differentiation", "deep learning", "gradient", "tensor", "machine learning", "open source", "gitee"]
+requires-python = ">=3.7"
+dependencies = [
+    "numpy>=1.20.0",
+    "scipy>=1.7.0"
+]
+
+[project.optional-dependencies]
+tests = [
+    "pytest>=7.0.0",
+    "torch>=2.0.0"
+]
+
+[project.urls]
+"Documentation" = "https://gitee.com/xfcode2021/Riemann"
+"Source" = "https://gitee.com/xfcode2021/Riemann"
+"Tracker" = "https://gitee.com/xfcode2021/Riemann/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["riemann"]
+include-package-data = true
+zip-safe = false
+
+[tool.setuptools.package-data]
+"*" = ["*.pyi"]
