@@ -1,3 +1,17 @@
+"""
+演示scatter函数的用法
+
+本示例展示了如何使用Riemann的scatter函数进行张量操作。
+scatter函数是深度学习中常用的操作之一，用于根据索引将源张量的值散布到目标张量中。
+
+主要功能：
+1. 基本的scatter操作演示
+2. 不同维度的scatter操作
+3. scatter的梯度计算
+4. 在神经网络中的应用场景
+5. 与PyTorch scatter函数的对比
+"""
+
 import sys,os
 # 添加项目根目录到sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))
