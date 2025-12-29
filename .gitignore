@@ -45,3 +45,7 @@ venv.bak/
 # 编辑器或IDE特定文件（可选，按需添加）
 .vscode/
 .idea/
+
+# 文档构建目录
+docs/build/
+_site/
