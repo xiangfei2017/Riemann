@@ -73,10 +73,66 @@ import scipy
 from .tensordef import *
 import builtins
 
+def matmul(A, B, *, out=None):
+    """计算两个张量的矩阵乘法
+    
+    根据输入张量的维度自动选择适当的矩阵乘法方式：
+    - 1D × 1D: 向量内积（标量）
+    - 2D × 1D: 矩阵乘向量
+    - 1D × 2D: 向量乘矩阵
+    - 2D × 2D: 矩阵乘法
+    - ≥3D: 批量矩阵乘法（支持广播）
+    
+    参数:
+        A: 第一个张量
+        type A: riemann.TN
+        B: 第二个张量
+        type B: riemann.TN
+        out: 输出张量（可选）
+        type out: riemann.TN, optional
+        
+    返回:
+        矩阵乘法结果
+        rtype: riemann.TN
+        
+    示例:
+        >>> A = tensor([[1, 2], [3, 4]])
+        >>> B = tensor([[5, 6], [7, 8]])
+        >>> C = matmul(A, B)  # 返回 [[19, 22], [43, 50]]
+        
+        >>> a = tensor([1, 2, 3])
+        >>> b = tensor([4, 5, 6])
+        >>> c = matmul(a, b)  # 返回标量 32
+        
+        >>> A = tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])  # 形状 (2, 2, 2)
+        >>> B = tensor([[[9, 10], [11, 12]], [[13, 14], [15, 16]]])  # 形状 (2, 2, 2)
+        >>> C = matmul(A, B)  # 返回形状 (2, 2, 2) 的张量
+    """
+    # 输入验证
+    if not isinstance(A, TN):
+        raise TypeError(f"matmul: Expected A to be TN type, got {type(A)}")
+    if not isinstance(B, TN):
+        raise TypeError(f"matmul: Expected B to be TN type, got {type(B)}")
+    
+    # 执行矩阵乘法
+    result = A @ B
+    
+    # 处理out参数
+    if out is not None:
+        if not isinstance(out, TN):
+            raise TypeError("out must be TN type")
+        if out.shape != result.shape:
+            raise ValueError(f"out has wrong shape: expected {result.shape}, got {out.shape}")
+        
+        # 将计算结果复制到out中
+        return out.copy_(result)
+    
+    return result
+
 def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtype=None):
     """计算张量的向量范数、矩阵范数或多轴范数
     
-    支持与PyTorch相同的接口和行为，包括向量范数、矩阵范数和多轴范数
+    支持向量范数、矩阵范数和多轴范数
     
     参数:
         A: 输入张量
