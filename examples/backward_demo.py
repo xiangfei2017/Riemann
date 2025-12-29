@@ -1,3 +1,16 @@
+"""
+演示Riemann的自动微分和反向传播功能
+
+本示例展示了如何使用Riemann的backward()函数进行自动微分和反向传播。
+包括标量输出和向量输出的梯度计算，以及如何使用梯度进行参数更新。
+
+主要功能：
+1. 标量输出的反向传播
+2. 向量输出的反向传播
+3. 梯度累积和清除
+4. 使用梯度进行简单的参数更新
+"""
+
 import sys, os
 import numpy as np
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))  # 添加父目录到路径

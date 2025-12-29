@@ -73,10 +73,8 @@ Example usage:
 
 from __future__ import annotations
 import builtins
-from re import I
-from types import new_class
 import warnings
-from typing import Callable, Any, List, Self, Tuple
+from typing import Callable, Any, List, Tuple
 import numpy as np
 from .dtype import *
 from .gradmode import *
@@ -129,9 +127,27 @@ class TN:
     - rcv_grad_count: 整数，用于梯度计算时记录节点可接收梯度的计数
     - grad_value: TN类型，反向传播中的临时梯度存储
     
-    注：该类设计灵感来自PyTorch的Tensor类，但专为Riemann框架实现，提供与NumPy兼容的接口。
+    注：该类提供与PyTorch兼容的接口。
     """
     def __init__(self):
+        """
+        初始化张量对象。
+        
+        创建一个新的张量实例，初始化所有必要的属性。张量是Riemann框架的核心数据结构，
+        封装了NumPy数组并支持自动微分功能。
+        
+        属性：
+            data (np.ndarray): 存储张量数据的NumPy数组
+            fromvars (tuple): 记录本张量是通过哪些张量计算得来的
+            parms (tuple): 对张量进行函数运算时用到的参数，如sum函数的dim和keepdim参数
+            gradfuncs (tuple): 张量运算时登记的梯度函数对象，在backward中将调用这些钩子函数
+            grad (TN): 与data的shape一致的张量，用于存放梯度，初始化为None以节省空间
+            requires_grad (bool): 是否需要计算梯度，默认为False
+            retains_grad (bool): 是否保留梯度，默认为False
+            is_leaf (bool): 是否为叶子节点，默认为True
+            rcv_grad_count (int): 在计算图中可接收梯度的计数，计算梯度时临时使用
+            grad_value (TN): 用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
+        """
         self.data:np.ndarray = None     #tensor函数构造对象时，data引用一个numpy数组
         self.fromvars = ()              #张量运算时，运算符函数中记录本张量是通过哪些张量计算得来的
         self.parms = ()                 #对张量进行函数运算时用到的参数，比如sum函数的dim和keepdim参数
@@ -149,7 +165,7 @@ class TN:
     # 用于交互式环境显示对象的数值
     def __disp__(self, format_spec: str = '.4f'):
         """
-        带格式字符串参数的显示函数，完全匹配PyTorch风格
+        带格式字符串参数的显示函数
         
         参数:
             format_spec: 格式规范字符串，默认为'8.4f'（宽度为8，精度为4的浮点数格式）
@@ -370,15 +386,59 @@ class TN:
         
     # 返回张量第一维的大小
     def __len__(self):
+        """
+        返回张量第一维的大小。
+        
+        返回张量第一个维度的大小，等同于len(tensor.data)。
+        对于标量张量（0维），此方法会引发TypeError。
+        
+        Returns:
+            int: 张量第一维的大小
+            
+        Raises:
+            TypeError: 如果张量是标量（0维）
+        """
         return len(self.data)
     
     def __bool__(self):
+        """
+        将张量转换为布尔值。
+        
+        根据张量的值返回True或False，遵循Python的布尔转换规则。
+        对于非空张量，如果所有元素都不为零，则返回True；否则返回False。
+        对于空张量，返回False。
+        
+        Returns:
+            bool: 张量的布尔值表示
+        """
         return bool(self.data)
     
     def __float__(self):
+        """
+        将张量转换为Python浮点数。
+        
+        仅适用于单元素张量，将张量的值转换为Python的float类型。
+        
+        Returns:
+            float: 张量值的浮点数表示
+            
+        Raises:
+            ValueError: 如果张量包含多个元素
+        """
         return float(self.data)
 
     def __int__(self):
+        """
+        将张量转换为Python整数。
+        
+        仅适用于单元素张量，将张量的值转换为Python的int类型。
+        
+        Returns:
+            int: 张量值的整数表示
+            
+        Raises:
+            ValueError: 如果张量包含多个元素
+        """
         return int(self.data)
 
     def item(self):
@@ -399,26 +459,88 @@ class TN:
     
     @property
     def dtype(self):
+        """
+        返回张量的数据类型。
+        
+        返回张量中元素的数据类型，与NumPy数组的dtype属性一致。
+        常见的数据类型包括float32、float64、int32、int64、complex64等。
+        
+        Returns:
+            np.dtype: 张量的数据类型对象
+        """
         return self.data.dtype
     
     def is_floating_point(self):
+        """
+        判断张量是否为浮点类型。
+        
+        检查张量的数据类型是否为浮点类型，包括float16、float32、float64等。
+        浮点类型张量支持梯度计算，通常用于神经网络中的权重和激活值。
+        
+        Returns:
+            bool: 如果张量是浮点类型返回True，否则返回False
+        """
         return self.data.dtype.kind == 'f'
 
     def is_complex(self):
+        """
+        判断张量是否为复数类型。
+        
+        检查张量的数据类型是否为复数类型，包括complex64、complex128等。
+        复数类型张量包含实部和虚部，支持复数运算和梯度计算。
+        
+        Returns:
+            bool: 如果张量是复数类型返回True，否则返回False
+        """
         return self.data.dtype.kind == 'c'
     
     def isreal(self:TN)->TN:
+        """
+        判断张量元素是否为实数。
+        
+        对于复数张量，返回一个布尔张量，指示每个元素是否为实数（虚部为零）。
+        对于实数张量，返回一个与原张量形状相同且所有元素为True的布尔张量。
+        
+        Returns:
+            TN: 布尔张量，True表示对应元素为实数
+        """
         return isreal(self)
     
     def isinf(self:TN)->TN:
+        """
+        判断张量元素是否为无穷大。
+        
+        逐元素检查张量中的值是否为正无穷大或负无穷大，返回一个布尔张量。
+        对于有限数值和NaN（非数值），返回False。
+        
+        Returns:
+            TN: 布尔张量，True表示对应元素为无穷大
+        """
         return isinf(self)
     
     def isnan(self:TN)->TN:
+        """
+        判断张量元素是否为NaN（非数值）。
+        
+        逐元素检查张量中的值是否为NaN（Not a Number），返回一个布尔张量。
+        NaN通常由未定义的数学运算产生，如0除以0。
+        
+        Returns:
+            TN: 布尔张量，True表示对应元素为NaN
+        """
         return isnan(self)
 
     @property
     def real(self):
-        """返回复数张量的实部。"""
+        """
+        返回复数张量的实部。
+        
+        对于复数张量，返回一个包含实部的新张量。对于实数张量，返回原张量本身。
+        支持自动微分，梯度计算正确处理复数运算。
+        
+        Returns:
+            TN: 包含实部的新张量，或原张量（如果为实数张量）
+        """
         if not self.is_complex():
             return self
             
@@ -438,7 +560,18 @@ class TN:
     
     @property
     def imag(self):
-        """返回复数张量的虚部。"""
+        """
+        返回复数张量的虚部。
+        
+        对于复数张量，返回一个包含虚部的新张量。对于实数张量，会引发RuntimeError。
+        支持自动微分，梯度计算正确处理复数运算。
+        
+        Returns:
+            TN: 包含虚部的新张量
+            
+        Raises:
+            RuntimeError: 如果张量不是复数类型
+        """
         if not self.is_complex():
             raise RuntimeError("imag property is only defined for complex tensors")
         
@@ -489,13 +622,46 @@ class TN:
 
     @property
     def shape(self):
+        """
+        返回张量的形状。
+        
+        返回张量各维度大小的元组，与NumPy数组的shape属性一致。
+        例如，一个2x3矩阵的形状为(2, 3)，标量的形状为()。
+        
+        Returns:
+            tuple: 张量各维度大小的元组
+        """
         return self.data.shape
     
     @property
     def ndim(self):
+        """
+        返回张量的维度数。
+        
+        返回张量的维度数量，也称为秩(rank)。标量的维度为0，向量的维度为1，
+        矩阵的维度为2，以此类推。与NumPy数组的ndim属性一致。
+        
+        Returns:
+            int: 张量的维度数
+        """
         return self.data.ndim
 
     def size(self, dim = None):
+        """
+        返回张量的大小。
+        
+        当不提供dim参数时，返回张量的形状（与shape属性相同）。
+        当提供dim参数时，返回指定维度的大小。
+        
+        Args:
+            dim (int, optional): 要查询的维度索引，从0开始计数。如果为None，返回整个形状。
+            
+        Returns:
+            tuple or int: 如果dim为None，返回形状元组；否则返回指定维度的大小
+            
+        Raises:
+            IndexError: 如果dim超出张量的维度范围
+        """
         if dim is None:
             return self.data.shape
         else:
@@ -512,7 +678,7 @@ class TN:
     def type(self, dtype=None):
         """返回或转换张量的数据类型
         
-        行为与PyTorch的type()函数一致：
+        行为：
         - 如果不传入参数，返回张量的数据类型
         - 如果传入数据类型参数，返回一个转换为指定数据类型的新张量
         
@@ -578,17 +744,62 @@ class TN:
         return ret
 
     def float(self):
+        """
+        将张量转换为单精度浮点类型(float32)。
+        
+        创建并返回一个新的张量，其数据类型为float32，与原张量内容相同。
+        如果原张量已经是float32类型，则返回原张量本身。
+        
+        Returns:
+            TN: float32类型的新张量，或原张量（如果已经是float32类型）
+        """
         return self.type(float32)
     
     def double(self):
+        """
+        将张量转换为双精度浮点类型(float64)。
+        
+        创建并返回一个新的张量，其数据类型为float64，与原张量内容相同。
+        如果原张量已经是float64类型，则返回原张量本身。
+        
+        Returns:
+            TN: float64类型的新张量，或原张量（如果已经是float64类型）
+        """
         return self.type(float64)
 
     def type_as(self,other):
+        """
+        将张量转换为与另一个张量相同的数据类型。
+        
+        创建并返回一个新的张量，其数据类型与参数张量other相同，与原张量内容相同。
+        如果原张量的数据类型已经与other相同，则返回原张量本身。
+        
+        Args:
+            other (TN): 目标数据类型的参考张量
+            
+        Returns:
+            TN: 与other相同数据类型的新张量，或原张量（如果数据类型已匹配）
+            
+        Raises:
+            TypeError: 如果other不是张量类型
+        """
         if not isinstance(other,TN):
             raise TypeError("'other' need to be a tensor")
         return self.type(other.dtype)
 
     def to(self, dtype):
+        """
+        将张量转换为指定的数据类型。
+        
+        创建并返回一个新的张量，其数据类型为指定的dtype，与原张量内容相同。
+        如果原张量的数据类型已经与指定的dtype相同，则返回原张量本身。
+        
+        Args:
+            dtype: 目标数据类型，可以是Python类型、NumPy dtype、字符串或Riemann dtype
+            
+        Returns:
+            TN: 指定数据类型的新张量，或原张量（如果数据类型已匹配）
+        """
         return self.type(dtype)
 
     def __getitem__(self, index):
@@ -987,8 +1198,6 @@ class TN:
         # 将右值形状、维度转化为和索引值相匹配的形式
         target_size = target_data.size
         right_size = right_val.numel()
-        # print(f'right_size={right_size},target_size={target_size}')
-        # print(f'right_shape={right_val.shape},target_shape={target_data.shape}')
         if right_size > target_size:
             if target_size == 0 and right_size == 1:
                 pass   # 允许向空张量赋值0D标量
@@ -1187,7 +1396,7 @@ class TN:
 
     def gather(self, dim: int, index:TN):
         """
-        根据指定的 ​维度和​索引收集元素，功能对齐PyTorch的gather
+        根据指定的 ​维度和​索引收集元素，
         常用于需要根据条件动态选择数据的场景（如交叉熵损失函数中选择正确类别的预测概率）
         :param dim: 收集维度（0 ≤ dim < self.ndim）
         :param index: 索引张量（dtype=int64）
@@ -1278,7 +1487,7 @@ class TN:
             if not isinstance(src, TN):
                 src = tensor(src, dtype=self.dtype)
             
-            # 确保src和self的dtype相同 - 与PyTorch行为一致
+            # 确保src和self的dtype相同
             if src.dtype != self.dtype:
                 raise RuntimeError(f"scatter(): Expected self.dtype to be equal to src.dtype")
 
@@ -1377,7 +1586,7 @@ class TN:
             if not isinstance(src, TN):
                 src = tensor(src, dtype=self.dtype)
             
-            # 确保src和self的dtype相同 - 与PyTorch行为一致
+            # 确保src和self的dtype相同
             if src.dtype != self.dtype:
                 raise RuntimeError(f"scatter_(): Expected self.dtype to be equal to src.dtype")
             
@@ -1424,7 +1633,7 @@ class TN:
         if not isinstance(src,TN):
             src = tensor(src, dtype=self.dtype)
 
-        # 确保src和self的dtype相同 - 与PyTorch行为一致
+        # 确保src和self的dtype相同
         if src.dtype != self.dtype:
             raise RuntimeError(f"scatter_add_(): Expected self.dtype to be equal to src.dtype")
 
@@ -1477,7 +1686,7 @@ class TN:
         if not isinstance(src,TN):
             src = tensor(src, dtype=self.dtype)
 
-        # 确保src和self的dtype相同 - 与PyTorch行为一致
+        # 确保src和self的dtype相同
         if src.dtype != self.dtype:
             raise RuntimeError(f"scatter_add_(): Expected self.dtype to be equal to src.dtype")
 
@@ -1503,11 +1712,35 @@ class TN:
     # end of scatter_add_
 
     def numpy(self):
+        """
+        将张量转换为NumPy数组。
+        
+        返回张量数据的NumPy数组表示。此操作会断开计算图，
+        因此返回的NumPy数组不会参与梯度计算。
+        
+        Returns:
+            np.ndarray: 张量数据的NumPy数组表示
+            
+        Raises:
+            RuntimeError: 如果张量需要计算梯度
+        """
         if self.requires_grad:
             raise RuntimeError("Can't call numpy() on Tensor that requires grad. Use tensor.detach().numpy() instead.")
         return self.data
     
     def requires_grad_(self, requires_grad : bool = True):
+        """
+        就地设置张量是否需要计算梯度。
+        
+        仅适用于叶子节点张量，非叶子节点张量不能修改requires_grad属性。
+        只有浮点类型和复数类型的张量可以设置requires_grad为True。
+        
+        Args:
+            requires_grad (bool, optional): 是否需要计算梯度，默认为True
+            
+        Raises:
+            RuntimeError: 如果张量不是叶子节点或尝试为非浮点/复数类型张量设置requires_grad=True
+        """
         if not self.is_leaf:
             raise RuntimeError('requires_grad_:you can only change requires_grad flags of leaf variables.')
         
@@ -1520,12 +1753,37 @@ class TN:
         return self
     
     def retain_grad(self):
+        """
+        设置张量在反向传播后保留梯度。
+        
+        默认情况下，只有叶子节点张量在反向传播后会保留梯度值。
+        调用此方法可以使非叶子节点张量也保留梯度值，便于调试和分析。
+        
+        Raises:
+            RuntimeError: 如果张量的requires_grad为False
+        """
         if not self.requires_grad:
             raise RuntimeError("'can't retain_grad on Tensor that has requires_grad=False")
         self.retains_grad = True
         return
 
     def transpose(self,dim1:int,dim2:int):
+        """
+        交换张量的两个维度。
+        
+        返回一个新张量，其中指定的两个维度被交换。对于2D张量，
+        transpose(0, 1)等同于矩阵转置。对于高维张量，可以交换任意两个维度。
+        
+        Args:
+            dim1 (int): 要交换的第一个维度索引
+            dim2 (int): 要交换的第二个维度索引
+            
+        Returns:
+            TN: 交换指定维度后的新张量
+            
+        Raises:
+            ValueError: 如果张量维度小于2或维度索引超出范围
+        """
         if self.data.ndim >= 2:    #只有3D以上多维数组才支持批量矩阵转置
             trandata = self.data.swapaxes(dim1, dim2)
             
@@ -1545,18 +1803,41 @@ class TN:
 
     @property
     def mT(self) -> TN:
-        '''矩阵转置，即张量最后两个维度间的转置'''
+        """
+        矩阵转置，即张量最后两个维度间的转置。
+        
+        对于高维张量，此属性只交换最后两个维度，保持其他维度不变。
+        例如，对于一个形状为(3, 4, 5)的张量，mT的结果形状为(3, 5, 4)。
+        对于2D张量，这等同于标准的矩阵转置。
+        
+        Returns:
+            TN: 最后两个维度转置后的新张量
+            
+        Raises:
+            RuntimeError: 如果张量维度小于2
+        """
         return self.transpose(-1,-2)
     
     @property
     def mH(self) -> TN:
-        '''矩阵共轭转置，即张量最后两个维度间的共轭转置'''
+        """
+        矩阵共轭转置，即张量最后两个维度间的共轭转置。
+        
+        对于复数张量，此属性先对张量进行共轭操作，然后交换最后两个维度。
+        对于实数张量，这等同于mT属性，因为实数的共轭是其本身。
+        
+        Returns:
+            TN: 最后两个维度共轭转置后的新张量
+            
+        Raises:
+            RuntimeError: 如果张量维度小于2
+        """
         return self.conj().mT
 
     @property
     def T(self) -> TN:
         """
-        返回张量的转置，行为与PyTorch的.T方法一致
+        返回张量的转置
         - 对于一维张量，返回原张量（不变）
         - 对于二维张量，交换两个维度（标准矩阵转置）
         - 对于高维张量，反转整个维度顺序
@@ -1570,7 +1851,16 @@ class TN:
 
     @property
     def H(self) -> TN:
-        '''全维度共轭转置，张量共轭后反转整个维度顺序'''
+        """
+        全维度共轭转置，张量共轭后反转整个维度顺序。
+        
+        对于复数张量，此属性先对张量进行共轭操作，然后反转整个维度顺序。
+        对于实数张量，这等同于T属性，因为实数的共轭是其本身。
+        与mH属性不同，H属性会反转所有维度，而不仅仅是最后两个维度。
+        
+        Returns:
+            TN: 共轭转置后的新张量
+        """
         return self.conj().T
     
     def permute(self, *dims: int|tuple) -> 'TN':
@@ -1618,6 +1908,21 @@ class TN:
         return newobj
 
     def add_(self,other):
+        """
+        就地加法操作，将另一个张量或标量值加到当前张量上。
+        
+        直接修改当前张量的数据，而不是创建新张量。对于需要梯度的叶子节点张量，
+        不允许进行就地操作，因为这会破坏计算图。
+        
+        Args:
+            other (TN or scalar): 要加到当前张量上的张量或标量值
+            
+        Returns:
+            TN: 当前张量（已就地修改）
+            
+        Raises:
+            RuntimeError: 如果当前张量是需要梯度的叶子节点
+        """
         if self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
@@ -1625,24 +1930,84 @@ class TN:
         return self.addat_((), other)
     
     def sub_(self,other):
+        """
+        就地减法操作，从当前张量中减去另一个张量或标量值。
+        
+        直接修改当前张量的数据，而不是创建新张量。对于需要梯度的叶子节点张量，
+        不允许进行就地操作，因为这会破坏计算图。
+        
+        Args:
+            other (TN or scalar): 要从当前张量中减去的张量或标量值
+            
+        Returns:
+            TN: 当前张量（已就地修改）
+            
+        Raises:
+            RuntimeError: 如果当前张量是需要梯度的叶子节点
+        """
         if self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
         return self.subat_((), other)
 
     def mul_(self,other):
+        """
+        就地乘法操作，将当前张量与另一个张量或标量值相乘。
+        
+        直接修改当前张量的数据，而不是创建新张量。对于需要梯度的叶子节点张量，
+        不允许进行就地操作，因为这会破坏计算图。
+        
+        Args:
+            other (TN or scalar): 要与当前张量相乘的张量或标量值
+            
+        Returns:
+            TN: 当前张量（已就地修改）
+            
+        Raises:
+            RuntimeError: 如果当前张量是需要梯度的叶子节点
+        """
         if self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
         return self.mulat_((), other)
     
     def div_(self,other):
+        """
+        就地除法操作，将当前张量除以另一个张量或标量值。
+        
+        直接修改当前张量的数据，而不是创建新张量。对于需要梯度的叶子节点张量，
+        不允许进行就地操作，因为这会破坏计算图。
+        
+        Args:
+            other (TN or scalar): 要除以的张量或标量值
+            
+        Returns:
+            TN: 当前张量（已就地修改）
+            
+        Raises:
+            RuntimeError: 如果当前张量是需要梯度的叶子节点
+        """
         if self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
         return self.divat_((), other)
     
     def pow_(self,other):
+        """
+        就地幂运算操作，将当前张量的元素进行幂运算。
+        
+        直接修改当前张量的数据，而不是创建新张量。对于需要梯度的叶子节点张量，
+        不允许进行就地操作，因为这会破坏计算图。
+        
+        Args:
+            other (TN or scalar): 幂运算的指数，可以是张量或标量值
+            
+        Returns:
+            TN: 当前张量（已就地修改）
+            
+        Raises:
+            RuntimeError: 如果当前张量是需要梯度的叶子节点
+        """
         if self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
@@ -1886,13 +2251,31 @@ class TN:
         return tensor(self.data >> other_data)
     
     def detach(self):
-        '''返回一个新张量，与self共享内存，但不依赖self'''
+        """
+        返回一个与当前张量共享数据但断开计算图的新张量。
+        
+        返回的新张量与原张量共享底层数据，但不参与原张量的计算图。
+        这意味着对新张量的操作不会影响原张量的梯度计算。
+        常用于在需要将张量转换为NumPy数组或进行不需要梯度的计算时。
+        
+        Returns:
+            TN: 与原张量共享数据但断开计算图的新张量
+        """
         ret = TN()
         ret.data = self.data
         return ret    
     
     def detach_(self):
-        '''原地操作，清0 self的计算图数据'''
+        """
+        原地操作，断开当前张量与计算图的连接。
+        
+        将当前张量从计算图中分离，使其成为叶子节点，并清除所有与梯度计算相关的属性。
+        这是一个就地操作，会直接修改当前张量，而不是创建新张量。
+        操作后，张量将不再参与梯度计算，也无法通过反向传播接收梯度。
+        
+        Returns:
+            None: 此方法就地修改张量，不返回任何值
+        """
         self.requires_grad = False
         self.retains_grad = False
         self.is_leaf = True
@@ -2045,7 +2428,7 @@ class TN:
         """
         返回具有新形状的张量，不改变其数据。
         
-        与PyTorch的reshape函数行为保持一致，支持负数维度大小（特别是-1）
+        支持负数维度大小（特别是-1）
         来自动计算该维度的大小，前提是其他维度的大小可以确定。
         
         参数:
@@ -2374,7 +2757,6 @@ class TN:
             else:
                 # 检查是否可以通过在前面添加1的维度来匹配新维度数
                 # 例如：(4,) -> (1,4) -> 可以扩展为 (3,4)
-                # 这符合PyTorch的expand行为
                 if new_ndim > orig_ndim:
                     # 创建扩展后的原始形状（在前面添加1）
                     expanded_orig_shape = (1,) * (new_ndim - orig_ndim) + original_shape
@@ -2826,7 +3208,7 @@ class TN:
             gradient (TN | None, 可选): 输出张量的梯度，默认为None
             retain_graph (bool, 可选):  本参数为兼容Pytorch的设计，riemann反向传播不依赖该参数，
                                        无论True还是False，riemann都支持多次反向传播
-                                       Pytorch中，该参数表示是否在反向传播后保留计算图，设为True时可用于多次反向传播，默认为False
+                                       该参数表示是否在反向传播后保留计算图，设为True时可用于多次反向传播，默认为False
             create_graph (bool, 可选):  是否在梯度计算中创建计算图，
                                        设为True时可用于高阶导数计算，默认为False
 
@@ -2964,7 +3346,7 @@ def tensor(data, dtype:np.dtype|None = None, requires_grad:bool|None = False)->T
     """
     创建一个新的张量对象。
     
-    该函数是Riemann框架中创建张量的主要入口点，类似于PyTorch的torch.tensor()。
+    该函数是Riemann框架中创建张量的主要入口点,
     它将输入数据转换为张量，并可选择设置数据类型和是否需要梯度计算。
     
     参数:
@@ -3081,72 +3463,321 @@ def _validate_shape(shape:tuple|list):
     return newshape
 
 def zeros(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+    """
+    创建一个全零张量。
+    
+    返回一个形状为指定形状、元素全为零的新张量。
+    
+    Args:
+        *shape: 张量的形状，可以是一个整数序列或一个元组/列表
+        dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        
+    Returns:
+        TN: 全零张量
+        
+    Examples:
+        >>> zeros(3, 4)  # 创建3x4的全零张量
+        >>> zeros((2, 3))  # 创建2x3的全零张量
+    """
     shape_val = _validate_shape(shape)
     dt = get_default_dtype() if dtype is None else dtype
     return tensor(np.zeros(shape_val,dt),requires_grad=requires_grad)
 
 def zeros_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+    """
+    创建一个与给定张量形状相同的全零张量。
+    
+    返回一个与输入张量形状相同、元素全为零的新张量。
+    
+    Args:
+        tsr (TN): 参考张量，用于确定输出张量的形状
+        dtype (np.dtype, optional): 输出张量的数据类型，如果为None则使用参考张量的数据类型
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        
+    Returns:
+        TN: 与参考张量形状相同的全零张量
+        
+    Examples:
+        >>> x = ones(3, 4)
+        >>> y = zeros_like(x)  # 创建与x形状相同的全零张量
+    """
     dt = tsr.dtype if dtype is None else dtype
     return tensor(np.zeros_like(tsr.data,dt),requires_grad=requires_grad)
 
 def ones(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+    """
+    创建一个全一张量。
+    
+    返回一个形状为指定形状、元素全为一的新张量。
+    
+    Args:
+        *shape: 张量的形状，可以是一个整数序列或一个元组/列表
+        dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        
+    Returns:
+        TN: 全一张量
+        
+    Examples:
+        >>> ones(3, 4)  # 创建3x4的全一张量
+        >>> ones((2, 3))  # 创建2x3的全一张量
+    """
     shape_val = _validate_shape(shape)
     dt = get_default_dtype() if dtype is None else dtype
-    return tensor(np.ones(shape_val, dt),requires_grad=requires_grad)
+    return tensor(np.ones(shape_val,dt),requires_grad=requires_grad)
 
 def ones_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:  
+    """
+    创建一个与给定张量形状相同的全一张量。
+    
+    返回一个与输入张量形状相同、元素全为一的新张量。
+    
+    Args:
+        tsr (TN): 参考张量，用于确定输出张量的形状
+        dtype (np.dtype, optional): 输出张量的数据类型，如果为None则使用参考张量的数据类型
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        
+    Returns:
+        TN: 与参考张量形状相同的全一张量
+        
+    Examples:
+        >>> x = zeros(3, 4)
+        >>> y = ones_like(x)  # 创建与x形状相同的全一张量
+    """
     dt = tsr.dtype if dtype is None else dtype
-    return tensor(np.ones_like(tsr.data, dt),requires_grad=requires_grad)
+    return tensor(np.ones_like(tsr.data,dt),requires_grad=requires_grad)
 
 def empty(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+    """
+    创建一个未初始化的张量。
+    
+    返回一个形状为指定形状的新张量，但不初始化其元素的值。
+    元素的值是未定义的，取决于内存的当前状态。
+    
+    Args:
+        *shape: 张量的形状，可以是一个整数序列或一个元组/列表
+        dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        
+    Returns:
+        TN: 未初始化的张量
+        
+    Examples:
+        >>> x = empty(3, 4)  # 创建3x4的未初始化张量
+        >>> y = empty((2, 3))  # 创建2x3的未初始化张量
+        
+    Note:
+        由于张量未初始化，其元素值是不确定的，使用前应当先赋值。
+    """
     shape_val = _validate_shape(shape)
     dt = get_default_dtype() if dtype is None else dtype
     return tensor(np.empty(shape_val,dt),requires_grad=requires_grad)
 
 def empty_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+    """
+    创建一个与给定张量形状相同的未初始化张量。
+    
+    返回一个与输入张量形状相同的新张量，但不初始化其元素的值。
+    元素的值是未定义的，取决于内存的当前状态。
+    
+    Args:
+        tsr (TN): 参考张量，用于确定输出张量的形状
+        dtype (np.dtype, optional): 输出张量的数据类型，如果为None则使用参考张量的数据类型
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        
+    Returns:
+        TN: 与参考张量形状相同的未初始化张量
+        
+    Examples:
+        >>> x = ones(3, 4)
+        >>> y = empty_like(x)  # 创建与x形状相同的未初始化张量
+        
+    Note:
+        由于张量未初始化，其元素值是不确定的，使用前应当先赋值。
+    """
     dt = tsr.dtype if dtype is None else dtype
     return tensor(np.empty_like(tsr.data,dt),requires_grad=requires_grad)
 
 def full(*shape,fill_value:Any,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+    """
+    创建一个填充了指定值的张量。
+    
+    返回一个形状为指定形状、所有元素都填充为指定值的新张量。
+    
+    Args:
+        *shape: 张量的形状，可以是一个整数序列或一个元组/列表
+        fill_value: 用于填充张量的值
+        dtype (np.dtype, optional): 张量的数据类型，如果为None则根据fill_value推断
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        
+    Returns:
+        TN: 填充了指定值的张量
+        
+    Examples:
+        >>> full(3, 4, 5)  # 创建3x4的张量，所有元素为5
+        >>> full((2, 3), 1.5)  # 创建2x3的张量，所有元素为1.5
+    """
     shape_val = _validate_shape(shape)
     dt = get_default_dtype() if dtype is None else dtype
     return tensor(np.full(shape_val,fill_value,dt),requires_grad=requires_grad) 
 
 def full_like(tsr:TN,fill_value:Any,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+    """
+    创建一个与给定张量形状相同并填充了指定值的张量。
+    
+    返回一个与输入张量形状相同、所有元素都填充为指定值的新张量。
+    
+    Args:
+        tsr (TN): 参考张量，用于确定输出张量的形状
+        fill_value: 用于填充张量的值
+        dtype (np.dtype, optional): 输出张量的数据类型，如果为None则使用参考张量的数据类型
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        
+    Returns:
+        TN: 与参考张量形状相同并填充了指定值的张量
+        
+    Examples:
+        >>> x = ones(3, 4)
+        >>> y = full_like(x, 5)  # 创建与x形状相同的张量，所有元素为5
+    """
     dt = tsr.dtype if dtype is None else dtype
     return tensor(np.full_like(tsr.data,fill_value,dt),requires_grad=requires_grad)
 
 def eye(n: int, m: int | None = None, dtype:np.dtype|None = None,requires_grad:bool|None = False):
+    """
+    创建一个二维单位矩阵。
+    
+    返回一个n行m列的二维张量，对角线元素为1，其他元素为0。
+    如果未指定m，则默认创建一个n×n的方阵。
+    
+    Args:
+        n (int): 矩阵的行数
+        m (int, optional): 矩阵的列数，如果为None则默认为n
+        dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        
+    Returns:
+        TN: 二维单位矩阵张量
+        
+    Examples:
+        >>> eye(3)  # 创建3×3的单位矩阵
+        >>> eye(2, 4)  # 创建2×4的单位矩阵
+    """
     dt = get_default_dtype() if dtype is None else dtype
     mm = n if m is None else m
     return tensor(np.eye(n, mm, 0, dt),requires_grad=requires_grad)
 
 def rand(*size, requires_grad=False, dtype:np.dtype|None = None) -> TN:
-    #"""生成[0,1)均匀分布的随机张量"""
+    """
+    创建一个填充了[0,1)均匀分布随机数的张量。
+    
+    返回一个形状为指定大小的张量，元素是从[0,1)区间均匀分布的随机数。
+    
+    Args:
+        *size: 张量的形状，可以是一个整数序列或一个元组/列表
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        
+    Returns:
+        TN: 填充了[0,1)均匀分布随机数的张量
+        
+    Examples:
+        >>> rand(3, 4)  # 创建3x4的张量，元素为[0,1)的随机数
+        >>> rand((2, 3))  # 创建2x3的张量，元素为[0,1)的随机数
+    """
     shape = _validate_shape(size)
     dt = get_default_dtype() if dtype is None else dtype
     data = np.random.rand(*shape).astype(dt)
     return tensor(data, requires_grad=requires_grad)
 
 def randn(*size, requires_grad=False, dtype:np.dtype|None = None) -> TN:
-    #"""生成标准正态分布的随机张量"""    
+    """
+    创建一个填充了标准正态分布随机数的张量。
+    
+    返回一个形状为指定大小的张量，元素是从标准正态分布（均值为0，标准差为1）中抽取的随机数。
+    
+    Args:
+        *size: 张量的形状，可以是一个整数序列或一个元组/列表
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        
+    Returns:
+        TN: 填充了标准正态分布随机数的张量
+        
+    Examples:
+        >>> randn(3, 4)  # 创建3x4的张量，元素为标准正态分布的随机数
+        >>> randn((2, 3))  # 创建2x3的张量，元素为标准正态分布的随机数
+    """
     shape = _validate_shape(size)
     dt = get_default_dtype() if dtype is None else dtype
     data = np.random.randn(*shape).astype(dt)
     return tensor(data, requires_grad=requires_grad)
 
 def randint(low: int, high: int, size, requires_grad = False, dtype = int64) -> TN:
-    #"""生成[low,high)区间的整数随机张量"""
+    """
+    创建一个填充了指定区间随机整数的张量。
+    
+    返回一个形状为指定大小的张量，元素是从[low, high)区间均匀分布的随机整数。
+    
+    Args:
+        low (int): 随机整数的最小值（包含）
+        high (int): 随机整数的最大值（不包含）
+        size: 张量的形状，可以是一个整数序列或一个元组/列表
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        dtype (np.dtype, optional): 张量的数据类型，默认为int64
+        
+    Returns:
+        TN: 填充了[low, high)区间随机整数的张量
+        
+    Examples:
+        >>> randint(0, 10, (3, 4))  # 创建3x4的张量，元素为0到9的随机整数
+        >>> randint(5, 15, 6)  # 创建长度为6的一维张量，元素为5到14的随机整数
+    """
     dt = get_default_dtype() if dtype is None else dtype
     data = np.random.randint(low, high, size=size).astype(dt)
     return tensor(data, requires_grad=requires_grad)
 
 def randperm(n: int, requires_grad=False, dtype=int64) -> TN:
-    #"""生成0~n-1的随机排列"""
+    """
+    创建一个包含0到n-1随机排列的张量。
+    
+    返回一个长度为n的一维张量，包含从0到n-1的整数，这些整数以随机顺序排列。
+    
+    Args:
+        n (int): 排列的长度，生成的张量将包含从0到n-1的整数
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
+        dtype (np.dtype, optional): 张量的数据类型，默认为int64
+        
+    Returns:
+        TN: 包含0到n-1随机排列的一维张量
+        
+    Examples:
+        >>> randperm(5)  # 可能返回[3, 1, 4, 0, 2]这样的随机排列
+        >>> randperm(10)  # 返回长度为10的0到9的随机排列
+    """
     data = np.random.permutation(n).astype(dtype)
     return tensor(data, requires_grad=requires_grad)
 
 def normal(mean:float,std:float,size:int|tuple,dtype:np.dtype|None = None)->TN:
+    """
+    创建一个填充了指定正态分布随机数的张量。
+    
+    返回一个形状为指定大小的张量，元素是从指定均值和标准差的正态分布中抽取的随机数。
+    
+    Args:
+        mean (float): 正态分布的均值
+        std (float): 正态分布的标准差
+        size (int|tuple): 张量的形状，可以是一个整数或一个元组/列表
+        dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        
+    Returns:
+        TN: 填充了指定正态分布随机数的张量
+        
+    Examples:
+        >>> normal(0, 1, (3, 4))  # 创建3x4的张量，元素为标准正态分布的随机数
+        >>> normal(2, 0.5, 5)  # 创建长度为5的一维张量，元素为均值为2、标准差为0.5的正态分布随机数
+    """
     dt = get_default_dtype() if dtype is None else dtype
     data = np.random.normal(mean,std,size).astype(dt)    
     return tensor(data)
@@ -3181,7 +3812,7 @@ def arange(start: float, end: float = None, step: float = 1.0,
         # 检查所有输入是否都是整数
         is_all_integer = isinstance(start, int) and isinstance(end, int) and isinstance(step, int)
         if is_all_integer:
-            # 与PyTorch行为一致，所有输入都是整数时使用int64
+            # 所有输入都是整数时使用int64
             data = data.astype(np.int64)
         else:
             # 否则使用默认浮点类型
@@ -3222,7 +3853,27 @@ def linspace(start: float, end: float, steps: int = 100,
 
 def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
     """
-    将输入张量广播到指定的形状
+    将输入张量广播到指定的形状。
+    
+    返回一个原始张量的视图，广播到新的形状。原始张量和新张量共享相同的数据，
+    但新张量的形状可能不同。广播遵循NumPy的广播规则。
+    
+    Args:
+        input (TN): 要广播的输入张量
+        size (Tuple[int, ...]): 目标形状，必须与输入形状兼容
+        
+    Returns:
+        TN: 广播后的张量
+        
+    Raises:
+        TypeError: 如果输入不是TN张量或size不是元组/列表
+        RuntimeError: 如果广播失败
+        
+    Examples:
+        >>> x = tensor([[1, 2, 3]])  # 形状(1, 3)
+        >>> y = broadcast_to(x, (4, 3))  # 形状(4, 3)，每行都是[1, 2, 3]
+        >>> z = tensor([1, 2, 3])  # 形状(3,)
+        >>> w = broadcast_to(z, (2, 3))  # 形状(2, 3)，每行都是[1, 2, 3]
     """
     # 验证输入
     if not isinstance(input, TN):
@@ -3249,11 +3900,53 @@ def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
     return result
 
 def dot(x:TN,y:TN)->TN:
-    """计算两个张量的点积。"""
+    """
+    计算两个张量的点积。
+    
+    对于一维数组，计算向量的内积；对于二维数组，计算矩阵乘法；
+    对于N维数组，是x和y的最后一个轴上的点积运算。
+    
+    Args:
+        x (TN): 第一个张量
+        y (TN): 第二个张量
+        
+    Returns:
+        TN: 两个张量的点积结果
+        
+    Examples:
+        >>> a = tensor([1, 2, 3])
+        >>> b = tensor([4, 5, 6])
+        >>> dot(a, b)  # 返回32 (1*4 + 2*5 + 3*6)
+        
+        >>> c = tensor([[1, 2], [3, 4]])
+        >>> d = tensor([[5, 6], [7, 8]])
+        >>> dot(c, d)  # 返回[[19, 22], [43, 50]]
+    """
     return x @ y
 
 def matmul(x:TN,y:TN)->TN:
-    """计算两个张量的矩阵乘法。"""
+    """
+    计算两个张量的矩阵乘法。
+    
+    对于二维张量，执行标准的矩阵乘法；对于大于二维的张量，
+    执行批处理矩阵乘法，将最后两个维度视为矩阵，前面的维度视为批处理维度。
+    
+    Args:
+        x (TN): 第一个张量
+        y (TN): 第二个张量
+        
+    Returns:
+        TN: 两个张量的矩阵乘法结果
+        
+    Examples:
+        >>> a = tensor([[1, 2], [3, 4]])
+        >>> b = tensor([[5, 6], [7, 8]])
+        >>> matmul(a, b)  # 返回[[19, 22], [43, 50]]
+        
+        >>> c = tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])  # 形状(2, 2, 2)
+        >>> d = tensor([[[9, 10], [11, 12]], [[13, 14], [15, 16]]])  # 形状(2, 2, 2)
+        >>> matmul(c, d)  # 返回形状(2, 2, 2)的张量
+    """
     return x @ y
 
 def _convert_TNindex_to_numpy(index):
@@ -3812,7 +4505,7 @@ def _prod_backward(result_tensor:TN, i:int)->TN:
     # 常规梯度计算，但使用安全除数
     regular_grad = where(non_zero_x, expanded_result / safe_divisor, zeros_like(x))
     
-    # 特殊处理：当x为0时，PyTorch的梯度计算逻辑是
+    # 特殊处理：当x为0时，梯度计算逻辑是
     # 如果沿着指定维度，该元素所在切片中只有它一个为0，则梯度为其他元素的乘积
     # 否则，梯度为0
     
@@ -3966,7 +4659,7 @@ def mean(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
 def _abs_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
     # 添加安全检查，避免当result_tensor为0时的除零错误
-    # 当result_tensor为0时，梯度应为0（与PyTorch行为一致）
+    # 当result_tensor为0时，梯度应为0
     is_zero = (result_tensor == 0)
     # 使用where操作避免除零，当result_tensor为0时使用1代替
     safe_divisor = where(is_zero, ones_like(result_tensor), result_tensor)
@@ -3976,6 +4669,24 @@ def _abs_backward(result_tensor:TN, i:int)->TN:
     return grad
 
 def abs(x:TN)->TN:
+    """
+    计算张量的绝对值。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的绝对值。
+    
+    Args:
+        x (TN): 输入张量
+        
+    Returns:
+        TN: 包含输入张量绝对值的新张量
+        
+    Examples:
+        >>> a = tensor([-1, -2, 3])
+        >>> abs(a)  # 返回[1, 2, 3]
+        
+        >>> b = tensor([[-1.5, 2.5], [3.0, -4.0]])
+        >>> abs(b)  # 返回[[1.5, 2.5], [3.0, 4.0]]
+    """
     value = np.abs(x.data)
     ret = tensor(value, requires_grad = (is_grad_enabled() and x.requires_grad))
     ret.is_leaf = not ret.requires_grad
@@ -3987,6 +4698,24 @@ def abs(x:TN)->TN:
     return ret
 
 def sqrt(x:TN)->TN:
+    """
+    计算张量的平方根。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的平方根。
+    
+    Args:
+        x (TN): 输入张量，元素必须为非负数
+        
+    Returns:
+        TN: 包含输入张量平方根的新张量
+        
+    Examples:
+        >>> a = tensor([1, 4, 9])
+        >>> sqrt(a)  # 返回[1, 2, 3]
+        
+        >>> b = tensor([[4.0, 9.0], [16.0, 25.0]])
+        >>> sqrt(b)  # 返回[[2.0, 3.0], [4.0, 5.0]]
+    """
     return x ** 0.5
 
 def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
@@ -3994,7 +4723,7 @@ def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
 
     该函数用于在自动微分过程中，为max/min函数的反向传播创建掩码数组。
     当dim=None时，梯度会被平均分配到所有相同的极值位置；
-    当指定dim时，梯度仅分配到每个切片中的第一个极值位置（与PyTorch行为一致）。
+    当指定dim时，梯度仅分配到每个切片中的第一个极值位置。
 
     参数:
         arr (numpy.ndarray): 输入的numpy数组
@@ -4586,19 +5315,52 @@ def _warp_backward_func(result_tensor:TN, i:int,
     grad = result_tensor.grad_value * derivative_func(x)
     return grad
 
-# def _log_derivative(x:TN)->TN:
-#     return 1./x
-
 def _log_backward(result_tensor:TN, i:int)->TN:
     x=result_tensor.fromvars[i]
     grad = result_tensor.grad_value / x.conj()
     return grad
 
 def log(x:TN)->TN:
+    """
+    计算张量的自然对数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的自然对数(ln(x))。
+    
+    Args:
+        x (TN): 输入张量，元素必须为正数
+        
+    Returns:
+        TN: 包含输入张量自然对数的新张量
+        
+    Examples:
+        >>> a = tensor([1, e, e^2])  # e是自然常数
+        >>> log(a)  # 返回[0, 1, 2]
+        
+        >>> b = tensor([[1.0, 2.718], [7.389, 20.086]])
+        >>> log(b)  # 返回[[0.0, 1.0], [2.0, 3.0]]
+    """
     return _wrap_func(x,np.log,_log_backward)
 
-# log(1+x)实现
 def log1p(x: TN) -> TN:    
+    """
+    计算张量的log(1+x)。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素加1后的自然对数，即log(1+x)。
+    对于x接近0的小值，这个函数比直接计算log(1+x)更精确。
+    
+    Args:
+        x (TN): 输入张量，元素必须大于-1
+        
+    Returns:
+        TN: 包含输入张量log(1+x)的新张量
+        
+    Examples:
+        >>> a = tensor([0, 1, 2])
+        >>> log1p(a)  # 返回[log(1), log(2), log(3)] ≈ [0, 0.693, 1.099]
+        
+        >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
+        >>> log1p(b)  # 返回[[0.0, 0.693], [1.099, 1.386]]
+    """
     return log(x + 1.0)  # 复用现有log函数
 
 def _exp_derivative(x:TN)->TN:
@@ -4608,6 +5370,24 @@ def _exp_backward(result_tensor:TN, i:int)->TN:
     return _warp_backward_func(result_tensor,i,_exp_derivative)
 
 def exp(x:TN)->TN:
+    """
+    计算张量的指数函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的自然指数(e^x)。
+    
+    Args:
+        x (TN): 输入张量
+        
+    Returns:
+        TN: 包含输入张量指数函数值的新张量
+        
+    Examples:
+        >>> a = tensor([0, 1, 2])
+        >>> exp(a)  # 返回[e^0, e^1, e^2] ≈ [1, 2.718, 7.389]
+        
+        >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
+        >>> exp(b)  # 返回[[1.0, 2.718], [7.389, 20.086]]
+    """
     return _wrap_func(x,np.exp,_exp_backward)
 
 def _sin_derivative(x:TN)->TN:
@@ -4617,6 +5397,24 @@ def _sin_backward(result_tensor:TN, i:int)->TN:
     return _warp_backward_func(result_tensor,i,_sin_derivative)
 
 def sin(x:TN)->TN:
+    """
+    计算张量的正弦函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的正弦值(弧度制)。
+    
+    Args:
+        x (TN): 输入张量，元素为弧度值
+        
+    Returns:
+        TN: 包含输入张量正弦值的新张量
+        
+    Examples:
+        >>> a = tensor([0, pi/2, pi])  # 0, 90度, 180度
+        >>> sin(a)  # 返回[0, 1, 0]
+        
+        >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
+        >>> sin(b)  # 返回[[0.0, 0.707], [1.0, 0.707]]
+    """
     return _wrap_func(x,np.sin,_sin_backward)
     
 def _cos_derivative(x:TN)->TN:
@@ -4626,6 +5424,24 @@ def _cos_backward(result_tensor:TN, i:int)->TN:
     return _warp_backward_func(result_tensor,i,_cos_derivative)
 
 def cos(x:TN)->TN:
+    """
+    计算张量的余弦函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的余弦值(弧度制)。
+    
+    Args:
+        x (TN): 输入张量，元素为弧度值
+        
+    Returns:
+        TN: 包含输入张量余弦值的新张量
+        
+    Examples:
+        >>> a = tensor([0, pi/2, pi])  # 0, 90度, 180度
+        >>> cos(a)  # 返回[1, 0, -1]
+        
+        >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
+        >>> cos(b)  # 返回[[1.0, 0.707], [0.0, -0.707]]
+    """
     return _wrap_func(x,np.cos,_cos_backward)
 
 def _tan_derivative(x:TN)->TN:
@@ -4635,9 +5451,45 @@ def _tan_backward(result_tensor:TN, i:int)->TN:
     return _warp_backward_func(result_tensor,i,_tan_derivative)
 
 def tan(x:TN)->TN:
+    """
+    计算张量的正切函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的正切值(弧度制)。
+    
+    Args:
+        x (TN): 输入张量，元素为弧度值
+        
+    Returns:
+        TN: 包含输入张量正切值的新张量
+        
+    Examples:
+        >>> a = tensor([0, pi/4])  # 0, 45度
+        >>> tan(a)  # 返回[0, 1]
+        
+        >>> b = tensor([[0.0, pi/6], [pi/3, pi/4]])
+        >>> tan(b)  # 返回[[0.0, 0.577], [1.732, 1.0]]
+    """
     return _wrap_func(x,np.tan,_tan_backward)
 
 def cot(x:TN)->TN:
+    """
+    计算张量的余切函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的余切值(弧度制)，即cot(x) = 1/tan(x)。
+    
+    Args:
+        x (TN): 输入张量，元素为弧度值
+        
+    Returns:
+        TN: 包含输入张量余切值的新张量
+        
+    Examples:
+        >>> a = tensor([pi/4, pi/6])  # 45度, 30度
+        >>> cot(a)  # 返回[1, 1.732]
+        
+        >>> b = tensor([[pi/4, pi/3], [pi/6, pi/2]])
+        >>> cot(b)  # 返回[[1.0, 0.577], [1.732, 0.0]]
+    """
     return 1./tan(x)
 
 def sec(x:TN)->TN:
@@ -4645,9 +5497,6 @@ def sec(x:TN)->TN:
 
 def csc(x:TN)->TN:
     return 1./sin(x)
-
-# def _arcsin_derivative(x:TN)->TN:
-#     return 1. / sqrt(1. - x**2.)
 
 def _arcsin_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
@@ -4657,9 +5506,6 @@ def _arcsin_backward(result_tensor:TN, i:int)->TN:
 def arcsin(x:TN)->TN:
     return _wrap_func(x,np.arcsin,_arcsin_backward)
 
-# def _arccos_derivative(x:TN)->TN:
-#     return -1. / sqrt(1. - x**2.)
-
 def _arccos_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
     grad = -(result_tensor.grad_value / sqrt(1. - x**2.).conj())
@@ -4667,9 +5513,6 @@ def _arccos_backward(result_tensor:TN, i:int)->TN:
 
 def arccos(x:TN)->TN:
     return _wrap_func(x,np.arccos,_arccos_backward)
-
-# def _arctan_derivative(x:TN)->TN:
-#     return 1. / (1. + x**2.)
 
 def _arctan_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
@@ -4686,6 +5529,24 @@ def _sinh_backward(result_tensor:TN, i:int)->TN:
     return _warp_backward_func(result_tensor,i,_sinh_derivative)
 
 def sinh(x:TN)->TN:
+    """
+    计算张量的双曲正弦函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的双曲正弦值，即sinh(x) = (e^x - e^(-x))/2。
+    
+    Args:
+        x (TN): 输入张量
+        
+    Returns:
+        TN: 包含输入张量双曲正弦值的新张量
+        
+    Examples:
+        >>> a = tensor([0, 1, -1])
+        >>> sinh(a)  # 返回[0, 1.175, -1.175]
+        
+        >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
+        >>> sinh(b)  # 返回[[0.0, 1.175], [3.627, -1.175]]
+    """
     return _wrap_func(x,np.sinh,_sinh_backward)
 
 def _cosh_derivative(x:TN)->TN:
@@ -4695,6 +5556,24 @@ def _cosh_backward(result_tensor:TN, i:int)->TN:
     return _warp_backward_func(result_tensor,i,_cosh_derivative)
 
 def cosh(x:TN)->TN:
+    """
+    计算张量的双曲余弦函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的双曲余弦值，即cosh(x) = (e^x + e^(-x))/2。
+    
+    Args:
+        x (TN): 输入张量
+        
+    Returns:
+        TN: 包含输入张量双曲余弦值的新张量
+        
+    Examples:
+        >>> a = tensor([0, 1, -1])
+        >>> cosh(a)  # 返回[1, 1.543, 1.543]
+        
+        >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
+        >>> cosh(b)  # 返回[[1.0, 1.543], [3.762, 1.543]]
+    """
     return _wrap_func(x,np.cosh,_cosh_backward)
 
 def _tanh_derivative(x:TN)->TN:
@@ -4704,19 +5583,88 @@ def _tanh_backward(result_tensor:TN, i:int)->TN:
     return _warp_backward_func(result_tensor,i,_tanh_derivative)
 
 def tanh(x:TN)->TN:
+    """
+    计算张量的双曲正切函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的双曲正切值，即tanh(x) = sinh(x)/cosh(x)。
+    
+    Args:
+        x (TN): 输入张量
+        
+    Returns:
+        TN: 包含输入张量双曲正切值的新张量
+        
+    Examples:
+        >>> a = tensor([0, 1, -1])
+        >>> tanh(a)  # 返回[0, 0.762, -0.762]
+        
+        >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
+        >>> tanh(b)  # 返回[[0.0, 0.762], [0.964, -0.762]]
+    """
     return _wrap_func(x,np.tanh,_tanh_backward)
 
 def coth(x:TN)->TN:
+    """
+    计算张量的双曲余切函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的双曲余切值，即coth(x) = 1/tanh(x)。
+    
+    Args:
+        x (TN): 输入张量，元素不能为0
+        
+    Returns:
+        TN: 包含输入张量双曲余切值的新张量
+        
+    Examples:
+        >>> a = tensor([1, 2])
+        >>> coth(a)  # 返回[1.313, 1.037]
+        
+        >>> b = tensor([[1.0, 2.0], [3.0, 4.0]])
+        >>> coth(b)  # 返回[[1.313, 1.037], [1.005, 1.001]]
+    """
     return 1.0 / tanh(x)
 
 def sech(x:TN)->TN:
+    """
+    计算张量的双曲正割函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的双曲正割值，即sech(x) = 1/cosh(x)。
+    
+    Args:
+        x (TN): 输入张量
+        
+    Returns:
+        TN: 包含输入张量双曲正割值的新张量
+        
+    Examples:
+        >>> a = tensor([0, 1, -1])
+        >>> sech(a)  # 返回[1, 0.648, 0.648]
+        
+        >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
+        >>> sech(b)  # 返回[[1.0, 0.648], [0.266, 0.648]]
+    """
     return 1.0 / cosh(x)
 
 def csch(x:TN)->TN:
+    """
+    计算张量的双曲余割函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的双曲余割值，即csch(x) = 1/sinh(x)。
+    
+    Args:
+        x (TN): 输入张量，元素不能为0
+        
+    Returns:
+        TN: 包含输入张量双曲余割值的新张量
+        
+    Examples:
+        >>> a = tensor([1, 2])
+        >>> csch(a)  # 返回[0.851, 0.276]
+        
+        >>> b = tensor([[1.0, 2.0], [3.0, 4.0]])
+        >>> csch(b)  # 返回[[0.851, 0.276], [0.100, 0.037]]
+    """
     return 1.0 / sinh(x)
-
-# def _arcsinh_derivative(x:TN)->TN:
-#     return 1. / sqrt(x**2. + 1.)
 
 def _arcsinh_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
@@ -4724,10 +5672,25 @@ def _arcsinh_backward(result_tensor:TN, i:int)->TN:
     return grad
 
 def arcsinh(x:TN)->TN:
+    """
+    计算张量的反双曲正弦函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的反双曲正弦值，即arcsinh(x) = ln(x + sqrt(x^2 + 1))。
+    
+    Args:
+        x (TN): 输入张量
+        
+    Returns:
+        TN: 包含输入张量反双曲正弦值的新张量
+        
+    Examples:
+        >>> a = tensor([0, 1, -1])
+        >>> arcsinh(a)  # 返回[0, 0.881, -0.881]
+        
+        >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
+        >>> arcsinh(b)  # 返回[[0.0, 0.881], [1.444, -0.881]]
+    """
     return _wrap_func(x,np.arcsinh,_arcsinh_backward)
-
-# def _arccosh_derivative(x:TN)->TN:
-#     return 1. / sqrt(x**2. - 1.)
 
 def _arccosh_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
@@ -4735,10 +5698,25 @@ def _arccosh_backward(result_tensor:TN, i:int)->TN:
     return grad
 
 def arccosh(x:TN)->TN:
+    """
+    计算张量的反双曲余弦函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的反双曲余弦值，即arccosh(x) = ln(x + sqrt(x^2 - 1))。
+    
+    Args:
+        x (TN): 输入张量，元素必须大于等于1
+        
+    Returns:
+        TN: 包含输入张量反双曲余弦值的新张量
+        
+    Examples:
+        >>> a = tensor([1, 2, 3])
+        >>> arccosh(a)  # 返回[0, 1.317, 1.763]
+        
+        >>> b = tensor([[1.0, 2.0], [3.0, 4.0]])
+        >>> arccosh(b)  # 返回[[0.0, 1.317], [1.763, 2.063]]
+    """
     return _wrap_func(x,np.arccosh,_arccosh_backward)
-
-# def _arctanh_derivative(x:TN)->TN:
-#     return 1. / (1. - x**2.)
 
 def _arctanh_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
@@ -4746,6 +5724,24 @@ def _arctanh_backward(result_tensor:TN, i:int)->TN:
     return grad
 
 def arctanh(x:TN)->TN:
+    """
+    计算张量的反双曲正切函数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的反双曲正切值，即arctanh(x) = 0.5 * ln((1+x)/(1-x))。
+    
+    Args:
+        x (TN): 输入张量，元素必须在(-1, 1)区间内
+        
+    Returns:
+        TN: 包含输入张量反双曲正切值的新张量
+        
+    Examples:
+        >>> a = tensor([0, 0.5, -0.5])
+        >>> arctanh(a)  # 返回[0, 0.549, -0.549]
+        
+        >>> b = tensor([[0.0, 0.5], [0.8, -0.8]])
+        >>> arctanh(b)  # 返回[[0.0, 0.549], [1.099, -1.099]]
+    """
     return _wrap_func(x,np.arctanh,_arctanh_backward)
 
 def _sign_backward(result_tensor:TN, i:int)->TN:
@@ -4802,7 +5798,7 @@ def where(cond: TN, x: TN=None, y: TN=None) -> TN:
     return ret
 
 def clamp(x: TN, min: float = None, max: float = None, out: TN = None) -> TN:
-    # 处理参数缺省逻辑（与PyTorch对齐）
+    # 处理参数缺省逻辑
     if min is None and max is None:
         raise ValueError("clamp()需要至少指定min或max参数")
     
@@ -4811,7 +5807,7 @@ def clamp(x: TN, min: float = None, max: float = None, out: TN = None) -> TN:
         if min > max:
             raise ValueError("clamp(): min不能大于max")
     
-    # 检查out参数和梯度需求的冲突（与PyTorch行为一致）
+    # 检查out参数和梯度需求的冲突
     if out is not None and x.requires_grad:
         raise RuntimeError("clamp(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
     
@@ -4832,7 +5828,7 @@ def clamp(x: TN, min: float = None, max: float = None, out: TN = None) -> TN:
         # 执行原地数值截断操作，直接修改out.data的内容
         np.clip(x.data, np_min, np_max, out=out.data)
         
-        # 使用out参数时不设置梯度跟踪（与PyTorch一致）
+        # 使用out参数时不设置梯度跟踪
         return out
     
     # 否则创建新的张量
@@ -4967,9 +5963,9 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
     返回:
         包含两个张量的元组 (sorted_values, sorted_indices)
         
-    注意: 与PyTorch一致，当使用out参数时，不支持自动微分
+    注意: 当使用out参数时，不支持自动微分
     """
-    # 检查out参数和梯度需求的冲突（与PyTorch行为一致）
+    # 检查out参数和梯度需求的冲突
     if out is not None and input.requires_grad:
         raise RuntimeError("sort(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
     
@@ -5054,7 +6050,7 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
         np.copyto(values_out.data, sorted_values.data)
         np.copyto(indices_out.data, sorted_indices_tensor.data)
         
-        # 使用out参数时不设置梯度跟踪（与PyTorch一致）
+        # 使用out参数时不设置梯度跟踪
         return (values_out, indices_out)
     
     # 返回排序结果
@@ -5276,7 +6272,7 @@ def unique(input: TN, sorted: bool = True, return_inverse: bool = False,
 
 def maximum(input: TN, other: TN) -> TN:
     """
-    计算两个张量的逐元素最大值，与PyTorch的torch.maximum接口一致
+    计算两个张量的逐元素最大值
     
     参数:
         input (TN): 第一个输入张量
@@ -5319,7 +6315,7 @@ def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
     梯度规则：
     - 当input > other时，梯度为1（传递梯度）
     - 当input <= other时，梯度为0（阻断梯度）
-    - 当input == other时，梯度为0.5（平均分配，与PyTorch行为一致）
+    - 当input == other时，梯度为0.5（平均分配）
     """
     input_tensor = result_tensor.fromvars[i]  # 第一个输入
     other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
@@ -5358,7 +6354,7 @@ def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
     梯度规则：
     - 当other > input时，梯度为1（传递梯度）
     - 当other <= input时，梯度为0（阻断梯度）
-    - 当other == input时，梯度为0.5（平均分配，与PyTorch行为一致）
+    - 当other == input时，梯度为0.5（平均分配）
     """
     other_tensor = result_tensor.fromvars[i]  # 第二个输入
     input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
@@ -5392,7 +6388,7 @@ def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
 
 def minimum(input: TN, other: TN) -> TN:
     """
-    计算两个张量的逐元素最小值，与PyTorch的torch.minimum接口一致
+    计算两个张量的逐元素最小值
     
     参数:
         input (TN): 第一个输入张量
@@ -5435,7 +6431,7 @@ def _minimum_grad_input(result_tensor: TN, i: int) -> TN:
     梯度规则：
     - 当input < other时，梯度为1（传递梯度）
     - 当input >= other时，梯度为0（阻断梯度）
-    - 当input == other时，梯度为0.5（平均分配，与PyTorch行为一致）
+    - 当input == other时，梯度为0.5（平均分配）
     """
     input_tensor = result_tensor.fromvars[i]  # 第一个输入
     other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
@@ -5474,7 +6470,7 @@ def _minimum_grad_other(result_tensor: TN, i: int) -> TN:
     梯度规则：
     - 当other < input时，梯度为1（传递梯度）
     - 当other >= input时，梯度为0（阻断梯度）
-    - 当other == input时，梯度为0.5（平均分配，与PyTorch行为一致）
+    - 当other == input时，梯度为0.5（平均分配）
     """
     other_tensor = result_tensor.fromvars[i]  # 第二个输入
     input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
@@ -5851,8 +6847,8 @@ def batch_diag(v):
     shape = v.shape
     n = shape[-1]  # 最后一维的大小
     
-    # 创建单位矩阵模板
-    identity_tensor = eye(n)
+    # 创建单位矩阵模板，确保与输入张量的数据类型一致
+    identity_tensor = eye(n, dtype=v.dtype)
     
     # 使用广播机制生成对角矩阵
     # 将输入张量扩展维度，然后与单位矩阵相乘
@@ -6044,7 +7040,7 @@ def isreal(x:TN)->TN:
 
 def tril(input_tensor: TN, diagonal: int = 0) -> TN:
     """
-    返回矩阵的下三角部分，与PyTorch的tril函数接口一致。
+    返回矩阵的下三角部分
     
     参数:
         input_tensor: 输入张量
@@ -6083,7 +7079,7 @@ def _tril_backward(result_tensor: TN, i: int) -> TN:
 
 def triu(input_tensor: TN, diagonal: int = 0) -> TN:
     """
-    返回矩阵的上三角部分，与PyTorch的triu函数接口一致。
+    返回矩阵的上三角部分
     
     参数:
         input_tensor: 输入张量

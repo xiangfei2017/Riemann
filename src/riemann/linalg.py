@@ -1397,6 +1397,10 @@ def pinv(A, atol=None, rtol=None, hermitian=False, out=None):
     # 只对非零奇异值计算倒数
     S_reciprocal = where(mask, 1.0 / where(mask, S, 1.0), 0.0)
     
+    # 确保S_reciprocal的数据类型与输入矩阵A一致，避免反向传播时的类型不匹配
+    if A.dtype in (np.complex64, np.complex128):
+        S_reciprocal = S_reciprocal.type(A.dtype)
+    
     # 创建S的伪逆对角矩阵
     S_inv = batch_diag(S_reciprocal)
     
@@ -1422,7 +1426,7 @@ def pinv(A, atol=None, rtol=None, hermitian=False, out=None):
 def eig(A, *, out=None):
     """计算方阵的特征值和特征向量。
     
-    该函数计算矩阵A的特征值分解，与torch.linalg.eig保持一致。
+    该函数计算矩阵A的特征值分解
     
     参数:
         A (TN): 输入张量，形状为(*, n, n)，其中*表示任意数量的批处理维度

@@ -1,3 +1,17 @@
+"""
+演示Riemann的Jacobian矩阵计算功能
+
+本示例展示了如何使用Riemann的jacobian()函数计算向量值函数的Jacobian矩阵。
+Jacobian矩阵是一阶偏导数组成的矩阵，描述了向量函数的局部线性化。
+
+主要功能：
+1. 单输入单输出的Jacobian矩阵计算
+2. 多输入单输出的Jacobian矩阵计算
+3. 多输入多输出的Jacobian矩阵计算
+4. Jacobian-向量积(JVP)计算
+5. 向量-Jacobian积(VJP)计算
+"""
+
 import sys,os,time
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))  # 添加父目录到路径
 
@@ -6,9 +20,6 @@ def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 clear_screen()
-
-# import torch
-# from torch.autograd.functional import jacobian
 
 import riemann as rm
 from riemann.autograd.functional import jacobian, jvp, vjp

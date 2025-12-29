@@ -1,3 +1,17 @@
+"""
+演示Riemann的Hessian矩阵计算功能
+
+本示例展示了如何使用Riemann的hessian()函数计算函数的Hessian矩阵。
+Hessian矩阵是二阶偏导数组成的矩阵，在优化和牛顿法中有重要应用。
+
+主要功能：
+1. 单变量函数的Hessian矩阵计算
+2. 多变量函数的Hessian矩阵计算
+3. Hessian-向量积(HVP)计算
+4. 向量-Hessian积(VHP)计算
+5. 使用Hessian进行二阶优化
+"""
+
 import sys,os,time
 # 添加time模块以进行效率对比
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))  # 添加父目录到路径

@@ -1,3 +1,17 @@
+"""
+演示Riemann的梯度计算功能
+
+本示例展示了如何使用Riemann的grad()函数计算函数的梯度。
+包括单输入单输出、多输入单输出、多输入多输出等情况的梯度计算。
+
+主要功能：
+1. 单输入单输出函数的梯度计算
+2. 多输入单输出函数的梯度计算
+3. 高阶导数计算
+4. 偏导数计算
+5. 使用梯度进行优化
+"""
+
 import sys, os
 import numpy as np
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))  # 添加父目录到路径
