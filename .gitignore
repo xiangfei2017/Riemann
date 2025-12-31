@@ -48,4 +48,8 @@ venv.bak/
 
 # 文档构建目录
 docs/build/
+docs/build_en
+docs/build_zh
+docs/build_html
+docs/build_html_zh
 _site/

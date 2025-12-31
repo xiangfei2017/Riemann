@@ -711,7 +711,6 @@ def _compute_hessian_vector_product(func, inputs, v, create_graph=False, strict=
     # 返回函数值和HVP/VHP结果的元组，与PyTorch行为一致
     return func_output, hessian_vec_product
 
-
 def hvp(func, inputs, v, create_graph=False, strict=False):
     """
     计算Hessian-vector product (HVP): H @ v

@@ -74,10 +74,11 @@ Example usage:
 from __future__ import annotations
 import builtins
 import warnings
-from typing import Callable, Any, List, Tuple
+from typing import Callable, Any, List, Tuple, TypeAlias
 import numpy as np
 from .dtype import *
 from .gradmode import *
+
 
 class TN:
     """
@@ -2906,6 +2907,12 @@ class TN:
         ret = tensor(idx, dtype = int64)
         return ret
 
+    def argsort(self,dim:int=-1,descending:bool=False):
+        return argsort(self,dim=dim,descending=descending)
+
+    def sort(self,dim:int=-1,descending:bool=False):
+        return sort(self,dim=dim,descending=descending)
+
     def maximum(self, other):
         return maximum(self,other)
     
@@ -3850,6 +3857,124 @@ def linspace(start: float, end: float, steps: int = 100,
     
     # 创建并返回张量
     return tensor(data, requires_grad=requires_grad)
+
+# 定义函数类型别名
+ForwardFunc: TypeAlias = Callable[..., Any]  # 前向函数类型：输入任意数量的参数，返回任意类型
+GradFunc: TypeAlias = Callable[..., tuple[TN, ...]]  # 梯度函数类型：输入任意数量的参数，返回包含每个输入梯度的元组
+BackwardFunc: TypeAlias = Callable[[TN, int], TN]  # 反向函数类型：输入一个TN和一个int，返回一个TN
+DecoratorFunc: TypeAlias = Callable[[Callable[..., Any]], Callable[..., TN]]  # 修饰器类型：输入一个返回任意类型的函数，返回一个返回TN的函数
+
+def track_grad(grad_func:GradFunc)->DecoratorFunc:
+    """
+    创建一个梯度跟踪修饰器，用于为函数添加自动微分支持。
+    
+    这个修饰器工厂接收一个梯度函数，返回一个修饰器，该修饰器可以将普通的张量运算函数
+    转换为支持自动微分的函数。它会自动创建反向传播函数，并管理梯度计算图的构建。
+    
+    Args:
+        grad_func (GradFunc): 梯度计算函数，接收与前向函数相同的输入参数，
+            返回一个元组，包含每个输入张量对应的梯度（偏导数）
+            元组内元素需要与前向函数的输入张量一一对应，对于不需要梯度的张量，对应的梯度值应为None
+            
+    Returns:
+        DecoratorFunc: 一个修饰器函数，用于包装
+            前向计算函数，使其支持自动微分
+    
+    Examples:
+        >>> # 定义单输入导数函数（d/dx log(x) = 1/x）
+        >>> def _log_derivative(x: TN) -> tuple[TN]:
+        ...     return (1. / x.conj(),)
+        >>> 
+        >>> # 使用track_grad修饰器创建支持自动微分的对数函数
+        >>> @track_grad(_log_derivative)
+        ... def mylog(x: TN) -> TN:
+        ...     return tensor(np.log(x.data))
+        >>> 
+        >>> # 使用带自动微分的对数函数
+        >>> x = tensor(2., requires_grad=True)
+        >>> y = mylog(x)
+        >>> y.backward()
+        >>> print(f'x.grad = {x.grad}')  # 输出: x.grad = 0.5
+        
+        >>> # 定义多输入导数函数（d/dx (x + y) = 1, d/dy (x + y) = 1）
+        >>> def _add_derivative(x: TN, y: TN) -> tuple[TN, TN]:
+        ...     return (tensor(1.), tensor(1.))
+        >>> 
+        >>> # 使用track_grad修饰器创建支持自动微分的加法函数
+        >>> @track_grad(_add_derivative)
+        ... def myadd(x: TN, y: TN) -> TN:
+        ...     return tensor(x.data + y.data)
+        >>> 
+        >>> # 使用带自动微分的加法函数
+        >>> x = tensor(2., requires_grad=True)
+        >>> y = tensor(3., requires_grad=True)
+        >>> z = myadd(x, y)
+        >>> z.backward()
+        >>> print(f'x.grad = {x.grad}')  # 输出: x.grad = 1.0
+        >>> print(f'y.grad = {y.grad}')  # 输出: y.grad = 1.0
+    
+    工作原理：
+        1. 接收一个前向计算函数forward_func，包装它为支持梯度跟踪的函数
+        2. 自动创建反向传播函数，用于计算梯度值（利用链式法则：grad = result.grad_value * grad_func(x)）
+        3. 包装后的函数会管理梯度计算所需的元数据（requires_grad, is_leaf, fromvars, gradfuncs）
+        4. 当进行反向传播时，会自动调用backward_func计算梯度
+    """
+    def decorator(forward_func:ForwardFunc)->ForwardFunc:
+        def wrapper(*xs, **kwargs)->TN:
+            # 调用前向函数
+            ret_val = forward_func(*xs, **kwargs)
+            
+            # 如果返回值不是TN类型，将其转换为TN类型
+            if not isinstance(ret_val, TN):
+                ret = tensor(ret_val)
+            else:
+                ret = ret_val
+            
+            # 合并所有参数
+            all_params = list(xs) + list(kwargs.values())
+            
+            # 筛选出所有TN类型的参数
+            tn_params = []
+            tn_param_indices = []
+            for i, param in enumerate(all_params):
+                if isinstance(param, TN):
+                    tn_params.append(param)
+                    tn_param_indices.append(i)
+            
+            # 设置梯度跟踪标志
+            ret.requires_grad = (is_grad_enabled() and any(x.requires_grad for x in tn_params))
+            ret.is_leaf = not ret.requires_grad
+
+            if ret.requires_grad:
+                # 只保留需要梯度的TN类型输入张量及其原始索引
+                grad_required_tn_indices = [i for i, x in enumerate(tn_params) if x.requires_grad]
+                fromvars = tuple(tn_params[i] for i in grad_required_tn_indices)
+                
+                # 为每个需要梯度的TN输入创建对应的反向梯度跟踪函数
+                def create_backward_func():
+                    def backward_func(result_tensor: TN, index_in_fromvars: int) -> TN:
+                        # index_in_fromvars是fromvars中的索引，需要根据它找到对应的TN参数索引
+                        tn_index = grad_required_tn_indices[index_in_fromvars]
+                        # 再根据TN参数索引找到对应的原始参数索引
+                        original_index = tn_param_indices[tn_index]
+                        # 同时传递位置参数和关键字参数给梯度函数
+                        grad_values = grad_func(*xs, **kwargs)
+                        # 确保返回值是元组
+                        if not isinstance(grad_values, tuple):
+                            grad_values = (grad_values,)
+                        
+                        return result_tensor.grad_value * grad_values[original_index]
+                    return backward_func
+                
+                gradfuncs = tuple(
+                    create_backward_func() for _ in range(len(grad_required_tn_indices))
+                )
+                ret.fromvars = fromvars
+                ret.gradfuncs = gradfuncs
+            return ret
+        return wrapper
+    return decorator
+# end of track_grad
 
 def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
     """
@@ -5294,32 +5419,10 @@ def _pow_grad_right(result_tensor:TN, i:int)->TN:
 def pow(input, exponent)->TN|float:
     return input ** exponent
 
-def _wrap_func(x:TN, 
-               npfunc:Callable[[np.ndarray,np.dtype],np.ndarray], 
-               backward_func:Callable[[TN],TN])->TN:
-    if not isinstance(x,TN):
-        raise SyntaxError('x need to be a tensor')
-    
-    value = npfunc(x.data) 
-    ret = tensor(value, requires_grad = (is_grad_enabled() and x.requires_grad))
-    ret.is_leaf = not ret.requires_grad
+def _log_derivative(x:TN)->tuple[TN]:
+    return (1. / x.conj(),)
 
-    if ret.requires_grad:
-        ret.fromvars = (x,)
-        ret.gradfuncs = (backward_func,)     
-    return ret
-
-def _warp_backward_func(result_tensor:TN, i:int,
-                        derivative_func:Callable[[TN],TN])->TN:
-    x = result_tensor.fromvars[i]
-    grad = result_tensor.grad_value * derivative_func(x)
-    return grad
-
-def _log_backward(result_tensor:TN, i:int)->TN:
-    x=result_tensor.fromvars[i]
-    grad = result_tensor.grad_value / x.conj()
-    return grad
-
+@track_grad(_log_derivative)
 def log(x:TN)->TN:
     """
     计算张量的自然对数。
@@ -5339,7 +5442,7 @@ def log(x:TN)->TN:
         >>> b = tensor([[1.0, 2.718], [7.389, 20.086]])
         >>> log(b)  # 返回[[0.0, 1.0], [2.0, 3.0]]
     """
-    return _wrap_func(x,np.log,_log_backward)
+    return tensor(np.log(x.data))
 
 def log1p(x: TN) -> TN:    
     """
@@ -5364,11 +5467,9 @@ def log1p(x: TN) -> TN:
     return log(x + 1.0)  # 复用现有log函数
 
 def _exp_derivative(x:TN)->TN:
-    return exp(x).conj()
+    return (exp(x).conj(),)
 
-def _exp_backward(result_tensor:TN, i:int)->TN:
-    return _warp_backward_func(result_tensor,i,_exp_derivative)
-
+@track_grad(_exp_derivative)
 def exp(x:TN)->TN:
     """
     计算张量的指数函数。
@@ -5388,14 +5489,12 @@ def exp(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
         >>> exp(b)  # 返回[[1.0, 2.718], [7.389, 20.086]]
     """
-    return _wrap_func(x,np.exp,_exp_backward)
+    return tensor(np.exp(x.data))
 
 def _sin_derivative(x:TN)->TN:
-    return cos(x).conj()
+    return (cos(x).conj(),)
 
-def _sin_backward(result_tensor:TN, i:int)->TN:
-    return _warp_backward_func(result_tensor,i,_sin_derivative)
-
+@track_grad(_sin_derivative)
 def sin(x:TN)->TN:
     """
     计算张量的正弦函数。
@@ -5415,14 +5514,12 @@ def sin(x:TN)->TN:
         >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
         >>> sin(b)  # 返回[[0.0, 0.707], [1.0, 0.707]]
     """
-    return _wrap_func(x,np.sin,_sin_backward)
+    return tensor(np.sin(x.data))
     
 def _cos_derivative(x:TN)->TN:
-    return -sin(x).conj()
+    return (-sin(x).conj(),)
 
-def _cos_backward(result_tensor:TN, i:int)->TN:
-    return _warp_backward_func(result_tensor,i,_cos_derivative)
-
+@track_grad(_cos_derivative)
 def cos(x:TN)->TN:
     """
     计算张量的余弦函数。
@@ -5442,14 +5539,12 @@ def cos(x:TN)->TN:
         >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
         >>> cos(b)  # 返回[[1.0, 0.707], [0.0, -0.707]]
     """
-    return _wrap_func(x,np.cos,_cos_backward)
+    return tensor(np.cos(x.data))
 
 def _tan_derivative(x:TN)->TN:
-    return 1. + (tan(x.conj()))**2.
+    return (1. + (tan(x.conj()))**2.,)
 
-def _tan_backward(result_tensor:TN, i:int)->TN:
-    return _warp_backward_func(result_tensor,i,_tan_derivative)
-
+@track_grad(_tan_derivative)
 def tan(x:TN)->TN:
     """
     计算张量的正切函数。
@@ -5469,7 +5564,7 @@ def tan(x:TN)->TN:
         >>> b = tensor([[0.0, pi/6], [pi/3, pi/4]])
         >>> tan(b)  # 返回[[0.0, 0.577], [1.732, 1.0]]
     """
-    return _wrap_func(x,np.tan,_tan_backward)
+    return tensor(np.tan(x.data))
 
 def cot(x:TN)->TN:
     """
@@ -5498,36 +5593,31 @@ def sec(x:TN)->TN:
 def csc(x:TN)->TN:
     return 1./sin(x)
 
-def _arcsin_backward(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    grad = result_tensor.grad_value / sqrt(1. - x**2.).conj()
-    return grad
+def _arcsin_derivative(x:TN)->TN:
+    return (1./sqrt(1. - x**2.).conj(),)
 
+@track_grad(_arcsin_derivative)
 def arcsin(x:TN)->TN:
-    return _wrap_func(x,np.arcsin,_arcsin_backward)
+    return tensor(np.arcsin(x.data))
 
-def _arccos_backward(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    grad = -(result_tensor.grad_value / sqrt(1. - x**2.).conj())
-    return grad
+def _arccos_derivative(x:TN)->TN:
+    return (-1.0/sqrt(1. - x**2.).conj(),)
 
+@track_grad(_arccos_derivative)
 def arccos(x:TN)->TN:
-    return _wrap_func(x,np.arccos,_arccos_backward)
+    return tensor(np.arccos(x.data))
 
-def _arctan_backward(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    grad = result_tensor.grad_value / (1. + x**2.).conj()
-    return grad
+def _arctan_derivative(x:TN)->TN:
+    return (1./(1. + x**2.).conj(),)
 
+@track_grad(_arctan_derivative)
 def arctan(x:TN)->TN:
-    return _wrap_func(x,np.arctan,_arctan_backward)
+    return tensor(np.arctan(x.data))
 
 def _sinh_derivative(x:TN)->TN:
-    return cosh(x).conj()
+    return (cosh(x).conj(),)
 
-def _sinh_backward(result_tensor:TN, i:int)->TN:
-    return _warp_backward_func(result_tensor,i,_sinh_derivative)
-
+@track_grad(_sinh_derivative)
 def sinh(x:TN)->TN:
     """
     计算张量的双曲正弦函数。
@@ -5547,14 +5637,12 @@ def sinh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> sinh(b)  # 返回[[0.0, 1.175], [3.627, -1.175]]
     """
-    return _wrap_func(x,np.sinh,_sinh_backward)
+    return tensor(np.sinh(x.data))
 
 def _cosh_derivative(x:TN)->TN:
-    return sinh(x).conj()
+    return (sinh(x).conj(),)
 
-def _cosh_backward(result_tensor:TN, i:int)->TN:
-    return _warp_backward_func(result_tensor,i,_cosh_derivative)
-
+@track_grad(_cosh_derivative)
 def cosh(x:TN)->TN:
     """
     计算张量的双曲余弦函数。
@@ -5574,14 +5662,12 @@ def cosh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> cosh(b)  # 返回[[1.0, 1.543], [3.762, 1.543]]
     """
-    return _wrap_func(x,np.cosh,_cosh_backward)
+    return tensor(np.cosh(x.data))
 
 def _tanh_derivative(x:TN)->TN:
-    return (1.0 - tanh(x)**2.0).conj()
+    return ((1.0 - tanh(x)**2.0).conj(),)
 
-def _tanh_backward(result_tensor:TN, i:int)->TN:
-    return _warp_backward_func(result_tensor,i,_tanh_derivative)
-
+@track_grad(_tanh_derivative)
 def tanh(x:TN)->TN:
     """
     计算张量的双曲正切函数。
@@ -5601,7 +5687,7 @@ def tanh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> tanh(b)  # 返回[[0.0, 0.762], [0.964, -0.762]]
     """
-    return _wrap_func(x,np.tanh,_tanh_backward)
+    return tensor(np.tanh(x.data))
 
 def coth(x:TN)->TN:
     """
@@ -5666,11 +5752,10 @@ def csch(x:TN)->TN:
     """
     return 1.0 / sinh(x)
 
-def _arcsinh_backward(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    grad = result_tensor.grad_value / sqrt(x**2. + 1.).conj()
-    return grad
-
+def _arcsinh_derivative(x:TN)->TN:
+    return (1. / sqrt(x**2. + 1.).conj(),)
+    
+@track_grad(_arcsinh_derivative)
 def arcsinh(x:TN)->TN:
     """
     计算张量的反双曲正弦函数。
@@ -5690,13 +5775,12 @@ def arcsinh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> arcsinh(b)  # 返回[[0.0, 0.881], [1.444, -0.881]]
     """
-    return _wrap_func(x,np.arcsinh,_arcsinh_backward)
+    return tensor(np.arcsinh(x.data))
 
-def _arccosh_backward(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    grad = result_tensor.grad_value / sqrt(x**2. - 1.).conj()
-    return grad
+def _arccosh_derivative(x:TN)->TN:
+    return (1. / sqrt(x**2. - 1.).conj(),)
 
+@track_grad(_arccosh_derivative)
 def arccosh(x:TN)->TN:
     """
     计算张量的反双曲余弦函数。
@@ -5716,13 +5800,12 @@ def arccosh(x:TN)->TN:
         >>> b = tensor([[1.0, 2.0], [3.0, 4.0]])
         >>> arccosh(b)  # 返回[[0.0, 1.317], [1.763, 2.063]]
     """
-    return _wrap_func(x,np.arccosh,_arccosh_backward)
+    return tensor(np.arccosh(x.data))
 
-def _arctanh_backward(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    grad = result_tensor.grad_value / (1. - x**2.0).conj()
-    return grad
+def _arctanh_derivative(x:TN)->TN:
+    return (1. / (1. - x**2.0).conj(),)
 
+@track_grad(_arctanh_derivative)
 def arctanh(x:TN)->TN:
     """
     计算张量的反双曲正切函数。
@@ -5742,15 +5825,15 @@ def arctanh(x:TN)->TN:
         >>> b = tensor([[0.0, 0.5], [0.8, -0.8]])
         >>> arctanh(b)  # 返回[[0.0, 0.549], [1.099, -1.099]]
     """
-    return _wrap_func(x,np.arctanh,_arctanh_backward)
+    return tensor(np.arctanh(x.data))
 
-def _sign_backward(result_tensor:TN, i:int)->TN:
+def _sign_derivative(x:TN)->TN:
     # sign函数在x=0处不可导，在其他点处梯度为0
     # 创建一个与输入相同形状的零张量作为梯度
-    x = result_tensor.fromvars[i]
     grad = zeros_like(x)
     return grad
 
+@track_grad(_sign_derivative)
 def sign(x:TN)->TN:
     """计算张量的符号函数
     
@@ -5760,7 +5843,7 @@ def sign(x:TN)->TN:
     
     该函数支持实数和复数张量，并正确处理反向传播。
     """
-    return _wrap_func(x,np.sign,_sign_backward)
+    return tensor(np.sign(x.data))
 
 def where(cond: TN, x: TN=None, y: TN=None) -> TN:
     if not isinstance(cond,TN):
@@ -6056,6 +6139,57 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
     # 返回排序结果
     return (sorted_values, sorted_indices_tensor)
 
+def argsort(input: TN, dim: int = -1, descending: bool = False, stable: bool = False, *, out = None) -> TN:
+    """    
+    返回沿指定维度按值排序的索引张量，排序结果为升序或降序
+    
+    参数:
+        input: 输入张量
+        dim: 排序维度，默认为最后一维
+        descending: 是否降序排列，默认为False（升序）
+        stable: 是否使用稳定排序算法，默认为False
+        out: 可选的输出张量
+    
+    返回:
+        排序后的索引张量
+        
+    注意: 当使用out参数时，不支持自动微分
+    """
+    if out is not None and input.requires_grad:
+        raise RuntimeError("argsort(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
+    
+    if dim < -input.ndim or dim >= input.ndim:
+        raise IndexError(f"Dimension out of range (expected to be in range of [-{input.ndim}, {input.ndim-1}], got {dim})")
+    
+    if dim < 0:
+        dim += input.ndim
+    
+    sorted_indices = np.argsort(input.data, axis=dim)
+    
+    if descending:
+        reverse_indices = np.empty_like(sorted_indices)
+        dim_size = input.data.shape[dim]
+        it = np.nditer(sorted_indices, flags=['multi_index', 'refs_ok'])
+        while not it.finished:
+            idx = list(it.multi_index)
+            sub_array = sorted_indices[tuple(idx[:dim] + [slice(None)] + idx[dim+1:])]
+            reverse_sub_array = sub_array[::-1].copy()
+            reverse_indices[tuple(idx[:dim] + [slice(None)] + idx[dim+1:])] = reverse_sub_array
+            it.iternext()
+        sorted_indices = reverse_indices
+    
+    sorted_indices_tensor = tensor(sorted_indices, requires_grad=False)
+    
+    if out is not None:
+        if not isinstance(out, TN):
+            raise TypeError("out must be a tensor of type TN")
+        if out.shape != sorted_indices_tensor.shape:
+            raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible with result shape ({sorted_indices_tensor.shape})")
+        np.copyto(out.data, sorted_indices_tensor.data)
+        return out
+    
+    return sorted_indices_tensor
+
 def stack(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
     """沿新维度堆叠张量"""
     data = np.stack([t.data for t in tensors], axis=dim)
@@ -6314,8 +6448,8 @@ def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
     
     梯度规则：
     - 当input > other时，梯度为1（传递梯度）
-    - 当input <= other时，梯度为0（阻断梯度）
-    - 当input == other时，梯度为0.5（平均分配）
+    - 当input < other时，梯度为0（阻断梯度）
+    - 当input == other时，梯度为0.5（与PyTorch行为一致，平均分配）
     """
     input_tensor = result_tensor.fromvars[i]  # 第一个输入
     other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
@@ -6326,7 +6460,7 @@ def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
     
     # 计算梯度掩码
     # input > other: 1.0
-    # input == other: 0.5  
+    # input == other: 0.5  # 与PyTorch一致
     # input < other: 0.0
     # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
     mask_dtype = input_tensor.dtype
@@ -6365,7 +6499,7 @@ def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
     
     # 计算梯度掩码
     # other > input: 1.0
-    # other == input: 0.5
+    # other == input: 0.5  # 与PyTorch一致
     # other < input: 0.0
     # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
     mask_dtype = other_tensor.dtype
