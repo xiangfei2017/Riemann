@@ -1,6 +1,6 @@
 # Riemann
 
-Riemann is an open-source lightweight automatic differentiation library designed specifically for learning, educational, and research purposes related to automatic differentiation and neural networks. The library focuses on providing efficient and flexible automatic differentiation functionality, supporting gradient computation needs in deep learning and scientific computing while maintaining code readability and comprehensibility to facilitate learners' deep understanding of automatic differentiation principles and implementation.
+Riemann is a lightweight automatic differentiation library and neural network programming framework that supports automatic gradient tracking for scalars, vectors, and tensors. It provides common components needed for building neural networks, with flexible and extensible interfaces, compatible with PyTorch, and specifically designed for learning, education, and research related to neural networks.
 
 ## Key Features
 

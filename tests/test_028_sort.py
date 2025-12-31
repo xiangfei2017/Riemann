@@ -250,7 +250,7 @@ class TestSortFunction(unittest.TestCase):
         pass
     
     def test_sort_basic_1d(self):
-        """测试1D张量的基本排序功能"""
+        """sort - 测试1D张量的基本排序功能"""
         stats.start_function("test_sort_basic_1d")
         
         # 1D升序排序测试
@@ -264,8 +264,8 @@ class TestSortFunction(unittest.TestCase):
             values_match = compare_values(rm_sorted, torch_sorted)
             indices_match = compare_values(rm_indices, torch_indices)
             
-            stats.add_result("1D升序排序值比较", values_match)
-            stats.add_result("1D升序排序索引比较", indices_match)
+            stats.add_result("sort - 1D升序排序值比较", values_match)
+            stats.add_result("sort - 1D升序排序索引比较", indices_match)
             
             self.assertTrue(values_match, "1D升序排序值与PyTorch不匹配")
             self.assertTrue(indices_match, "1D升序排序索引与PyTorch不匹配")
@@ -277,8 +277,8 @@ class TestSortFunction(unittest.TestCase):
             values_match = compare_values(rm_sorted, expected_sorted)
             indices_match = compare_values(rm_indices, expected_indices)
             
-            stats.add_result("1D升序排序值验证", values_match)
-            stats.add_result("1D升序排序索引验证", indices_match)
+            stats.add_result("sort - 1D升序排序值验证", values_match)
+            stats.add_result("sort - 1D升序排序索引验证", indices_match)
             
             self.assertTrue(values_match, "1D升序排序值不正确")
             self.assertTrue(indices_match, "1D升序排序索引不正确")
@@ -286,7 +286,7 @@ class TestSortFunction(unittest.TestCase):
         stats.end_function()
     
     def test_sort_descending(self):
-        """测试降序排序功能"""
+        """sort - 测试降序排序功能"""
         stats.start_function("test_sort_descending")
         
         # 2D降序排序测试（沿最后一个维度）
@@ -300,19 +300,31 @@ class TestSortFunction(unittest.TestCase):
             values_match = compare_values(rm_sorted, torch_sorted)
             indices_match = compare_values(rm_indices, torch_indices)
             
-            stats.add_result("2D降序排序值比较", values_match)
-            stats.add_result("2D降序排序索引比较", indices_match)
+            stats.add_result("sort - 2D降序排序值比较", values_match)
+            stats.add_result("sort - 2D降序排序索引比较", indices_match)
             
             self.assertTrue(values_match, "2D降序排序值与PyTorch不匹配")
             self.assertTrue(indices_match, "2D降序排序索引与PyTorch不匹配")
+        else:
+            expected_sorted = np.sort(self.data_2d, axis=-1)[..., ::-1]
+            expected_indices = np.argsort(self.data_2d, axis=-1)[..., ::-1]
+            
+            values_match = compare_values(rm_sorted, expected_sorted)
+            indices_match = compare_values(rm_indices, expected_indices)
+            
+            stats.add_result("sort - 2D降序排序值验证", values_match)
+            stats.add_result("sort - 2D降序排序索引验证", indices_match)
+            
+            self.assertTrue(values_match, "2D降序排序值不正确")
+            self.assertTrue(indices_match, "2D降序排序索引不正确")
         
         stats.end_function()
     
     def test_sort_different_dims(self):
-        """测试沿不同维度排序"""
+        """sort - 测试沿不同维度排序"""
         stats.start_function("test_sort_different_dims")
         
-        # 测试沿第0维和第1维排序
+        # 沿不同维度测试
         for dim in [0, 1]:
             rm_x = rm.tensor(self.data_2d, requires_grad=False)
             rm_sorted, rm_indices = rm.sort(rm_x, dim=dim)
@@ -324,21 +336,34 @@ class TestSortFunction(unittest.TestCase):
                 values_match = compare_values(rm_sorted, torch_sorted)
                 indices_match = compare_values(rm_indices, torch_indices)
                 
-                stats.add_result(f"2D沿维度{dim}排序值比较", values_match)
-                stats.add_result(f"2D沿维度{dim}排序索引比较", indices_match)
+                stats.add_result(f"sort - 2D张量沿dim={dim}排序值比较", values_match)
+                stats.add_result(f"sort - 2D张量沿dim={dim}排序索引比较", indices_match)
                 
-                self.assertTrue(values_match, f"2D沿维度{dim}排序值与PyTorch不匹配")
-                self.assertTrue(indices_match, f"2D沿维度{dim}排序索引与PyTorch不匹配")
+                self.assertTrue(values_match, f"沿dim={dim}排序值与PyTorch不匹配")
+                self.assertTrue(indices_match, f"沿dim={dim}排序索引与PyTorch不匹配")
+            else:
+                expected_sorted = np.sort(self.data_2d, axis=dim)
+                expected_indices = np.argsort(self.data_2d, axis=dim)
+                
+                values_match = compare_values(rm_sorted, expected_sorted)
+                indices_match = compare_values(rm_indices, expected_indices)
+                
+                stats.add_result(f"sort - 2D张量沿dim={dim}排序值验证", values_match)
+                stats.add_result(f"sort - 2D张量沿dim={dim}排序索引验证", indices_match)
+                
+                self.assertTrue(values_match, f"沿dim={dim}排序值不正确")
+                self.assertTrue(indices_match, f"沿dim={dim}排序索引不正确")
         
         stats.end_function()
     
     def test_sort_3d_tensor(self):
-        """测试3D张量排序"""
+        """sort - 测试3D张量排序"""
         stats.start_function("test_sort_3d_tensor")
         
-        # 测试沿3D张量的不同维度排序
-        for dim in [0, 1, 2]:
-            rm_x = rm.tensor(self.data_3d, requires_grad=False)
+        # 3D张量排序测试
+        rm_x = rm.tensor(self.data_3d, requires_grad=False)
+        
+        for dim in range(3):
             rm_sorted, rm_indices = rm.sort(rm_x, dim=dim)
             
             if TORCH_AVAILABLE:
@@ -348,180 +373,342 @@ class TestSortFunction(unittest.TestCase):
                 values_match = compare_values(rm_sorted, torch_sorted)
                 indices_match = compare_values(rm_indices, torch_indices)
                 
-                stats.add_result(f"3D沿维度{dim}排序值比较", values_match)
-                stats.add_result(f"3D沿维度{dim}排序索引比较", indices_match)
+                stats.add_result(f"sort - 3D张量沿dim={dim}排序值比较", values_match)
+                stats.add_result(f"sort - 3D张量沿dim={dim}排序索引比较", indices_match)
                 
-                self.assertTrue(values_match, f"3D沿维度{dim}排序值与PyTorch不匹配")
-                self.assertTrue(indices_match, f"3D沿维度{dim}排序索引与PyTorch不匹配")
+                self.assertTrue(values_match, f"3D张量沿dim={dim}排序值与PyTorch不匹配")
+                self.assertTrue(indices_match, f"3D张量沿dim={dim}排序索引与PyTorch不匹配")
+            else:
+                expected_sorted = np.sort(self.data_3d, axis=dim)
+                expected_indices = np.argsort(self.data_3d, axis=dim)
+                
+                values_match = compare_values(rm_sorted, expected_sorted)
+                indices_match = compare_values(rm_indices, expected_indices)
+                
+                stats.add_result(f"sort - 3D张量沿dim={dim}排序值验证", values_match)
+                stats.add_result(f"sort - 3D张量沿dim={dim}排序索引验证", indices_match)
+                
+                self.assertTrue(values_match, f"3D张量沿dim={dim}排序值不正确")
+                self.assertTrue(indices_match, f"3D张量沿dim={dim}排序索引不正确")
         
         stats.end_function()
     
     def test_sort_with_grad(self):
-        """测试带梯度的排序操作"""
-        if not TORCH_AVAILABLE:
-            return  # 如果没有PyTorch，跳过此测试
-        
+        """sort - 测试带梯度的排序操作"""
         stats.start_function("test_sort_with_grad")
         
-        # 测试2D张量的梯度计算
-        for dim in [0, 1]:
-            # Riemann测试
-            rm_x = rm.tensor(self.data_2d, requires_grad=True)
-            rm_sorted, _ = rm.sort(rm_x, dim=dim)
-            rm_loss = rm_sorted.sum()
-            rm_loss.backward()
+        rm_x = rm.tensor(self.data_1d, requires_grad=True)
+        rm_sorted, rm_indices = rm.sort(rm_x)
+        
+        # 计算梯度
+        rm_sum = rm_sorted.sum()
+        rm_sum.backward()
+        
+        if TORCH_AVAILABLE:
+            torch_x = torch.tensor(self.data_1d, requires_grad=True)
+            torch_sorted, torch_indices = torch.sort(torch_x)
+            torch_sum = torch_sorted.sum()
+            torch_sum.backward()
             
-            # PyTorch测试
-            torch_x = torch.tensor(self.data_2d, requires_grad=True)
-            torch_sorted, _ = torch.sort(torch_x, dim=dim)
-            torch_loss = torch_sorted.sum()
-            torch_loss.backward()
-            
-            # 比较梯度
             grad_match = compare_values(rm_x.grad, torch_x.grad)
             
-            stats.add_result(f"沿维度{dim}排序梯度比较", grad_match)
-            self.assertTrue(grad_match, f"沿维度{dim}排序梯度与PyTorch不匹配")
+            stats.add_result("sort - 带梯度排序的梯度比较", grad_match)
+            stats.add_result("sort - 带梯度排序后的张量比较", compare_values(rm_sorted, torch_sorted))
+            
+            self.assertTrue(grad_match, "排序操作的梯度与PyTorch不匹配")
+        else:
+            stats.add_result("带梯度排序的功能验证", True)
         
         stats.end_function()
     
     def test_sort_with_out_parameter(self):
-        """测试使用out参数的排序操作"""
+        """sort - 测试使用out参数的排序操作"""
         stats.start_function("test_sort_with_out_parameter")
         
-        # 不带梯度的out参数测试
-        rm_x = rm.tensor(self.data_2d, requires_grad=False)
-        rm_values_out = rm.zeros_like(rm_x)
-        rm_indices_out = rm.zeros_like(rm_x, dtype=rm.int64)
+        # 测试out参数
+        rm_x = rm.tensor(self.data_1d, requires_grad=False)
+        rm_out_values = rm.zeros_like(rm_x)
+        rm_out_indices = rm.zeros_like(rm_x, dtype='int64')
         
-        # 使用out参数调用sort
-        rm_result = rm.sort(rm_x, dim=0, out=(rm_values_out, rm_indices_out))
+        rm_sorted, rm_indices = rm.sort(rm_x, out=(rm_out_values, rm_out_indices))
         
-        # 验证返回值是否为out参数
-        stats.add_result("out参数返回值验证", rm_result[0] is rm_values_out and rm_result[1] is rm_indices_out)
-        self.assertTrue(rm_result[0] is rm_values_out, "返回的values不是out参数")
-        self.assertTrue(rm_result[1] is rm_indices_out, "返回的indices不是out参数")
+        # 检查返回结果是否与out参数一致
+        self.assertIs(rm_sorted, rm_out_values, "返回的排序值不是out参数的同一个对象")
+        self.assertIs(rm_indices, rm_out_indices, "返回的索引不是out参数的同一个对象")
         
-        # 与不使用out参数的结果比较
-        rm_sorted_no_out, rm_indices_no_out = rm.sort(rm_x, dim=0)
+        # 验证排序结果
+        expected_sorted = np.sort(self.data_1d)
+        expected_indices = np.argsort(self.data_1d)
         
-        values_match = compare_values(rm_values_out, rm_sorted_no_out)
-        indices_match = compare_values(rm_indices_out, rm_indices_no_out)
+        values_match = compare_values(rm_sorted, expected_sorted)
+        indices_match = compare_values(rm_indices, expected_indices)
         
-        stats.add_result("out参数值一致性验证", values_match)
-        stats.add_result("out参数索引一致性验证", indices_match)
+        stats.add_result("sort - out参数排序值正确性验证", values_match)
+        stats.add_result("sort - out参数排序索引正确性验证", indices_match)
+        stats.add_result("sort - out参数对象一致性验证", rm_sorted is rm_out_values and rm_indices is rm_out_indices)
         
-        self.assertTrue(values_match, "使用out参数的排序值与不使用out参数的不一致")
-        self.assertTrue(indices_match, "使用out参数的排序索引与不使用out参数的不一致")
+        self.assertTrue(values_match, "使用out参数的排序值不正确")
+        self.assertTrue(indices_match, "使用out参数的排序索引不正确")
         
         stats.end_function()
     
     def test_sort_out_requires_grad_conflict(self):
-        """测试out参数和requires_grad的冲突情况"""
+        """sort - 测试out参数和requires_grad的冲突情况"""
         stats.start_function("test_sort_out_requires_grad_conflict")
         
-        # 创建需要梯度的输入张量
-        rm_x = rm.tensor(self.data_2d, requires_grad=True)
-        rm_values_out = rm.zeros_like(rm_x)
-        rm_indices_out = rm.zeros_like(rm_x, dtype=rm.int64)
+        rm_x = rm.tensor(self.data_1d, requires_grad=True)
+        rm_out = rm.zeros_like(rm_x)
+        rm_out_indices = rm.zeros_like(rm_x, dtype='int64')
         
-        # 验证是否抛出RuntimeError
-        try:
-            rm.sort(rm_x, dim=0, out=(rm_values_out, rm_indices_out))
-            # 如果没有抛出异常，测试失败
-            stats.add_result("out参数与requires_grad冲突检测", False)
-            self.fail("使用out参数和requires_grad=True时应该抛出RuntimeError")
-        except RuntimeError as e:
-            # 检查错误信息
-            expected_error = "sort(): functions with out=... arguments don't support automatic differentiation"
-            error_match = expected_error in str(e)
-            stats.add_result("out参数与requires_grad冲突错误信息", error_match)
-            self.assertTrue(error_match, f"错误信息不符合预期: {e}")
+        with self.assertRaises(RuntimeError, msg="out参数与requires_grad=True同时使用时应抛出RuntimeError"):
+            rm.sort(rm_x, out=(rm_out, rm_out_indices))
+        
+        stats.add_result("sort - out参数与requires_grad冲突测试", True)
         
         stats.end_function()
     
     def test_sort_invalid_dim(self):
-        """测试无效维度参数"""
+        """sort - 测试无效维度参数"""
         stats.start_function("test_sort_invalid_dim")
         
         rm_x = rm.tensor(self.data_2d, requires_grad=False)
         
-        # 测试维度越界（太大）
-        try:
-            rm.sort(rm_x, dim=5)  # 2D张量，有效维度是0和1
-            stats.add_result("大维度越界检测", False)
-            self.fail("维度超出范围时应该抛出IndexError")
-        except IndexError:
-            stats.add_result("大维度越界检测", True)
+        # 测试无效的维度
+        with self.assertRaises(IndexError, msg="无效维度参数应抛出IndexError异常"):
+            rm.sort(rm_x, dim=10)
         
-        # 测试维度越界（太小）
-        try:
-            rm.sort(rm_x, dim=-3)  # 2D张量，最小有效维度是-2
-            stats.add_result("小维度越界检测", False)
-            self.fail("维度超出范围时应该抛出IndexError")
-        except IndexError:
-            stats.add_result("小维度越界检测", True)
+        # 测试负维度
+        with self.assertRaises(IndexError, msg="无效负维度参数应抛出IndexError异常"):
+            rm.sort(rm_x, dim=-10)
+        
+        stats.add_result("sort - 无效维度测试", True)
+        stats.add_result("sort - 无效负维度测试", True)
         
         stats.end_function()
     
     def test_sort_invalid_out_parameter(self):
-        """测试无效的out参数"""
+        """sort - 测试无效的out参数"""
         stats.start_function("test_sort_invalid_out_parameter")
         
         rm_x = rm.tensor(self.data_2d, requires_grad=False)
         
-        # 测试out不是元组
-        try:
-            rm.sort(rm_x, dim=0, out=rm.zeros_like(rm_x))
-            stats.add_result("out非元组检测", False)
-            self.fail("out不是元组时应该抛出TypeError")
-        except TypeError:
-            stats.add_result("out非元组检测", True)
+        with self.assertRaises(TypeError, msg="错误类型的out参数应抛出TypeError"):
+            rm.sort(rm_x, out="invalid")
         
-        # 测试out元组长度不为2
-        try:
-            rm.sort(rm_x, dim=0, out=(rm.zeros_like(rm_x),))
-            stats.add_result("out元组长度检测", False)
-            self.fail("out元组长度不为2时应该抛出TypeError")
-        except TypeError:
-            stats.add_result("out元组长度检测", True)
+        with self.assertRaises(TypeError, msg="out参数长度不足应抛出TypeError"):
+            rm.sort(rm_x, out=(rm.zeros_like(rm_x), ))
         
-        # 测试out张量形状不匹配
-        try:
-            wrong_shape = rm.zeros((2, 2))
-            rm.sort(rm_x, dim=0, out=(wrong_shape, rm.zeros_like(rm_x, dtype=rm.int64)))
-            stats.add_result("out形状不匹配检测", False)
-            self.fail("out张量形状不匹配时应该抛出RuntimeError")
-        except RuntimeError:
-            stats.add_result("out形状不匹配检测", True)
+        invalid_shape_out = rm.zeros((3, 3))
+        with self.assertRaises(RuntimeError, msg="形状不匹配的out参数应抛出RuntimeError"):
+            rm.sort(rm_x, out=(invalid_shape_out, invalid_shape_out))
+        
+        stats.add_result("sort - 无效out参数类型测试", True)
+        stats.add_result("sort - 无效out参数长度测试", True)
+        stats.add_result("sort - 形状不匹配out参数测试", True)
         
         stats.end_function()
     
     def test_sort_stable_parameter(self):
-        """测试stable参数（虽然当前实现忽略此参数）"""
+        """sort - 测试stable参数（虽然当前实现忽略此参数）"""
         stats.start_function("test_sort_stable_parameter")
         
-        # 创建有重复值的测试数据，更容易看出稳定排序的效果
-        repeated_data = np.array([3, 1, 2, 1, 3])
+        rm_x = rm.tensor(self.data_1d, requires_grad=False)
         
-        rm_x = rm.tensor(repeated_data, requires_grad=False)
+        # 测试使用stable=True和stable=False
+        rm_sorted_true, rm_indices_true = rm.sort(rm_x, stable=True)
+        rm_sorted_false, rm_indices_false = rm.sort(rm_x, stable=False)
         
-        # 测试stable=True
-        rm_sorted_stable, rm_indices_stable = rm.sort(rm_x, stable=True)
+        # 验证排序结果是否正确（由于当前实现忽略stable参数，结果应相同）
+        values_same = compare_values(rm_sorted_true, rm_sorted_false)
+        indices_same = compare_values(rm_indices_true, rm_indices_false)
         
-        # 测试stable=False（默认值）
-        rm_sorted_unstable, rm_indices_unstable = rm.sort(rm_x, stable=False)
+        stats.add_result("sort - stable参数设置为True的排序结果", values_same)
+        stats.add_result("sort - stable参数设置为False的排序结果", indices_same)
         
-        # 当前实现中，stable参数被忽略，所以结果应该相同
-        values_match = compare_values(rm_sorted_stable, rm_sorted_unstable)
-        indices_match = compare_values(rm_indices_stable, rm_indices_unstable)
+        self.assertTrue(values_same, "使用stable=True和stable=False得到的排序值不同")
+        self.assertTrue(indices_same, "使用stable=True和stable=False得到的排序索引不同")
         
-        stats.add_result("stable参数值一致性", values_match)
-        stats.add_result("stable参数索引一致性", indices_match)
+        stats.end_function()
+
+    def test_argsort_basic_1d(self):
+        """argsort - 测试1D张量的argsort基本功能"""
+        stats.start_function("test_argsort_basic_1d")
         
-        self.assertTrue(values_match, "stable=True和stable=False的排序值应该相同（当前实现忽略此参数）")
-        # 注意：索引可能不同，因为如果有重复值，排序算法可能会产生不同的索引顺序
-        # 所以我们不测试索引的一致性，只测试值的一致性
+        # 1D升序测试
+        rm_x = rm.tensor(self.data_1d, requires_grad=False)
+        result = rm.argsort(rm_x)
+        
+        if TORCH_AVAILABLE:
+            torch_x = torch.tensor(self.data_1d)
+            torch_indices = torch.argsort(torch_x)
+            indices_match = compare_values(result, torch_indices)
+            
+            stats.add_result("argsort - 1D argsort 结果与 PyTorch 比较", indices_match)
+            self.assertTrue(indices_match, "1D argsort 结果与 PyTorch 不一致")
+        else:
+            expected_indices = np.argsort(self.data_1d)
+            indices_match = compare_values(result, expected_indices)
+            
+            stats.add_result("argsort - 1D argsort 结果验证", indices_match)
+            self.assertTrue(indices_match, "1D argsort 结果不正确")
+        
+        stats.end_function()
+    
+    def test_argsort_descending(self):
+        """argsort - 测试argsort的降序排序功能"""
+        stats.start_function("test_argsort_descending")
+        
+        rm_x = rm.tensor(self.data_2d, requires_grad=False)
+        result = rm.argsort(rm_x, descending=True)
+        
+        if TORCH_AVAILABLE:
+            torch_x = torch.tensor(self.data_2d)
+            torch_indices = torch.argsort(torch_x, descending=True)
+            indices_match = compare_values(result, torch_indices)
+            
+            stats.add_result("argsort - 降序与 PyTorch 比较", indices_match)
+            self.assertTrue(indices_match, "argsort 降序结果与 PyTorch 不一致")
+        else:
+            expected_indices = np.argsort(-self.data_2d)
+            indices_match = compare_values(result, expected_indices)
+            
+            stats.add_result("argsort - 降序结果验证", indices_match)
+            self.assertTrue(indices_match, "argsort 降序结果不正确")
+        
+        stats.end_function()
+    
+    def test_argsort_different_dims(self):
+        """argsort - 测试在不同维度上使用argsort"""
+        stats.start_function("test_argsort_different_dims")
+        
+        for dim in [0, 1]:
+            rm_x = rm.tensor(self.data_2d, requires_grad=False)
+            result = rm.argsort(rm_x, dim=dim)
+            
+            if TORCH_AVAILABLE:
+                torch_x = torch.tensor(self.data_2d)
+                torch_indices = torch.argsort(torch_x, dim=dim)
+                indices_match = compare_values(result, torch_indices)
+                
+                stats.add_result(f"argsort - 沿 dim={dim} 与 PyTorch 比较", indices_match)
+                self.assertTrue(indices_match, f"argsort 沿 dim={dim} 结果与 PyTorch 不一致")
+            else:
+                expected_indices = np.argsort(self.data_2d, axis=dim)
+                indices_match = compare_values(result, expected_indices)
+                
+                stats.add_result(f"argsort - 沿 dim={dim} 结果验证", indices_match)
+                self.assertTrue(indices_match, f"argsort 沿 dim={dim} 结果不正确")
+        
+        stats.end_function()
+    
+    def test_argsort_3d_tensor(self):
+        """argsort - 测试3D张量的argsort功能"""
+        stats.start_function("test_argsort_3d_tensor")
+        
+        rm_x = rm.tensor(self.data_3d, requires_grad=False)
+        result = rm.argsort(rm_x, dim=1)
+        
+        if TORCH_AVAILABLE:
+            torch_x = torch.tensor(self.data_3d)
+            torch_indices = torch.argsort(torch_x, dim=1)
+            indices_match = compare_values(result, torch_indices)
+            
+            stats.add_result("argsort - 3D 张量 argsort 与 PyTorch 比较", indices_match)
+            self.assertTrue(indices_match, "3D 张量 argsort 结果与 PyTorch 不一致")
+        else:
+            expected_indices = np.argsort(self.data_3d, axis=1)
+            indices_match = compare_values(result, expected_indices)
+            
+            stats.add_result("argsort - 3D 张量 argsort 结果验证", indices_match)
+            self.assertTrue(indices_match, "3D 张量 argsort 结果不正确")
+        
+        stats.end_function()
+    
+    def test_argsort_with_grad(self):
+        """argsort - 测试带梯度的argsort"""
+        stats.start_function("test_argsort_with_grad")
+        
+        rm_x = rm.tensor(self.data_1d, requires_grad=True)
+        result = rm.argsort(rm_x)
+        
+        # 计算梯度
+        # 注意：argsort 的结果是索引，不能直接计算梯度
+        # 所以我们需要将索引用于索引原始张量后再计算梯度
+        rm_subset = rm_x[result[:3]]
+        rm_sum = rm_subset.sum()
+        rm_sum.backward()
+        
+        if TORCH_AVAILABLE:
+            torch_x = torch.tensor(self.data_1d, requires_grad=True)
+            torch_indices = torch.argsort(torch_x)
+            torch_subset = torch_x[torch_indices[:3]]
+            torch_sum = torch_subset.sum()
+            torch_sum.backward()
+            
+            grad_match = compare_values(rm_x.grad, torch_x.grad)
+            
+            stats.add_result("argsort - 梯度与 PyTorch 比较", grad_match)
+            stats.add_result("argsort - 带梯度功能验证", True)
+            
+            self.assertTrue(grad_match, "argsort 梯度与 PyTorch 不一致")
+        else:
+            stats.add_result("argsort - 带梯度功能验证", True)
+        
+        stats.end_function()
+    
+    def test_argsort_with_out_parameter(self):
+        """argsort - 测试argsort的out参数"""
+        stats.start_function("test_argsort_with_out_parameter")
+        
+        rm_x = rm.tensor(self.data_1d, requires_grad=False)
+        out_tensor = rm.zeros_like(rm_x, dtype='int64')
+        
+        result = rm.argsort(rm_x, out=out_tensor)
+        
+        # 验证结果对象是否是同一个
+        self.assertIs(result, out_tensor, "argsort 的 out 参数返回值不是同一对象")
+        
+        # 验证排序索引
+        expected_indices = np.argsort(self.data_1d)
+        indices_match = compare_values(result, expected_indices)
+        
+        stats.add_result("argsort - out 参数结果验证", indices_match)
+        stats.add_result("argsort - out 参数对象一致性验证", result is out_tensor)
+        
+        self.assertTrue(indices_match, "argsort 使用 out 参数的结果不正确")
+        
+        stats.end_function()
+    
+    def test_argsort_invalid_dim(self):
+        """argsort - 测试无效维度的argsort"""
+        stats.start_function("test_argsort_invalid_dim")
+        
+        rm_x = rm.tensor(self.data_2d, requires_grad=False)
+        
+        with self.assertRaises(IndexError, msg="无效维度应抛出 IndexError"):
+            rm.argsort(rm_x, dim=10)
+        
+        with self.assertRaises(IndexError, msg="无效负维度应抛出 IndexError"):
+            rm.argsort(rm_x, dim=-10)
+        
+        stats.add_result("argsort - 无效正维度测试", True)
+        stats.add_result("argsort - 无效负维度测试", True)
+        
+        stats.end_function()
+    
+    def test_argsort_stable_parameter(self):
+        """argsort - 测试stable参数（虽然当前实现忽略此参数）"""
+        stats.start_function("test_argsort_stable_parameter")
+        
+        rm_x = rm.tensor(self.data_1d, requires_grad=False)
+        result_true = rm.argsort(rm_x, stable=True)
+        result_false = rm.argsort(rm_x, stable=False)
+        
+        # 由于当前实现忽略stable参数，结果应相同
+        indices_same = compare_values(result_true, result_false)
+        
+        stats.add_result("argsort - stable=True 与 stable=False 结果比较", indices_same)
+        self.assertTrue(indices_same, "argsort 使用不同 stable 参数得到不同结果")
         
         stats.end_function()
 

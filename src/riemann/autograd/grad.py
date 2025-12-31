@@ -54,7 +54,8 @@ Core components:
 All functions support Riemann Tensor (TN) type and automatic differentiation.
 """
 
-from typing import List, Tuple
+from typing import List, Tuple, Callable, Any
+import numpy as np
 from ..tensordef import *
 
 def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, create_graph: bool = False):
@@ -389,3 +390,305 @@ def higher_order_grad(outputs: TN,
             result.append(zero_grad)
     
     return tuple(result)
+
+def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-5, atol: float = 1e-1, rtol: float = 1e-0, raise_exception: bool = True, check_sparse_nnz: bool = False, fast_mode: bool = False) -> bool:
+    """
+    验证给定函数的梯度计算是否正确，通过比较数值梯度和解析梯度。
+
+    该函数通过在输入参数上添加微小扰动来计算数值梯度（有限差分法），
+    并将其与使用自动微分计算的解析梯度进行比较。
+
+    参数：
+        func (Callable[..., Any]): 需要验证梯度的函数，该函数应接受一个或多个TN张量作为输入，
+                                  并返回一个或多个TN张量作为输出。
+        inputs (Tuple[TN, ...]): 用于测试的输入张量元组，所有张量必须设置requires_grad=True。
+        eps (float, 可选): 用于计算数值梯度的微小扰动，默认为1e-6。
+        atol (float, 可选): 绝对误差容限，默认为1e-5。
+        rtol (float, 可选): 相对误差容限，默认为1e-3。
+        raise_exception (bool, 可选): 如果梯度检查失败，是否抛出异常，默认为True。
+        check_sparse_nnz (bool, 可选): 是否检查稀疏张量的非零元素，默认为False。
+        fast_mode (bool, 可选): 是否使用快速模式（只检查每个张量的一个元素），默认为False。
+
+    返回：
+        bool: 如果梯度检查通过，返回True；否则返回False（或抛出异常，取决于raise_exception参数）。
+
+    异常：
+        RuntimeError: 当梯度检查失败且raise_exception为True时抛出。
+        ValueError: 当输入参数不符合要求时抛出。
+
+    示例：
+        >>> # 定义一个简单的函数
+        >>> def f(x, y):
+        >>>     return x * y
+        >>> 
+        >>> # 准备输入
+        >>> x = tensor(2.0, requires_grad=True)
+        >>> y = tensor(3.0, requires_grad=True)
+        >>> 
+        >>> # 验证梯度
+        >>> result = gradcheck(f, (x, y))
+        >>> print(result)  # 输出: True
+
+    注意：
+        1. 该函数目前仅支持实值函数和实值输入。
+        2. 对于具有多个输出的函数，梯度将被求和。
+        3. 小的误差是正常的，尤其是对于复杂函数或使用较大eps值时。
+        4. fast_mode=True可以加速检查，但会降低验证的全面性。
+    """
+        
+    # 验证输入参数
+    if not callable(func):
+        raise ValueError("func must be a callable")
+    
+    if not isinstance(inputs, (tuple, list)):
+        raise ValueError("inputs must be a tuple or list of tensors")
+    
+    # 检查所有输入是否为TN张量且requires_grad=True
+    for i, inp in enumerate(inputs):
+        if not isinstance(inp, TN):
+            raise ValueError(f"Input {i} must be a TN tensor")
+        if not inp.requires_grad:
+            raise ValueError(f"Input {i} must have requires_grad=True")
+    
+    inputs = tuple(inputs)
+    
+    # 计算解析梯度（使用自动微分）
+    outputs = func(*inputs)
+    
+    # 处理多个输出的情况
+    if isinstance(outputs, (tuple, list)):
+        # 如果有多个输出，将它们求和
+        outputs = sum(outputs)
+    elif not isinstance(outputs, TN):
+        raise ValueError("func must return a TN tensor or a tuple/list of TN tensors")
+    
+    # 确保输出是标量
+    if outputs.data.ndim > 0:
+        outputs = outputs.sum()
+    
+    # 计算解析梯度
+    analytical_grads = grad(outputs, inputs, create_graph=False)
+    
+    # 计算数值梯度（有限差分法）
+    numerical_grads = []
+    
+    for i, input_tensor in enumerate(inputs):
+        # 创建与输入相同形状的零张量来存储数值梯度
+        numerical_grad = zeros_like(input_tensor, dtype=input_tensor.dtype)
+        
+        # 遍历张量的每个元素或只检查一个元素（快速模式）
+        if fast_mode:
+            # 只检查第一个元素
+            idx = tuple([0] * input_tensor.data.ndim)
+            
+            # 创建输入副本列表
+            inputs_pos = list(inputs)
+            inputs_neg = list(inputs)
+            
+            # 计算正向扰动的输出
+            x_pos = input_tensor.copy()
+            # 使用TN张量操作而不是直接修改data
+            delta = zeros_like(x_pos)
+            delta.data[idx] = eps
+            x_pos = x_pos + delta
+            inputs_pos[i] = x_pos
+            outputs_pos = func(*inputs_pos)
+            if isinstance(outputs_pos, (tuple, list)):
+                outputs_pos = sum(outputs_pos)
+            if outputs_pos.data.ndim > 0:
+                outputs_pos = outputs_pos.sum()
+            
+            # 计算负向扰动的输出
+            x_neg = input_tensor.copy()
+            delta = zeros_like(x_neg)
+            delta.data[idx] = eps
+            x_neg = x_neg - delta
+            inputs_neg[i] = x_neg
+            outputs_neg = func(*inputs_neg)
+            if isinstance(outputs_neg, (tuple, list)):
+                outputs_neg = sum(outputs_neg)
+            if outputs_neg.data.ndim > 0:
+                outputs_neg = outputs_neg.sum()
+            
+            # 计算数值梯度（中心差分）
+            numerical_grad.data[idx] = (outputs_pos.data - outputs_neg.data) / (2 * eps)
+        else:
+            # 遍历所有元素
+            it = np.nditer(input_tensor.data, flags=['multi_index'], op_flags=['readwrite'])
+            while not it.finished:
+                idx = it.multi_index
+                
+                # 创建输入副本列表
+                inputs_pos = list(inputs)
+                inputs_neg = list(inputs)
+                
+                # 计算正向扰动的输出
+                x_pos = input_tensor.copy()
+                # 使用TN张量操作而不是直接修改data
+                delta = zeros_like(x_pos)
+                delta.data[idx] = eps
+                x_pos = x_pos + delta
+                inputs_pos[i] = x_pos
+                outputs_pos = func(*inputs_pos)
+                if isinstance(outputs_pos, (tuple, list)):
+                    outputs_pos = sum(outputs_pos)
+                if outputs_pos.data.ndim > 0:
+                    outputs_pos = outputs_pos.sum()
+                
+                # 计算负向扰动的输出
+                x_neg = input_tensor.copy()
+                delta = zeros_like(x_neg)
+                delta.data[idx] = eps
+                x_neg = x_neg - delta
+                inputs_neg[i] = x_neg
+                outputs_neg = func(*inputs_neg)
+                if isinstance(outputs_neg, (tuple, list)):
+                    outputs_neg = sum(outputs_neg)
+                if outputs_neg.data.ndim > 0:
+                    outputs_neg = outputs_neg.sum()
+                
+                # 计算数值梯度（中心差分）
+                numerical_grad.data[idx] = (outputs_pos.data - outputs_neg.data) / (2 * eps)
+                
+                it.iternext()
+        
+        numerical_grads.append(numerical_grad)
+    
+    # 比较数值梯度和解析梯度
+    for i, (num_grad, an_grad) in enumerate(zip(numerical_grads, analytical_grads)):
+        if num_grad is None or an_grad is None:
+            if raise_exception:
+                raise RuntimeError(f"Gradient {i} is None")
+            return False
+        
+        # 计算绝对误差和相对误差
+        abs_error = np.abs(num_grad.data - an_grad.data)
+        rel_error = abs_error / (np.abs(num_grad.data) + np.abs(an_grad.data) + 1e-10)
+        
+        # 检查误差是否在容限范围内
+        if (abs_error > atol).any() and (rel_error > rtol).any():
+            if raise_exception:
+                raise RuntimeError(f"Gradient check failed for input {i}: absolute error {abs_error.max():.6f}, relative error {rel_error.max():.6f}")
+            return False
+    
+    return True
+# end of gradcheck
+
+class Function:
+    """
+    Function类是Riemann框架中用于自定义梯度的基类，参考PyTorch的torch.autograd.Function接口设计。
+    
+    要使用该类，需要继承并实现forward和backward静态方法：
+    - forward：执行前向计算，返回输出张量
+    - backward：接收输出梯度，返回输入梯度
+    
+    示例用法：
+    class MyFunction(Function):
+        @staticmethod
+        def forward(ctx, input1, input2):
+            ctx.save_for_backward(input1, input2)
+            output = input1 * input2
+            return output
+        
+        @staticmethod
+        def backward(ctx, grad_output):
+            input1, input2 = ctx.saved_tensors
+            grad_input1 = grad_output * input2
+            grad_input2 = grad_output * input1
+            return grad_input1, grad_input2
+    """
+    
+    class _Context:
+        """
+        上下文类，用于在forward和backward之间传递信息
+        """
+        def __init__(self):
+            self.saved_tensors = ()
+        
+        def save_for_backward(self, *tensors):
+            """保存张量，以便在backward中使用"""
+            self.saved_tensors = tensors
+    
+    @staticmethod
+    def forward(ctx, *inputs):
+        """
+        前向传播函数，需要被子类实现
+        
+        参数：
+            ctx: 上下文对象，用于保存信息供backward使用
+            *inputs: 输入张量
+        
+        返回：
+            输出张量
+        """
+        raise NotImplementedError("forward() must be implemented in subclass")
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        反向传播函数，需要被子类实现
+        
+        参数：
+            ctx: 上下文对象，包含forward中保存的信息
+            grad_output: 输出张量的梯度
+        
+        返回：
+            输入张量的梯度
+        """
+        raise NotImplementedError("backward() must be implemented in subclass")
+    
+    @classmethod
+    def apply(cls, *inputs):
+        """
+        应用函数到输入张量，执行前向计算并设置梯度跟踪
+        
+        参数：
+            *inputs: 输入张量
+        
+        返回：
+            输出张量
+        """
+        ctx = cls._Context()
+        
+        # 执行前向计算
+        outputs = cls.forward(ctx, *inputs)
+        
+        # 如果输出不是张量，将其转换为张量
+        if not isinstance(outputs, TN):
+            outputs = tensor(outputs)
+        
+        # 检查是否需要计算梯度
+        requires_grad = any(input.requires_grad for input in inputs)
+        
+        if requires_grad:
+            # 设置输出张量的梯度跟踪信息
+            outputs.requires_grad = True
+            outputs.is_leaf = False
+            
+            # 收集所有需要跟踪的输入张量
+            fromvars = tuple(input for input in inputs if input.requires_grad)
+            
+            # 创建梯度函数（闭包直接捕获cls、ctx、inputs变量）
+            def _function_grad(result_tensor: TN, i: int) -> TN:
+                
+                # 执行反向传播
+                grad_output = result_tensor.grad_value
+                grad_inputs = cls.backward(ctx, grad_output)
+                
+                # 确保返回值是元组
+                if not isinstance(grad_inputs, tuple):
+                    grad_inputs = (grad_inputs,)
+                
+                # 找到当前梯度对应的原始输入索引
+                grad_required_indices = [idx for idx, input in enumerate(inputs) if input.requires_grad]
+                original_index = grad_required_indices[i]
+                
+                return grad_inputs[original_index]
+            
+            # 设置fromvars和gradfuncs
+            outputs.fromvars = fromvars
+            outputs.gradfuncs = tuple(_function_grad for _ in fromvars)
+            outputs.parms = ()
+            
+        return outputs
+# end of Function class

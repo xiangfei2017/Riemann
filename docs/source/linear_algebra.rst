@@ -1,10 +1,10 @@
 Linear Algebra
-===============
+==============
 
 Riemann provides comprehensive linear algebra operations through the ``riemann.linalg`` module. These operations are essential for many machine learning and scientific computing applications.
 
 Matrix Operations
------------------
+~~~~~~~~~~~~~~~~~
 
 Matrix Multiplication
 ~~~~~~~~~~~~~~~~~~~~~
@@ -17,14 +17,14 @@ Matrix Multiplication
     # Matrix multiplication
     A = rm.randn(3, 4)
     B = rm.randn(4, 5)
-    C = linalg.matmul(A, B)  # or simply A @ B
-    print(C.shape)  # [3, 5]
+    C = linalg.matmul(A, B)  # or simply use A @ B
+    print(C.shape)  # (3, 5)
     
     # Batch matrix multiplication
     A_batch = rm.randn(10, 3, 4)
     B_batch = rm.randn(10, 4, 5)
     C_batch = linalg.matmul(A_batch, B_batch)
-    print(C_batch.shape)  # [10, 3, 5]
+    print(C_batch.shape)  # (10, 3, 5)
 
 Matrix Transpose
 ~~~~~~~~~~~~~~~~
@@ -33,15 +33,15 @@ Matrix Transpose
 
     import riemann as rm
     
-    # Transpose a matrix
+    # Transpose matrix
     A = rm.randn(3, 4)
     A_T = A.T  # or A.transpose()
-    print(A_T.shape)  # [4, 3]
+    print(A_T.shape)  # (4, 3)
     
-    # Transpose a batch of matrices
+    # Transpose batch matrix
     A_batch = rm.randn(10, 3, 4)
     A_batch_T = A_batch.transpose(1, 2)  # Swap dimensions 1 and 2
-    print(A_batch_T.shape)  # [10, 4, 3]
+    print(A_batch_T.shape)  # (10, 4, 3)
 
 Matrix Inverse
 ~~~~~~~~~~~~~~
@@ -54,16 +54,16 @@ Matrix Inverse
     # Matrix inverse
     A = rm.randn(3, 3)
     A_inv = linalg.inv(A)
-    print(A_inv.shape)  # [3, 3]
+    print(A_inv.shape)  # (3, 3)
     
     # Verify A @ A_inv ≈ I
     identity = linalg.matmul(A, A_inv)
     print(identity)  # Should be close to identity matrix
     
-    # Pseudoinverse for non-square matrices
+    # Pseudoinverse of non-square matrix
     A = rm.randn(3, 4)
     A_pinv = linalg.pinv(A)
-    print(A_pinv.shape)  # [4, 3]
+    print(A_pinv.shape)  # (4, 3)
 
 Matrix Determinant
 ~~~~~~~~~~~~~~~~~~
@@ -78,10 +78,10 @@ Matrix Determinant
     det = linalg.det(A)
     print(det)  # Scalar value
     
-    # Batch determinant
+    # Batch determinants
     A_batch = rm.randn(10, 3, 3)
     det_batch = linalg.det(A_batch)
-    print(det_batch.shape)  # [10]
+    print(det_batch.shape)  # (10,)
 
 Decompositions
 --------------
@@ -94,34 +94,34 @@ Singular Value Decomposition (SVD)
     import riemann as rm
     import riemann.linalg as linalg
     
-    # SVD of a matrix
+    # SVD of matrix
     A = rm.randn(4, 3)
     U, S, Vh = linalg.svd(A)
-    print(U.shape, S.shape, Vh.shape)  # [4, 4], [3], [3, 3]
+    print(U.shape, S.shape, Vh.shape)  # (4, 4), (3,), (3, 3)
     
-    # Reconstruct the matrix
+    # Reconstruct matrix
     A_reconstructed = U @ rm.diag(S) @ Vh
     print(rm.allclose(A, A_reconstructed))  # True
     
     # Reduced SVD
     U, S, Vh = linalg.svd(A, full_matrices=False)
-    print(U.shape, S.shape, Vh.shape)  # [4, 3], [3], [3, 3]
+    print(U.shape, S.shape, Vh.shape)  # (4, 3), (3,), (3, 3)
 
-Eigenvalue Decomposition
-~~~~~~~~~~~~~~~~~~~~~~~~
+Eigendecomposition
+~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
     import riemann as rm
     import riemann.linalg as linalg
     
-    # Eigenvalue decomposition of a symmetric matrix
+    # Eigendecomposition of symmetric matrix
     A = rm.randn(3, 3)
     A = A + A.T  # Make it symmetric
     eigenvalues, eigenvectors = linalg.eig(A)
-    print(eigenvalues.shape, eigenvectors.shape)  # [3], [3, 3]
+    print(eigenvalues.shape, eigenvectors.shape)  # (3,), (3, 3)
     
-    # Reconstruct the matrix
+    # Reconstruct matrix
     A_reconstructed = eigenvectors @ rm.diag(eigenvalues) @ eigenvectors.T
     print(rm.allclose(A, A_reconstructed))  # True
 
@@ -136,9 +136,9 @@ QR Decomposition
     # QR decomposition
     A = rm.randn(4, 3)
     Q, R = linalg.qr(A)
-    print(Q.shape, R.shape)  # [4, 3], [3, 3]
+    print(Q.shape, R.shape)  # (4, 3), (3, 3)
     
-    # Reconstruct the matrix
+    # Reconstruct matrix
     A_reconstructed = Q @ R
     print(rm.allclose(A, A_reconstructed))  # True
 
@@ -153,22 +153,22 @@ LU Decomposition
     # LU decomposition with pivoting (A = PLU)
     A = rm.randn(4, 4)
     P, L, U = linalg.lu(A)
-    print(P.shape, L.shape, U.shape)  # [4, 4], [4, 4], [4, 4]
+    print(P.shape, L.shape, U.shape)  # (4, 4), (4, 4), (4, 4)
     
-    # Reconstruct the matrix
+    # Reconstruct matrix
     A_reconstructed = P @ L @ U
     print(rm.allclose(A, A_reconstructed))  # True
     
     # LU decomposition for rectangular matrices
     A_rect = rm.randn(3, 5)
     P, L, U = linalg.lu(A_rect)
-    print(P.shape, L.shape, U.shape)  # [3, 3], [3, 3], [3, 5]
+    print(P.shape, L.shape, U.shape)  # (3, 3), (3, 3), (3, 5)
     
     # Note: pivot=False is not yet implemented
-    # P, L, U = linalg.lu(A, pivot=False)  # Raises NotImplementedError
+    # P, L, U = linalg.lu(A, pivot=False)  # Throws NotImplementedError
 
 Norms and Metrics
------------------
+~~~~~~~~~~~~~~~~~
 
 Vector Norms
 ~~~~~~~~~~~~
@@ -182,13 +182,13 @@ Vector Norms
     v = rm.randn(5)
     
     # L1 norm
-    l1_norm = linalg.norm(v, p=1)
+    l1_norm = linalg.norm(v, ord=1)
     
     # L2 norm (Euclidean norm)
-    l2_norm = linalg.norm(v, p=2)
+    l2_norm = linalg.norm(v, ord=2)
     
     # Infinity norm
-    inf_norm = linalg.norm(v, p=float('inf'))
+    inf_norm = linalg.norm(v, ord=float('inf'))
     
     print(l1_norm, l2_norm, inf_norm)
 
@@ -204,13 +204,13 @@ Matrix Norms
     A = rm.randn(3, 4)
     
     # Frobenius norm
-    frobenius_norm = linalg.norm(A, p='fro')
+    frobenius_norm = linalg.norm(A, ord='fro')
     
     # Nuclear norm (sum of singular values)
-    nuclear_norm = linalg.norm(A, p='nuc')
+    nuclear_norm = linalg.norm(A, ord='nuc')
     
-    # Spectral norm (largest singular value)
-    spectral_norm = linalg.norm(A, p=2)
+    # Spectral norm (maximum singular value)
+    spectral_norm = linalg.norm(A, ord=2)
     
     print(frobenius_norm, nuclear_norm, spectral_norm)
 
@@ -247,16 +247,16 @@ Solving Linear Systems
     A = rm.randn(3, 3)
     b = rm.randn(3)
     x = linalg.solve(A, b)
-    print(x.shape)  # [3]
+    print(x.shape)  # (3,)
     
     # Verify solution
     print(rm.allclose(A @ x, b))  # True
     
-    # Solve batch of linear systems
+    # Solve batch linear systems
     A_batch = rm.randn(10, 3, 3)
     b_batch = rm.randn(10, 3)
     x_batch = linalg.solve(A_batch, b_batch)
-    print(x_batch.shape)  # [10, 3]
+    print(x_batch.shape)  # (10, 3)
 
 Least Squares Solutions
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -270,13 +270,13 @@ Least Squares Solutions
     A = rm.randn(5, 3)  # More equations than unknowns
     b = rm.randn(5)
     x = linalg.lstsq(A, b)
-    print(x.shape)  # [3]
+    print(x[0].shape)  # (3,)
     
     # Solve underdetermined system Ax = b
     A = rm.randn(3, 5)  # Fewer equations than unknowns
     b = rm.randn(3)
     x = linalg.lstsq(A, b)
-    print(x.shape)  # [5]
+    print(x[0].shape)  # (5,)
 
 Special Matrices
 ----------------
@@ -294,7 +294,7 @@ Identity Matrix
     
     # Batch identity matrices
     I_batch = rm.eye(3, batch_shape=(4,))
-    print(I_batch.shape)  # [4, 3, 3]
+    print(I_batch.shape)  # (4, 3, 3)
 
 Diagonal Matrix
 ~~~~~~~~~~~~~~~
@@ -306,15 +306,15 @@ Diagonal Matrix
     # Create diagonal matrix from vector
     v = rm.randn(3)
     D = rm.diag(v)
-    print(D.shape)  # [3, 3]
+    print(D.shape)  # (3, 3)
     
     # Extract diagonal from matrix
     A = rm.randn(3, 3)
     diag = rm.diag(A)
-    print(diag.shape)  # [3]
+    print(diag.shape)  # (3,)
 
-Triangular Matrices
-~~~~~~~~~~~~~~~~~~~
+Triangular Matrix
+~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -330,8 +330,6 @@ Triangular Matrices
     lower = linalg.tril(A)
     print(lower)
 
-
-
 Examples
 --------
 
@@ -346,11 +344,11 @@ Principal Component Analysis (PCA)
     # Generate random data
     X = rm.randn(100, 5)  # 100 samples, 5 features
     
-    # Center the data
+    # Center data
     X_centered = X - rm.mean(X, dim=0)
     
     # Compute covariance matrix
-    cov_matrix = linalg.matmul(X_centered.T, X_centered) / (X.shape[0] - 1)
+    cov_matrix = linalg.matmul(X_centered.T, X_centered) / (X.shape[0] - 1.)
     
     # Compute eigenvalues and eigenvectors
     eigenvalues, eigenvectors = linalg.eig(cov_matrix)
@@ -363,7 +361,7 @@ Principal Component Analysis (PCA)
     # Project data onto principal components
     X_pca = linalg.matmul(X_centered, eigenvectors)
     
-    print(X_pca.shape)  # [100, 5]
+    print(X_pca.shape)  # (100, 5)
     print("Explained variance ratio:", eigenvalues / rm.sum(eigenvalues))
 
 Linear Regression
@@ -380,12 +378,12 @@ Linear Regression
     true_weights = rm.randn(n_features)
     y = linalg.matmul(X, true_weights) + 0.1 * rm.randn(n_samples)
     
-    # Solve for weights using normal equations: w = (X^T X)^(-1) X^T y
+    # Solve for weights using normal equations: w = (X^T X)^{-1} X^T y
     XtX = linalg.matmul(X.T, X)
     XtY = linalg.matmul(X.T, y)
     weights = linalg.solve(XtX, XtY)
     
-    # Compute predictions and MSE
+    # Calculate predictions and MSE
     predictions = linalg.matmul(X, weights)
     mse = rm.mean((predictions - y) ** 2)
     
@@ -394,15 +392,15 @@ Linear Regression
     print("MSE:", mse.item())
 
 Solving Differential Equations
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
     import riemann as rm
     import riemann.linalg as linalg
     
-    # Solve system of linear ODEs: dx/dt = Ax
-    # Using simple Euler method for numerical integration
+    # Solve linear ODE system: dx/dt = Ax
+    # Use simple Euler method for numerical integration
     
     # Define system matrix
     A = rm.tensor([[-1.0, 2.0], [0.0, -3.0]])
@@ -415,7 +413,7 @@ Solving Differential Equations
     t_end = 1.0  # End time
     num_steps = int(t_end / dt)
     
-    # Numerical integration using Euler method
+    # Perform numerical integration using Euler method
     x = x0.clone()
     solutions = [x.clone()]
     
@@ -426,7 +424,7 @@ Solving Differential Equations
         solutions.append(x.clone())
     
     solutions = rm.stack(solutions)
-    print(solutions.shape)  # [101, 2]
+    print(solutions.shape)  # (101, 2)
 
 Kalman Filter
 ~~~~~~~~~~~~~
@@ -436,11 +434,11 @@ Kalman Filter
     import riemann as rm
     import riemann.linalg as linalg
     
-    # Simplified Kalman filter implementation
+    # Simplified Kalman Filter implementation
     class KalmanFilter:
         def __init__(self, F, H, Q, R, x0, P0):
             self.F = F  # State transition matrix
-            self.H = H  # Observation matrix
+            self.H = H  # Measurement matrix
             self.Q = Q  # Process noise covariance
             self.R = R  # Measurement noise covariance
             self.x = x0  # Initial state estimate
@@ -453,7 +451,7 @@ Kalman Filter
             self.P = linalg.matmul(self.F, linalg.matmul(self.P, self.F.T)) + self.Q
         
         def update(self, z):
-            # Compute Kalman gain
+            # Calculate Kalman gain
             S = linalg.matmul(self.H, linalg.matmul(self.P, self.H.T)) + self.R
             K = linalg.matmul(self.P, linalg.matmul(self.H.T, linalg.inv(S)))
             
@@ -467,7 +465,7 @@ Kalman Filter
     
     # Example usage
     F = rm.tensor([[1.0, 1.0], [0.0, 1.0]])  # State transition
-    H = rm.tensor([[1.0, 0.0]])              # Observation
+    H = rm.tensor([[1.0, 0.0]])              # Measurement
     Q = 0.01 * rm.eye(2)                     # Process noise
     R = 0.1 * rm.eye(1)                      # Measurement noise
     x0 = rm.tensor([0.0, 0.0])                # Initial state
@@ -475,7 +473,7 @@ Kalman Filter
     
     kf = KalmanFilter(F, H, Q, R, x0, P0)
     
-    # Simulate measurements
+    # Simulated measurements
     measurements = [rm.tensor([i + 0.1 * rm.randn(1).item()]) for i in range(10)]
     
     # Run filter
