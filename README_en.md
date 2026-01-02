@@ -4,10 +4,9 @@ Riemann is a lightweight automatic differentiation library and neural network pr
 
 ## Key Features
 
-- **Automatic Differentiation**: Supports forward computation and backward automatic differentiation for real and complex scalars, vectors, and tensors
-- **Gradient Computation**: Supports backpropagation algorithm for gradient calculation, providing `grad` and `backward` functions for efficient gradient computation, supporting backward gradient tracking in scalar, vector, matrix, and multi-dimensional tensor calculations
+- Automatic Differentiation : Supports forward computation and backward automatic differentiation for real and complex scalars, vectors, and tensors
+- Gradient Calculation : Supports gradient computation using the backpropagation algorithm, provides grad and backward functions for efficient gradient calculation, supports backward gradient tracking in scalar, vector, matrix, and multi-dimensional tensor computations, supports Jacobian and Hessian matrix calculations, and enables custom gradient tracking functions via the `track_grad` decorator or `Function` class
 - **Tensor Operations**: Provides rich tensor operation functionality, including: addition, subtraction, multiplication, division, elementary functions, indexing operations, shape operations, dimension expansion/reduction, stacking/splitting
-- **Higher-order Derivatives**: Supports Jacobian matrix and Hessian matrix computation, as well as JVP (Jacobian-vector product), VJP (vector-Jacobian product), HVP (Hessian-vector product), and VHP (vector-Hessian product)
 - **Neural Network Components**: Contains basic neural network modules, activation functions, loss functions, and optimizers
 - **Computer Vision Support**: Provides commonly used dataset classes and image transformation functions, supporting loading and preprocessing of datasets such as MNIST and CIFAR10
 
@@ -18,7 +17,7 @@ The Riemann library is designed with attention to PyTorch interface compatibilit
 - **Tensor Operations**: Supports tensor operation functions and methods with the same names as PyTorch, such as `tensor()`, `grad()`, `backward()`, etc.
 - **Neural Network Components**: Layers, activation functions, and loss functions in the `nn` module maintain interface compatibility with PyTorch
 - **Optimizers**: Optimizers in the `optim` module (such as SGD, Adam, etc.) maintain consistent interfaces with PyTorch
-- **Automatic Differentiation Mechanism**: `requires_grad`, computation graph construction, and backpropagation mechanisms are similar to PyTorch
+- **Automatic Differentiation Mechanism**: `requires_grad`, backpropagation mechanisms are similar to PyTorch
 - **Computer Vision**: Datasets and transformations in the `vision` module maintain interface compatibility with torchvision
 
 This design allows users familiar with PyTorch to easily migrate to the Riemann library for development and research work.
@@ -90,14 +89,15 @@ print("Gradient of y:", y.grad)  # Output: Gradient of y: [1. 2.]
 ## Core Features
 
 ### 1. Tensor Operations
-- Supports basic mathematical operations (addition, subtraction, multiplication, division, power, exponential functions, logarithmic functions, trigonometric functions, etc.)
-- Provides tensor creation functions (zeros, ones, random, etc.)
+- Provides tensor creation functions (tensor, zeros, ones, random, etc.) with support for complex tensors
+- Supports basic mathematical operations (addition, subtraction, multiplication, division, exponentiation, elementary functions like exponential, logarithmic, trigonometric, hyperbolic functions, etc.)
+- Supports vector and matrix operations (batch matrix multiplication, vector dot product, matrix determinant, matrix inverse, matrix factorization, etc.)
 - Supports tensor shape reshaping, dimension expansion/reduction, indexing and slicing, element gathering/scattering, concatenation/splitting, etc.
 
 ### 2. Automatic Differentiation
 - **backward method**: Triggers backpropagation to compute gradients
 - **grad function**: Computes gradients of functions with respect to inputs
-- Supports higher-order derivatives and complex computation graphs
+- **track_grad Decorator and Function Class**: Support custom gradient tracking functions
 
 ### 3. Jacobian and Hessian Matrices
 - Supports Jacobian matrix computation for multi-input multi-output functions
@@ -105,16 +105,23 @@ print("Gradient of y:", y.grad)  # Output: Gradient of y: [1. 2.]
 - Efficient computation of Jacobian-vector products and vector-Jacobian products
 - Supports Hessian-vector product and vector-Hessian product computation
 
-### 4. Neural Network Modules
-- Basic layers (Linear, ReLU, Sigmoid, etc.)
+### 4. Linear Algebra Module
+- Provides matrix factorization and backward gradient tracking (SVD, PLU, QR, etc.)
+- Supports calculation of matrix inverse, pseudo-inverse, determinant, eigenvalues/eigenvectors
+- Matrix norm and condition number computation
+- Supports linear equation solving and least squares solving
+
+### 5. Neural Network Modules
+- Basic layers (Linear, Flatten, Dropout, BatchNorm, etc.)
+- Activation functions (ReLU, Sigmoid, Softmax, etc.)
 - Convolution and pooling layers (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, etc.)
 - Loss functions (MSE, CrossEntropy, etc.)
 - Optimizers (SGD, Adam, Adagrad, LBFGS, etc.)
+- Network module containers (Sequential, ModuleList, ModuleDict, etc.)
 
-### 5. Computer Vision Module
+### 6. Computer Vision Module
 - Dataset classes: Loading and preprocessing of commonly used datasets such as MNIST, CIFAR10
 - Image transformations: Resize, Crop, Flip, Rotate, Normalize and other image preprocessing operations
-- torchvision-compatible API design for easy transfer learning
 
 ## Project Structure
 
@@ -136,13 +143,13 @@ Riemann/
 ├── data/                     # Training and test dataset file directory
 ├── docs/                     # Project documentation directory
 ├── tests/                    # Test files
-├── examples/                 # Example code
-│   ├── backward_demo.py      # Backpropagation example
-│   ├── grad_demo.py          # Gradient computation example
-│   ├── hessian.py            # Hessian matrix computation example
-│   ├── jacobian.py           # Jacobian matrix computation example
-│   ├── nn_MNIST_CE_SGD.py    # Neural network training example
-│   ├── cnn_CIFAR10_CE_SGD.py # CNN training example
+├── examples/                     # Example code
+│   ├── backward_demo.py          # Backpropagation example
+│   ├── grad_demo.py              # Gradient computation example
+│   ├── custom_grad_decorator.py  # Custom gradient tracking function
+│   ├── optimizers_comparison.py  # Optimizer comparison example
+│   ├── nn_MNIST_CE_SGD.py        # Neural network training example
+│   ├── cnn_CIFAR10_CE_SGD.py     # CNN training example
 │   └── ...
 ├── README.md                 # Project documentation
 ├── README_en.md              # English project documentation
@@ -396,18 +403,26 @@ transformed_image = transform(image)
 print(f"Transformed image shape: {transformed_image.shape}")  # Output: (3, 224, 224)
 ```
 
-## Example Descriptions
+> ## Example Descriptions
 
-Riemann provides rich example code located in the `examples/` directory:
+  Riemann provides rich example code located in the `examples/` directory:
 
-- **backward_demo.py**: Demonstration of backward function usage
-- **grad_demo.py**: Demonstration of grad function usage
-- **hessian.py**: Hessian matrix computation example
-- **jacobian.py**: Jacobian matrix computation example
-- **nn_MNIST_CE_SGD.py**: Handwritten digit recognition neural network example based on MNIST
-- **cnn_CIFAR10_CE_SGD.py**: Convolutional neural network example based on CIFAR10
-- **optimizers_comparison.py**: Optimizer performance comparison
-- **scatter.py**: Tensor scatter operation example
+  - **backward_demo.py**: Demonstration of backward function usage
+  - **grad_demo.py**: Demonstration of grad function usage
+  - **hessian.py**: Hessian matrix computation example
+  - **jacobian.py**: Jacobian matrix computation example
+  - **nn_MNIST_CE_SGD.py**: Handwritten digit recognition neural network example based on MNIST (Cross-entropy loss + SGD optimizer)
+  - **nn_MNIST_CE_Adam.py**: Handwritten digit recognition neural network example based on MNIST (Cross-entropy loss + Adam optimizer)
+  - **nn_MNIST_CE_Adagrad.py**: Handwritten digit recognition neural network example based on MNIST (Cross-entropy loss + Adagrad optimizer)
+  - **nn_MNIST_MSE_SGD.py**: Handwritten digit recognition neural network example based on MNIST (Mean squared error loss + SGD optimizer)
+  - **nn_MNIST_MSE_GD.py**: Handwritten digit recognition neural network example based on MNIST (Mean squared error loss + Gradient descent optimizer)
+  - **nn_MNIST_MSE_LBFGS.py**: Handwritten digit recognition neural network example based on MNIST (Mean squared error loss + LBFGS optimizer)
+  - **cnn_CIFAR10_CE_SGD.py**: Convolutional neural network example based on CIFAR10 (Cross-entropy loss + SGD optimizer)
+  - **cnn_CIFAR10_CE_Adam.py**: Convolutional neural network example based on CIFAR10 (Cross-entropy loss + Adam optimizer)
+  - **custom_grad_decorator.py**: Example of custom gradient tracking using decorators
+  - **custom_grad_FunctionClass.py**: Example of custom gradient tracking using Function class
+  - **optimizers_comparison.py**: Optimizer performance comparison
+  - **scatter.py**: Tensor scatter operation example
 
 ## Testing Methods
 
@@ -445,10 +460,9 @@ python test_010_grad.py
 ## Technical Features
 
 - **Efficient Implementation**: Optimized automatic differentiation algorithms
-- **Easy-to-use API**: Concise and clear interface design
+- **Easy-to-use API**: Concise and clear interface design,Highly compatible with PyTorch interfaces
 - **Flexible Extension**: Supports custom operations and derivative rules
 - **Comprehensive Testing**: Full unit test coverage
-- **PyTorch Compatible**: Highly compatible with PyTorch interfaces
 - **Computer Vision Support**: Provides commonly used datasets and image transformation functions
 
 ## Application Scenarios
@@ -505,3 +519,5 @@ Issues and pull requests are welcome. Please ensure all contributions comply wit
 Author: Fei Xiang
 Email: xfeix@outlook.com
 Gitee: https://gitee.com/xfcode2021
+
+
