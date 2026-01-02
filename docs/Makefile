@@ -2,7 +2,7 @@
 #
 
 # You can set these variables from the command line.
-SPHINXOPTS    =
+SPHINXOPTS    = 
 SPHINXBUILD   = sphinx-build
 SOURCEDIR     = source
 BUILDDIR      = build
@@ -22,18 +22,14 @@ html-en:
 
 # Build Chinese documentation
 html-zh:
-	@cp $(SOURCEDIR_ZH)/conf_zh.py $(SOURCEDIR_ZH)/conf.py
 	@$(SPHINXBUILD) -b html "$(SOURCEDIR_ZH)" "$(BUILDDIR_ZH)" -c "$(SOURCEDIR_ZH)" $(SPHINXOPTS) $(O)
-	@rm $(SOURCEDIR_ZH)/conf.py
 	@echo "Chinese documentation built at $(BUILDDIR_ZH)"
 
 # Build both English and Chinese documentation
 html-all:
 	@$(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" $(SPHINXOPTS) $(O)
 	@echo "English documentation built at $(BUILDDIR)/html"
-	@cp $(SOURCEDIR_ZH)/conf_zh.py $(SOURCEDIR_ZH)/conf.py
 	@$(SPHINXBUILD) -b html "$(SOURCEDIR_ZH)" "$(BUILDDIR_ZH)" -c "$(SOURCEDIR_ZH)" $(SPHINXOPTS) $(O)
-	@rm $(SOURCEDIR_ZH)/conf.py
 	@echo "Chinese documentation built at $(BUILDDIR_ZH)"
 
 # Clean all build files
