@@ -40,18 +40,14 @@ echo English documentation built at %BUILDDIR%\html
 goto end
 
 :html_zh
-copy %SOURCEDIR_ZH%\conf_zh.py %SOURCEDIR_ZH%\conf.py
 %SPHINXBUILD% -b html %SOURCEDIR_ZH% %BUILDDIR_ZH% -c %SOURCEDIR_ZH% %SPHINXOPTS% %O%
-del %SOURCEDIR_ZH%\conf.py
 echo Chinese documentation built at %BUILDDIR_ZH%
 goto end
 
 :html_all
 %SPHINXBUILD% -b html %SOURCEDIR% %BUILDDIR%\html %SPHINXOPTS% %O%
 echo English documentation built at %BUILDDIR%\html
-copy %SOURCEDIR_ZH%\conf_zh.py %SOURCEDIR_ZH%\conf.py
 %SPHINXBUILD% -b html %SOURCEDIR_ZH% %BUILDDIR_ZH% -c %SOURCEDIR_ZH% %SPHINXOPTS% %O%
-del %SOURCEDIR_ZH%\conf.py
 echo Chinese documentation built at %BUILDDIR_ZH%
 goto end
 
