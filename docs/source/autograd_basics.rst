@@ -209,8 +209,7 @@ The copy() method creates a new tensor object with its own data memory and is co
 
 **Characteristics**: Creates new tensor object, copies data (no memory sharing), disables gradient tracking
 
-Key Differences Between Methods
--------------------------------
+5. Key Differences Between Methods
 
 The following table summarizes the key differences between these four methods:
 
@@ -252,6 +251,7 @@ The following table summarizes the key differences between these four methods:
     print(f"copy() result: y3 = {y3}, requires_grad={y3.requires_grad}")
 
 Key differences between these methods:
+
 - **Data Sharing**: detach() shares data with original, while clone() and copy() create new data copies
 - **In-place Operation**: detach_() modifies the tensor in-place, others create new tensors
 - **Gradient Tracking**: clone() maintains gradient tracking (if original requires it), others disable gradient tracking

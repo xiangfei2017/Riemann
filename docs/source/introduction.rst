@@ -6,12 +6,46 @@ Riemann is an open-source lightweight automatic differentiation library designed
 Key Features
 ------------
 
-- **Automatic Differentiation**: Supports forward and reverse automatic differentiation for scalars, vectors, and tensors of real and complex numbers
-- **Gradient Computation**: Supports backpropagation algorithm for gradient computation, providing `grad` and `backward` functions for efficient gradient calculation
-- **Tensor Operations**: Provides rich tensor operation functions, including arithmetic operations, elementary functions, indexing operations, shape operations, dimension expansion/reduction, stacking/splitting
-- **Higher-order Derivatives**: Supports Jacobian and Hessian matrix computation, as well as JVP (Jacobian-vector product), VJP (vector-Jacobian product), HVP (Hessian-vector product), and VHP (vector-Hessian product)
-- **Neural Network Components**: Contains basic neural network modules, activation functions, loss functions, and optimizers
-- **Computer Vision Support**: Provides common dataset classes and image transformation functions, supporting loading and preprocessing of datasets like MNIST and CIFAR10
+Tensor Operations
+
+- Provides tensor creation functions (tensor, zeros, ones, random, etc.) with support for complex tensors
+- Supports basic mathematical operations (addition, subtraction, multiplication, division, exponentiation, elementary functions like exponential, logarithmic, trigonometric, hyperbolic functions, etc.)
+- Supports vector and matrix operations (batch matrix multiplication, vector dot product, matrix determinant, matrix inverse, matrix factorization, etc.)
+- Supports tensor shape reshaping, dimension expansion/reduction, indexing and slicing, element gathering/scattering, concatenation/splitting, etc.
+
+Automatic Differentiation
+
+- **backward method**: Triggers backpropagation to compute gradients
+- **grad function**: Computes gradients of functions with respect to inputs
+- **track_grad Decorator and Function Class**: Support custom gradient tracking functions
+
+Jacobian and Hessian Matrices
+
+- Supports Jacobian matrix computation for multi-input multi-output functions
+- Provides Hessian matrix computation functionality for second-order derivatives
+- Efficient computation of Jacobian-vector products and vector-Jacobian products
+- Supports Hessian-vector product and vector-Hessian product computation
+
+Linear Algebra Module
+
+- Provides matrix factorization and backward gradient tracking (SVD, PLU, QR, etc.)
+- Supports calculation of matrix inverse, pseudo-inverse, determinant, eigenvalues/eigenvectors
+- Matrix norm and condition number computation
+- Supports linear equation solving and least squares solving
+
+Neural Network Modules
+
+- Basic layers (Linear, Flatten, Dropout, BatchNorm, etc.)
+- Activation functions (ReLU, Sigmoid, Softmax, etc.)
+- Convolution and pooling layers (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, etc.)
+- Loss functions (MSE, CrossEntropy, etc.)
+- Optimizers (SGD, Adam, Adagrad, LBFGS, etc.)
+- Network module containers (Sequential, ModuleList, ModuleDict, etc.)
+
+Computer Vision Module
+
+- Dataset classes: Loading and preprocessing of commonly used datasets such as MNIST, CIFAR10
+- Image transformations: Resize, Crop, Flip, Rotate, Normalize and other image preprocessing operations
 
 PyTorch Interface Compatibility
 -------------------------------
