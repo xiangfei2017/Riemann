@@ -148,8 +148,12 @@ class StatisticsCollector:
         print(header_line)
         print("-"*total_width)
         
-        # 打印数据行 - 精确计算每个值的填充
+        # 打印数据行 - 精确计算每个值的填充，并过滤掉空的测试用例组
         for func_name, stats in self.function_stats.items():
+            # 过滤掉总测试用例为0的空组
+            if stats['total'] == 0:
+                continue
+                
             pass_rate = stats["passed"]/stats["total"]*100 if stats["total"] > 0 else 0
             status_color = Colors.OKGREEN if pass_rate == 100 else Colors.FAIL
             
@@ -262,6 +266,41 @@ INPLACE_OPS = [
     {"name": "原地减法", "op": "-", "rm_func": lambda x, idx, y: x[idx].__isub__(y), "torch_func": lambda x, idx, y: x[idx].__isub__(y)},
     {"name": "原地乘法", "op": "*", "rm_func": lambda x, idx, y: x[idx].__imul__(y), "torch_func": lambda x, idx, y: x[idx].__imul__(y)},
     {"name": "原地除法", "op": "/", "rm_func": lambda x, idx, y: x[idx].__itruediv__(y), "torch_func": lambda x, idx, y: x[idx].__itruediv__(y)}
+]
+
+# 定义 copy_, fill_, masked_fill_ 函数的测试用例
+SPECIAL_INPLACE_OPS = [
+    {
+        "name": "copy_",
+        "rm_func": lambda self, src: self.copy_(src),
+        "torch_func": lambda self, src: self.copy_(src),
+        "test_cases": [
+            {"name": "标量源值", "src": 42.0},
+            {"name": "0维张量源值", "src": None},  # 特殊标记，表示要创建0维张量
+            {"name": "相同形状张量源值", "src": None},  # 特殊标记，表示要创建相同形状的随机张量
+            {"name": "不同形状可广播源值", "src": None}
+        ]
+    },
+    {
+        "name": "fill_",
+        "rm_func": lambda self, value: self.fill_(value),
+        "torch_func": lambda self, value: self.fill_(value),
+        "test_cases": [
+            {"name": "标量填充值", "value": 42.0},
+            {"name": "0维张量填充值", "value": None}
+        ]
+    },
+    {
+        "name": "masked_fill_",
+        "rm_func": lambda self, mask, value: self.masked_fill_(mask, value),
+        "torch_func": lambda self, mask, value: self.masked_fill_(mask, value),
+        "test_cases": [
+            {"name": "全布尔掩码", "mask_type": "full_bool"},
+            {"name": "广播布尔掩码", "mask_type": "broadcast_bool"},
+            {"name": "标量填充值", "mask_type": "full_bool", "value": 42.0},
+            {"name": "0维张量填充值", "mask_type": "full_bool", "value": None}
+        ]
+    }
 ]
 
 # 定义索引合并的测试用例（从test_index_merge.py迁移）
@@ -817,6 +856,7 @@ class TestInplaceOperations(unittest.TestCase):
                         stats.add_result(case_name, False, [str(e)])
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
+        stats.end_function()
     
     def test_multi_level_view_inplace(self):
         """测试对多层视图对象的原地操作"""
@@ -961,16 +1001,280 @@ class TestInplaceOperations(unittest.TestCase):
                             print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                         raise
 
-    def test_index_merge(self):
+    def test_copy_function(self):
+        """测试 copy_ 特殊原地操作函数"""
+        base_tensor = np.random.randn(5, 4)
+        
+        # 找到 copy_ 操作
+        copy_op = None
+        for op in SPECIAL_INPLACE_OPS:
+            if op['name'] == 'copy_':
+                copy_op = op
+                break
+        
+        if copy_op:
+            stats.start_function("test_copy_function")
+            
+            for test_case in copy_op['test_cases']:
+                case_name = f"copy_ - {test_case['name']}"
+                start_time = time.time()
+                
+                try:
+                    # 创建Riemann张量和PyTorch张量
+                    rm_tensor = rm.tensor(base_tensor, requires_grad=True)
+                    rm_tensor = rm_tensor.clone()  # 创建非叶子节点
+                    rm_tensor.retain_grad()
+                    
+                    torch_tensor = None
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(base_tensor, requires_grad=True)
+                        torch_tensor = torch_tensor.clone()  # 创建非叶子节点
+                        torch_tensor.retain_grad()
+                    
+                    # 准备不同类型的源值 - 设置为可跟踪梯度
+                    if test_case['src'] is None:
+                        if test_case['name'] == "0维张量源值":
+                            rm_src = rm.tensor(42.0, requires_grad=True)
+                            torch_src = torch.tensor(42.0, requires_grad=True) if TORCH_AVAILABLE else None
+                        elif test_case['name'] == "相同形状张量源值":
+                            src_data = np.random.randn(*base_tensor.shape)
+                            rm_src = rm.tensor(src_data, requires_grad=True)
+                            torch_src = torch.tensor(src_data, requires_grad=True) if TORCH_AVAILABLE else None
+                        elif test_case['name'] == "不同形状可广播源值":
+                            src_data = np.random.randn(base_tensor.shape[0], 1)
+                            rm_src = rm.tensor(src_data, requires_grad=True)
+                            torch_src = torch.tensor(src_data, requires_grad=True) if TORCH_AVAILABLE else None
+                    else:
+                        # 如果是标量，转换为可跟踪梯度的张量
+                        if isinstance(test_case['src'], (int, float)):
+                            rm_src = rm.tensor(test_case['src'], requires_grad=True)
+                            torch_src = torch.tensor(test_case['src'], requires_grad=True) if TORCH_AVAILABLE else None
+                        else:
+                            rm_src = test_case['src']
+                            torch_src = test_case['src'] if TORCH_AVAILABLE else None
+                    
+                    # 执行操作
+                    rm_result = copy_op['rm_func'](rm_tensor, rm_src)
+                    torch_result = copy_op['torch_func'](torch_tensor, torch_src) if TORCH_AVAILABLE else None
+                    
+                    # 前向传播和损失计算
+                    rm_loss = rm_tensor.sum()
+                    rm_loss.backward()
+                    
+                    torch_loss = None
+                    if TORCH_AVAILABLE:
+                        torch_loss = torch_tensor.sum()
+                        torch_loss.backward()
+                    
+                    # 比较结果
+                    values_match = compare_values(rm_tensor, torch_tensor)
+                    grads_self_match = compare_grads(rm_tensor, torch_tensor)
+                    grads_right_match = compare_grads(rm_src, torch_src) if TORCH_AVAILABLE else True
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, values_match and grads_self_match and grads_right_match)
+                        
+                        if values_match and grads_self_match and grads_right_match:
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        else:
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                    
+                    # 单元测试断言
+                    self.assertTrue(values_match, f"{case_name} 函数值不匹配")
+                    self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
+                    self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+            stats.end_function()
+
+    def test_fill_function(self):
+        """测试 fill_ 特殊原地操作函数"""
+        base_tensor = np.random.randn(5, 4)
+        
+        # 找到 fill_ 操作
+        fill_op = None
+        for op in SPECIAL_INPLACE_OPS:
+            if op['name'] == 'fill_':
+                fill_op = op
+                break
+        
+        if fill_op:
+            stats.start_function("test_fill_function")
+            
+            for test_case in fill_op['test_cases']:
+                case_name = f"fill_ - {test_case['name']}"
+                start_time = time.time()
+                
+                try:
+                    # 创建Riemann张量和PyTorch张量
+                    rm_tensor = rm.tensor(base_tensor, requires_grad=True)
+                    rm_tensor = rm_tensor.clone()  # 创建非叶子节点
+                    rm_tensor.retain_grad()
+                    
+                    torch_tensor = None
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(base_tensor, requires_grad=True)
+                        torch_tensor = torch_tensor.clone()  # 创建非叶子节点
+                        torch_tensor.retain_grad()
+                    
+                    # 准备不同类型的填充值 - 设置为可跟踪梯度
+                    if test_case['value'] is None:
+                        fill_value = 42.0
+                        rm_value = rm.tensor(fill_value, requires_grad=True)
+                        torch_value = torch.tensor(fill_value, requires_grad=True) if TORCH_AVAILABLE else None
+                    else:
+                        # 如果是标量，转换为可跟踪梯度的张量
+                        if isinstance(test_case['value'], (int, float)):
+                            rm_value = rm.tensor(test_case['value'], requires_grad=True)
+                            torch_value = torch.tensor(test_case['value'], requires_grad=True) if TORCH_AVAILABLE else None
+                        else:
+                            rm_value = test_case['value']
+                            torch_value = test_case['value'] if TORCH_AVAILABLE else None
+                    
+                    # 执行操作
+                    rm_result = fill_op['rm_func'](rm_tensor, rm_value)
+                    torch_result = fill_op['torch_func'](torch_tensor, torch_value) if TORCH_AVAILABLE else None
+                    
+                    # 前向传播和损失计算
+                    rm_loss = rm_tensor.sum()
+                    rm_loss.backward()
+                    
+                    torch_loss = None
+                    if TORCH_AVAILABLE:
+                        torch_loss = torch_tensor.sum()
+                        torch_loss.backward()
+                    
+                    # 比较结果
+                    values_match = compare_values(rm_tensor, torch_tensor)
+                    grads_self_match = compare_grads(rm_tensor, torch_tensor)
+                    grads_right_match = compare_grads(rm_value, torch_value) if TORCH_AVAILABLE else True
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, values_match and grads_self_match and grads_right_match)
+                        
+                        if values_match and grads_self_match and grads_right_match:
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        else:
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                    
+                    # 单元测试断言
+                    self.assertTrue(values_match, f"{case_name} 函数值不匹配")
+                    self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
+                    self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+            stats.end_function()
+
+    def test_masked_fill_function(self):
+        """测试 masked_fill_ 特殊原地操作函数"""
+        base_tensor = np.random.randn(5, 4)
+        
+        # 找到 masked_fill_ 操作
+        masked_fill_op = None
+        for op in SPECIAL_INPLACE_OPS:
+            if op['name'] == 'masked_fill_':
+                masked_fill_op = op
+                break
+        
+        if masked_fill_op:
+            stats.start_function("test_masked_fill_function")
+            
+            for test_case in masked_fill_op['test_cases']:
+                case_name = f"masked_fill_ - {test_case['name']}"
+                start_time = time.time()
+                
+                try:
+                    # 创建Riemann张量和PyTorch张量
+                    rm_tensor = rm.tensor(base_tensor, requires_grad=True)
+                    rm_tensor = rm_tensor.clone()  # 创建非叶子节点
+                    rm_tensor.retain_grad()
+                    
+                    torch_tensor = None
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(base_tensor, requires_grad=True)
+                        torch_tensor = torch_tensor.clone()  # 创建非叶子节点
+                        torch_tensor.retain_grad()
+                    
+                    # 准备掩码和填充值
+                    if test_case['mask_type'] == "full_bool":
+                        mask_data = np.random.choice([True, False], size=base_tensor.shape)
+                        rm_mask = rm.tensor(mask_data)
+                        torch_mask = torch.tensor(mask_data) if TORCH_AVAILABLE else None
+                    elif test_case['mask_type'] == "broadcast_bool":
+                        mask_data = np.random.choice([True, False], size=(base_tensor.shape[0], 1))
+                        rm_mask = rm.tensor(mask_data)
+                        torch_mask = torch.tensor(mask_data) if TORCH_AVAILABLE else None
+                    
+                    if test_case.get('value') is None:
+                        fill_value = 0.0
+                        rm_value = rm.tensor(fill_value, requires_grad=True)
+                        torch_value = torch.tensor(fill_value, requires_grad=True) if TORCH_AVAILABLE else None
+                    else:
+                        # 如果是标量，转换为可跟踪梯度的张量
+                        if isinstance(test_case['value'], (int, float)):
+                            rm_value = rm.tensor(test_case['value'], requires_grad=True)
+                            torch_value = torch.tensor(test_case['value'], requires_grad=True) if TORCH_AVAILABLE else None
+                        else:
+                            rm_value = test_case['value']
+                            torch_value = test_case['value'] if TORCH_AVAILABLE else None
+                    
+                    # 执行操作
+                    rm_result = masked_fill_op['rm_func'](rm_tensor, rm_mask, rm_value)
+                    torch_result = masked_fill_op['torch_func'](torch_tensor, torch_mask, torch_value) if TORCH_AVAILABLE else None
+                    
+                    # 前向传播和损失计算
+                    rm_loss = rm_tensor.sum()
+                    rm_loss.backward()
+                    
+                    torch_loss = None
+                    if TORCH_AVAILABLE:
+                        torch_loss = torch_tensor.sum()
+                        torch_loss.backward()
+                    
+                    # 比较结果
+                    values_match = compare_values(rm_tensor, torch_tensor)
+                    grads_self_match = compare_grads(rm_tensor, torch_tensor)
+                    grads_right_match = compare_grads(rm_value, torch_value) if TORCH_AVAILABLE else True
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, values_match and grads_self_match and grads_right_match)
+                        
+                        if values_match and grads_self_match and grads_right_match:
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        else:
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                    
+                    # 单元测试断言
+                    self.assertTrue(values_match, f"{case_name} 函数值不匹配")
+                    self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
+                    self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+            stats.end_function()
+
+    def test_index_merge_function(self):
         """测试索引合并功能"""
         # 创建一个基础张量
         base_tensor = np.arange(20, dtype=np.float64).reshape(5, 4)
         
+        stats.start_function("test_index_merge_function")
+        
         for i, scenario in enumerate(INDEX_MERGE_CASES):
-            # 跳过不可比较的场景
-            # if i in [35, 39, 41]:  # 索引从0开始，对应原场景36、40、42
-            #     continue
-                
             case_name = f"索引合并 - {scenario['name']}"
             start_time = time.time()
             

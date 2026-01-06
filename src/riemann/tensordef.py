@@ -744,6 +744,18 @@ class TN:
 
         return ret
 
+    def bool(self):
+        """
+        将张量转换为布尔类型(bool_)。
+        
+        创建并返回一个新的张量，其数据类型为布尔类型(bool_)。
+        如果原张量已经是布尔类型，则返回原张量本身。
+        
+        Returns:
+            TN: 布尔类型的新张量，或原张量（如果已经是布尔类型）
+        """
+        return self.type(bool_)
+
     def float(self):
         """
         将张量转换为单精度浮点类型(float32)。
@@ -2353,7 +2365,6 @@ class TN:
         
         # 处理不同类型的value参数
         if isinstance(value, TN):
-            # 如果是TN张量，取第一个元素作为填充值
             if value.ndim != 0:
                 raise RuntimeError(f'fill_ only supports 0-dimension value tensor but got tensor with {value.ndim} dimensions.')
         
@@ -2362,7 +2373,86 @@ class TN:
         
         # 返回自身以支持链式调用
         return self
+
+    def masked_fill_(self, mask: TN, value: any):
+        """
+        masked_fill_(mask, value)
         
+        原地将张量中掩码为 True 的元素填充为指定值
+        
+        掩码 (mask) 必须是可广播到原张量形状的布尔张量
+        
+        参数:
+            mask (TN): 布尔类型的张量掩码，形状需与原张量可广播
+            value (any): 用于填充的值，可以是标量或 0 维张量
+        
+        返回:
+            TN: 原地修改后的张量
+        
+        注意:
+            - 这是原地操作，会直接修改张量数据
+            - 如果张量是需要梯度的叶子节点，会抛出运行时错误
+            - 掩码必须是布尔类型的张量
+            - 填充值可以是标量或 0 维张量
+            - 掩码形状需与原张量形状可广播
+            - 此实现与 PyTorch 的 masked_fill_ 行为保持一致
+        
+        示例:
+            基本用法:
+                arr = tensor([[1, 2, 3], [4, 5, 6]])
+                mask = tensor([[True, False, True], [False, True, False]])
+                arr.masked_fill_(mask, 0)
+                print(arr)  # 输出: [[0, 2, 0], [4, 0, 6]]
+            
+            使用可广播掩码:
+                arr = tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+                mask = tensor([True, False, True])  # 形状为 (3,)，可广播到 (3, 3)
+                arr.masked_fill_(mask, 10)
+                print(arr)  # 输出: [[10, 2, 10], [10, 5, 10], [10, 8, 10]]
+            
+            带梯度计算的用法（跟踪右值梯度）:
+                arr = tensor([[1, 2], [3, 4]], requires_grad=True)
+                arr_clone = arr.clone()  # 创建非叶子节点
+                mask = tensor([[True, False], [False, True]])
+                fill_value = tensor(100.0, requires_grad=True)  # 设置填充值为可跟踪梯度
+                arr_clone.masked_fill_(mask, fill_value)
+                loss = arr_clone.sum()
+                loss.backward()
+                print(fill_value.grad)  # 输出填充值的梯度，显示被填充位置的数量
+            
+            使用标量值填充:
+                arr = tensor([1, 2, 3, 4, 5])
+                mask = tensor([False, True, False, True, False])
+                arr.masked_fill_(mask, -1)
+                print(arr)  # 输出: [1, -1, 3, -1, 5]
+        """
+        # 检查是否是需要梯度的叶子节点，原地操作不允许对需要梯度的叶子节点执行
+        if self.requires_grad and self.is_leaf:
+            raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
+        
+        # 检查mask是否为布尔类型
+        if mask.dtype != np.bool_:
+            raise RuntimeError(f"masked_fill_ only supports boolean masks, but got mask with dtype {mask.dtype}")
+        
+        # 处理不同类型的value参数
+        if isinstance(value, TN):
+            if value.ndim != 0:
+                raise RuntimeError(f'masked_fill_ only supports 0-dimension value tensor but got tensor with {value.ndim} dimensions.')
+        
+        # 执行原地填充操作
+        try:
+            if mask.shape != self.shape:
+                # 如果需要广播，先广播掩码
+                broadcasted_mask = mask.broadcast_to(self.shape)
+                self[broadcasted_mask] = value
+            else:
+                self[mask] = value
+        except Exception as e:
+            raise RuntimeError(f"mask with shape {mask.shape} is not broadcastable to tensor shape {self.shape}") from e
+        
+        # 返回自身以支持链式调用
+        return self
+    
     def squeeze(self, dim: int | tuple = None):        
         # 当dim为None时，计算所有大小为1的维度
         if dim is None:
