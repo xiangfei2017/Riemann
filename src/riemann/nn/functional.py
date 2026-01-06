@@ -2544,3 +2544,51 @@ def batch_norm(input: TN, running_mean: TN = None, running_var: TN = None,
         return normalized
 
 
+def layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-05):
+    """Layer normalization function that normalizes over specified dimensions.
+    Compatible with torch.nn.functional.layer_norm.
+    
+    Args:
+        input: The input tensor to normalize.
+        normalized_shape: An integer or tuple specifying the dimensions to normalize over.
+        weight: Optional weight tensor (gamma) for affine transformation.
+        bias: Optional bias tensor (beta) for affine transformation.
+        eps: Small value added to variance to avoid division by zero.
+    """
+    # 计算需要归一化的维度
+    if isinstance(normalized_shape, int):
+        normalized_shape = (normalized_shape,)
+    
+    # 确定归一化的维度索引
+    if len(normalized_shape) > len(input.shape):
+        raise ValueError(f"normalized_shape {normalized_shape} is longer than input shape {input.shape}")
+    
+    start_dim = len(input.shape) - len(normalized_shape)
+    
+    # 验证输入形状是否与 normalized_shape 匹配
+    for i, dim in enumerate(normalized_shape):
+        if input.shape[start_dim + i] != dim:
+            raise ValueError(f"normalized_shape {normalized_shape} does not match input shape {input.shape} starting from dimension {start_dim}")
+    
+    # 计算归一化维度
+    dims = tuple(range(start_dim, len(input.shape)))
+    
+    # 计算均值和方差
+    mean_val = input.mean(dim=dims, keepdim=True)
+    var_val = input.var(dim=dims, unbiased=False, keepdim=True)
+    
+    # 归一化
+    normalized = (input - mean_val) / sqrt(var_val + eps)
+    
+    # 应用仿射变换
+    if weight is not None and bias is not None:
+        # 重塑 weight 和 bias 以匹配输入形状
+        reshape_size = (1,) * start_dim + normalized_shape
+        weight_reshaped = weight.reshape(reshape_size)
+        bias_reshaped = bias.reshape(reshape_size)
+        
+        return normalized * weight_reshaped + bias_reshaped
+    else:
+        return normalized
+
+
