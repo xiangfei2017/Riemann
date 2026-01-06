@@ -3347,3 +3347,43 @@ class BatchNorm3d(Module):
 
 # end of class BatchNorm3d
 
+class LayerNorm(Module):
+    """层归一化层，对指定维度进行归一化处理
+    与 torch.nn.LayerNorm 兼容
+    
+    参数:
+        normalized_shape: 一个整数或元组，指定需要归一化的维度
+        eps: 一个很小的常数，添加到方差中以避免除零错误
+        affine: 如果为 True，将使用可学习的参数(gamma 和 beta)进行仿射变换
+    """
+    
+    def __init__(self, normalized_shape, eps=1e-05, affine=True):
+        super().__init__()
+        self.normalized_shape = normalized_shape if isinstance(normalized_shape, (tuple, list)) else (normalized_shape,)
+        self.eps = eps
+        self.affine = affine
+        
+        # 如果启用仿射变换，创建可学习参数
+        if self.affine:
+            self.weight = Parameter(ones(self.normalized_shape))
+            self.bias = Parameter(zeros(self.normalized_shape))
+        else:
+            self.register_parameter('weight', None)
+            self.register_parameter('bias', None)
+    
+    def forward(self, input):
+        """前向传播
+        
+        参数:
+            input: 需要归一化的输入张量
+        
+        返回值:
+            归一化后的张量，形状与输入一致
+        """
+        return layer_norm(input, self.normalized_shape, self.weight, self.bias, self.eps)
+    
+    def extra_repr(self):
+        """返回 LayerNorm 模块的字符串表示
+        """
+        return f"normalized_shape={self.normalized_shape}, eps={self.eps}, affine={self.affine}"
+

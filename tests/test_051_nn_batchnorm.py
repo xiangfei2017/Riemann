@@ -27,8 +27,8 @@ from typing import Tuple, Dict, Any
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import riemann as rm
-from riemann.nn import Module
 from riemann.nn import BatchNorm1d, BatchNorm2d, BatchNorm3d
+from riemann.nn import LayerNorm
 from riemann.nn import MSELoss
 
 import torch
@@ -284,6 +284,83 @@ def compare_gradients(torch_param, riemann_param, name="parameter"):
 
 def compare_batch_norm(rm_bn, torch_bn, input_data, test_name, stats, mode="train"):
     """测试Riemann BatchNorm与PyTorch BatchNorm的比较"""
+    # ... existing code ...
+
+
+def compare_layer_norm(rm_ln, torch_ln, input_data, test_name, stats):
+    """测试Riemann LayerNorm与PyTorch LayerNorm的比较"""
+    try:
+        # 复制权重，确保两个模块参数完全一致
+        copy_weights_torch_to_riemann(torch_ln, rm_ln)
+        
+        # 确保输入数据完全一致：使用深拷贝创建独立的numpy数组，避免内存共享
+        input_data_copy = np.array(input_data, copy=True)
+        rm_input = rm.tensor(input_data_copy, requires_grad=True)
+        torch_input = torch.tensor(input_data_copy, requires_grad=True)
+        
+        # 验证输入张量形状一致
+        input_shape_match = rm_input.shape == torch_input.shape
+        stats.add_result(f"{test_name}-输入形状", input_shape_match,
+                        f"Riemann: {rm_input.shape}, PyTorch: {torch_input.shape}")
+        
+        # 前向传播
+        rm_output = rm_ln(rm_input)
+        torch_output = torch_ln(torch_input)
+        
+        # 比较输出
+        forward_close = tensor_allclose(rm_output, torch_output, rtol=1e-4, atol=1e-6)
+        stats.add_result(f"{test_name}-前向传播", forward_close, 
+                        f"输出形状: rm={rm_output.shape}, torch={torch_output.shape}")
+        
+        # 计算损失
+        target_data = np.random.randn(*rm_output.shape).astype(np.float32)
+        target_rm = rm.tensor(target_data)
+        target_torch = torch.tensor(target_data)
+        
+        rm_loss = MSELoss()(rm_output, target_rm)
+        torch_loss = tnn.MSELoss()(torch_output, target_torch)
+        
+        # 比较损失
+        loss_close = tensor_allclose(rm_loss, torch_loss, rtol=1e-4, atol=1e-6)
+        stats.add_result(f"{test_name}-损失计算", loss_close,
+                        f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
+        
+        # 反向传播
+        rm_loss.backward()
+        torch_loss.backward()
+        
+        # 比较梯度
+        gradient_tests_passed = 0
+        gradient_tests_total = 0
+        
+        # 比较权重梯度
+        if hasattr(rm_ln, 'weight') and rm_ln.weight is not None:
+            gradient_tests_total += 1
+            weight_close, weight_msg = compare_gradients(torch_ln.weight, rm_ln.weight, "weight")
+            stats.add_result(f"{test_name}-weight梯度", weight_close, weight_msg)
+            if weight_close:
+                gradient_tests_passed += 1
+        
+        # 比较偏置梯度
+        if hasattr(rm_ln, 'bias') and rm_ln.bias is not None:
+            gradient_tests_total += 1
+            bias_close, bias_msg = compare_gradients(torch_ln.bias, rm_ln.bias, "bias")
+            stats.add_result(f"{test_name}-bias梯度", bias_close, bias_msg)
+            if bias_close:
+                gradient_tests_passed += 1
+        
+        # 梯度总体通过率
+        if gradient_tests_total > 0:
+            gradient_pass_rate = gradient_tests_passed / gradient_tests_total * 100
+            stats.add_result(f"{test_name}-梯度总体", gradient_pass_rate >= 90,
+                            f"梯度通过率: {gradient_pass_rate:.1f}% ({gradient_tests_passed}/{gradient_tests_total})")
+        
+    except Exception as e:
+        stats.add_result(f"{test_name}", False, f"测试异常: {str(e)}")
+
+
+def compare_batch_norm(rm_bn, torch_bn, input_data, test_name, stats, mode="train"):
+    """测试Riemann BatchNorm与PyTorch BatchNorm的比较"""
     try:
         # 复制权重和运行时统计量，确保两个模块参数完全一致
         copy_weights_torch_to_riemann(torch_bn, rm_bn)
@@ -457,6 +534,76 @@ def test_batch_norm_2d(stats=None):
         stats.end_function()
 
 
+def test_layer_norm(stats=None):
+    """测试LayerNorm模块"""
+    # 如果没有传入stats实例，创建一个（用于pytest调用）
+    if stats is None:
+        stats = StatisticsCollector()
+    
+    stats.start_function("LayerNorm模块")
+    
+    try:
+        # 设置随机种子确保可重现性
+        np.random.seed(42)
+        
+        # 测试参数组合
+        test_configs = [
+            {"affine": True, "desc": "affine=True"},
+            {"affine": False, "desc": "affine=False"},
+        ]
+        
+        # 测试不同输入形状
+        print("\n测试不同输入形状:")
+        
+        # 测试1D输入 (N, D)
+        print("  1D输入 (N, D):")
+        batch_size, feature_dim = 4, 5
+        input_data_1d = np.random.randn(batch_size, feature_dim).astype(np.float32)
+        
+        for i, config in enumerate(test_configs):
+            print(f"    配置{i+1}: {config['desc']}")
+            
+            # 创建Riemann和PyTorch的LayerNorm
+            rm_ln = LayerNorm(feature_dim, affine=config['affine'])
+            torch_ln = tnn.LayerNorm(feature_dim, elementwise_affine=config['affine'])
+            
+            test_name = f"LayerNorm-1D-配置{i+1}"
+            compare_layer_norm(rm_ln, torch_ln, input_data_1d, test_name, stats)
+        
+        # 测试2D输入 (N, C, L)
+        print("\n  2D输入 (N, C, L):")
+        batch_size, seq_len, feature_dim = 2, 3, 4
+        input_data_2d = np.random.randn(batch_size, seq_len, feature_dim).astype(np.float32)
+        
+        for i, config in enumerate(test_configs):
+            print(f"    配置{i+1}: {config['desc']}")
+            
+            # 创建Riemann和PyTorch的LayerNorm
+            rm_ln = LayerNorm((seq_len, feature_dim), affine=config['affine'])
+            torch_ln = tnn.LayerNorm((seq_len, feature_dim), elementwise_affine=config['affine'])
+            
+            test_name = f"LayerNorm-2D-配置{i+1}"
+            compare_layer_norm(rm_ln, torch_ln, input_data_2d, test_name, stats)
+        
+        # 测试3D输入 (N, C, H, W)
+        print("\n  3D输入 (N, C, H, W):")
+        batch_size, channels, height, width = 2, 3, 4, 4
+        input_data_3d = np.random.randn(batch_size, channels, height, width).astype(np.float32)
+        
+        for i, config in enumerate(test_configs):
+            print(f"    配置{i+1}: {config['desc']}")
+            
+            # 创建Riemann和PyTorch的LayerNorm
+            rm_ln = LayerNorm((channels, height, width), affine=config['affine'])
+            torch_ln = tnn.LayerNorm((channels, height, width), elementwise_affine=config['affine'])
+            
+            test_name = f"LayerNorm-3D-配置{i+1}"
+            compare_layer_norm(rm_ln, torch_ln, input_data_3d, test_name, stats)
+            
+    finally:
+        stats.end_function()
+
+
 def test_batch_norm_3d(stats=None):
     """测试BatchNorm3d模块"""
     # 如果没有传入stats实例，创建一个（用于pytest调用）
@@ -498,8 +645,8 @@ def test_batch_norm_3d(stats=None):
 
 def main():
     """主测试函数"""
-    print(f"{Colors.HEADER}Riemann nn.BatchNorm 批量归一化模块测试{Colors.ENDC}")
-    print(f"{Colors.OKCYAN}测试BatchNorm1d、BatchNorm2d、BatchNorm3d模块的前向传播和反向传播{Colors.ENDC}")
+    print(f"{Colors.HEADER}Riemann nn.归一化模块测试{Colors.ENDC}")
+    print(f"{Colors.OKCYAN}测试BatchNorm1d、BatchNorm2d、BatchNorm3d和LayerNorm模块的前向传播和反向传播{Colors.ENDC}")
     
     # 创建测试统计对象
     stats = StatisticsCollector()
@@ -508,6 +655,7 @@ def main():
     test_batch_norm_1d(stats)
     test_batch_norm_2d(stats)
     test_batch_norm_3d(stats)
+    test_layer_norm(stats)
     
     # 打印测试汇总
     stats.print_summary()
