@@ -104,11 +104,8 @@ All functions in this module are designed to work with the Riemann Tensor (TN) t
 support automatic differentiation through properly implemented backward functions.
 """
 
-from typing import Any
-import math
 import numpy as np
 from ..tensordef import *
-
 
 def linear(input: TN, weight: TN, bias: TN = None) -> TN:
     """
@@ -334,7 +331,7 @@ def relu(x: TN) -> TN:
 def _relu_backward(result_tensor: TN, i: int) -> TN:
     """梯度计算：输入>0时梯度为1，否则为0"""
     x = result_tensor.fromvars[0]
-    mask = (x > 0) #.type(x.dtype)
+    mask = (x > 0).type(x.dtype)
     return result_tensor.grad_value * mask
 
 def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
@@ -353,7 +350,7 @@ def _leaky_relu_backward(result_tensor: TN, i: int) -> TN:
     alpha = result_tensor.parms[0]
     x = result_tensor.fromvars[0]
     # 计算梯度：x>0时梯度为1，否则为alpha
-    mask = (x > 0) #.type(x.dtype)
+    mask = (x > 0).type(x.dtype)
     grad = result_tensor.grad_value * (mask + (1.0 - mask) * alpha)
     return grad
 
@@ -374,7 +371,7 @@ def prelu(x: TN, alpha: TN) -> TN:
 
 def _prelu_grad_x(result_tensor: TN, i: int) -> TN:
     x, alpha = result_tensor.fromvars
-    mask = (x > 0) #.type(x.dtype)
+    mask = (x > 0).type(x.dtype)
     grad_x = result_tensor.grad_value * (mask + (1.0 - mask) * alpha.data)
     return grad_x
 
@@ -410,7 +407,7 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
 def _rrelu_grad_x(result_tensor: TN, i: int) -> TN:
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[3]
-    mask = (x > 0)
+    mask = (x > 0).type(x.dtype)
     grad = result_tensor.grad_value * (mask + (1.0 - mask) * alpha)
     return grad
 
@@ -2591,4 +2588,278 @@ def layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-05):
     else:
         return normalized
 
+def embedding(
+    input: TN,
+    weight: TN,
+    padding_idx: int = None,
+    max_norm: float = None,
+    norm_type: float = 2.0,
+    scale_grad_by_freq: bool = False,
+    sparse: bool = False,
+) -> TN:
+    """
+    从嵌入矩阵中查找输入索引的嵌入向量（使用自定义梯度跟踪实现）。
+    
+    参数:
+        input (TN): 包含索引的张量，形状为任意维度
+        weight (TN): 嵌入矩阵，形状为 (num_embeddings, embedding_dim)
+        padding_idx (int, optional): 如果指定，该索引的嵌入向量不参与梯度计算，
+                                     且在训练过程中保持不变。默认为None
+        max_norm (float, optional): 如果指定，所有嵌入向量的范数超过max_norm时，
+                                    将被重归一化到max_norm。默认为None
+        norm_type (float, optional): 计算范数时使用的p值，默认为2（L2范数）
+        scale_grad_by_freq (bool, optional): 如果为True，梯度将按mini-batch中每个词的频率进行缩放。
+                                             默认为False
+        sparse (bool, optional): 如果为True，权重的梯度将是稀疏张量。默认为False
+    
+    返回:
+        TN: 输出张量，形状为 (*, embedding_dim)，其中*是输入的形状
+    
+    注意:
+        - 该实现使用自定义的梯度跟踪机制，更便于支持scale_grad_by_freq参数
+        - 支持任意维度的输入张量
+        - 输入张量的数据类型应为整数类型（通常是long）
+        - 如果设置了padding_idx，它必须在[0, num_embeddings-1]范围内
+        - 自动支持梯度计算
+        - 与PyTorch行为一致：不会自动将padding_idx的输出设为0，需要手动将权重中对应的值设为0
+        - 当前版本支持scale_grad_by_freq参数
+        - 当前版本不支持sparse参数（会忽略该参数并使用密集存储）
+    """
+    if not isinstance(weight, TN):
+        raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
+    
+    # 检查输入数据类型是否为整数类型
+    if input.dtype.kind not in ['i', 'u']:
+        raise TypeError(f"Expected input tensor to have integer type, but received: {input.dtype}")
+    
+    # 检查权重矩阵的维度
+    if weight.ndim != 2:
+        raise ValueError(f"Expected weight to be 2-dimensional, but received: {weight.ndim} dimensions")
+    
+    num_embeddings, embedding_dim = weight.shape
+    
+    # 处理padding_idx
+    if padding_idx is not None:
+        if padding_idx >= 0:
+            if padding_idx >= num_embeddings:
+                raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
+        elif padding_idx < 0:
+            padding_idx = num_embeddings + padding_idx
+            if padding_idx < 0:
+                raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
+    
+    weight_data = weight.data
 
+    # 处理max_norm
+    if max_norm is not None:
+        # 使用张量操作计算每个嵌入向量的范数，保持维度
+        norms = np.linalg.norm(weight.data, ord=norm_type, axis=1, keepdims=True)
+        # 创建掩码，找出范数超过max_norm的嵌入向量
+        mask = norms > max_norm
+        
+        # 如果有需要重归一化的嵌入向量
+        if mask.any():
+            # 计算重归一化后的嵌入向量
+            normalized = weight.data / norms * max_norm
+            # 使用where操作更新权重
+            weight_data = np.where(mask, normalized, weight.data)
+    
+    # PyTorch不会自动将padding_idx的权重设为0，只是不计算其梯度
+    # 因此这里不做额外处理，保持与PyTorch行为一致
+    
+    # 处理scale_grad_by_freq参数，计算频率信息
+    freq = None
+    if scale_grad_by_freq:
+        # 统计每个索引出现的频率
+        input_flat = input.flatten()
+        unique_indices, counts = unique(input_flat, return_counts=True)
+        
+        # 创建频率数组
+        freq = ones(num_embeddings)
+        
+        # 更新出现过的索引的频率
+        for idx, count in zip(unique_indices, counts):
+            if idx != padding_idx:  # 不考虑padding_idx
+                freq[idx] = count
+            
+    # 获取输入的数据    
+    input_data = input.data
+    
+    # 使用numpy的索引操作直接获取嵌入向量
+    output_data = weight_data[input_data]
+    
+    # 创建输出张量
+    requires_grad = (is_grad_enabled() and weight.requires_grad)
+    output = tensor(output_data, requires_grad =requires_grad )
+    output.is_leaf = not requires_grad
+
+    # 如果需要跟踪梯度
+    if requires_grad:
+        # 设置fromvars，记录参与计算的变量
+        output.fromvars = (weight,)        
+        # 设置parms，记录计算所需的参数
+        output.parms = ((input, scale_grad_by_freq, freq),)
+                
+        # 定义反向传播函数
+        def _embedding_backward(result_tensor: TN, i: int) -> TN:
+            """
+            embedding的反向传播函数
+            
+            参数:
+                result_tensor: 结果张量
+                i: 当前处理的变量索引
+            
+            返回:
+                梯度张量
+            """
+            # 获取相关变量和参数
+            weight_var = result_tensor.fromvars[i]
+            input_tensor,scale_grad,freq_tensor = result_tensor.parms[i]
+            grad_value = result_tensor.grad_value
+            
+            # 初始化权重梯度
+            weight_grad = zeros_like(weight_var)
+            
+            # 处理scale_grad_by_freq
+            if scale_grad:
+                # 对梯度进行缩放
+                freq_values = freq_tensor[input_tensor]
+                # 将频率张量扩展一个维度，以便正确广播到嵌入维度
+                freq_values_expanded = freq_values.unsqueeze(-1)
+                scaled_grad = grad_value / freq_values_expanded
+                # 将缩放后的梯度添加到权重梯度中
+                weight_grad = weight_grad.addat(input_tensor, scaled_grad)
+            else:
+                # 直接将梯度添加到权重梯度中
+                weight_grad = weight_grad.addat(input_tensor, grad_value)
+            
+            # 将padding_idx的梯度设为0（与PyTorch行为一致）
+            if padding_idx is not None:
+                weight_grad[padding_idx] = 0.0
+            
+            return weight_grad
+        
+        # 设置gradfuncs，记录反向传播函数
+        output.gradfuncs = (_embedding_backward,)
+    
+    return output
+
+def embedding2(
+    input: TN,
+    weight: TN,
+    padding_idx: int = None,
+    max_norm: float = None,
+    norm_type: float = 2,
+    scale_grad_by_freq: bool = False,
+    sparse: bool = False,
+) -> TN:
+    """
+    从嵌入矩阵中查找输入索引的嵌入向量。
+    
+    参数:
+        input (TN): 包含索引的张量，形状为任意维度
+        weight (TN): 嵌入矩阵，形状为 (num_embeddings, embedding_dim)
+        padding_idx (int, optional): 如果指定，该索引的嵌入向量不参与梯度计算，
+                                     且在训练过程中保持不变。默认为None
+        max_norm (float, optional): 如果指定，所有嵌入向量的范数超过max_norm时，
+                                    将被重归一化到max_norm。默认为None
+        norm_type (float, optional): 计算范数时使用的p值，默认为2（L2范数）
+        scale_grad_by_freq (bool, optional): 如果为True，梯度将按mini-batch中每个词的频率进行缩放。
+                                             默认为False
+        sparse (bool, optional): 如果为True，权重的梯度将是稀疏张量。默认为False
+    
+    返回:
+        TN: 输出张量，形状为 (*, embedding_dim)，其中*是输入的形状
+    
+    形状:
+        - 输入: LongTensor类型的任意形状张量，包含要提取的索引
+        - 权重: 浮点数类型的嵌入矩阵，形状为 (V, embedding_dim)，
+               其中V = max_index + 1，embedding_dim = 嵌入大小
+        - 输出: (*, embedding_dim)，其中*是输入的形状
+    
+    示例:
+        >>> # 批量大小为2，每个样本有4个索引
+        >>> input = tensor([[1, 2, 4, 5]], dtype='long')
+        >>> # 包含10个3维嵌入向量的嵌入矩阵
+        >>> embedding_matrix = tensor(np.random.rand(10, 3), dtype='float32')
+        >>> output = embedding(input, embedding_matrix)
+        >>> # 结果形状: (1, 4, 3)
+        
+        >>> # 使用padding_idx的示例（与PyTorch行为一致）
+        >>> weights = tensor(np.random.rand(10, 3), dtype='float32')
+        >>> input = tensor([[0, 2, 0, 5]], dtype='long')
+        >>> # PyTorch不会自动将padding_idx的输出设为0，需要手动处理
+        >>> weights[0, :] = 0  # 手动将padding_idx对应的嵌入设为0
+        >>> output = embedding(input, weights, padding_idx=0)
+        >>> # 结果中索引0的嵌入将保持为全0（因为权重已手动设为0）
+    
+    注意:
+        - 支持任意维度的输入张量
+        - 输入张量的数据类型应为整数类型（通常是long）
+        - 如果设置了padding_idx，它必须在[0, num_embeddings-1]范围内
+        - max_norm参数会对权重矩阵进行重归一化
+        - 自动支持梯度计算
+        - 与PyTorch行为一致：不会自动将padding_idx的输出设为0，需要手动将权重中对应的值设为0
+        - 当前版本暂不支持scale_grad_by_freq和sparse参数
+    """
+    if not isinstance(weight, TN):
+        raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
+    
+    # 检查输入数据类型是否为整数类型
+    # 使用dtype.kind检查，'i'表示有符号整数，'u'表示无符号整数
+    if input.dtype.kind not in ['i', 'u']:
+        raise TypeError(f"Expected input tensor to have integer type, but received: {input.dtype}")
+    
+    # 检查权重矩阵的维度
+    if weight.ndim != 2:
+        raise ValueError(f"Expected weight to be 2-dimensional, but received: {weight.ndim} dimensions")
+    
+    num_embeddings, embedding_dim = weight.shape
+    
+    # 处理padding_idx
+    if padding_idx is not None:
+        if padding_idx >= 0:
+            if padding_idx >= num_embeddings:
+                raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
+        elif padding_idx < 0:
+            padding_idx = num_embeddings + padding_idx
+            if padding_idx < 0:
+                raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
+    
+    # 处理max_norm
+    if max_norm is not None:
+        # 使用张量操作计算每个嵌入向量的范数
+        # 计算Lp范数，axis=1表示按行计算，keepdims=True保持维度
+        norms = weight.norm(p=norm_type, dim=1, keepdim=True)
+        # 创建掩码，找出范数超过max_norm的嵌入向量
+        mask = norms > max_norm
+        
+        # 如果有需要重归一化的嵌入向量
+        if mask.any():
+            # 计算重归一化后的嵌入向量
+            normalized = weight / norms * max_norm
+            # 使用where操作更新权重，保持梯度跟踪
+            weight = where(mask, normalized, weight)
+    
+    # 确保padding_idx的梯度为0（与PyTorch行为一致）
+    # 这里使用一个小技巧：将padding_idx对应的权重行分离出来，不参与梯度计算
+    if padding_idx is not None and weight.requires_grad:
+        # 创建一个与weight相同形状的临时张量
+        # 非padding_idx的行保持原样，padding_idx的行使用detach()版本
+        # 这样，反向传播时，padding_idx对应的行的梯度不会影响原weight
+        temp_weight = where(
+            arange(num_embeddings, requires_grad=False)[:, None] == padding_idx,
+            weight[padding_idx].detach().broadcast_to(weight.shape[1:]),
+            weight
+        )
+        
+        # 使用临时权重张量进行嵌入查找
+        output = temp_weight[input]
+    else:
+        # 正常进行嵌入查找
+        output = weight[input]
+    
+    # PyTorch不会自动将padding_idx的输出设为0，只是不计算其梯度
+    # 因此这里不做额外处理，保持与PyTorch行为一致
+    
+    return output

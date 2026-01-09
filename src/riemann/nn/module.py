@@ -3383,7 +3383,132 @@ class LayerNorm(Module):
         return layer_norm(input, self.normalized_shape, self.weight, self.bias, self.eps)
     
     def extra_repr(self):
-        """返回 LayerNorm 模块的字符串表示
+        """
+        返回 LayerNorm 模块的字符串表示
         """
         return f"normalized_shape={self.normalized_shape}, eps={self.eps}, affine={self.affine}"
+
+class Embedding(Module):
+    """
+    嵌入层 (Embedding Layer)
+    
+    将整数索引转换为固定大小的密集向量表示。
+    嵌入层是神经网络中处理分类特征和序列数据的基础组件。
+    
+    参数:
+        num_embeddings (int): 嵌入向量的数量，即词典大小
+        embedding_dim (int): 每个嵌入向量的维度
+        padding_idx (int, optional): 如果指定，该索引的嵌入向量不参与梯度计算，
+                                     且在训练过程中保持不变。默认为None
+        max_norm (float, optional): 如果指定，所有嵌入向量的范数超过max_norm时，
+                                    将被重归一化到max_norm。默认为None
+        norm_type (float, optional): 计算范数时使用的p值，默认为2（L2范数）
+        scale_grad_by_freq (bool, optional): 如果为True，梯度将按mini-batch中每个词的频率进行缩放。
+                                             默认为False
+        sparse (bool, optional): 如果为True，权重的梯度将是稀疏张量。默认为False
+    
+    形状:
+        - 输入: (*) 包含整数索引的任意维度张量
+        - 输出: (*, embedding_dim) 嵌入向量张量
+    
+    示例:
+        >>> # 创建一个嵌入层，词典大小为10，嵌入维度为3
+        >>> embedding = Embedding(10, 3)
+        >>> input = rm.tensor([1, 2, 3])
+        >>> output = embedding(input)
+        >>> output.shape
+        (3, 3)
+        
+        >>> # 指定padding_idx
+        >>> embedding = Embedding(10, 3, padding_idx=0)
+        >>> input = rm.tensor([0, 2, 3])
+        >>> output = embedding(input)
+        >>> # padding_idx=0的嵌入向量将不参与梯度计算
+    
+    注意:
+        - 与PyTorch的nn.Embedding接口兼容
+        - 嵌入权重是随机初始化的
+        - padding_idx的嵌入向量在初始化时被设为0
+        - 支持max_norm限制嵌入向量的范数
+        - 支持scale_grad_by_freq按频率缩放梯度
+        - 目前不支持sparse参数（会忽略该参数）
+    """
+    
+    def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: int = None, 
+                 max_norm: float = None, norm_type: float = 2.0, scale_grad_by_freq: bool = False, 
+                 sparse: bool = False):
+        """
+        初始化嵌入层
+        
+        参数:
+            num_embeddings (int): 嵌入向量的数量
+            embedding_dim (int): 每个嵌入向量的维度
+            padding_idx (int, optional): 填充索引
+            max_norm (float, optional): 嵌入向量的最大范数
+            norm_type (float, optional): 计算范数的p值
+            scale_grad_by_freq (bool, optional): 是否按频率缩放梯度
+            sparse (bool, optional): 是否使用稀疏梯度
+        """
+        super().__init__()
+        
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.padding_idx = padding_idx
+        self.max_norm = max_norm
+        self.norm_type = norm_type
+        self.scale_grad_by_freq = scale_grad_by_freq
+        self.sparse = sparse
+        
+        # 创建嵌入权重，形状为(num_embeddings, embedding_dim)
+        self.weight = Parameter(randn(num_embeddings, embedding_dim))
+        
+        # 如果指定了padding_idx，将其嵌入向量设为0
+        if padding_idx is not None:
+            if padding_idx < 0:
+                padding_idx += num_embeddings
+            if padding_idx >= num_embeddings or padding_idx < 0:
+                raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
+            self.weight.data[padding_idx] = 0.0
+    
+    def forward(self, input: TN) -> TN:
+        """
+        前向传播
+        
+        参数:
+            input: 包含索引的张量，形状为任意维度
+            
+        返回:
+            嵌入向量张量，形状为(*, embedding_dim)
+        """
+        return embedding(
+            input=input,
+            weight=self.weight,
+            padding_idx=self.padding_idx,
+            max_norm=self.max_norm,
+            norm_type=self.norm_type,
+            scale_grad_by_freq=self.scale_grad_by_freq,
+            sparse=self.sparse
+        )
+    
+    def extra_repr(self) -> str:
+        """
+        模块的额外表示信息
+        
+        返回:
+            str: 模块的描述字符串
+        """
+        s = f"{self.num_embeddings}, {self.embedding_dim}"
+        if self.padding_idx is not None:
+            s += f", padding_idx={self.padding_idx}"
+        if self.max_norm is not None:
+            s += f", max_norm={self.max_norm}"
+        if self.norm_type != 2:
+            s += f", norm_type={self.norm_type}"
+        if self.scale_grad_by_freq:
+            s += f", scale_grad_by_freq={self.scale_grad_by_freq}"
+        if self.sparse:
+            s += f", sparse=True"
+        return s
+
+# end of class Embedding
 
