@@ -1740,6 +1740,25 @@ class TN:
         if self.requires_grad:
             raise RuntimeError("Can't call numpy() on Tensor that requires grad. Use tensor.detach().numpy() instead.")
         return self.data
+        
+    def tolist(self):
+        """
+        将张量转换为Python列表。
+        
+        返回张量数据的Python列表表示。对于标量张量，返回Python标量值；
+        对于多维张量，返回嵌套列表。此操作会断开计算图，因此返回的列表不会参与梯度计算。
+        
+        Returns:
+            Union[list, int, float, complex]: 张量数据的Python列表或标量表示
+            
+        Raises:
+            RuntimeError: 如果张量需要计算梯度
+        """
+        if self.requires_grad:
+            raise RuntimeError("Can't call tolist() on Tensor that requires grad. Use tensor.detach().tolist() instead.")
+        
+        # 直接使用NumPy的tolist()方法，它会自动处理标量和多维数组
+        return self.data.tolist()
     
     def requires_grad_(self, requires_grad : bool = True):
         """
