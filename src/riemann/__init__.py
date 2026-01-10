@@ -43,5 +43,11 @@ from . import nn
 from . import optim
 from . import utils
 from . import vision
-
+from . import cuda
+from .cuda import (
+    get_default_device, 
+    set_default_device, 
+    device, 
+    Device
+)
 from .serialization import *
