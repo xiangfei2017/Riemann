@@ -81,8 +81,8 @@ class Optimizer:
         """
         self.param_groups: List[Dict[str, Any]] = []
         self.defaults = defaults
-        # 使用defaultdict简化状态管理，避免键不存在的检查
-        self.state = defaultdict(dict)
+        # 使用defaultdict简化状态管理，避免检查不存在的键
+        self.state: defaultdict[Any, Dict[str, Any]] = defaultdict(dict)
         
         # 检查空参数列表
         if isinstance(params, (list, tuple)) and len(params) == 0:
@@ -1266,4 +1266,5 @@ class LBFGS(Optimizer):
             loss = self._compute_final_loss(closure, best_loss)
                     
         return loss
+
 

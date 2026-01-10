@@ -258,7 +258,7 @@ def grad(outputs:TN,
                     q.append(var) 
         
         #当前节点反向传播完梯度后，节点的grad_value清空，节省空间
-        item.grad_value = None
+        item.grad_value = None  # type: ignore
     #end of while
     
     # 与backward函数不同，grad函数不会遍历计算图里所有节点，inputs里张量的梯度一旦计算完毕就会结束
@@ -271,7 +271,7 @@ def grad(outputs:TN,
             if grad_val is None:
                 raise RuntimeError(f"Output is independent of input ({i}), Set allow_unused=True if this is the desired behavior.")
     
-    return tuple(grad_list)
+    return tuple(grad_list)  # type: ignore
 #end of grad
 
 def higher_order_grad(outputs: TN, 
@@ -391,6 +391,16 @@ def higher_order_grad(outputs: TN,
     
     return tuple(result)
 
+def _sum_all(tensors):
+    """辅助函数：累加多个TN张量"""
+    if not tensors:
+        raise ValueError("Empty tensor list/tuple")
+    result = tensors[0]
+    for ts in tensors[1:]:
+        result = result + ts
+    return result
+
+
 def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-5, atol: float = 1e-1, rtol: float = 1e-0, raise_exception: bool = True, check_sparse_nnz: bool = False, fast_mode: bool = False) -> bool:
     """
     验证给定函数的梯度计算是否正确，通过比较数值梯度和解析梯度。
@@ -457,8 +467,7 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
     
     # 处理多个输出的情况
     if isinstance(outputs, (tuple, list)):
-        # 如果有多个输出，将它们求和
-        outputs = sum(outputs)
+        outputs = _sum_all(outputs)
     elif not isinstance(outputs, TN):
         raise ValueError("func must return a TN tensor or a tuple/list of TN tensors")
     
@@ -467,7 +476,7 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
         outputs = outputs.sum()
     
     # 计算解析梯度
-    analytical_grads = grad(outputs, inputs, create_graph=False)
+    analytical_grads = grad(outputs, list(inputs), create_graph=False)
     
     # 计算数值梯度（有限差分法）
     numerical_grads = []
@@ -494,7 +503,7 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
             inputs_pos[i] = x_pos
             outputs_pos = func(*inputs_pos)
             if isinstance(outputs_pos, (tuple, list)):
-                outputs_pos = sum(outputs_pos)
+                outputs_pos = _sum_all(outputs_pos)
             if outputs_pos.data.ndim > 0:
                 outputs_pos = outputs_pos.sum()
             
@@ -506,7 +515,7 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
             inputs_neg[i] = x_neg
             outputs_neg = func(*inputs_neg)
             if isinstance(outputs_neg, (tuple, list)):
-                outputs_neg = sum(outputs_neg)
+                outputs_neg = _sum_all(outputs_neg)
             if outputs_neg.data.ndim > 0:
                 outputs_neg = outputs_neg.sum()
             
@@ -514,7 +523,7 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
             numerical_grad.data[idx] = (outputs_pos.data - outputs_neg.data) / (2 * eps)
         else:
             # 遍历所有元素
-            it = np.nditer(input_tensor.data, flags=['multi_index'], op_flags=['readwrite'])
+            it = np.nditer(input_tensor.data, flags=['multi_index'], op_flags=['readwrite'])  # type: ignore
             while not it.finished:
                 idx = it.multi_index
                 
@@ -531,7 +540,7 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
                 inputs_pos[i] = x_pos
                 outputs_pos = func(*inputs_pos)
                 if isinstance(outputs_pos, (tuple, list)):
-                    outputs_pos = sum(outputs_pos)
+                    outputs_pos = _sum_all(outputs_pos)
                 if outputs_pos.data.ndim > 0:
                     outputs_pos = outputs_pos.sum()
                 
@@ -543,7 +552,7 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
                 inputs_neg[i] = x_neg
                 outputs_neg = func(*inputs_neg)
                 if isinstance(outputs_neg, (tuple, list)):
-                    outputs_neg = sum(outputs_neg)
+                    outputs_neg = _sum_all(outputs_neg)
                 if outputs_neg.data.ndim > 0:
                     outputs_neg = outputs_neg.sum()
                 

@@ -38,8 +38,7 @@ class SimpleModel(Module):
     
     def forward(self, x):
         # 使用矩阵乘法，需要建立计算图
-        from riemann import matmul
-        return matmul(x, self.weight) + self.bias
+        return x @ self.weight + self.bias
 
 
 class TestOptimizedOptimizer(unittest.TestCase):

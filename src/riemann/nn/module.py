@@ -96,7 +96,7 @@ class Parameter(TN):
         - is_leaf属性影响反向传播的行为
         - 继承自张量类，支持所有张量操作
     """
-    def __init__(self, data:TN=None, requires_grad:bool=True):
+    def __init__(self, data: Optional[TN] = None, requires_grad:bool=True):
         """
         初始化参数实例 (Initialize Parameter Instance)
         
@@ -126,7 +126,7 @@ class Parameter(TN):
         super().__init__()
         # 处理空参数情况
         if data is None:
-            self.data = None
+            self.data = None # type:ignore
         else:
             # 确保输入是张量
             if not isinstance(data, TN):
@@ -538,7 +538,7 @@ class Module:
             raise TypeError("{} is not a Module subclass".format(type(module)))
         self._modules[name] = module
 
-    def forward(self, x):
+    def forward(self, *args, **kwargs):
         """
         前向传播方法 (Forward Pass)
         
@@ -546,7 +546,8 @@ class Module:
         这是模块的核心功能，接收输入数据并产生输出。
         
         Args:
-            x: 输入数据，类型和形状由具体模块定义
+            *args: 位置参数，根据具体模块定义
+            **kwargs: 关键字参数，根据具体模块定义
             
         Returns:
             输出数据，类型和形状由具体模块定义
@@ -3434,8 +3435,8 @@ class Embedding(Module):
         - 目前不支持sparse参数（会忽略该参数）
     """
     
-    def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: int = None, 
-                 max_norm: float = None, norm_type: float = 2.0, scale_grad_by_freq: bool = False, 
+    def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: Optional[int] = None, 
+                 max_norm: Optional[float] = None, norm_type: float = 2.0, scale_grad_by_freq: bool = False, 
                  sparse: bool = False):
         """
         初始化嵌入层
@@ -3468,7 +3469,7 @@ class Embedding(Module):
                 padding_idx += num_embeddings
             if padding_idx >= num_embeddings or padding_idx < 0:
                 raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
-            self.weight.data[padding_idx] = 0.0
+            self.weight.data[padding_idx] = 0.0  # type: ignore  # type: ignore  # type: ignore
     
     def forward(self, input: TN) -> TN:
         """

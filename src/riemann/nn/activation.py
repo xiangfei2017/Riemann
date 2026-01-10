@@ -53,6 +53,7 @@ that applies the respective activation function from the functional module.
 """
 from .module import *
 from .functional import *
+from ..tensordef import tanh
 
 class ReLU(Module):
     """修正线性单元激活模块 (Rectified Linear Unit)
