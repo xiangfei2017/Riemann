@@ -29,6 +29,7 @@ pip-wheel-metadata/
 .coverage
 .coverage.*
 htmlcov/
+.mypy_cache/
 
 # 调试目录（特别忽略您提到的try目录）
 try/

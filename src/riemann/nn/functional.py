@@ -105,9 +105,10 @@ support automatic differentiation through properly implemented backward function
 """
 
 import numpy as np
+from typing import Optional
 from ..tensordef import *
 
-def linear(input: TN, weight: TN, bias: TN = None) -> TN:
+def linear(input: TN, weight: TN, bias: Optional[TN] = None) -> TN:
     """
     应用线性变换：y = xA^T + b
     
@@ -169,8 +170,7 @@ def linear(input: TN, weight: TN, bias: TN = None) -> TN:
         raise ValueError(f"bias.shape[0] ({bias.shape[0]}) must equal weight.shape[0] ({out_features})")
     
     # 执行线性变换：input @ weight.T
-    # 使用矩阵乘法实现
-    output = matmul(input, weight.mT)
+    output = input @ weight.mT
     
     # 添加偏置（如果提供）
     if bias is not None:
@@ -243,39 +243,6 @@ def silu(input: TN) -> TN:
     # 利用已有的sigmoid函数，自动支持梯度计算
     sigmoid_output = sigmoid(input)
     return input * sigmoid_output
-
-def tanh(input: TN) -> TN:
-    """
-    双曲正切激活函数 (Hyperbolic Tangent Activation Function)
-    
-    参数:
-        input (TN): 输入张量
-    
-    返回:
-        TN: tanh激活后的张量
-    
-    数学公式:
-        tanh(x) = (exp(x) - exp(-x)) / (exp(x) + exp(-x))
-                = 2 * sigmoid(2x) - 1
-        
-    其中：
-        - input: 输入张量
-        - output: 输出张量，形状与输入相同，值域为(-1, 1)
-    
-    示例:
-        >>> input = tensor([-2.0, 0.0, 2.0])
-        >>> output = tanh(input)
-        >>> # 结果约: [-0.9640, 0.0, 0.9640]
-    
-    注意:
-        - tanh函数输出值域为(-1, 1)，关于原点对称
-        - 是S型函数，在x=0处导数最大
-        - 相比sigmoid，输出均值接近0，有利于梯度下降
-    """
-    if not isinstance(input, TN):
-        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
-    
-    return input.tanh()
 
 # softmax函数定义
 def softmax(x:TN, dim:int)->TN:
@@ -463,7 +430,7 @@ def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
 
 # 修改nll_loss函数，使其在non-reduction模式下与PyTorch保持一致
 # PyTorch在non-reduction模式下保留所有样本位置，只是将被忽略样本的损失值设为0
-def nll_loss(input: TN, target: TN, weight: TN = None, 
+def nll_loss(input: TN, target: TN, weight: Optional[TN] = None, 
              ignore_index: int = -100, reduction: str = 'mean') -> TN:
     if not isinstance(input, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
@@ -696,7 +663,7 @@ def smooth_l1_loss(input: TN, target: TN, size_average=None, reduce=None, reduct
     else:
         raise ValueError(f"Invalid reduction: {reduction}")
 
-def cross_entropy(input: TN, target: TN, weight: TN = None,
+def cross_entropy(input: TN, target: TN, weight: Optional[TN] = None,
                  size_average=None, ignore_index: int = -100,
                  reduce=None, reduction: str = 'mean',
                  label_smoothing: float = 0.0) -> TN:
@@ -781,10 +748,10 @@ def cross_entropy(input: TN, target: TN, weight: TN = None,
     else:
         raise ValueError(f"Invalid reduction: {reduction}")
 
-def binary_cross_entropy_with_logits(input: TN, target: TN, weight: TN = None, 
+def binary_cross_entropy_with_logits(input: TN, target: TN, weight: Optional[TN] = None, 
                                     size_average=None, reduce=None, 
                                     reduction: str = 'mean', 
-                                    pos_weight: TN = None) -> TN:
+                                    pos_weight: Optional[TN] = None) -> TN:
     """
     计算带logits的二分类交叉熵损失
     接口与torch.nn.functional.binary_cross_entropy_with_logits一致
@@ -1378,7 +1345,7 @@ def unfold3d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
     
     return unfolded_blocks, D_out, H_out, W_out
 
-def conv1d(input: TN, weight: TN, bias: TN = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
+def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
     r"""对输入张量应用1D卷积。
 
     参数:
@@ -1494,7 +1461,7 @@ def conv1d(input: TN, weight: TN, bias: TN = None, stride=1, padding=0, dilation
     
     return output
 
-def conv2d(input: TN, weight: TN, bias: TN = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
+def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
     r"""对输入张量应用2D卷积。
 
     参数:
@@ -1596,7 +1563,7 @@ def conv2d(input: TN, weight: TN, bias: TN = None, stride=1, padding=0, dilation
     
     return output
 
-def conv3d(input: TN, weight: TN, bias: TN = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
+def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
     r"""对输入张量应用3D卷积。
 
     参数:
@@ -1699,7 +1666,7 @@ def conv3d(input: TN, weight: TN, bias: TN = None, stride=1, padding=0, dilation
     
     return output
 
-def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False) -> TN:
+def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False) -> TN | tuple[TN, TN]:
     r"""对输入张量应用1D最大池化。
 
     参数:
@@ -1809,7 +1776,7 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     else:
         return output
 
-def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False) -> TN:
+def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False) -> TN | tuple[TN, TN]:
     r"""对输入张量应用2D最大池化。
 
     参数:
@@ -1902,7 +1869,7 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     else:
         return output
 
-def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False) -> TN:
+def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False) -> TN | tuple[TN, TN]:
     r"""对输入张量应用3D最大池化。
 
     参数:
@@ -2410,8 +2377,8 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
 
     return output
 
-def batch_norm(input: TN, running_mean: TN = None, running_var: TN = None, 
-              weight: TN = None, bias: TN = None, training: bool = False, 
+def batch_norm(input: TN, running_mean: Optional[TN] = None, running_var: Optional[TN] = None, 
+              weight: Optional[TN] = None, bias: Optional[TN] = None, training: bool = False, 
               momentum: float = 0.1, eps: float = 1e-5) -> TN:
     """
     对输入张量应用批量归一化。
@@ -2445,16 +2412,16 @@ def batch_norm(input: TN, running_mean: TN = None, running_var: TN = None,
     # 根据输入维度确定计算统计量的维度
     if input.ndim == 2:
         # 输入形状: (N, C)
-        dims = (0,)  # 沿着批次维度计算统计量
+        dims = (0,)  # type: ignore  # 沿着批次维度计算统计量
     elif input.ndim == 3:
         # 输入形状: (N, C, L)
-        dims = (0, 2)  # 沿着批次和序列长度维度计算统计量
+        dims = (0, 2)  # type: ignore  # 沿着批次和序列长度维度计算统计量
     elif input.ndim == 4:
         # 输入形状: (N, C, H, W)
-        dims = (0, 2, 3)  # 沿着批次、高度和宽度维度计算统计量
+        dims = (0, 2, 3)  # type: ignore  # 沿着批次、高度和宽度维度计算统计量
     else:  # input.ndim == 5
         # 输入形状: (N, C, D, H, W)
-        dims = (0, 2, 3, 4)  # 沿着批次、深度、高度和宽度维度计算统计量
+        dims = (0, 2, 3, 4)  # type: ignore  # 沿着批次、深度、高度和宽度维度计算统计量
     
     # 训练模式：使用当前批次的统计量
     if training:
@@ -2591,8 +2558,8 @@ def layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-05):
 def embedding(
     input: TN,
     weight: TN,
-    padding_idx: int = None,
-    max_norm: float = None,
+    padding_idx: Optional[int] = None,
+    max_norm: Optional[float] = None,
     norm_type: float = 2.0,
     scale_grad_by_freq: bool = False,
     sparse: bool = False,
@@ -2640,12 +2607,12 @@ def embedding(
     
     # 处理padding_idx
     if padding_idx is not None:
-        if padding_idx >= 0:
-            if padding_idx >= num_embeddings:
+        if padding_idx is not None and padding_idx >= 0:  # type: ignore
+            if padding_idx >= num_embeddings:  # type: ignore
                 raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
-        elif padding_idx < 0:
+        elif padding_idx is not None and padding_idx < 0:  # type: ignore
             padding_idx = num_embeddings + padding_idx
-            if padding_idx < 0:
+            if padding_idx < 0:  # type: ignore
                 raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
     
     weight_data = weight.data
@@ -2655,14 +2622,14 @@ def embedding(
         # 使用张量操作计算每个嵌入向量的范数，保持维度
         norms = np.linalg.norm(weight.data, ord=norm_type, axis=1, keepdims=True)
         # 创建掩码，找出范数超过max_norm的嵌入向量
-        mask = norms > max_norm
+        mask = norms > max_norm  # type: ignore
         
         # 如果有需要重归一化的嵌入向量
-        if mask.any():
-            # 计算重归一化后的嵌入向量
-            normalized = weight.data / norms * max_norm
-            # 使用where操作更新权重
-            weight_data = np.where(mask, normalized, weight.data)
+        mask = norms > max_norm  # type: ignore
+        # 计算重归一化后的嵌入向量
+        normalized = weight.data / norms * max_norm
+        # 使用where操作更新权重
+        weight_data = np.where(mask, normalized, weight.data)
     
     # PyTorch不会自动将padding_idx的权重设为0，只是不计算其梯度
     # 因此这里不做额外处理，保持与PyTorch行为一致
@@ -2672,7 +2639,7 @@ def embedding(
     if scale_grad_by_freq:
         # 统计每个索引出现的频率
         input_flat = input.flatten()
-        unique_indices, counts = unique(input_flat, return_counts=True)
+        unique_indices, counts = unique(input_flat, return_counts=True)  # type: ignore
         
         # 创建频率数组
         freq = ones(num_embeddings)
@@ -2747,8 +2714,8 @@ def embedding(
 def embedding2(
     input: TN,
     weight: TN,
-    padding_idx: int = None,
-    max_norm: float = None,
+    padding_idx: Optional[int] = None,
+    max_norm: Optional[float] = None,
     norm_type: float = 2,
     scale_grad_by_freq: bool = False,
     sparse: bool = False,
@@ -2818,21 +2785,21 @@ def embedding2(
     
     # 处理padding_idx
     if padding_idx is not None:
-        if padding_idx >= 0:
-            if padding_idx >= num_embeddings:
+        if padding_idx is not None and padding_idx >= 0:  # type: ignore
+            if padding_idx >= num_embeddings:  # type: ignore
                 raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
-        elif padding_idx < 0:
+        elif padding_idx is not None and padding_idx < 0:  # type: ignore
             padding_idx = num_embeddings + padding_idx
-            if padding_idx < 0:
+            if padding_idx < 0:  # type: ignore
                 raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
     
     # 处理max_norm
     if max_norm is not None:
         # 使用张量操作计算每个嵌入向量的范数
         # 计算Lp范数，axis=1表示按行计算，keepdims=True保持维度
-        norms = weight.norm(p=norm_type, dim=1, keepdim=True)
+        norms = weight.norm(norm_type, dim=1, keepdim=True)
         # 创建掩码，找出范数超过max_norm的嵌入向量
-        mask = norms > max_norm
+        mask = norms > max_norm  # type: ignore
         
         # 如果有需要重归一化的嵌入向量
         if mask.any():

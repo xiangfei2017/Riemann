@@ -82,9 +82,9 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     # 处理输入为单个张量或张量列表的情况
     is_single_input = not isinstance(inputs, (list, tuple))
     if is_single_input:
-        inputs = [inputs]
+        inputs = [inputs]  # type: ignore
     else:
-        inputs = list(inputs)
+        inputs = list(inputs)  # type: ignore
     
     # 验证输入是否为张量
     for i, inp in enumerate(inputs):
@@ -101,9 +101,9 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     # 处理输出为单个张量的情况
     is_single_output = not isinstance(outputs, (list, tuple))
     if is_single_output:
-        outputs = [outputs]
+        outputs = [outputs]  # type: ignore
     else:
-        outputs = list(outputs)
+        outputs = list(outputs)  # type: ignore
     
     # 确保输出是张量
     for i, out in enumerate(outputs):
@@ -119,7 +119,7 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     total_input_elements = builtins.sum(int(np.prod(shape)) for shape in input_shapes)
     
     # 创建结果存储
-    jacobian_results = []
+    jacobian_results: List[TN] = []
     
     # 对每个输出计算梯度
     current_output_idx = 0
@@ -176,7 +176,7 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         else:
             # 3. 多输入单输出：返回与输入结构匹配的元组
             input_sizes = [int(np.prod(shape)) for shape in input_shapes]
-            result_list = []
+            result_list: List[TN] = []
             start_idx = 0
             for size, shape in zip(input_sizes, input_shapes):
                 # 提取每个输入对应的雅可比矩阵部分
@@ -195,11 +195,11 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
             return tuple(jacobian_results)
         else:
             # 4. 多输入多输出：对于每个输出，返回与输入结构匹配的元组
-            result_list = []
+            result_list: List[Tuple[TN, ...]] = []  # type: ignore
             input_sizes = [int(np.prod(shape)) for shape in input_shapes]
             
             for jac, output_shape in zip(jacobian_results, output_shapes):
-                output_result_list = []
+                output_result_list: List[TN] = []
                 start_idx = 0
                 for size, inp_shape in zip(input_sizes, input_shapes):
                     # 提取每个输入对应的雅可比矩阵部分
@@ -210,7 +210,7 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                     sliced_jac = sliced_jac.reshape(result_shape)
                     output_result_list.append(sliced_jac)
                     start_idx += size
-                result_list.append(tuple(output_result_list))
+                result_list.append(tuple(output_result_list))  # type: ignore
             return tuple(result_list)
 # end of jacobian
 
@@ -237,7 +237,7 @@ def derivative(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         >>> df(x)  # 应返回 tensor([4.0])
     """
     
-    def _derivative(*inputs):
+    def _derivative(*inputs: Any) -> TN | List[TN] | Tuple[TN, ...]:
         # 调用jacobian计算导数
         jac = jacobian(func, inputs, create_graph=create_graph)
         
@@ -252,6 +252,8 @@ def derivative(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                 isinstance(item, TN) and len(item.shape) == 0 for item in sample_output
             ):
                 is_scalar_tensor_output = True
+            else:
+                is_scalar_tensor_output = False
             
             # 对于标量输出，需要特殊处理结果形状
             if is_scalar_tensor_output:
@@ -259,9 +261,9 @@ def derivative(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                 if len(inputs) == 1 and not isinstance(sample_output, (list, tuple)):
                     # 对于标量输出，jacobian返回形状为 (1,) + input_shape 的张量
                     # 我们需要去除第一个维度
-                    if jac.ndim > inputs[0].ndim:
+                    if isinstance(jac, TN) and jac.ndim > inputs[0].ndim:
                         return jac.squeeze(0)
-                    return jac
+                    return jac  # type: ignore
                 # 多输入或多输出标量情况
                 # 保持jacobian的结果结构，但可能需要调整形状
                 return jac
@@ -300,9 +302,9 @@ def hessian(func: Callable[..., TN],
     # 处理输入为单个张量或张量列表的情况
     is_single_input = not isinstance(inputs, (list, tuple))
     if is_single_input:
-        inputs = [inputs]
+        inputs = [inputs]  # type: ignore
     else:
-        inputs = list(inputs)
+        inputs = list(inputs)  # type: ignore
     
     # 验证输入是否张量
     for i, inp in enumerate(inputs):
@@ -310,15 +312,15 @@ def hessian(func: Callable[..., TN],
             raise RuntimeError(f"Input {i} must be a tensor")
         
     # 定义一个辅助函数，用于计算梯度
-    def gradient_fn(*args):
+    def gradient_fn(*args: TN) -> Tuple[TN, ...]:
         # 计算函数值
         output = func(*args)
         # 确保输出是标量
         if output.data.ndim > 0:
             raise RuntimeError("Hessian only supports scalar-valued functions")
         # 计算梯度
-        grads = grad(output, args, create_graph=True, allow_unused = not strict)  # 传递allow_unused参数
-        return grads
+        grads = grad(output, args, create_graph=True, allow_unused = not strict)  # type: ignore
+        return tuple(g if g is not None else tensor(0.0) for g in grads)
     
     # 计算Hessian矩阵，即梯度的雅可比矩阵 - 传递strict参数
     hessian_results = jacobian(gradient_fn, inputs, create_graph=create_graph, strict=strict)
@@ -330,10 +332,10 @@ def hessian(func: Callable[..., TN],
         if isinstance(hessian_results, (list, tuple)):
             if len(hessian_results) == 1 and isinstance(hessian_results[0], (list, tuple)):
                 # 对于形如 ((tensor,),) 的结果
-                hessian_tensor = hessian_results[0][0]
+                hessian_tensor = hessian_results[0][0]  # type: ignore
             else:
                 # 对于其他嵌套情况
-                hessian_tensor = hessian_results[0]
+                hessian_tensor = hessian_results[0]  # type: ignore
         else:
             hessian_tensor = hessian_results
         
@@ -362,18 +364,18 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     # 处理输入为单个张量或张量列表的情况
     is_single_input = not isinstance(inputs, (list, tuple))
     if is_single_input:
-        inputs = [inputs]
+        inputs = [inputs]  # type: ignore
         # 如果v为None且只有单个输入，设置v为包含1的张量
         if v is None:
             v = [tensor(1.0, dtype=inputs[0].dtype, requires_grad=create_graph)]
         else:
-            v = [v]
+            v = [v]  # type: ignore
     else:
-        inputs = list(inputs)
+        inputs = list(inputs)  # type: ignore
         # 如果v为None但有多个输入，抛出错误
         if v is None:
             raise RuntimeError("v must be provided when func has multiple inputs")
-        v = list(v)
+        v = list(v)  # type: ignore
     
     # 验证输入张量和v的形状匹配
     for i, (inp, vec) in enumerate(zip(inputs, v)):
@@ -396,7 +398,7 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     if is_single_output:
         outputs_processed = [outputs]
     else:
-        outputs_processed = list(outputs)
+        outputs_processed = list(outputs)  # type: ignore
     
     # 确保输出是张量
     for i, out in enumerate(outputs_processed):
@@ -404,16 +406,16 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
             raise RuntimeError(f"Output {i} must be a tensor")
     
     # 计算JVP结果，对每个输出单独计算JVP
-    jvp_results = []
+    jvp_results: List[TN] = []
     
     for out in outputs_processed:
         # 对于标量输出，使用点积计算JVP
-        if out.ndim == 0:
+        if out.ndim == 0:  # type: ignore
             # 优化：直接使用向量点积公式，避免中间变量累积误差
-            total_jvp = 0.0
+            total_jvp: TN = tensor(0.0, dtype=out.dtype, requires_grad=create_graph)  # type: ignore
             for i, (inp, vec) in enumerate(zip(inputs, v)):
                 # 计算标量输出相对于输入的梯度
-                grads = grad(out, inp, create_graph=create_graph, allow_unused=True)[0]
+                grads = grad(out, inp, create_graph=create_graph, allow_unused=True)[0]  # type: ignore
                 
                 if strict and grads is None:
                     raise RuntimeError(f"At least one of the outputs is independent of input {i}")
@@ -421,7 +423,7 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                 if grads is not None:
                     # 对于标量输出，正确的JVP计算是梯度与v向量的点积
                     # 使用更精确的方式计算点积，避免中间张量创建
-                    dot_product = tensor(np.sum(grads.data * vec.data), dtype=out.dtype, requires_grad=create_graph)
+                    dot_product = tensor(np.sum(grads.data * vec.data), dtype=out.dtype, requires_grad=create_graph)  # type: ignore
                     if create_graph:
                         # 如果需要创建计算图，使用PyTorch风格的点积计算
                         dot_product = (grads * vec).sum()
@@ -430,8 +432,8 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         else:
             # 对于非标量输出，采用更精确的方法计算JVP
             # 对于每个输入，计算其对输出的贡献并累加
-            jvp_val = tensor(0.0, dtype=out.dtype, requires_grad=create_graph)
-            jvp_val = jvp_val.expand(out.shape).clone()  # 扩展到输出形状
+            jvp_val = tensor(0.0, dtype=out.dtype, requires_grad=create_graph)  # type: ignore
+            jvp_val = jvp_val.expand(out.shape).clone()  # type: ignore
             
             # 对每个输入分别计算其对输出的贡献
             for i, (inp, vec) in enumerate(zip(inputs, v)):
@@ -439,19 +441,19 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                 # 使用更精确的方式：直接计算雅可比矩阵与向量的乘积
                 if create_graph:
                     # 创建一个与输出形状相同的零张量用于累加贡献
-                    input_contribution = tensor(0.0, dtype=out.dtype, requires_grad=True)
-                    input_contribution = input_contribution.expand(out.shape).clone()
+                    input_contribution = tensor(0.0, dtype=out.dtype, requires_grad=True)  # type: ignore
+                    input_contribution = input_contribution.expand(out.shape).clone()  # type: ignore
                     
                     # 对于每个输出元素，计算该输入对其的贡献
-                    for j in range(out.data.size):
+                    for j in range(out.data.size):  # type: ignore
                         # 创建one-hot向量作为grad_outputs
-                        grad_output_data = np.zeros_like(out.data)
-                        flat_idx = np.unravel_index(j, out.shape)
+                        grad_output_data = np.zeros_like(out.data)  # type: ignore
+                        flat_idx = np.unravel_index(j, out.shape)  # type: ignore
                         grad_output_data[flat_idx] = 1.0
-                        grad_output = tensor(grad_output_data, dtype=out.dtype)
+                        grad_output = tensor(grad_output_data, dtype=out.dtype)  # type: ignore
                         
                         # 计算梯度
-                        grads = grad(out, inp, grad_outputs=grad_output, create_graph=create_graph, allow_unused=True)[0]
+                        grads = grad(out, inp, grad_outputs=grad_output, create_graph=create_graph, allow_unused=True)[0]  # type: ignore
                         
                         if strict and grads is None:
                             raise RuntimeError(f"At least one of the outputs is independent of input {i}")
@@ -461,23 +463,23 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                             contribution = (grads * vec).sum()
                             
                             # 创建掩码并更新贡献张量
-                            mask = zeros_like(out)
+                            mask = zeros_like(out)  # type: ignore
                             mask.data[flat_idx] = 1.0
                             input_contribution = input_contribution * (1.0 - mask) + contribution * mask
                 else:
                     # 不创建计算图时的优化版本
-                    input_contribution = zeros_like(out)
+                    input_contribution = zeros_like(out)  # type: ignore
                     
                     # 对于每个输出元素，计算该输入对其的贡献
-                    for j in range(out.data.size):
+                    for j in range(out.data.size):  # type: ignore
                         # 创建one-hot向量作为grad_outputs
-                        grad_output_data = np.zeros_like(out.data)
-                        flat_idx = np.unravel_index(j, out.shape)
+                        grad_output_data = np.zeros_like(out.data)  # type: ignore
+                        flat_idx = np.unravel_index(j, out.shape)  # type: ignore
                         grad_output_data[flat_idx] = 1.0
-                        grad_output = tensor(grad_output_data, dtype=out.dtype)
+                        grad_output = tensor(grad_output_data, dtype=out.dtype)  # type: ignore
                         
                         # 计算梯度
-                        grads = grad(out, inp, grad_outputs=grad_output, create_graph=False, allow_unused=True)[0]
+                        grads = grad(out, inp, grad_outputs=grad_output, create_graph=False, allow_unused=True)[0]  # type: ignore
                         
                         if strict and grads is None:
                             raise RuntimeError(f"At least one of the outputs is independent of input {i}")
@@ -498,11 +500,11 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
 
     # 恢复原始的输出格式
     if is_single_output:
-        original_outputs = outputs
+        original_outputs = outputs  # type: ignore
         original_jvp = jvp_results[0]
     else:
-        original_outputs = tuple(outputs)
-        original_jvp = tuple(jvp_results)
+        original_outputs = tuple(outputs)  # type: ignore
+        original_jvp = tuple(jvp_results)  # type: ignore
     
     return original_outputs, original_jvp
 
@@ -538,9 +540,9 @@ def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     # 处理输入为单个张量或张量列表的情况
     is_single_input = not isinstance(inputs, (list, tuple))
     if is_single_input:
-        inputs = [inputs]
+        inputs = [inputs]  # type: ignore
     else:
-        inputs = list(inputs)
+        inputs = list(inputs)  # type: ignore
     
     # 验证输入张量
     for i, inp in enumerate(inputs):
@@ -559,7 +561,7 @@ def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     if is_single_output:
         outputs_processed = [outputs]
     else:
-        outputs_processed = list(outputs)
+        outputs_processed = list(outputs)  # type: ignore
     
     # 确保输出是张量
     for i, out in enumerate(outputs_processed):
@@ -569,9 +571,9 @@ def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     # 处理v参数
     if v is None:
         # 检查是否只有单个输出元素
-        if is_single_output and outputs_processed[0].ndim == 0:
-            # 输出是标量，创建值为1的张量
-            v = [tensor(1.0, dtype=outputs_processed[0].dtype, requires_grad=create_graph)]
+        if is_single_output and outputs_processed[0].ndim == 0:  # type: ignore
+            # 输出是标量，创建值为1的Tensor
+            v = [tensor(1.0, dtype=outputs_processed[0].dtype, requires_grad=create_graph)]  # type: ignore
         else:
             raise RuntimeError("v must be provided when the output of func does not contain a single element")
     else:
@@ -580,9 +582,9 @@ def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         if is_single_v:
             if len(outputs_processed) != 1:
                 raise RuntimeError(f"Expected a list of vs with length {len(outputs_processed)}, got a single v")
-            v = [v]
+            v = [v]  # type: ignore
         else:
-            v = list(v)
+            v = list(v)  # type: ignore
         
         # 验证v的数量与输出数量匹配
         if len(v) != len(outputs_processed):
@@ -592,16 +594,15 @@ def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         for i, (out, vec) in enumerate(zip(outputs_processed, v)):
             if not isinstance(vec, TN):
                 raise RuntimeError(f"v[{i}] must be a tensor")
-            if out.shape != vec.shape:
-                raise RuntimeError(f"Shapes of output {i} and v[{i}] do not match: {out.shape} vs {vec.shape}")
+            if out.shape != vec.shape:  # type: ignore
+                raise RuntimeError(f"Shapes of output {i} and v[{i}] do not match: {out.shape} vs {vec.shape}")  # type: ignore
     
     # 计算VJP，对每个输出单独计算梯度然后相加
-    # vjp_results = [tensor(0.0, dtype=inp.dtype, requires_grad=create_graph) for inp in inputs]
     vjp_results = [zeros_like(inp, requires_grad=create_graph) for inp in inputs]
 
     for i, (out, vec) in enumerate(zip(outputs_processed, v)):
         # 对每个输出使用对应的v计算梯度
-        grads = grad(out, inputs, grad_outputs=vec, create_graph=create_graph, allow_unused=True)
+        grads = grad(out, inputs, grad_outputs=vec, create_graph=create_graph, allow_unused=True)  # type: ignore
         
         # 处理strict模式
         if strict:
@@ -623,19 +624,19 @@ def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     if is_single_input:
         vjp_result = vjp_results[0]
     else:
-        vjp_result = tuple(vjp_results)
+        vjp_result = tuple(vjp_results)  # type: ignore
     
     # 恢复原始的输出格式
     if is_single_output:
-        func_output = outputs
+        func_output = outputs  # type: ignore
     else:
-        func_output = tuple(outputs)
+        func_output = tuple(outputs)  # type: ignore
     
     return func_output, vjp_result
 
 
 # 添加在vjp函数后
-def _compute_hessian_vector_product(func, inputs, v, create_graph=False, strict=False):
+def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | List[TN] | Tuple[TN, ...], v: TN | List[TN] | Tuple[TN, ...], create_graph: bool = False, strict: bool = False) -> Tuple[TN, TN | List[TN] | Tuple[TN, ...]]:
     """
     计算Hessian-vector乘积 (hvp) 或 vector-Hessian乘积 (vhp) 的核心函数。
     
@@ -656,11 +657,11 @@ def _compute_hessian_vector_product(func, inputs, v, create_graph=False, strict=
     # 处理输入为单个张量或张量列表的情况
     is_single_input = not isinstance(inputs, (list, tuple))
     if is_single_input:
-        inputs = [inputs]
-        v = [v]
+        inputs = [inputs]  # type: ignore
+        v = [v]  # type: ignore
     else:
-        inputs = list(inputs)
-        v = list(v)
+        inputs = list(inputs)  # type: ignore
+        v = list(v)  # type: ignore
     
     # 验证输入和v的类型与形状
     for i, (inp, vec) in enumerate(zip(inputs, v)):
@@ -690,7 +691,7 @@ def _compute_hessian_vector_product(func, inputs, v, create_graph=False, strict=
                 raise RuntimeError(f"Output is independent of input {i}")
     
     # 计算内积
-    dot_product = 0.0
+    dot_product: TN = tensor(0.0, dtype=func_output.dtype, requires_grad=True)
     for grad_out, vec in zip(grads, v):
         if grad_out is not None:
             dot_product = dot_product + (grad_out * vec).sum()
@@ -704,14 +705,14 @@ def _compute_hessian_vector_product(func, inputs, v, create_graph=False, strict=
 
     # 恢复原始格式
     if is_single_input:
-        hessian_vec_product = hessian_vec_product[0]
+        hessian_vec_product = hessian_vec_product[0]  # type: ignore
     else:
         hessian_vec_product = tuple(hessian_vec_product)
     
     # 返回函数值和HVP/VHP结果的元组，与PyTorch行为一致
     return func_output, hessian_vec_product
 
-def hvp(func, inputs, v, create_graph=False, strict=False):
+def hvp(func: Callable[..., TN], inputs: TN | List[TN] | Tuple[TN, ...], v: TN | List[TN] | Tuple[TN, ...], create_graph: bool = False, strict: bool = False) -> Tuple[TN, TN | List[TN] | Tuple[TN, ...]]:
     """
     计算Hessian-vector product (HVP): H @ v
     
@@ -734,7 +735,7 @@ def hvp(func, inputs, v, create_graph=False, strict=False):
     # 直接调用核心函数计算
     return _compute_hessian_vector_product(func, inputs, v, create_graph, strict)
 
-def vhp(func, inputs, v, create_graph=False, strict=False):
+def vhp(func: Callable[..., TN], inputs: TN | List[TN] | Tuple[TN, ...], v: TN | List[TN] | Tuple[TN, ...], create_graph: bool = False, strict: bool = False) -> Tuple[TN, TN | List[TN] | Tuple[TN, ...]]:
     """
     计算vector-Hessian product (VHP): v @ H
     

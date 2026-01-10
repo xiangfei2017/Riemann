@@ -77,6 +77,27 @@ import math
 from typing import Callable, List, Tuple, Union, Optional, Any
 import numpy as np
 from PIL import Image, ImageOps, ImageEnhance
+
+# 处理PIL库版本兼容性问题
+try:
+    # 对于较新版本的PIL (Pillow >= 10.0)
+    from PIL.Image import Resampling as PilResampling
+    BILINEAR = PilResampling.BILINEAR
+    NEAREST = PilResampling.NEAREST
+    LANCZOS = PilResampling.LANCZOS
+    BICUBIC = PilResampling.BICUBIC
+except ImportError:
+    # 对于旧版本的PIL
+    PilResampling = None  # type: ignore
+    BILINEAR = Image.BILINEAR  # type: ignore
+    NEAREST = Image.NEAREST  # type: ignore
+    LANCZOS = Image.LANCZOS  # type: ignore
+    BICUBIC = Image.BICUBIC  # type: ignore
+
+# 定义其他常用常量
+FLIP_LEFT_RIGHT = Image.FLIP_LEFT_RIGHT  # type: ignore
+FLIP_TOP_BOTTOM = Image.FLIP_TOP_BOTTOM  # type: ignore
+
 from ..tensordef import TN, tensor
 from ..dtype import get_default_dtype
 
@@ -266,33 +287,32 @@ class Normalize(Transform):
         self.std = std
         self.inplace = inplace
     
-    def __call__(self, tensor: TN) -> TN:
+    def __call__(self, tensor_obj: TN) -> TN:
         """
         Args:
-            tensor (TN): 要标准化的张量，形状为(C x H x W)
+            tensor_obj (TN): 要标准化的张量，形状为(C x H x W)
             
         Returns:
             TN: 标准化后的张量
         """
-        if not isinstance(tensor, TN):
+        if not isinstance(tensor_obj, TN):
             raise TypeError(f'Input should be a TN tensor, got {type(tensor)}')
         
-        if tensor.ndim != 3:
-            raise ValueError(f'Expected tensor to be 3D, got {tensor.ndim}D')
+        if tensor_obj.ndim != 3:
+            raise ValueError(f'Expected tensor to be 3D, got {tensor_obj.ndim}D')
         
-        if len(self.mean) != tensor.shape[0] or len(self.std) != tensor.shape[0]:
-            raise ValueError(f'Expected mean and std to have {tensor.shape[0]} elements, '
+        if len(self.mean) != tensor_obj.shape[0] or len(self.std) != tensor_obj.shape[0]:
+            raise ValueError(f'Expected mean and std to have {tensor_obj.shape[0]} elements, '
                            f'but got {len(self.mean)} and {len(self.std)}')
         
         if self.inplace:
             for i, (m, s) in enumerate(zip(self.mean, self.std)):
-                tensor.data[i] = (tensor.data[i] - m) / s
-            return tensor
+                tensor_obj.data[i] = (tensor_obj.data[i] - m) / s
+            return tensor_obj
         else:
             result = []
             for i, (m, s) in enumerate(zip(self.mean, self.std)):
-                result.append((tensor.data[i] - m) / s)
-            from ..tensordef import tensor
+                result.append((tensor_obj.data[i] - m) / s)
             return tensor(np.stack(result, axis=0))
     
     def __repr__(self) -> str:
@@ -305,7 +325,7 @@ class Resize(Transform):
     Args:
         size (int or tuple): 目标大小。如果是int，则较小边会被调整为该大小，
                            保持宽高比。如果是(h, w)，则直接调整为该大小。
-        interpolation (int, optional): 插值方法。默认值：PIL.Image.BILINEAR
+        interpolation (int, optional): 插值方法。默认值：BILINEAR
         
     Example:
         >>> transforms.Resize(256)  # 较小边调整为256
@@ -313,11 +333,8 @@ class Resize(Transform):
     """
     
     def __init__(self, size: Union[int, Tuple[int, int]], 
-                 interpolation: int = Image.BILINEAR) -> None:
-        if isinstance(size, int):
-            self.size = size
-        else:
-            self.size = size
+                 interpolation: int = BILINEAR) -> None:
+        self.size = size
         self.interpolation = interpolation
     
     def __call__(self, img: Image.Image) -> Image.Image:
@@ -422,7 +439,7 @@ class RandomHorizontalFlip(Transform):
             raise TypeError(f'Expected PIL.Image, got {type(img)}')
         
         if random.random() < self.p:
-            return img.transpose(Image.FLIP_LEFT_RIGHT)
+            return img.transpose(FLIP_LEFT_RIGHT)
         return img
     
     def __repr__(self) -> str:
@@ -453,7 +470,7 @@ class RandomVerticalFlip(Transform):
             raise TypeError(f'Expected PIL.Image, got {type(img)}')
         
         if random.random() < self.p:
-            return img.transpose(Image.FLIP_TOP_BOTTOM)
+            return img.transpose(FLIP_TOP_BOTTOM)
         return img
     
     def __repr__(self) -> str:
@@ -468,7 +485,7 @@ class RandomRotation(Transform):
     Args:
         degrees (int or tuple): 旋转角度范围。如果是int，则在(-degrees, degrees)范围内选择。
                                如果是(min, max)，则在(min, max)范围内选择。
-        resample (int, optional): 重采样方法。默认值：PIL.Image.NEAREST
+        resample (int, optional): 重采样方法。默认值：NEAREST
         expand (bool, optional): 是否扩展图像以适应旋转。默认值：False
         center (tuple, optional): 旋转中心。默认值：图像中心
         
@@ -478,7 +495,7 @@ class RandomRotation(Transform):
     """
     
     def __init__(self, degrees: Union[int, Tuple[int, int]], 
-                 resample: int = Image.NEAREST, expand: bool = False, 
+                 resample: int = NEAREST, expand: bool = False, 
                  center: Optional[Tuple[float, float]] = None) -> None:
         if isinstance(degrees, int):
             self.degrees = (-degrees, degrees)
@@ -500,7 +517,7 @@ class RandomRotation(Transform):
             raise TypeError(f'Expected PIL.Image, got {type(img)}')
         
         angle = random.uniform(self.degrees[0], self.degrees[1])
-        return img.rotate(angle, self.resample, self.expand, self.center)
+        return img.rotate(angle, self.resample, self.expand, self.center)  # type: ignore
     
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(degrees={self.degrees})'
@@ -539,14 +556,15 @@ class ColorJitter(Transform):
         if isinstance(value, (float, int)):
             if value < 0:
                 raise ValueError(f"If {name} is a single number, it must be non negative.")
-            value = [center - value, center + value]
+            value_tuple = (center - value, center + value)
         elif isinstance(value, tuple) and len(value) == 2:
             if not bound[0] <= value[0] <= value[1] <= bound[1]:
                 raise ValueError(f"{name} values should be between {bound}")
+            value_tuple = value
         else:
             raise TypeError(f"{name} should be a single number or a tuple/list of length 2.")
         
-        return value
+        return value_tuple
     
     def __call__(self, img: Image.Image) -> Image.Image:
         """
@@ -743,7 +761,7 @@ class RandomResizedCrop(Transform):
                            如果是(h, w)，则调整为该大小。
         scale (tuple, optional): 裁剪面积相对于原图的比例范围。默认值：(0.08, 1.0)
         ratio (tuple, optional): 裁剪的宽高比范围。默认值：(3/4, 4/3)
-        interpolation (int, optional): 插值方法。默认值：PIL.Image.BILINEAR
+        interpolation (int, optional): 插值方法。默认值：BILINEAR
         
     Example:
         >>> transforms.RandomResizedCrop(224)  # 随机裁剪并调整为224x224
@@ -752,7 +770,7 @@ class RandomResizedCrop(Transform):
     def __init__(self, size: Union[int, Tuple[int, int]], 
                  scale: Tuple[float, float] = (0.08, 1.0),
                  ratio: Tuple[float, float] = (3. / 4., 4. / 3.),
-                 interpolation: int = Image.BILINEAR) -> None:
+                 interpolation: int = BILINEAR) -> None:
         if isinstance(size, int):
             self.size = (size, size)
         else:
@@ -890,13 +908,13 @@ class TenCrop(Transform):
         five_crops = FiveCrop(self.size)(img)
         
         # 获取水平翻转版本
-        h_flipped_crops = tuple(crop.transpose(Image.FLIP_LEFT_RIGHT) for crop in five_crops)
+        h_flipped_crops = tuple(crop.transpose(FLIP_LEFT_RIGHT) for crop in five_crops)
         
         if self.vertical_flip:
             # 获取垂直翻转版本
-            v_flipped_crops = tuple(crop.transpose(Image.FLIP_TOP_BOTTOM) for crop in five_crops)
+            v_flipped_crops = tuple(crop.transpose(FLIP_TOP_BOTTOM) for crop in five_crops)
             # 获取水平垂直翻转版本
-            hv_flipped_crops = tuple(crop.transpose(Image.FLIP_LEFT_RIGHT).transpose(Image.FLIP_TOP_BOTTOM) 
+            hv_flipped_crops = tuple(crop.transpose(FLIP_LEFT_RIGHT).transpose(FLIP_TOP_BOTTOM) 
                                     for crop in five_crops)
             return five_crops + h_flipped_crops + v_flipped_crops + hv_flipped_crops
         else:

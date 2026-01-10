@@ -69,7 +69,7 @@ and decompositions.
 """
 
 import numpy as np
-import scipy
+import scipy  # type: ignore
 from .tensordef import *
 import builtins
 
@@ -161,9 +161,9 @@ def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtyp
     if dim == ():
         dim = None
     
-    # 预先验证一些无效的ord值
-    valid_ords = [None, 0, 1, 2, -1, -2, float('inf'), float('-inf'), 'fro', 'nuc']
-    if ord not in valid_ords and not isinstance(ord, (int, float)):
+    # 预先验证一些无效的p值
+    valid_ps = [None, 0, 1, 2, -1, -2, float('inf'), float('-inf'), 'fro', 'nuc']
+    if ord not in valid_ps and not isinstance(ord, (int, float)):
         raise ValueError(f"Unsupported norm type: ord={ord}")
     
     # 扁平化范数情况
@@ -174,7 +174,7 @@ def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtyp
             squared_A = abs_A * abs_A
             ret = sqrt(sum(squared_A))
         else:
-            # dim=None且ord!=None的情况
+            # dim=None且p!=None的情况
             if A.ndim > 2:
                 raise ValueError("When dim=None and ord!=None, input must be 1D or 2D tensor")
             
@@ -205,7 +205,7 @@ def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtyp
             if len(dim) != 2:
                 raise ValueError(f"dim must be a tuple of length 2, got {len(dim)}")
             
-            # 对于两个维度的情况，根据ord值决定是矩阵范数还是多轴范数
+            # 对于两个维度的情况，根据p值决定是矩阵范数还是多轴范数
             # 关键修复：在高维张量上，即使是矩阵范数类型，也应该根据张量维度决定调用哪个函数
             if ord in ['fro', 'nuc']:
                 # 特殊矩阵范数类型始终调用矩阵范数函数
@@ -214,7 +214,7 @@ def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtyp
                 # 2D张量始终调用矩阵范数函数
                 ret = _compute_matrix_norm(A, ord, dim, keepdim)
             else:
-                # 高维张量上，ord为1, -1, inf, -inf时也应该调用矩阵范数函数
+                # 高维张量上，p为1, -1, inf, -inf时也应该调用矩阵范数函数
                 # 这是与PyTorch行为一致的关键
                 if ord in [1, -1, float('inf'), float('-inf')]:
                     ret = _compute_matrix_norm(A, ord, dim, keepdim)
@@ -251,17 +251,17 @@ def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtyp
     return ret
 
 
-def _vector_norm(A, ord):
+def _vector_norm(A, p):
     """计算1D向量的范数（内部函数）"""
     # 检查是否是全零向量
     is_all_zero = all(abs(A) < tensor(np.finfo(float).eps, requires_grad=False))
     if is_all_zero:
         # 对于全零向量，负阶范数返回0，与PyTorch行为一致
-        if ord in [-1, -2]:
+        if p in [-1, -2]:
             return tensor(0.0, requires_grad=False)
         # 其他范数正常处理
     
-    if ord == 0:
+    if p == 0:
         # L0范数: 非零元素的个数
         epsilon = tensor(np.finfo(float).eps, requires_grad=False)
         abs_A = abs(A)
@@ -270,79 +270,79 @@ def _vector_norm(A, ord):
         zeros = tensor(0.0, requires_grad=False)
         mask_float = where(mask, ones, zeros)
         return sum(mask_float)
-    elif ord == 1:
+    elif p == 1:
         return sum(abs(A))
-    elif ord == 2 or ord is None:
+    elif p == 2 or p is None:
         abs_A = abs(A)
         squared_A = abs_A * abs_A
         return sqrt(sum(squared_A))
-    elif ord == float('inf'):
+    elif p == float('inf'):
         abs_A = abs(A)
         max_result = max(abs_A)
         return max_result.values if hasattr(max_result, 'values') else max_result
-    elif ord == float('-inf'):
+    elif p == float('-inf'):
         abs_A = abs(A)
         min_result = min(abs_A)
         return min_result.values if hasattr(min_result, 'values') else min_result
-    elif isinstance(ord, (int, float)) and ord > 0:
+    elif isinstance(p, (int, float)) and p > 0:
         abs_A = abs(A)
-        float_ord = get_default_dtype().type(ord)
-        value = abs_A ** float_ord
-        return sum(value) ** (1.0/float_ord)
-    elif ord == -1:
+        float_p = get_default_dtype().type(p)
+        value = abs_A ** float_p
+        return sum(value) ** (1.0/float_p)
+    elif p == -1:
         abs_A = abs(A)
         # 避免除以零
         epsilon = tensor(np.finfo(float).eps, requires_grad=False)
         safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
         # L-1范数: (sum(|x_i|^(-1)))^(-1)
-        value = 1.0 / safe_abs_A  # ord=-1, 相当于1/|x_i|
-        return 1.0 / sum(value)   # 1/ord=-1
-    elif ord == -2:
+        value = 1.0 / safe_abs_A  # p=-1, 相当于1/|x_i|
+        return 1.0 / sum(value)   # 1/p=-1
+    elif p == -2:
         abs_A = abs(A)
         # 避免除以零
         epsilon = tensor(np.finfo(float).eps, requires_grad=False)
         safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
         # L-2范数: (sum(|x_i|^(-2)))^(-1/2)
-        value = safe_abs_A ** (-2.0)  # ord=-2, 相当于1/(|x_i|^2)
-        return sum(value) ** (-0.5)  # 1/ord=-1/2
+        value = safe_abs_A ** (-2.0)  # p=-2, 相当于1/(|x_i|^2)
+        return sum(value) ** (-0.5)  # 1/p=-1/2
     else:
-        raise ValueError(f"vector norm does not support ord value: {ord}")
+        raise ValueError(f"vector norm does not support p value: {p}")
 
 
-def _matrix_norm(A, ord):
+def _matrix_norm(A, p):
     """计算2D矩阵的范数（内部函数）"""
-    if ord == 'fro' or (ord is None):
+    if p == 'fro' or (p is None):
         abs_A = abs(A)
         squared_A = abs_A * abs_A
         return sqrt(sum(squared_A))
-    elif ord == 'nuc':
+    elif p == 'nuc':
         _, S, _ = svd(A, full_matrices=False)
         return sum(S)
-    elif ord == float('inf'):
+    elif p == float('inf'):
         abs_A = abs(A)
         sum_abs = sum(abs_A, dim=1)
         max_result = max(sum_abs)
         return max_result.values if hasattr(max_result, 'values') else max_result
-    elif ord == float('-inf'):
+    elif p == float('-inf'):
         abs_A = abs(A)
         sum_abs = sum(abs_A, dim=1)
         min_result = min(sum_abs)
         return min_result.values if hasattr(min_result, 'values') else min_result
-    elif ord == 1:
+    elif p == 1:
         abs_A = abs(A)
         sum_abs = sum(abs_A, dim=0)
         max_result = max(sum_abs)
         return max_result.values if hasattr(max_result, 'values') else max_result
-    elif ord == -1:
+    elif p == -1:
         abs_A = abs(A)
         sum_abs = sum(abs_A, dim=0)
         min_result = min(sum_abs)
         return min_result.values if hasattr(min_result, 'values') else min_result
-    elif ord == 2:
+    elif p == 2:
         _, S, _ = svd(A, full_matrices=False)
         max_result = max(S)
         return max_result.values if hasattr(max_result, 'values') else max_result
-    elif ord == -2:
+    elif p == -2:
         _, S, _ = svd(A, full_matrices=False)
         epsilon = tensor(np.finfo(float).eps * S.max().data, requires_grad=False)
         S_non_zero = where(S > epsilon, S, tensor(float('inf'), requires_grad=False))
@@ -352,13 +352,13 @@ def _matrix_norm(A, ord):
             ret = tensor(np.finfo(float).eps, requires_grad=A.requires_grad)
         return ret
     else:
-        raise ValueError(f"Matrix norm does not support ord value: {ord}")
+        raise ValueError(f"Matrix norm does not support p value: {p}")
 
 
-def _compute_axis_norm(A, ord, dim, keepdim):
+def _compute_axis_norm(A, p, dim, keepdim):
     """计算指定单轴的范数（内部函数）"""
     # 对于负阶范数，检查是否在指定维度上全为零
-    if ord in [-1, -2]:
+    if p in [-1, -2]:
         # 计算指定维度上的最大绝对值
         max_abs = max(abs(A), dim=dim, keepdim=True)
         max_abs_value = max_abs.values if hasattr(max_abs, 'values') else max_abs
@@ -375,48 +375,48 @@ def _compute_axis_norm(A, ord, dim, keepdim):
         if all_zero_mask.all():
             return zero_result
     
-    if ord == 1:
+    if p == 1:
         return sum(abs(A), dim=dim, keepdim=keepdim)
-    elif ord == 2 or ord is None:
+    elif p == 2 or p is None:
         abs_A = abs(A)
         squared_A = abs_A * abs_A
         sum_squared = sum(squared_A, dim=dim, keepdim=keepdim)
         return sqrt(sum_squared)
-    elif ord == float('inf'):
+    elif p == float('inf'):
         abs_A = abs(A)
         max_result = max(abs_A, dim=dim, keepdim=keepdim)
         return max_result.values if hasattr(max_result, 'values') else max_result
-    elif ord == float('-inf'):
+    elif p == float('-inf'):
         abs_A = abs(A)
         min_result = min(abs_A, dim=dim, keepdim=keepdim)
         return min_result.values if hasattr(min_result, 'values') else min_result
-    elif isinstance(ord, (int, float)) and ord > 0:
+    elif isinstance(p, (int, float)) and p > 0:
         abs_A = abs(A)
-        float_ord = get_default_dtype().type(ord)
-        value = abs_A ** float_ord
-        return sum(value, dim=dim, keepdim=keepdim) ** (1.0/float_ord)
-    elif ord == -1:
+        float_p = get_default_dtype().type(p)
+        value = abs_A ** float_p
+        return sum(value, dim=dim, keepdim=keepdim) ** (1.0/float_p)
+    elif p == -1:
         abs_A = abs(A)
         # 避免除以零
         epsilon = tensor(np.finfo(float).eps, requires_grad=False)
         safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
         # L-1范数: (sum(|x_i|^(-1)))^(-1)
-        value = -1.0 / safe_abs_A  # ord=-1, 相当于1/|x_i|
-        return -1.0 / sum(value, dim=dim, keepdim=keepdim)  # 1/ord=-1
-    elif ord == -2:
+        value = -1.0 / safe_abs_A  # p=-1, 相当于1/|x_i|
+        return -1.0 / sum(value, dim=dim, keepdim=keepdim)  # 1/p=-1
+    elif p == -2:
         abs_A = abs(A)
         # 避免除以零
         epsilon = tensor(np.finfo(float).eps, requires_grad=False)
         safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
         # L-2范数: (sum(|x_i|^(-2)))^(-1/2)
-        value = safe_abs_A ** (-2.0)  # ord=-2, 相当于1/(|x_i|^2)
-        return sum(value, dim=dim, keepdim=keepdim) ** (-0.5)  # 1/ord=-1/2
+        value = safe_abs_A ** (-2.0)  # p=-2, 相当于1/(|x_i|^2)
+        return sum(value, dim=dim, keepdim=keepdim) ** (-0.5)  # 1/p=-1/2
     else:
-        raise ValueError(f"Single-axis norm does not support ord value: {ord}")
+        raise ValueError(f"Single-axis norm does not support p value: {p}")
 
 
 # 修复_compute_matrix_norm函数，确保正确处理高维张量
-def _compute_matrix_norm(A, ord, dim, keepdim):
+def _compute_matrix_norm(A, p, dim, keepdim):
     """计算指定维度的矩阵范数（内部函数）"""
     # 验证维度索引是否有效
     for d in dim:
@@ -425,14 +425,14 @@ def _compute_matrix_norm(A, ord, dim, keepdim):
         if d < 0 or d >= A.ndim:
                 raise ValueError(f"Dimension index {d} out of range for tensor with {A.ndim} dimensions")
     
-    if ord == 'fro' or ord is None:
+    if p == 'fro' or p is None:
         # Frobenius范数: 平方和的平方根
         # 直接对指定维度求和，避免多次嵌套sum
         abs_A = abs(A)
         squared_A = abs_A * abs_A
         sum_squared = sum(squared_A, dim=dim, keepdim=keepdim)
         return sqrt(sum_squared)
-    elif ord == 'nuc':
+    elif p == 'nuc':
         # 核范数: 奇异值之和
         if A.ndim > 2:
             # 对于高维张量，我们需要对每个2D子矩阵应用SVD
@@ -443,32 +443,32 @@ def _compute_matrix_norm(A, ord, dim, keepdim):
             if keepdim:
                 return result.unsqueeze(0).unsqueeze(0)
             return result
-    elif ord == float('inf'):
+    elif p == float('inf'):
         # 矩阵无穷范数: max(sum(abs(x), dim=dim[1]))
         abs_A = abs(A)
         # 确保在sum后保持维度，以便正确应用max
         sum_abs = sum(abs_A, dim=dim[1], keepdim=True)
         max_result = max(sum_abs, dim=dim[0], keepdim=keepdim)
         return max_result.values if hasattr(max_result, 'values') else max_result
-    elif ord == float('-inf'):
+    elif p == float('-inf'):
         # 矩阵负无穷范数: min(sum(abs(x), dim=dim[1]))
         abs_A = abs(A)
         sum_abs = sum(abs_A, dim=dim[1], keepdim=True)
         min_result = min(sum_abs, dim=dim[0], keepdim=keepdim)
         return min_result.values if hasattr(min_result, 'values') else min_result
-    elif ord == 1:
+    elif p == 1:
         # 矩阵L1范数: max(sum(abs(x), dim=dim[0]))
         abs_A = abs(A)
         sum_abs = sum(abs_A, dim=dim[0], keepdim=True)
         max_result = max(sum_abs, dim=dim[1], keepdim=keepdim)
         return max_result.values if hasattr(max_result, 'values') else max_result
-    elif ord == -1:
+    elif p == -1:
         # 矩阵-1范数: min(sum(abs(x), dim=dim[0]))
         abs_A = abs(A)
         sum_abs = sum(abs_A, dim=dim[0], keepdim=True)
         min_result = min(sum_abs, dim=dim[1], keepdim=keepdim)
         return min_result.values if hasattr(min_result, 'values') else min_result
-    elif ord == 2 and A.ndim == 2:
+    elif p == 2 and A.ndim == 2:
         # 矩阵2范数(谱范数): 最大奇异值
         _, S, _ = svd(A, full_matrices=False)
         max_result = max(S)
@@ -476,7 +476,7 @@ def _compute_matrix_norm(A, ord, dim, keepdim):
         if keepdim:
             ret = ret.unsqueeze(0).unsqueeze(0)
         return ret
-    elif ord == -2 and A.ndim == 2:
+    elif p == -2 and A.ndim == 2:
         # 矩阵-2范数: 最小奇异值
         _, S, _ = svd(A, full_matrices=False)
         epsilon = tensor(np.finfo(float).eps * S.max().data, requires_grad=False)
@@ -489,7 +489,7 @@ def _compute_matrix_norm(A, ord, dim, keepdim):
             ret = ret.unsqueeze(0).unsqueeze(0)
         return ret
     else:
-        raise ValueError(f"Matrix norm does not support ord value: {ord}")
+        raise ValueError(f"Matrix norm does not support p value: {p}")
 
 def _compute_max_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -> TN:
     """
@@ -530,14 +530,14 @@ def _compute_max_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
     non_compute_axes = [ax for ax in all_dims if ax not in pos_dim]
     
     # 重塑数组，将计算轴放在最后两个维度
-    new_order = tuple(non_compute_axes + pos_dim)
+    new_per = tuple(non_compute_axes + pos_dim)
     
     # 验证维度列表长度是否正确
-    if len(new_order) != A.ndim:
-        raise ValueError(f"Internal error: Invalid dimension permutation. Expected {A.ndim} dimensions, got {len(new_order)}")
+    if len(new_per) != A.ndim:
+        raise ValueError(f"Internal error: Invalid dimension permutation. Expected {A.ndim} dimensions, got {len(new_per)}")
     
     # 使用permute重排维度
-    A_permuted = A.permute(new_order)
+    A_permuted = A.permute(new_per)
     
     # 检查是否全为零矩阵
     is_all_zero = (abs(A_permuted) < tensor(np.finfo(float).eps, requires_grad=False)).all()
@@ -629,10 +629,10 @@ def _compute_min_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
     non_compute_axes = [ax for ax in all_dims if ax not in pos_dim]
     
     # 重塑数组，将计算轴放在最后两个维度
-    new_order = tuple(non_compute_axes + pos_dim)
+    new_per = tuple(non_compute_axes + pos_dim)
     
     # 使用permute重排维度
-    A_permuted = A.permute(new_order)
+    A_permuted = A.permute(new_per)
     
     # 使用svd获取奇异值
     _, S, _ = svd(A_permuted, full_matrices=False)
@@ -669,9 +669,9 @@ def _compute_min_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
     return min_singular
 
 # 计算多维数组在指定两个轴上的范数
-def _compute_multi_axis_norm(A: TN, ord: int | float | str | None, dim: tuple, keepdim: bool = False) -> TN:
+def _compute_multi_axis_norm(A: TN, p: int | float | str | None, dim: tuple, keepdim: bool = False) -> TN:
     # 对于负阶范数，检查是否在指定维度上全为零
-    if ord == -1:
+    if p == -1:
         # 计算指定维度上的最大绝对值
         abs_A = abs(A)
         # 先沿第一个维度取最大
@@ -694,33 +694,33 @@ def _compute_multi_axis_norm(A: TN, ord: int | float | str | None, dim: tuple, k
                     result_shape[d] = 1
                 else:
                     result_shape.pop(d)
-            return tensor(0.0, shape=tuple(result_shape), requires_grad=A.requires_grad)
+            return zeros(tuple(result_shape), requires_grad=A.requires_grad)
     
-    if ord == 0:
-        raise ValueError("Multi-axis norm does not support ord=0")
-    elif ord == 1:
+    if p == 0:
+        raise ValueError("Multi-axis norm does not support p=0")
+    elif p == 1:
         # 多轴L1范数：对指定维度内的元素取绝对值后求和
         abs_A = abs(A)
         return sum(abs_A, dim=dim, keepdim=keepdim)
-    elif ord == 2:
+    elif p == 2:
         return _compute_max_singular_value_norm(A, dim=dim, keepdim=keepdim)
-    elif ord == -2:  # 修复：为-2范数添加特殊处理
+    elif p == -2:  # 修复：为-2范数添加特殊处理
         # 对于-2范数，在_compute_min_singular_value_norm函数中已经处理了全零情况
         return _compute_min_singular_value_norm(A, dim=dim, keepdim=keepdim)
-    elif ord is None:
+    elif p is None:
         # 使用Frobenius范数计算矩阵范数
         abs_A = abs(A)
         squared_A = abs_A * abs_A
         sum_squared = sum(squared_A, dim=dim, keepdim=keepdim)  # 沿指定维度求和
         result = sqrt(sum_squared)  # 开平方根
         return result        
-    elif isinstance(ord, (int, float)) and ord > 0:
+    elif isinstance(p, (int, float)) and p > 0:
         # 通用p-范数
         abs_A = abs(A)
-        float_ord = get_default_dtype().type(ord)
-        value = abs_A ** float_ord
-        return sum(value, dim=dim, keepdim=keepdim) ** (1.0/float_ord)
-    elif ord == float('inf'):
+        float_p = get_default_dtype().type(p)
+        value = abs_A ** float_p
+        return sum(value, dim=dim, keepdim=keepdim) ** (1.0/float_p)
+    elif p == float('inf'):
         # 多轴无穷范数：最大值
         abs_A = abs(A)
         # 对第一个维度应用max
@@ -729,7 +729,7 @@ def _compute_multi_axis_norm(A: TN, ord: int | float | str | None, dim: tuple, k
         max_result = max(max_result.values if hasattr(max_result, 'values') else max_result, 
                          dim=dim[1], keepdim=keepdim)
         return max_result.values if hasattr(max_result, 'values') else max_result
-    elif ord == float('-inf'):
+    elif p == float('-inf'):
         # 多轴负无穷范数：最小值 - 分别处理每个维度
         abs_A = abs(A)
         # 对第一个维度应用min
@@ -738,29 +738,29 @@ def _compute_multi_axis_norm(A: TN, ord: int | float | str | None, dim: tuple, k
         min_result = min(min_result.values if hasattr(min_result, 'values') else min_result, 
                          dim=dim[1], keepdim=keepdim)
         return min_result.values if hasattr(min_result, 'values') else min_result
-    elif ord == -1:
+    elif p == -1:
         # 多轴-1范数：(sum(|x_ij|^(-1)))^(-1)
         abs_A = abs(A)
         # 避免除以零
         epsilon = tensor(np.finfo(float).eps, requires_grad=False)
         safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
         # 计算每个元素的-1次方
-        value = 1. / safe_abs_A  # ord=-1
+        value = 1. / safe_abs_A  # p=-1
         # 对两个维度求和
         sum_value = sum(value, dim=dim, keepdim=keepdim)
         # 取-1次方根
-        return 1. / sum_value  # 1/ord=-1
+        return 1. / sum_value  # 1/p=-1
     else:
-        raise ValueError(f"Multi-axis norm does not support ord value: {ord}")
+        raise ValueError(f"Multi-axis norm does not support p value: {p}")
 
-def vector_norm(x, ord=None, dim=None, keepdim=False, out=None, dtype=None):
+def vector_norm(x, p=None, dim=None, keepdim=False, out=None, dtype=None):
     """计算向量的向量范数
     
     专门用于计算向量范数的函数，接口与PyTorch的torch.linalg.vector_norm一致
     
     参数:
         x: 输入张量
-        ord: 范数类型，支持None(默认2范数), 0, 1, 2, -1, -2, inf, -inf
+        p: 范数类型，支持None(默认2范数), 0, 1, 2, -1, -2, inf, -inf
         dim: 计算范数的维度，可以是整数、元组或None
         keepdim: 是否保持维度
         out: 输出张量
@@ -773,22 +773,22 @@ def vector_norm(x, ord=None, dim=None, keepdim=False, out=None, dtype=None):
     if not isinstance(x, TN) or x.dtype.kind not in ['f', 'c']:
         raise RuntimeError(f"linalg.vector_norm: Expected a floating point or complex tensor as input. Got {x.dtype.name if isinstance(x, TN) else type(x).__name__}")
     
-    # 验证ord参数，vector_norm不支持'fro'和'nuc'范数
-    if ord in ['fro', 'nuc']:
-        raise ValueError(f"vector_norm does not support norm type: ord={ord}")
+    # 验证p参数，vector_norm不支持'fro'和'nuc'范数
+    if p in ['fro', 'nuc']:
+        raise ValueError(f"vector_norm does not support norm type: p={p}")
     
     # 直接调用通用的norm函数处理
-    return norm(x, ord=ord, dim=dim, keepdim=keepdim, out=out, dtype=dtype)
+    return norm(x, ord=p, dim=dim, keepdim=keepdim, out=out, dtype=dtype)
 
 
-def matrix_norm(A, ord=None, dim=None, keepdim=False, out=None, dtype=None):
+def matrix_norm(A, p=None, dim=None, keepdim=False, out=None, dtype=None):
     """计算矩阵的矩阵范数
     
     专门用于计算矩阵范数的函数，接口与PyTorch的torch.linalg.matrix_norm一致
     
     参数:
         A: 输入张量
-        ord: 范数类型，支持None(默认Frobenius范数), 1, 2, -1, -2, inf, -inf, 'fro', 'nuc'
+        p: 范数类型，支持None(默认Frobenius范数), 1, 2, -1, -2, inf, -inf, 'fro', 'nuc'
         dim: 计算范数的维度，必须是长度为2的元组或None
         keepdim: 是否保持维度
         out: 输出张量
@@ -801,9 +801,9 @@ def matrix_norm(A, ord=None, dim=None, keepdim=False, out=None, dtype=None):
     if not isinstance(A, TN) or A.dtype.kind not in ['f', 'c']:
         raise RuntimeError(f"linalg.matrix_norm: Expected a floating point or complex tensor as input. Got {A.dtype.name if isinstance(A, TN) else type(A).__name__}")
     
-    # 验证ord参数，matrix_norm不支持0范数
-    if ord == 0:
-        raise ValueError(f"matrix_norm does not support norm type: ord={ord}")
+    # 验证p参数，matrix_norm不支持0范数
+    if p == 0:
+        raise ValueError(f"matrix_norm does not support norm type: p={p}")
     
     # 如果dim是整数，转换为元组
     if isinstance(dim, int):
@@ -812,7 +812,7 @@ def matrix_norm(A, ord=None, dim=None, keepdim=False, out=None, dtype=None):
         raise ValueError(f"matrix_norm's dim must be a tuple of length 2, got {dim}")
     
     # 直接调用通用的norm函数处理
-    return norm(A, ord=ord, dim=dim, keepdim=keepdim, out=out, dtype=dtype)
+    return norm(A, ord=p, dim=dim, keepdim=keepdim, out=out, dtype=dtype)
 
 
 # - slogdet ：计算方阵行列式的符号和对数绝对值
