@@ -32,6 +32,44 @@ class Colors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+# 检查CUDA是否可用
+try:
+    # 检查是否能导入cupy
+    import cupy as cp
+    CUPY_AVAILABLE = True
+    # 检查CUDA设备数量
+    CUDA_DEVICE_COUNT = cp.cuda.runtime.getDeviceCount()
+    if CUDA_DEVICE_COUNT == 0:
+        CUPY_AVAILABLE = False
+        print("警告: CUDA设备不可用，将跳过CUDA相关测试")
+except ImportError:
+    CUPY_AVAILABLE = False
+    print("警告: 无法导入CuPy，将跳过CUDA相关测试")
+
+# 定义设备列表：始终包含CPU，CUDA可用时添加CUDA
+device_list = [None, "cpu"]
+if CUPY_AVAILABLE:
+    device_list.extend(["cuda", "cuda:0"])  # 添加cuda和cuda:0
+
+# 辅助函数：获取设备名称
+def get_device_name(device):
+    return device if device is not None else "默认设备"
+
+# 辅助函数：检查张量设备是否匹配
+def check_device_match(rm_tensor, expected_device):
+    """检查张量设备是否与期望设备匹配"""
+    if not expected_device:
+        return True
+    
+    actual_device = str(rm_tensor.device)
+    expected_device_str = expected_device if isinstance(expected_device, str) else str(expected_device)
+    
+    # 处理cuda和cuda:0的情况
+    if expected_device_str == "cuda" and actual_device.startswith("cuda:"):
+        return True
+    
+    return actual_device == expected_device_str
+
 # 清屏函数
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -264,45 +302,51 @@ class TestRandomFunctions(unittest.TestCase):
         
         for shape in shapes:
             for dtype in dtypes:
-                case_name = f"rand({shape}, {dtype})"
-                start_time = time.time()
-                try:
-                    # 创建Riemann张量
-                    rm_result = rm.rand(*shape, dtype=dtype)
-                    # 创建PyTorch张量作为参考（仅用于形状和类型比较）
-                    if TORCH_AVAILABLE:
-                        torch_dtype = torch.float32 if dtype == np.float32 else torch.float64
-                        torch_result = torch.rand(shape, dtype=torch_dtype)
-                    else:
-                        torch_result = None
-                    
-                    # 比较形状和数据类型
-                    if TORCH_AVAILABLE:
-                        shape_dtype_passed, shape_dtype_details = self.compare_tensor_shapes_and_dtypes(rm_result, torch_result)
-                        self.assertTrue(shape_dtype_passed, f"{case_name} 形状/类型: {shape_dtype_details}")
-                    
-                    # 检查Riemann随机数范围
-                    range_passed, range_details = self.check_rand_range(rm_result)
-                    self.assertTrue(range_passed, f"{case_name} 范围: {range_details}")
-                    
-                    # 检查requires_grad参数
-                    rm_result_grad = rm.rand(*shape, requires_grad=True)
-                    self.assertTrue(hasattr(rm_result_grad, 'requires_grad') and rm_result_grad.requires_grad, 
-                                   f"{case_name} requires_grad: requires_grad参数未正确设置")
-                    
-                    passed = True
-                    time_taken = time.time() - start_time
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, passed)
-                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
+                for device in device_list:
+                    device_name = get_device_name(device)
+                    case_name = f"rand({shape}, {dtype}) - 设备:{device_name}"
+                    start_time = time.time()
+                    try:
+                        # 创建Riemann张量
+                        rm_result = rm.rand(*shape, dtype=dtype, device=device)
+                        # 创建PyTorch张量作为参考（仅用于形状和类型比较）
+                        if TORCH_AVAILABLE:
+                            torch_dtype = torch.float32 if dtype == np.float32 else torch.float64
+                            torch_result = torch.rand(shape, dtype=torch_dtype)
+                        else:
+                            torch_result = None
+                        
+                        # 比较形状和数据类型
+                        if TORCH_AVAILABLE:
+                            shape_dtype_passed, shape_dtype_details = self.compare_tensor_shapes_and_dtypes(rm_result, torch_result)
+                            self.assertTrue(shape_dtype_passed, f"{case_name} 形状/类型: {shape_dtype_details}")
+                        
+                        # 检查Riemann随机数范围
+                        range_passed, range_details = self.check_rand_range(rm_result)
+                        self.assertTrue(range_passed, f"{case_name} 范围: {range_details}")
+                        
+                        # 检查设备是否匹配
+                        device_passed = check_device_match(rm_result, device)
+                        self.assertTrue(device_passed, f"{case_name} 设备不匹配: 期望{device}, 实际{rm_result.device}")
+                        
+                        # 检查requires_grad参数
+                        rm_result_grad = rm.rand(*shape, requires_grad=True, device=device)
+                        self.assertTrue(hasattr(rm_result_grad, 'requires_grad') and rm_result_grad.requires_grad, 
+                                       f"{case_name} requires_grad: requires_grad参数未正确设置")
+                        
+                        passed = True
+                        time_taken = time.time() - start_time
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                        
+                    except Exception as e:
+                        time_taken = time.time() - start_time
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                        raise
     
     def test_randn(self):
         """测试randn函数 - 生成标准正态分布的随机数"""
@@ -312,41 +356,47 @@ class TestRandomFunctions(unittest.TestCase):
         
         for shape in shapes:
             for dtype in dtypes:
-                case_name = f"randn({shape}, {dtype})"
-                start_time = time.time()
-                try:
-                    # 创建Riemann张量
-                    rm_result = rm.randn(*shape, dtype=dtype)
-                    # 创建PyTorch张量作为参考（仅用于形状和类型比较）
-                    if TORCH_AVAILABLE:
-                        torch_dtype = torch.float32 if dtype == np.float32 else torch.float64
-                        torch_result = torch.randn(shape, dtype=torch_dtype)
-                    else:
-                        torch_result = None
-                    
-                    # 比较形状和数据类型
-                    if TORCH_AVAILABLE:
-                        shape_dtype_passed, shape_dtype_details = self.compare_tensor_shapes_and_dtypes(rm_result, torch_result)
-                        self.assertTrue(shape_dtype_passed, f"{case_name} 形状/类型: {shape_dtype_details}")
-                    
-                    # 检查requires_grad参数
-                    rm_result_grad = rm.randn(*shape, requires_grad=True)
-                    self.assertTrue(hasattr(rm_result_grad, 'requires_grad') and rm_result_grad.requires_grad, 
-                                   f"{case_name} requires_grad: requires_grad参数未正确设置")
-                    
-                    passed = True
-                    time_taken = time.time() - start_time
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, passed)
-                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
+                for device in device_list:
+                    device_name = get_device_name(device)
+                    case_name = f"randn({shape}, {dtype}) - 设备:{device_name}"
+                    start_time = time.time()
+                    try:
+                        # 创建Riemann张量
+                        rm_result = rm.randn(*shape, dtype=dtype, device=device)
+                        # 创建PyTorch张量作为参考（仅用于形状和类型比较）
+                        if TORCH_AVAILABLE:
+                            torch_dtype = torch.float32 if dtype == np.float32 else torch.float64
+                            torch_result = torch.randn(shape, dtype=torch_dtype)
+                        else:
+                            torch_result = None
+                        
+                        # 比较形状和数据类型
+                        if TORCH_AVAILABLE:
+                            shape_dtype_passed, shape_dtype_details = self.compare_tensor_shapes_and_dtypes(rm_result, torch_result)
+                            self.assertTrue(shape_dtype_passed, f"{case_name} 形状/类型: {shape_dtype_details}")
+                        
+                        # 检查设备是否匹配
+                        device_passed = check_device_match(rm_result, device)
+                        self.assertTrue(device_passed, f"{case_name} 设备不匹配: 期望{device}, 实际{rm_result.device}")
+                        
+                        # 检查requires_grad参数
+                        rm_result_grad = rm.randn(*shape, requires_grad=True, device=device)
+                        self.assertTrue(hasattr(rm_result_grad, 'requires_grad') and rm_result_grad.requires_grad, 
+                                       f"{case_name} requires_grad: requires_grad参数未正确设置")
+                        
+                        passed = True
+                        time_taken = time.time() - start_time
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                        
+                    except Exception as e:
+                        time_taken = time.time() - start_time
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                        raise
     
     def test_randint(self):
         """测试randint函数 - 生成整数随机数"""
@@ -358,26 +408,64 @@ class TestRandomFunctions(unittest.TestCase):
         ]
         
         for shape, low, high, dtype in test_cases:
-            case_name = f"randint({low}, {high}, {shape}, {dtype})"
+            for device in device_list:
+                device_name = get_device_name(device)
+                case_name = f"randint({low}, {high}, {shape}, {dtype}) - 设备:{device_name}"
+                start_time = time.time()
+                try:
+                    # 创建Riemann张量 - 注意接口差异：riemann的size是显式参数
+                    rm_result = rm.randint(low, high, size=shape, dtype=dtype, device=device)
+                    # 创建PyTorch张量作为参考（仅用于形状和类型比较）
+                    if TORCH_AVAILABLE:
+                        torch_dtype = torch.int32 if dtype == np.int32 else torch.int64
+                        torch_result = torch.randint(low, high, shape, dtype=torch_dtype)
+                    else:
+                        torch_result = None
+                    
+                    # 比较形状和数据类型
+                    if TORCH_AVAILABLE:
+                        shape_dtype_passed, shape_dtype_details = self.compare_tensor_shapes_and_dtypes(rm_result, torch_result)
+                        self.assertTrue(shape_dtype_passed, f"{case_name} 形状/类型: {shape_dtype_details}")
+                    
+                    # 检查随机数范围
+                    range_passed, range_details = self.check_randint_range(rm_result, low, high)
+                    self.assertTrue(range_passed, f"{case_name} 范围: {range_details}")
+                    
+                    # 检查设备是否匹配
+                    device_passed = check_device_match(rm_result, device)
+                    self.assertTrue(device_passed, f"{case_name} 设备不匹配: 期望{device}, 实际{rm_result.device}")
+                    
+                    passed = True
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+        
+        # 添加PyTorch风格测试 - randint(high, size)
+        for device in device_list:
+            device_name = get_device_name(device)
+            case_name = f"PyTorch style: randint(high, size) - 设备:{device_name}"
             start_time = time.time()
             try:
-                # 创建Riemann张量 - 注意接口差异：riemann的size是显式参数
-                rm_result = rm.randint(low, high, size=shape, dtype=dtype)
-                # 创建PyTorch张量作为参考（仅用于形状和类型比较）
+                rm_result = rm.randint(10, (3, 4), device=device)
                 if TORCH_AVAILABLE:
-                    torch_dtype = torch.int32 if dtype == np.int32 else torch.int64
-                    torch_result = torch.randint(low, high, shape, dtype=torch_dtype)
-                else:
-                    torch_result = None
-                
-                # 比较形状和数据类型
-                if TORCH_AVAILABLE:
+                    torch_result = torch.randint(10, (3, 4))
                     shape_dtype_passed, shape_dtype_details = self.compare_tensor_shapes_and_dtypes(rm_result, torch_result)
                     self.assertTrue(shape_dtype_passed, f"{case_name} 形状/类型: {shape_dtype_details}")
-                
-                # 检查随机数范围
-                range_passed, range_details = self.check_randint_range(rm_result, low, high)
+                range_passed, range_details = self.check_randint_range(rm_result, 0, 10)
                 self.assertTrue(range_passed, f"{case_name} 范围: {range_details}")
+                
+                # 检查设备是否匹配
+                device_passed = check_device_match(rm_result, device)
+                self.assertTrue(device_passed, f"{case_name} 设备不匹配: 期望{device}, 实际{rm_result.device}")
                 
                 passed = True
                 time_taken = time.time() - start_time
@@ -385,7 +473,97 @@ class TestRandomFunctions(unittest.TestCase):
                 if IS_RUNNING_AS_SCRIPT:
                     stats.add_result(case_name, passed)
                     print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+        
+        # 添加一维张量测试 - randint(high, size)（整数size）
+        for device in device_list:
+            device_name = get_device_name(device)
+            case_name = f"1D tensor with integer size: randint(high, size) - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                rm_result = rm.randint(10, 6, device=device)
+                expected_shape = (6,)
+                self.assertEqual(rm_result.shape, expected_shape, f"{case_name} 形状不匹配: {rm_result.shape} vs {expected_shape}")
+                range_passed, range_details = self.check_randint_range(rm_result, 0, 10)
+                self.assertTrue(range_passed, f"{case_name} 范围: {range_details}")
                 
+                # 检查设备是否匹配
+                device_passed = check_device_match(rm_result, device)
+                self.assertTrue(device_passed, f"{case_name} 设备不匹配: 期望{device}, 实际{rm_result.device}")
+                
+                passed = True
+                time_taken = time.time() - start_time
+                
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+        
+        # 添加关键字参数测试
+        for device in device_list:
+            device_name = get_device_name(device)
+            case_name = f"Keyword arguments: randint(low=5, high=15, size=(3, 4)) - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                rm_result = rm.randint(low=5, high=15, size=(3, 4), device=device)
+                range_passed, range_details = self.check_randint_range(rm_result, 5, 15)
+                self.assertTrue(range_passed, f"{case_name} 范围: {range_details}")
+                
+                # 检查设备是否匹配
+                device_passed = check_device_match(rm_result, device)
+                self.assertTrue(device_passed, f"{case_name} 设备不匹配: 期望{device}, 实际{rm_result.device}")
+                
+                passed = True
+                time_taken = time.time() - start_time
+                
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+        
+        # 添加PyTorch混合风格测试 - randint(high, size=size)
+        for device in device_list:
+            device_name = get_device_name(device)
+            case_name = f"PyTorch hybrid style: randint(high, size=size) - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                rm_result = rm.randint(10, size=(3, 4), device=device)
+                if TORCH_AVAILABLE:
+                    torch_result = torch.randint(10, (3, 4))
+                    shape_dtype_passed, shape_dtype_details = self.compare_tensor_shapes_and_dtypes(rm_result, torch_result)
+                    self.assertTrue(shape_dtype_passed, f"{case_name} 形状/类型: {shape_dtype_details}")
+                range_passed, range_details = self.check_randint_range(rm_result, 0, 10)
+                self.assertTrue(range_passed, f"{case_name} 范围: {range_details}")
+                
+                # 检查设备是否匹配
+                device_passed = check_device_match(rm_result, device)
+                self.assertTrue(device_passed, f"{case_name} 设备不匹配: 期望{device}, 实际{rm_result.device}")
+                
+                passed = True
+                time_taken = time.time() - start_time
+                
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            
             except Exception as e:
                 time_taken = time.time() - start_time
                 if IS_RUNNING_AS_SCRIPT:
@@ -401,30 +579,89 @@ class TestRandomFunctions(unittest.TestCase):
         
         for n in test_sizes:
             for dtype in dtypes:
-                case_name = f"randperm({n}, {dtype})"
+                for device in device_list:
+                    device_name = get_device_name(device)
+                    case_name = f"randperm({n}, {dtype}) - 设备:{device_name}"
+                    start_time = time.time()
+                    try:
+                        # 创建Riemann张量
+                        rm_result = rm.randperm(n, dtype=dtype, device=device)
+                        # 创建PyTorch张量作为参考（仅用于形状比较）
+                        if TORCH_AVAILABLE:
+                            torch_dtype = torch.int32 if dtype == np.int32 else torch.int64
+                            torch_result = torch.randperm(n, dtype=torch_dtype)
+                        else:
+                            torch_result = None
+                        
+                        # 比较形状
+                        rm_shape = (n,) if hasattr(rm_result, 'shape') and rm_result.shape == (n,) else \
+                                  (n,) if hasattr(rm_result, 'data') and rm_result.data.shape == (n,) else None
+                        
+                        if TORCH_AVAILABLE:
+                            torch_shape = torch_result.shape
+                            self.assertEqual(rm_shape, torch_shape, 
+                                            f"{case_name} 形状不匹配: Riemann={rm_shape}, PyTorch={torch_shape}")
+                        
+                        # 检查是否为有效排列
+                        perm_passed, perm_details = self.check_permutation(rm_result, n)
+                        self.assertTrue(perm_passed, f"{case_name} 排列: {perm_details}")
+                        
+                        # 检查设备是否匹配
+                        device_passed = check_device_match(rm_result, device)
+                        self.assertTrue(device_passed, f"{case_name} 设备不匹配: 期望{device}, 实际{rm_result.device}")
+                        
+                        passed = True
+                        time_taken = time.time() - start_time
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                        
+                    except Exception as e:
+                        time_taken = time.time() - start_time
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                        raise
+    
+    def test_normal(self):
+        """测试normal函数 - 生成指定均值和标准差的正态分布随机数"""
+        # 测试不同参数组合
+        test_cases = [
+            ((2, 3), 0.0, 1.0, np.float32),   # 标准正态分布
+            ((4,), 5.0, 2.0, np.float64),      # 均值5，标准差2
+            ((1, 5, 3), -2.0, 0.5, np.float32) # 均值-2，标准差0.5
+        ]
+        
+        for shape, mean, std, dtype in test_cases:
+            for device in device_list:
+                device_name = get_device_name(device)
+                case_name = f"normal({mean}, {std}, {shape}, {dtype}) - 设备:{device_name}"
                 start_time = time.time()
                 try:
-                    # 创建Riemann张量
-                    rm_result = rm.randperm(n, dtype=dtype)
-                    # 创建PyTorch张量作为参考（仅用于形状比较）
+                    # 创建Riemann张量 - 注意接口差异：riemann的参数顺序是mean, std, size
+                    rm_result = rm.normal(mean, std, size=shape, dtype=dtype, device=device)
+                    # 创建PyTorch张量作为参考（仅用于形状和类型比较）
                     if TORCH_AVAILABLE:
-                        torch_dtype = torch.int32 if dtype == np.int32 else torch.int64
-                        torch_result = torch.randperm(n, dtype=torch_dtype)
+                        torch_dtype = torch.float32 if dtype == np.float32 else torch.float64
+                        # 使用正确的参数形式：float mean, float std, tuple size
+                        torch_result = torch.normal(mean, std, shape, dtype=torch_dtype)
                     else:
                         torch_result = None
                     
-                    # 比较形状
-                    rm_shape = (n,) if hasattr(rm_result, 'shape') and rm_result.shape == (n,) else \
-                              (n,) if hasattr(rm_result, 'data') and rm_result.data.shape == (n,) else None
-                    
+                    # 比较形状和数据类型
                     if TORCH_AVAILABLE:
-                        torch_shape = torch_result.shape
-                        self.assertEqual(rm_shape, torch_shape, 
-                                        f"{case_name} 形状不匹配: Riemann={rm_shape}, PyTorch={torch_shape}")
+                        shape_dtype_passed, shape_dtype_details = self.compare_tensor_shapes_and_dtypes(rm_result, torch_result)
+                        self.assertTrue(shape_dtype_passed, f"{case_name} 形状/类型: {shape_dtype_details}")
                     
-                    # 检查是否为有效排列
-                    perm_passed, perm_details = self.check_permutation(rm_result, n)
-                    self.assertTrue(perm_passed, f"{case_name} 排列: {perm_details}")
+                    # 检查统计特性（对于较大的张量，结果更接近预期）
+                    if np.prod(shape) > 10:  # 只对足够大的张量进行统计检查
+                        stats_passed, stats_details = self.check_normal_stats(rm_result, mean, std)
+                        self.assertTrue(stats_passed, f"{case_name} 统计: {stats_details}")
+                    
+                    # 检查设备是否匹配
+                    device_passed = check_device_match(rm_result, device)
+                    self.assertTrue(device_passed, f"{case_name} 设备不匹配: 期望{device}, 实际{rm_result.device}")
                     
                     passed = True
                     time_taken = time.time() - start_time
@@ -439,53 +676,6 @@ class TestRandomFunctions(unittest.TestCase):
                         stats.add_result(case_name, False, [str(e)])
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
-    
-    def test_normal(self):
-        """测试normal函数 - 生成指定均值和标准差的正态分布随机数"""
-        # 测试不同参数组合
-        test_cases = [
-            ((2, 3), 0.0, 1.0, np.float32),   # 标准正态分布
-            ((4,), 5.0, 2.0, np.float64),      # 均值5，标准差2
-            ((1, 5, 3), -2.0, 0.5, np.float32) # 均值-2，标准差0.5
-        ]
-        
-        for shape, mean, std, dtype in test_cases:
-            case_name = f"normal({mean}, {std}, {shape}, {dtype})"
-            start_time = time.time()
-            try:
-                # 创建Riemann张量 - 注意接口差异：riemann的参数顺序是mean, std, size
-                rm_result = rm.normal(mean, std, size=shape, dtype=dtype)
-                # 创建PyTorch张量作为参考（仅用于形状和类型比较）
-                if TORCH_AVAILABLE:
-                    torch_dtype = torch.float32 if dtype == np.float32 else torch.float64
-                    # 使用正确的参数形式：float mean, float std, tuple size
-                    torch_result = torch.normal(mean, std, shape, dtype=torch_dtype)
-                else:
-                    torch_result = None
-                
-                # 比较形状和数据类型
-                if TORCH_AVAILABLE:
-                    shape_dtype_passed, shape_dtype_details = self.compare_tensor_shapes_and_dtypes(rm_result, torch_result)
-                    self.assertTrue(shape_dtype_passed, f"{case_name} 形状/类型: {shape_dtype_details}")
-                
-                # 检查统计特性（对于较大的张量，结果更接近预期）
-                if np.prod(shape) > 10:  # 只对足够大的张量进行统计检查
-                    stats_passed, stats_details = self.check_normal_stats(rm_result, mean, std)
-                    self.assertTrue(stats_passed, f"{case_name} 统计: {stats_details}")
-                
-                passed = True
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
 
 if __name__ == '__main__':
     # 设置为独立脚本运行模式

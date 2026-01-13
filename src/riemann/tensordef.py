@@ -76,7 +76,7 @@ import builtins
 import warnings
 from typing import Callable, Any, List, Tuple, TypeAlias, overload, Union, Optional
 import numpy as np
-from .cuda import Device, CUPY_AVAILABLE, cp, is_in_cuda_context
+from .cuda import Device, CUPY_AVAILABLE, cp, is_in_cuda_context, get_default_device
 from .dtype import *
 from .gradmode import *
 
@@ -163,10 +163,11 @@ class TN:
 
         self.rcv_grad_count = 0         #在具体计算图中，self可接收梯度的计数，计算梯度时临时使用
         self.grad_value:TN = None       #用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
+        
         return
-      
+    
     # 用于交互式环境显示对象的数值
-    def __disp__(self, format_spec: str = '.4f'):
+    def __disp__(self, format_spec: str):
         """
         带格式字符串参数的显示函数
         
@@ -185,12 +186,17 @@ class TN:
         default_float = get_default_dtype()
         default_complex = get_default_complex()
 
+        # 获取数组库
+        arrlib = self._get_array_lib()
+
         # 构建属性字符串        
         attrs = []        
+        if self.device != Device('cpu'):
+            attrs.append(f"device='{self.device}'")
         if is_float_or_complex(self.dtype) and self.dtype != default_float and self.dtype != default_complex:
             attrs.append(f"dtype={self.dtype.name}")
         if self.requires_grad:
-            attrs.append("requires_grad=True")
+            attrs.append("requires_grad=True")        
         attr_str = ", ".join(attrs)
 
         # 格式化工具函数
@@ -254,10 +260,10 @@ class TN:
         use_numpy_default = precision is None
         
         # 简化实现：根据数据类型使用不同的格式化策略
-        if np.issubdtype(self.data.dtype, np.complexfloating):
+        if arrlib.issubdtype(self.data.dtype, arrlib.complexfloating):
             if use_numpy_default:
                 # 使用numpy默认格式化
-                data_str = np.array2string(
+                data_str = arrlib.array2string(
                     self.data,
                     separator=', ',
                     threshold=self.data.size  # 确保显示所有元素
@@ -287,16 +293,16 @@ class TN:
                     return f'{real_str}{imag_sign}{imag_str_clean}j'
                 
                 formatter_dict = {'complex_kind': complex_formatter}
-                data_str = np.array2string(
+                data_str = arrlib.array2string(
                     self.data,
                     separator=', ',
                     formatter=formatter_dict,  # type: ignore
                     threshold=self.data.size  # 确保显示所有元素
                 )
-        elif np.issubdtype(self.data.dtype, np.floating):
+        elif arrlib.issubdtype(self.data.dtype, arrlib.floating):
             if use_numpy_default:
                 # 使用numpy默认格式化
-                data_str = np.array2string(
+                data_str = arrlib.array2string(
                     self.data,
                     separator=', ',
                     threshold=self.data.size  # 确保显示所有元素
@@ -312,7 +318,7 @@ class TN:
                         return f'{x:.{precision}{format_type}}'
                 
                 formatter_dict = {'float_kind': float_formatter}
-                data_str = np.array2string(
+                data_str = arrlib.array2string(
                     self.data,
                     separator=', ',
                     formatter=formatter_dict,  # type: ignore
@@ -320,14 +326,14 @@ class TN:
                 )
         else:
             # 对于非浮点、非复数类型，使用默认格式化
-            if np.issubdtype(self.data.dtype, np.integer):
-                data_str = np.array2string(
+            if arrlib.issubdtype(self.data.dtype, arrlib.integer):
+                data_str = arrlib.array2string(
                     self.data,
                     separator=', '
                 )
             else:
                 # 其他类型使用默认格式化
-                data_str = np.array2string(self.data, separator=', ')
+                data_str = arrlib.array2string(self.data, separator=', ')
 
         
         # 第一步：已经生成了多维数据的显示字符串
@@ -343,11 +349,11 @@ class TN:
 
     def __repr__(self):
         """调用__disp__()使用默认格式显示对象"""
-        return self.__disp__()
+        return self.__disp__(format_spec='.f')
 
     # 用于在print(obj)、str(obj)显示对象数值
     def __str__(self):
-        return self.__disp__()
+        return self.__disp__(format_spec='.f')
     
     # 用于在f'{obj}'显示对象数值
     def __format__(self, format_spec):
@@ -358,8 +364,6 @@ class TN:
         if self.ndim == 0 and not self.is_complex():
             return format(self.data, format_spec)
         else:
-            if format_spec=='':
-                format_spec='.4f'  # 使用与__disp__默认一致的格式
             return self.__disp__(format_spec)
 
     def __array__(self, dtype=None, copy=None):
@@ -446,6 +450,12 @@ class TN:
             ValueError: 如果张量包含多个元素
         """
         return int(self.data)
+    
+    def _get_array_lib(self):
+        """
+        根据data属性的数组类型，获得numpy或cupy库的模块名
+        """
+        return np if isinstance(self.data,np.ndarray) else cp
 
     def item(self):
         """从单元素张量中提取Python标量值
@@ -472,7 +482,7 @@ class TN:
         常见的数据类型包括float32、float64、int32、int64、complex64等。
         
         Returns:
-            np.dtype: 张量的数据类型对象
+            numpy.dtype: 张量的数据类型对象
         """
         return self.data.dtype
     
@@ -581,7 +591,7 @@ class TN:
         if not self.is_complex():
             raise RuntimeError("imag property is only defined for complex tensors")
         
-        result = tensor(self.data.imag, requires_grad=(is_grad_enabled() and self.requires_grad))
+        result = tensor(self.data.imag, device=self.device, requires_grad=(is_grad_enabled() and self.requires_grad))
         result.is_leaf = not result.requires_grad
         
         if result.requires_grad:
@@ -609,10 +619,11 @@ class TN:
             return  self
         
         # 计算共轭
-        conj_data = np.conj(self.data)
+        arrlib = self._get_array_lib()
+        conj_data = arrlib.conj(self.data)
         
         # 创建结果张量
-        ret = tensor(conj_data, requires_grad=(is_grad_enabled() and self.requires_grad))
+        ret = tensor(conj_data, device=self.device,requires_grad=(is_grad_enabled() and self.requires_grad))
         ret.is_leaf = not ret.requires_grad
         
         # 设置梯度传播
@@ -700,12 +711,8 @@ class TN:
         if dtype is None:
             return self.dtype
         
-        # 使用np.dtype生成目标数据类型实例，处理各种方式的dtype
-        try:
-            target_dtype = np.dtype(dtype)
-        except (TypeError, TypeError):
-            raise TypeError(f"Cannot convert {dtype} to a valid dtype")
-                
+        target_dtype = _get_dtype(dtype)
+        
         # 如果当前类型已经匹配，返回自身
         if self.dtype == target_dtype:
             return self
@@ -717,8 +724,7 @@ class TN:
             ret.data = self.data.real.astype(target_dtype)
         else:
             ret.data = self.data.astype(target_dtype)
-        # ret.data = self.data.astype(target_dtype)
-
+        
         # 只有浮点和复数是可微分的，使用is_floating函数检查
         if is_float_or_complex(target_dtype):
             ret.requires_grad = (is_grad_enabled() and self.requires_grad)
@@ -802,7 +808,7 @@ class TN:
         - 否则返回CPU设备
         
         Returns:
-            Device: 张量所在的设备对象
+            device: 张量所在的设备对象
         """
         # 直接检查data是否为cp.ndarray类型
         if CUPY_AVAILABLE and isinstance(self.data, cp.ndarray):
@@ -813,7 +819,7 @@ class TN:
         else:
             # 对于NumPy数组或其他类型，返回CPU设备
             return Device('cpu')
-
+                
     def to(self, *args, **kwargs):
         """
         将张量转换为指定的数据类型和/或设备。
@@ -852,7 +858,7 @@ class TN:
         
         # 处理位置参数
         if len(args) > 0:
-            if hasattr(args[0], 'dtype') and hasattr(args[0], 'device'):
+            if isinstance(args[0], TN):
                 # 参数是另一个张量，复制其dtype和device
                 other = args[0]
                 dtype = other.dtype
@@ -860,23 +866,39 @@ class TN:
             else:
                 # 处理第一个位置参数
                 first_arg = args[0]
-                if isinstance(first_arg, (str, Device)):
-                    # 第一个参数是device
+                
+                # 检查第一个参数是否是device（字符串形式）
+                if isinstance(first_arg, str):
+                    # 字符串参数可能是device或dtype
+                    # 先尝试识别为device，如果失败再作为dtype
+                    try:
+                        # 尝试创建device对象并直接赋值
+                        device = _get_device(first_arg)
+                        # 检查第二个参数是否是dtype
+                        if len(args) > 1:
+                            dtype = args[1]
+                    except Exception:
+                        # 不是有效的device字符串，作为dtype处理
+                        dtype = first_arg
+                        # 检查第二个参数是否是device
+                        if len(args) > 1:
+                            second_arg = args[1]
+                            if isinstance(second_arg, (int, str, Device)):
+                                device = second_arg
+                elif isinstance(first_arg, (int, Device)):
+                    # 整数或Device对象，作为device处理
                     device = first_arg
                     # 检查第二个参数是否是dtype
                     if len(args) > 1:
                         dtype = args[1]
                 else:
-                    # 第一个参数是dtype
+                    # 其他类型，作为dtype处理
                     dtype = first_arg
                     # 检查第二个参数是否是device
                     if len(args) > 1:
                         second_arg = args[1]
-                        if isinstance(second_arg, (str, Device)):
+                        if isinstance(second_arg, (int, str, Device)):
                             device = second_arg
-                        else:
-                            # 第二个参数不是device，可能是其他参数，但我们不支持
-                            pass
                 
                 # 检查是否有更多参数
                 if len(args) > 2:
@@ -884,67 +906,31 @@ class TN:
                     raise TypeError(f"to() takes at most 2 positional arguments but {len(args)} were given")
         
         # 解析device参数，确定是否使用CUDA
-        use_cuda = False
-        if device is not None:
-            if isinstance(device, str):
-                if device.startswith('cuda'):
-                    # 创建Device对象以利用其验证逻辑
-                    device_obj = Device(device)
-                    use_cuda = True
-                elif device == 'cpu':
-                    use_cuda = False
-                else:
-                    raise RuntimeError(f"Invalid device: {device}")
-            elif isinstance(device, Device):
-                if device.type == 'cuda':
-                    use_cuda = True
-            else:
-                raise RuntimeError(f"Invalid device type: {type(device).__name__}")
-        
-        # 检查CUDA是否可用
-        if use_cuda and not CUPY_AVAILABLE:
-            raise RuntimeError("CUDA is not available")
-        
-        # 根据device选择数组创建库
-        array_lib = np
-        if use_cuda:
-            array_lib = cp
-        
+        target_device = self.device if device is None else _get_device(device)
+                
         # 处理数据类型转换
-        target_dtype = dtype
-        if target_dtype is None:
-            # 如果没有指定dtype，使用原张量的dtype
-            target_dtype = self.dtype
-        else:
-            # 直接使用np.dtype转换，numpy可以处理各种字符串表示的类型
-            try:
-                target_dtype = np.dtype(target_dtype)
-            except (TypeError, TypeError):
-                raise TypeError(f"Cannot convert {dtype} to a valid dtype")
+        target_dtype = self.dtype if dtype is None else _get_dtype(dtype)
         
         # 检查当前类型和设备是否已经匹配
-        current_device_is_cuda = hasattr(self.data, '__cuda_array_interface__')
-        if self.dtype == target_dtype and use_cuda == current_device_is_cuda:
+        dtype_not_change = (self.dtype == target_dtype)
+        device_not_change = (self.device == target_device)
+        if dtype_not_change and device_not_change:
             return self
         
         # 创建新张量
         ret = TN()
         
-        # 处理数据转换
-        if current_device_is_cuda == use_cuda:
-            # 设备相同，只需转换数据类型
-            if self.dtype != target_dtype:
-                if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
-                    # 复数向非复数转换时，为避免warning，不用astype直接转，取real后再转换
-                    ret.data = self.data.real.astype(target_dtype)
-                else:
-                    ret.data = self.data.astype(target_dtype)
+        # 处理设备迁移、数据转换
+        if device_not_change:
+            # 设备相同，数据类型一定不同
+            if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
+                # 复数向非复数转换时，为避免warning，不用astype直接转，取real后再转换
+                ret.data = self.data.real.astype(target_dtype)
             else:
-                # 数据类型也相同，直接复制数据
-                ret.data = array_lib.array(self.data)
+                ret.data = self.data.astype(target_dtype)            
         else:
             # 设备不同，需要转换设备
-            if use_cuda:
+            if target_device.type=='cuda':
                 # CPU -> CUDA
                 # 利用cp.asarray()支持dtype参数的特性，一步完成转换
                 if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
@@ -955,12 +941,11 @@ class TN:
             else:
                 # CUDA -> CPU
                 # 先转换设备，再转换数据类型
-                # 使用np.array()一步完成转换
                 if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
                     # 复数向非复数转换时，先取real
-                    ret.data = np.array(cp.asnumpy(self.data).real, dtype=target_dtype)
+                    ret.data = cp.asnumpy(self.data.real).astype(target_dtype)
                 else:
-                    ret.data = np.array(cp.asnumpy(self.data), dtype=target_dtype)
+                    ret.data = cp.asnumpy(self.data).astype(target_dtype)
         
         # 设置梯度跟踪信息
         if is_float_or_complex(target_dtype):
@@ -969,15 +954,15 @@ class TN:
             
             if ret.requires_grad:
                 # 设置计算图相关属性
-                ret.fromvars = (self,)
-                
+                ret.fromvars = (self,)                
                 # 保存原始数据类型和设备信息用于反向传播
-                original_dtype = self.dtype
-                original_device_is_cuda = current_device_is_cuda
+                ret.parms = ((self.dtype,self.device),)                
                 
                 def to_backward(result, i):
+                    original_dtype = result.parms[i][0]
+                    original_device = result.parms[i][1]
                     # 直接使用to函数将梯度转换回原始数据类型和设备
-                    return result.grad_value.to(dtype=original_dtype, device='cuda' if original_device_is_cuda else 'cpu')
+                    return result.grad_value.to(dtype=original_dtype, device=original_device)
                 
                 ret.gradfuncs = (to_backward,)
         else:
@@ -1003,11 +988,12 @@ class TN:
         # NumPy会根据索引类型自动决定返回视图还是副本
         is_view = False
         if hasattr(indexed_data, 'base') and indexed_data.base is not None:
+            arrlib = self._get_array_lib()
             # 检查indexed_data是否与原数据共享内存
-            is_view = np.shares_memory(self.data, indexed_data)
+            is_view = arrlib.shares_memory(self.data, indexed_data)
         
         # 创建结果张量
-        ret = tensor(indexed_data, requires_grad = (is_grad_enabled() and self.requires_grad))
+        ret = tensor(indexed_data, device=self.device, requires_grad = (is_grad_enabled() and self.requires_grad))
         ret.is_leaf = not ret.requires_grad
         
         # 根据索引类型设置视图属性或创建副本
@@ -1084,9 +1070,11 @@ class TN:
         返回:
             combined_index: 合并后的索引（在基张量坐标系中的坐标）
         """
+        arrlib = self._get_array_lib()
+
         # 辅助函数：检查是否为布尔类型索引
         def _is_boolean_index(index):
-            return isinstance(index, np.ndarray) and index.dtype == bool
+            return isinstance(index, arrlib.ndarray) and index.dtype == bool
         
         def _normalize_neg_index(index, dim_size):
             """
@@ -1114,8 +1102,8 @@ class TN:
                     stop += dim_size
                 
                 return slice(start, stop, step)
-            elif isinstance(index, (np.ndarray, list)) and np.issubdtype(np.array(index).dtype, np.integer):
-                index_arr = np.asarray(index)
+            elif isinstance(index, (arrlib.ndarray, list)) and arrlib.issubdtype(arrlib.array(index).dtype, arrlib.integer):
+                index_arr = arrlib.asarray(index)
                 # 对负索引进行转换
                 index_arr[index_arr < 0] += dim_size
                 return index_arr
@@ -1133,7 +1121,7 @@ class TN:
             # 处理省略号 - 只有当 index 是元组且不包含数组时才检查
             if isinstance(index, tuple):
                 # 检查元组中是否包含数组或非基本类型
-                contains_array = any(isinstance(idx, (np.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in index)
+                contains_array = any(isinstance(idx, (arrlib.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in index)
                 if not contains_array and Ellipsis in index:
                     ellipsis_idx = index.index(Ellipsis)
                     num_regular = len(index) - 1
@@ -1158,14 +1146,14 @@ class TN:
         # 辅助函数：处理基础索引为数组的情况
         def _process_base_array_index(base_idx, view_dim):
             dim_size = _get_base_dim_size(view_dim)
-            base_idx_arr = np.asarray(base_idx)
+            base_idx_arr = arrlib.asarray(base_idx)
             
-            if np.issubdtype(base_idx_arr.dtype, np.bool_):
+            if arrlib.issubdtype(base_idx_arr.dtype, arrlib.bool_):
                 # 布尔数组 -> 整数数组
-                base_idx_arr = np.where(base_idx_arr)[0]
+                base_idx_arr = arrlib.where(base_idx_arr)[0]
             
             # 处理负索引
-            if np.any(base_idx_arr < 0):
+            if arrlib.any(base_idx_arr < 0):
                 base_idx_arr = base_idx_arr.copy()
                 base_idx_arr[base_idx_arr < 0] += dim_size
             
@@ -1233,7 +1221,7 @@ class TN:
         
         # 第五步：快速路径 - 当前操作是对整个视图进行的
         if isinstance(current_index, tuple):
-            contains_array = any(isinstance(idx, (np.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in current_index)
+            contains_array = any(isinstance(idx, (arrlib.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in current_index)
             if not contains_array:
                 all_full_slices = all(
                     isinstance(idx, slice) and 
@@ -1247,7 +1235,7 @@ class TN:
         
         # 第六步：处理布尔数组索引
         if _is_boolean_index(current_index):
-            bool_indices = np.where(current_index)
+            bool_indices = arrlib.where(current_index)
             if len(bool_indices) != len(view_dims):
                 raise ValueError(f"Boolean index dimension mismatch: {len(bool_indices)} vs {len(view_dims)}")
             
@@ -1261,7 +1249,7 @@ class TN:
                     norm_base = _normalize_neg_index(base_idx, _get_base_dim_size(view_dim))
                     start = norm_base.start if norm_base.start is not None else 0
                     combined_coords[view_dim] = start + bool_idx * step
-                elif isinstance(base_idx, (np.ndarray, list)):
+                elif isinstance(base_idx, (arrlib.ndarray, list)):
                     # 数组 -> 布尔索引：查表
                     base_arr, _ = _process_base_array_index(base_idx, view_dim)
                     combined_coords[view_dim] = base_arr[bool_idx]
@@ -1293,7 +1281,7 @@ class TN:
             # 根据基础索引类型选择处理方式
             if isinstance(base_idx, slice):
                 base_start, base_stop, base_step, step_val, view_dim_size = _process_base_slice_index(base_idx, view_dim)
-            elif isinstance(base_idx, (np.ndarray, list)):
+            elif isinstance(base_idx, (arrlib.ndarray, list)):
                 base_idx_arr, view_dim_size = _process_base_array_index(base_idx, view_dim)
             else:
                 raise NotImplementedError(f"Unsupported base index type: {type(base_idx)}")
@@ -1343,19 +1331,19 @@ class TN:
                     # 数组 -> 切片：直接索引映射数组
                     combined_coords[view_dim] = base_idx_arr[norm_curr_idx]
             
-            elif isinstance(norm_curr_idx, (np.ndarray, list)):
-                curr_idx_arr = np.asarray(norm_curr_idx)
+            elif isinstance(norm_curr_idx, (arrlib.ndarray, list)):
+                curr_idx_arr = arrlib.asarray(norm_curr_idx)
                 
-                if np.issubdtype(curr_idx_arr.dtype, np.bool_):
+                if arrlib.issubdtype(curr_idx_arr.dtype, arrlib.bool_):
                     # 布尔数组 -> 整数数组
-                    bool_indices = np.where(curr_idx_arr)[0]
+                    bool_indices = arrlib.where(curr_idx_arr)[0]
                     if len(bool_indices) == 0:
-                        combined_coords[view_dim] = np.array([], dtype=int)
+                        combined_coords[view_dim] = arrlib.array([], dtype=int)
                         continue
                     curr_idx_arr = bool_indices
                 
                 # 确保索引在有效范围内
-                if np.any(curr_idx_arr >= view_dim_size):
+                if arrlib.any(curr_idx_arr >= view_dim_size):
                     raise IndexError(f"Array index out of bounds for view dimension size {view_dim_size}")
                 
                 if isinstance(base_idx, slice):
@@ -1490,34 +1478,44 @@ class TN:
         return self._non_inplace_oper_at(index, val, _set_numpy_item, _setat_backward_left, _setat_backward_right)
 
     def addat_(self,index,val):
-        return self._inplace_oper_at_(index, val, np.add.at, _addat_inplace_backward)
+        arrlib = self._get_array_lib()
+        return self._inplace_oper_at_(index, val, arrlib.add.at, _addat_inplace_backward)
 
-    def addat(self,index,val):        
-        return self._non_inplace_oper_at(index, val, np.add.at, _addat_backward_left, _addat_backward_right)
+    def addat(self,index,val):
+        arrlib = self._get_array_lib()
+        return self._non_inplace_oper_at(index, val, arrlib.add.at, _addat_backward_left, _addat_backward_right)
 
-    def subat_(self,index,val):        
-        return self._inplace_oper_at_(index, val, np.subtract.at, _subat_inplace_backward)
+    def subat_(self,index,val):
+        arrlib = self._get_array_lib()
+        return self._inplace_oper_at_(index, val, arrlib.subtract.at, _subat_inplace_backward)
 
-    def subat(self,index,val):        
-        return self._non_inplace_oper_at(index, val, np.subtract.at, _subat_backward_left, _subat_backward_right)
+    def subat(self,index,val):
+        arrlib = self._get_array_lib()
+        return self._non_inplace_oper_at(index, val, arrlib.subtract.at, _subat_backward_left, _subat_backward_right)
 
     def mulat_(self,index,val):
-        return self._inplace_oper_at_(index, val, np.multiply.at, _mulat_inplace_backward)
+        arrlib = self._get_array_lib()
+        return self._inplace_oper_at_(index, val, arrlib.multiply.at, _mulat_inplace_backward)
 
     def mulat(self,index,val):
-        return self._non_inplace_oper_at(index, val, np.multiply.at, _mulat_backward_left, _mulat_backward_right)
+        arrlib = self._get_array_lib()
+        return self._non_inplace_oper_at(index, val, arrlib.multiply.at, _mulat_backward_left, _mulat_backward_right)
 
     def divat_(self,index,val):
-        return self._inplace_oper_at_(index, val, np.divide.at, _divat_inplace_backward)
+        arrlib = self._get_array_lib()
+        return self._inplace_oper_at_(index, val, arrlib.divide.at, _divat_inplace_backward)
 
     def divat(self,index,val):
-        return self._non_inplace_oper_at(index, val, np.divide.at, _divat_backward_left, _divat_backward_right)
+        arrlib = self._get_array_lib()
+        return self._non_inplace_oper_at(index, val, arrlib.divide.at, _divat_backward_left, _divat_backward_right)
 
     def powat_(self,index,val):
-        return self._inplace_oper_at_(index, val, np.power.at, _powat_inplace_backward)
+        arrlib = self._get_array_lib()
+        return self._inplace_oper_at_(index, val, arrlib.power.at, _powat_inplace_backward)
 
     def powat(self,index,val):
-        return self._non_inplace_oper_at(index, val, np.power.at, _powat_backward_left, _powat_backward_right)
+        arrlib = self._get_array_lib()
+        return self._non_inplace_oper_at(index, val, arrlib.power.at, _powat_backward_left, _powat_backward_right)
 
     def _compute_to_direct_indices(self:TN, dim:int, index_data:np.ndarray):
         """
@@ -1551,12 +1549,13 @@ class TN:
         if dim < 0:
             dim = dim + len(target_shape)
         
+        arrlib = self._get_array_lib()
         # 检查索引值是否在有效范围内
-        if np.any(index_data < 0) or np.any(index_data >= target_shape[dim]):
+        if arrlib.any(index_data < 0) or arrlib.any(index_data >= target_shape[dim]):
             raise IndexError(f"Index value out of range [0, {target_shape[dim]}-1]")
 
         # 使用np.indices一次性创建所有网格索引，这是高效的关键
-        grid_indices = np.indices(index_shape)
+        grid_indices = arrlib.indices(index_shape)
         
         # 为每个维度创建索引
         direct_indices = []
@@ -1574,7 +1573,7 @@ class TN:
         for i in range(len(index_shape), len(target_shape)):
             # 对于额外维度，直接使用全0索引
             # 这与gather函数原始实现保持一致
-            direct_indices.append(np.zeros(index_shape, dtype=np.int64))
+            direct_indices.append(arrlib.zeros(index_shape, dtype=arrlib.int64))
         
         return tuple(direct_indices)
     # end of _compute_direct_indices
@@ -1588,7 +1587,8 @@ class TN:
         :return: 新TN实例，形状与index相同
         """
         # 确保索引是int64类型
-        index.data = index.data.astype(np.int64)
+        arrlib = self._get_array_lib()
+        index.data = index.data.astype(arrlib.int64)
                 
         gather_indices_tuple = self._compute_to_direct_indices(dim, index.data)
         result = self[gather_indices_tuple]
@@ -1614,13 +1614,16 @@ class TN:
         # 标记value是否来自非命名参数
         is_positional_value = False
         
+        arrlib = self._get_array_lib()
+        dev = self.device
+
         # 处理非命名参数作为value的情况
         # 如果src是标量且value未提供，则将src视为value参数
         if src is not None and value is None:
             # 检查非命名参数是否为有效的标量类型
             positional_scalar_types = (int, float, complex)
             # 检查是否为numpy标量
-            is_numpy_scalar = hasattr(src, 'dtype') and np.isscalar(src)
+            is_numpy_scalar = hasattr(src, 'dtype') and arrlib.isscalar(src)
             
             if isinstance(src, positional_scalar_types) or is_numpy_scalar:
                 value = src
@@ -1639,14 +1642,14 @@ class TN:
             if is_positional_value:
                 # 非命名参数时的类型检查：仅限int、float、complex、numpy标量
                 positional_scalar_types = (int, float, complex)
-                is_numpy_scalar = hasattr(value, 'dtype') and np.isscalar(value)
+                is_numpy_scalar = hasattr(value, 'dtype') and arrlib.isscalar(value)
                 
                 if not (isinstance(value, positional_scalar_types) or is_numpy_scalar):
                     raise TypeError(f"Positional value must be a scalar (int, float, complex, numpy scalar), got {type(value).__name__}")
             else:
                 # 命名参数时的类型检查：int、float、complex、numpy标量、TN标量
                 named_scalar_types = (int, float, complex)
-                is_numpy_scalar = hasattr(value, 'dtype') and np.isscalar(value)
+                is_numpy_scalar = hasattr(value, 'dtype') and arrlib.isscalar(value)
                 is_TN_scalar = isinstance(value, TN) and value.ndim == 0
                 
                 if not (isinstance(value, named_scalar_types) or is_numpy_scalar or is_TN_scalar):
@@ -1654,7 +1657,7 @@ class TN:
         
         # 将index转换为TN张量（如果它不是）
         if not isinstance(index, TN):
-            index = tensor(index, dtype=int64)
+            index = tensor(index, dtype=int64, device=dev)
         
         # 确保dim是有效的维度
         if dim < 0:
@@ -1670,7 +1673,7 @@ class TN:
         if src is not None:
             # 将src转换为TN张量（如果它不是）
             if not isinstance(src, TN):
-                src = tensor(src, dtype=self.dtype)
+                src = tensor(src, dtype=self.dtype, device=dev)
             
             # 确保src和self的dtype相同
             if src.dtype != self.dtype:
@@ -1683,8 +1686,7 @@ class TN:
             fill_value = src
         else:  # 使用value参数
             # 创建与index形状相同的张量，填充value值
-            # fill_value = tensor(np.full(index.shape, value), dtype=self.dtype)
-            fill_value = full_like(index, value, dtype=self.dtype)            
+            fill_value = full_like(index, value, dtype=self.dtype,device=dev)            
 
         # 计算直接索引
         full_index = self._compute_to_direct_indices(dim, index.data)
@@ -1713,13 +1715,16 @@ class TN:
         # 标记value是否来自非命名参数
         is_positional_value = False
         
+        arrlib = self._get_array_lib()
+        dev = self.device
+
         # 处理非命名参数作为value的情况
         # 如果src是标量且value未提供，则将src视为value参数
         if src is not None and value is None:
             # 检查非命名参数是否为有效的标量类型
             positional_scalar_types = (int, float, complex)
             # 检查是否为numpy标量
-            is_numpy_scalar = hasattr(src, 'dtype') and np.isscalar(src)
+            is_numpy_scalar = hasattr(src, 'dtype') and arrlib.isscalar(src)
             
             if isinstance(src, positional_scalar_types) or is_numpy_scalar:
                 value = src
@@ -1738,14 +1743,14 @@ class TN:
             if is_positional_value:
                 # 非命名参数时的类型检查：仅限int、float、complex、numpy标量
                 positional_scalar_types = (int, float, complex)
-                is_numpy_scalar = hasattr(value, 'dtype') and np.isscalar(value)
+                is_numpy_scalar = hasattr(value, 'dtype') and arrlib.isscalar(value)
                 
                 if not (isinstance(value, positional_scalar_types) or is_numpy_scalar):
                     raise TypeError(f"Positional value must be a scalar (int, float, complex, numpy scalar), got {type(value).__name__}")
             else:
                 # 命名参数时的类型检查：int、float、complex、numpy标量、TN标量
                 named_scalar_types = (int, float, complex)
-                is_numpy_scalar = hasattr(value, 'dtype') and np.isscalar(value)
+                is_numpy_scalar = hasattr(value, 'dtype') and arrlib.isscalar(value)
                 is_TN_scalar = isinstance(value, TN) and value.ndim == 0
                 
                 if not (isinstance(value, named_scalar_types) or is_numpy_scalar or is_TN_scalar):
@@ -1753,7 +1758,7 @@ class TN:
         
         # 将index转换为TN张量（如果它不是）
         if not isinstance(index, TN):
-            index = tensor(index, dtype = int64)
+            index = tensor(index, dtype = int64, device=dev)
         
         # 确保dim是有效的维度
         if dim < 0:
@@ -1769,7 +1774,7 @@ class TN:
         if src is not None:
             # 将src转换为TN张量（如果它不是）
             if not isinstance(src, TN):
-                src = tensor(src, dtype=self.dtype)
+                src = tensor(src, dtype=self.dtype, device=dev)
             
             # 确保src和self的dtype相同
             if src.dtype != self.dtype:
@@ -1782,8 +1787,7 @@ class TN:
             fill_value = src
         else:  # 使用value参数
             # 创建与index形状相同的张量，填充value值
-            # fill_value = tensor(np.full(index.shape, value), dtype=self.dtype)
-            fill_value = full_like(index, value, dtype=self.dtype)            
+            fill_value = full_like(index, value, dtype=self.dtype,device=dev)            
 
         # 计算直接索引        
         full_index = self._compute_to_direct_indices(dim, index.data)
@@ -1804,19 +1808,19 @@ class TN:
         返回:
             原地修改后的张量（self）
         """
-
+        dev = self.device
         
         # 将index转换为TN张量（如果它不是）
         if not isinstance(index, TN):
-            index = tensor(index, dtype = int64)
+            index = tensor(index, dtype = int64, device=dev)
         
         # 处理src为标量的情况        
         # src参数的类型检查：int、float、complex、numpy标量、TN标量
         if is_scalar(src):
-            src = full_like(index, src, dtype=self.dtype)
+            src = full_like(index, src, dtype=self.dtype, device=dev)
 
         if not isinstance(src,TN):
-            src = tensor(src, dtype=self.dtype)
+            src = tensor(src, dtype=self.dtype, device=dev)
 
         # 确保src和self的dtype相同
         if src.dtype != self.dtype:
@@ -1859,17 +1863,19 @@ class TN:
         if self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         
+        dev = self.device
+        
         # 将index转换为TN张量（如果它不是）
         if not isinstance(index, TN):
-            index = tensor(index, dtype = int64)
+            index = tensor(index, dtype = int64, device=dev)
         
         # 处理src为标量的情况        
         # src参数的类型检查：int、float、complex、numpy标量、TN标量
         if is_scalar(src):
-            src = full_like(index, src, dtype=self.dtype)
+            src = full_like(index, src, dtype=self.dtype, device=dev)
 
         if not isinstance(src,TN):
-            src = tensor(src, dtype=self.dtype)
+            src = tensor(src, dtype=self.dtype, device=dev)
 
         # 确保src和self的dtype相同
         if src.dtype != self.dtype:
@@ -1992,7 +1998,7 @@ class TN:
             trandata = self.data.swapaxes(dim1, dim2)
             
             #转置产生一个新对象，但与原对象共用内存数据
-            newobj = tensor(trandata,
+            newobj = tensor(trandata,device=self.device,
                             requires_grad = (is_grad_enabled() and self.requires_grad))
             newobj.is_leaf = not newobj.requires_grad
 
@@ -2094,11 +2100,12 @@ class TN:
             raise ValueError("Dimension order must contain all axes without repetition")
         
         # 使用numpy.transpose直接计算维度重排
-        new_data = np.transpose(self.data, dims)  # type: ignore
+        arrlib = self._get_array_lib()
+        new_data = arrlib.transpose(self.data, dims)  # type: ignore
         
         # 创建新张量
         requires_grad = is_grad_enabled() and self.requires_grad
-        newobj = tensor(new_data, requires_grad=requires_grad)
+        newobj = tensor(new_data, device=self.device, requires_grad=requires_grad)
         
         # 设置叶子节点状态
         newobj.is_leaf = not requires_grad
@@ -2234,12 +2241,17 @@ class TN:
 
     # '+'运算，左值为self，右值为TN，numpy数组，list，tuple，整数或浮点数
     def __add__(self,right_obj):
+        # 获取self的设备
+        dev = self.device
+
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        if dev != right_tensor.device:
+            raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
-        ret = tensor(self.data + right_tensor.data, requires_grad=requires_grad)
+        ret = tensor(self.data + right_tensor.data, device=dev, requires_grad=requires_grad)
         ret.is_leaf = not requires_grad
         
         if requires_grad:
@@ -2251,17 +2263,22 @@ class TN:
     # '+'运算，右值为self，左值为TN，numpy数组，list，tuple，整数或浮点数
     def __radd__(self,left_obj):
         if not isinstance(left_obj,TN):
-            left_tensor = tensor(left_obj) #如左值是非TN对象，转化为TN对象
+            left_tensor = tensor(left_obj,device=self.device) #如左值是非TN对象，转化为TN对象
         return left_tensor.__add__(self) #归一到左值'+'函数
 
     # '-'运算，左值为self，右值为TN，numpy数组，list，tuple，整数或浮点数
     def __sub__(self,right_obj):
+        # 获取self的设备
+        dev = self.device
+
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        if dev != right_tensor.device:
+            raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
-        ret = tensor(self.data - right_tensor.data, requires_grad=requires_grad)
+        ret = tensor(self.data - right_tensor.data, device=dev, requires_grad=requires_grad)
         ret.is_leaf = not requires_grad
 
         if requires_grad:
@@ -2273,17 +2290,22 @@ class TN:
     # '-'运算，右值为self，左值为TN，numpy数组，list，tuple，整数或浮点数
     def __rsub__(self,left_obj):
         if not isinstance(left_obj,TN):
-            left_tensor=tensor(left_obj) #如左值是非TN对象，转化为TN对象
+            left_tensor=tensor(left_obj,device=self.device) #如左值是非TN对象，转化为TN对象
         return left_tensor.__sub__(self) #归一到左值'-'函数
     
     # '*'运算，左值为self，右值为TN，numpy数组，list，tuple，整数或浮点数
     def __mul__(self,right_obj):
+        # 获取self的设备
+        dev = self.device
+
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        if dev != right_tensor.device:
+            raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
-        ret = tensor(self.data * right_tensor.data,requires_grad=requires_grad)
+        ret = tensor(self.data * right_tensor.data, device=dev, requires_grad=requires_grad)
         ret.is_leaf = not requires_grad
 
         if requires_grad:
@@ -2295,20 +2317,25 @@ class TN:
     # '*'运算，右值为self，左值为TN，numpy数组，list，tuple，整数或浮点数
     def __rmul__(self,left_obj):
         if not isinstance(left_obj,TN):
-            left_tensor=tensor(left_obj) #如左值是非TN对象，转化为TN对象
+            left_tensor=tensor(left_obj,device=self.device) #如左值是非TN对象，转化为TN对象
         return left_tensor.__mul__(self) #归一到左值'*'函数
     
     # '@'运算，左值为self，右值为TN，numpy数组，list，tuple，整数或浮点数
     def __matmul__(self,right_obj):
+        # 获取self的设备
+        dev = self.device
+
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        if dev != right_tensor.device:
+            raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
         if self.data.ndim == 0 or right_obj.data.ndim == 0:
             raise RuntimeError('both arguments to matmul need to be at least 1D')
 
         # requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
-        ret = tensor(self.data @ right_tensor.data, requires_grad=requires_grad)
+        ret = tensor(self.data @ right_tensor.data, device=dev, requires_grad=requires_grad)
         ret.is_leaf=not requires_grad
 
         if requires_grad:
@@ -2320,18 +2347,23 @@ class TN:
     # '@'运算，右值为self，左值为TN，numpy数组，list，tuple，整数或浮点数
     def __rmatmul__(self,left_obj):
         if not isinstance(left_obj,TN):
-            left_tensor=tensor(left_obj) #如左值是非TN对象，转化为TN对象
+            left_tensor=tensor(left_obj,device=self.device) #如左值是非TN对象，转化为TN对象
         return left_tensor.__matmul__(self) #归一到左值'@'函数
     
 
     # '/'运算，左值为self，右值为TN，numpy数组，list，tuple，整数或浮点数
     def __truediv__(self,right_obj):
+        # 获取self的设备
+        dev = self.device
+
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        if dev != right_tensor.device:
+            raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
-        ret=tensor(self.data / right_tensor.data,requires_grad=requires_grad)
+        ret=tensor(self.data / right_tensor.data, device=dev, requires_grad=requires_grad)
         ret.is_leaf=not requires_grad
 
         if requires_grad:
@@ -2343,17 +2375,22 @@ class TN:
     # '/'运算，右值为self，左值为TN，numpy数组，list，tuple，整数或浮点数
     def __rtruediv__(self,left_obj):
         if not isinstance(left_obj,TN):
-            left_tensor=tensor(left_obj) #如左值是非TN对象，转化为TN对象
+            left_tensor=tensor(left_obj,device=self.device) #如左值是非TN对象，转化为TN对象
         return left_tensor.__truediv__(self) #归一到左值'*'函数
 
     # pow运算，左值为self，右值为TN，numpy数组，list，tuple，整数或浮点数
     def __pow__(self,right_obj):
+        # 获取self的设备
+        dev = self.device
+
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        if dev != right_tensor.device:
+            raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
-        ret=tensor(self.data ** right_tensor.data,requires_grad=requires_grad)
+        ret=tensor(self.data ** right_tensor.data, device=dev, requires_grad=requires_grad)
         ret.is_leaf=not requires_grad
 
         if requires_grad:
@@ -2365,7 +2402,7 @@ class TN:
     # pow运算，右值为self，左值为TN，numpy数组，list，tuple，整数或浮点数
     def __rpow__(self,left_obj):
         if not isinstance(left_obj,TN):
-            left_tensor=tensor(left_obj) #如左值是非TN对象，转化为TN对象
+            left_tensor=tensor(left_obj,device=self.device) #如左值是非TN对象，转化为TN对象
         return left_tensor.__pow__(self) #归一到左值'*'函数
         
     def __pos__(self):
@@ -2393,7 +2430,7 @@ class TN:
             dtype = target_dtype
         
         # 现在取负操作会得到正确的负值
-        ret = tensor(-data, dtype=dtype, 
+        ret = tensor(-data, dtype=dtype, device=self.device,
                     requires_grad = (is_grad_enabled() and self.requires_grad))
         ret.is_leaf = not ret.requires_grad
         if  ret.requires_grad:
@@ -2404,55 +2441,63 @@ class TN:
     
     # 比较运算符重载（返回布尔张量，不参与梯度计算）
     def __lt__(self, other):
-        other_data = other.data if isinstance(other, TN) else other
-        return tensor(self.data < other_data)
+        if other is None:
+            raise TypeError(" '<' not supported between instances of 'TN' and 'NoneType'")
+        other_data = other.data if isinstance(other, TN) else other        
+        return tensor(self.data < other_data, device=self.device)
 
     def __le__(self, other):
+        if other is None:
+            raise TypeError(" '<=' not supported between instances of 'TN' and 'NoneType'")
         other_data = other.data if isinstance(other, TN) else other
-        return tensor(self.data <= other_data)
+        return tensor(self.data <= other_data, device=self.device)
 
     def __gt__(self, other):
+        if other is None:
+            raise TypeError(" '>' not supported between instances of 'TN' and 'NoneType'")
         other_data = other.data if isinstance(other, TN) else other
-        return tensor(self.data > other_data)
+        return tensor(self.data > other_data, device=self.device)
 
     def __ge__(self, other):
+        if other is None:
+            raise TypeError(" '>=' not supported between instances of 'TN' and 'NoneType'")
         other_data = other.data if isinstance(other, TN) else other
-        return tensor(self.data >= other_data)
+        return tensor(self.data >= other_data, device=self.device)
 
     def __eq__(self, other):
         if other is None:
             return False
         other_data = other.data if isinstance(other, TN) else other
-        return tensor(self.data == other_data)
+        return tensor(self.data == other_data, device=self.device)
 
     def __ne__(self, other):
         if other is None:
             return True
         other_data = other.data if isinstance(other, TN) else other
-        return tensor(self.data != other_data)
+        return tensor(self.data != other_data, device=self.device)
 
     def __and__(self, other):
         other_data = other.data if isinstance(other,TN) else other        
-        return tensor(self.data & other_data)
+        return tensor(self.data & other_data, device=self.device)
 
     def __or__(self, other):
         other_data = other.data if isinstance(other,TN) else other        
-        return tensor(self.data | other_data)
+        return tensor(self.data | other_data, device=self.device)
     
     def __xor__(self, other):
         other_data = other.data if isinstance(other,TN) else other        
-        return tensor(self.data ^ other_data)
+        return tensor(self.data ^ other_data, device=self.device)
     
     def __invert__(self):
-        return tensor(~self.data)
+        return tensor(~self.data, device=self.device)
     
     def __lshift__(self, other):
         other_data = int(other.data if isinstance(other,TN) else other)
-        return tensor(self.data << other_data)
+        return tensor(self.data << other_data, device=self.device)
     
     def __rshift__(self, other):
         other_data = int(other.data if isinstance(other,TN) else other)
-        return tensor(self.data >> other_data)
+        return tensor(self.data >> other_data, device=self.device)
     
     def detach(self):
         """
@@ -2518,15 +2563,20 @@ class TN:
     
     def copy_to(self,target:TN|np.ndarray|None=None):
         '''将self数据复制到target'''
+        arrtype = (np.ndarray,cp.ndarray) if cp else (np.ndarray,)
 
         if isinstance(target,TN):
+            if target.device != self.device:
+                raise ValueError(f'target device must be {self.device} but got {target.device}')
             target.copy_(self)
-        elif isinstance(target,np.ndarray):
+        elif isinstance(target,arrtype):
+            if type(target) != type(self.data):
+                raise TypeError(f'target type must be {type(self.data)} but got {type(target)}')
             np.copyto(target,self.data)
         elif target is None:
             target = self.clone()
         else:
-            raise TypeError('target must be a TN, np.ndarray object or None')
+            raise TypeError('target must be a TN, numpy/cupy ndarray object or None')
 
         return target
 
@@ -2675,9 +2725,12 @@ class TN:
         else:
             raise TypeError("dim must be None, an integer, or a tuple of integers")
         
+        # 根据原始张量的数据类型选择使用np或cp
+        arrlib = self._get_array_lib()
+
         # 执行挤压操作并设置梯度信息
         new_dim = tuple(new_dim)  # type: ignore
-        newarr = np.squeeze(self.data, axis=new_dim)
+        newarr = arrlib.squeeze(self.data, axis=new_dim)
         ret = TN()
         ret.data = newarr        
         ret.requires_grad = (is_grad_enabled() and self.requires_grad)
@@ -2692,14 +2745,16 @@ class TN:
     def unsqueeze(self, dim:int|tuple):
         if dim is None or dim == ():            
             return self
-        
-        newarr = np.expand_dims(self.data, axis=dim)
+
+        # 根据原始张量的数据类型选择使用np或cp
+        arrlib = self._get_array_lib()
+        newarr = arrlib.expand_dims(self.data, axis=dim)
         
         ret = TN()
         ret.data = newarr        
         ret.requires_grad = (is_grad_enabled() and self.requires_grad)
         ret.is_leaf = not ret.requires_grad
-
+        
         if ret.requires_grad:
             ret.fromvars = (self,)
             ret.parms = (dim,)
@@ -3063,8 +3118,10 @@ class TN:
                         f"equal to the existing size ({orig_dim}) or the existing size must be one."
                     )
         
+        # 根据原始张量的数据类型选择使用np或cp
+        arrlib = self._get_array_lib()        
         # 使用numpy的broadcast_to执行扩展
-        expanded_data = np.broadcast_to(self.data, new_shape)
+        expanded_data = arrlib.broadcast_to(self.data, new_shape)   
         
         # 创建新的张量对象
         ret = tensor(expanded_data, 
@@ -3134,11 +3191,13 @@ class TN:
         if dim == ():
             dim = None
         
-        # 使用numpy的any函数计算结果
-        result_data = np.all(self.data, axis=dim, keepdims=keepdim)
+        # 根据原始张量的数据类型选择使用np或cp
+        arrlib = self._get_array_lib()
+        # 使用numpy/cupy的all函数计算结果
+        result_data = arrlib.all(self.data, axis=dim, keepdims=keepdim)
         
         # 创建结果张量，保持梯度传播
-        ret = tensor(result_data, dtype=bool)  # type: ignore
+        ret = tensor(result_data, dtype=bool, device=self.device)  # type: ignore
         return ret
 
     def any(self, dim:int|tuple|None=None, keepdim:bool=False):  # type: ignore
@@ -3156,11 +3215,13 @@ class TN:
         if dim == ():
             dim = None
         
-        # 使用numpy的any函数计算结果
-        result_data = np.any(self.data, axis=dim, keepdims=keepdim)
+        # 根据原始张量的数据类型选择使用np或cp
+        arrlib = self._get_array_lib()
+        # 使用numpy/cupy的any函数计算结果
+        result_data = arrlib.any(self.data, axis=dim, keepdims=keepdim)
         
         # 创建结果张量，保持梯度传播
-        ret = tensor(result_data, dtype=bool)  # type: ignore
+        ret = tensor(result_data, dtype=bool, device=self.device)  # type: ignore
         return ret
 
     def equal(self, other):
@@ -3518,13 +3579,14 @@ class TN:
         
             # 使用self作为反向传播的起点
             self._init_calc_graph()
-            self.grad_value = tensor(1.0,dtype=self.dtype,requires_grad=create_graph)
+            # 确保默认梯度张量与当前张量在相同的设备上
+            self.grad_value = tensor(1.0, dtype=self.dtype, device=self.device, requires_grad=create_graph)
         
         elif isinstance(gradient,TN):
             if gradient.data.shape == self.data.shape:
                 # 直接使用原始self，设置其grad_value为gradient
                 self._init_calc_graph()
-                self.grad_value = gradient.copy().requires_grad_(create_graph)            
+                self.grad_value = gradient.to(self.device).detach().requires_grad_(create_graph)            
             else:
                 raise RuntimeError('shape of gradient need to be same as the shape of outputs')
         else:
@@ -3630,7 +3692,72 @@ class TN:
         return current_grad
 #end of class
 
-def tensor(data, dtype:np.dtype|None = None, device:Device|None = None, requires_grad:bool|None = False)->TN:
+def _get_device(device:str|int|Device=None)->Device:
+    """
+    获取设备，该函数根据输入的设备参数，返回一个Device对象。
+    
+    参数:
+        device: 可选，指定设备的字符串表示、整数索引或Device对象。
+                可以是'cpu'、'cuda'、'cuda:0'、从0开始的整数等。
+                如果为None，则默认使用CPU。
+    
+    返回值:
+        Device: 包含两个属性，type属性为‘cpu'或'cuda'，
+                index属性为CUDA设备索引（CPU为None）。
+    
+    异常:
+        RuntimeError: 当指定的device无效或不可用时抛出
+    """ 
+
+    if device is not None:
+        # 先将字符串或Device对象统一转换为Device对象
+        if isinstance(device, Device):
+            return_device = device
+        elif isinstance(device, (str,int)):
+            return_device = Device(device)
+        else:
+            raise RuntimeError(f"Invalid device type: {type(device).__name__}")
+    else:
+        # device参数为None，优先级：device上下文 > 默认设备
+        if CUPY_AVAILABLE and is_in_cuda_context():
+            # 当前线程在CUDA设备上下文中，使用当前CUDA设备
+            target_device_idx = cp.cuda.runtime.getDevice()
+            return_device = Device(target_device_idx)
+        else:
+            # 否则使用默认设备
+            return_device = get_default_device()
+    
+    return return_device
+
+def _get_dtype(dtype:any)->np.dtype:
+    """
+    获取数据类型，该函数根据输入的dtype参数，返回一个np.dtype对象。
+    
+    参数:
+        dtype: 可选，指定数据类型的字符串表示或np.dtype对象。
+                可以是'float32'、'float64'、'int32'、'int64'等。
+                如果为None，则默认使用float32。
+    
+    返回值:
+        np.dtype: 包含数据类型的对象。
+    
+    异常:
+        TypeError: 当dtype参数无效时抛出
+    """
+
+    if isinstance(dtype, np.dtype):
+        return dtype
+    
+    # 使用np.dtype转换，numpy可以处理各种字符串表示的类型
+    # cupy和numpy的dtype类是统一的，所以用np.dtype处理即可，不用区分
+    try:
+        dtype_obj = np.dtype(dtype)
+    except (TypeError, TypeError):
+        raise TypeError(f"Cannot convert {dtype} to a valid dtype")
+
+    return dtype_obj    
+
+def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, requires_grad:bool|None = False)->TN:
     """
     创建一个新的张量对象。
     
@@ -3640,9 +3767,9 @@ def tensor(data, dtype:np.dtype|None = None, device:Device|None = None, requires
     参数:
         data: 可以是任意可转换为numpy数组的数据，包括列表、元组、标量、numpy数组等
         dtype: 可选，指定张量的数据类型。如果为None，则保留原始数据类型
-        requires_grad: 可选，布尔值，指定是否需要计算该张量的梯度，默认为False
         device: 可选，指定张量所在的设备，可以是'cpu'、'cuda'、device对象或None
-    
+        requires_grad: 可选，布尔值，指定是否需要计算该张量的梯度，默认为False
+            
     返回值:
         TN: 新创建的张量对象
     
@@ -3669,110 +3796,73 @@ def tensor(data, dtype:np.dtype|None = None, device:Device|None = None, requires
 
     tsobj = TN()    # 初始化空对象实例
     
-    # 解析device参数
-    use_cuda = False
-    if device is not None:
-        if isinstance(device, str):
-            if device.startswith('cuda'):
-                # 创建Device对象以利用其验证逻辑
-                device_obj = Device(device)
-                use_cuda = True
-            elif device == 'cpu':
-                use_cuda = False
-            else:
-                raise RuntimeError(f"Invalid device: {device}")
-        elif isinstance(device, Device):
-            if device.type == 'cuda':
-                use_cuda = True
-        else:
-            raise RuntimeError(f"Invalid device type: {type(device).__name__}")
-    else:
-        # device参数为None，优先级：device上下文 > 默认设备
-        if CUPY_AVAILABLE and is_in_cuda_context():
-            # 当前线程在CUDA设备上下文中，使用当前CUDA设备
-            use_cuda = True
-        else:
-            # 否则使用默认设备
-            from .cuda import get_default_device
-            default_dev = get_default_device()
-            if default_dev.type == 'cuda':
-                use_cuda = True
-    
-    # 检查CUDA是否可用
-    if use_cuda and not CUPY_AVAILABLE:
-        raise RuntimeError("CUDA is not available")
-    
-    # 根据device选择数组创建库
-    array_lib = np
-    if use_cuda:
-        array_lib = cp
+    # 解析设备索引
+    dev = _get_device(device)
+    use_cuda, target_device_idx = (dev.type == 'cuda'), dev.index
     
     # 根据CUPY_AVAILABLE决定检查的数组类型
-    if CUPY_AVAILABLE:
-        array_type = (np.ndarray, cp.ndarray)
-    else:
-        array_type = (np.ndarray,)  # type: ignore
-    
-    # 获取当前设备索引（仅当使用CUDA时）
-    current_device_idx = None
-    if use_cuda and CUPY_AVAILABLE:
-        # 检查是否有默认设备，并且默认设备是CUDA设备
-        from .cuda import get_default_device
-        default_dev = get_default_device()
-        if default_dev.type == 'cuda':
-            # 使用默认设备指定的CUDA设备索引
-            current_device_idx = default_dev.index
-        else:
-            # 使用当前CUDA设备索引
-            current_device_idx = cp.cuda.runtime.getDevice()
-    
+    array_type = (np.ndarray, cp.ndarray) if CUPY_AVAILABLE else (np.ndarray,)  # type: ignore
     if isinstance(data, array_type):
         if dtype is None:
             if use_cuda:
                 if isinstance(data, np.ndarray):
-                    # numpy数组迁移到当前cuda设备
-                    arr = cp.asarray(data)
+                    # numpy数组迁移到目标CUDA设备
+                    with cp.cuda.Device(target_device_idx):
+                        arr = cp.asarray(data)
                 else:
-                    # 检查cupy数组所在的设备是否与当前设备相同
+                    # 检查cupy数组所在的设备是否与目标设备相同
                     # 所有CuPy数组都有device属性，因此无需hasattr检查
-                    if data.device.id != current_device_idx:
-                        # 数组在不同设备上，迁移到当前设备
-                        arr = cp.asarray(data, dtype=data.dtype)
+                    if data.device.id != target_device_idx:
+                        # 数组在不同设备上，迁移到目标设备
+                        with cp.cuda.Device(target_device_idx):
+                            arr = cp.asarray(data, dtype=data.dtype)
                     else:
                         arr = data  # 已经是当前设备上的cp.ndarray
-            else:
+            else: 
                 if isinstance(data, cp.ndarray):
+                    # cupy数组迁移到cpu
                     arr = cp.asnumpy(data)
                 else:
                     arr = data  # 已经是np.ndarray
-        else:
+        else: # dtype is not None
             if use_cuda:
                 if isinstance(data, np.ndarray):
-                    # numpy数组迁移到当前cuda设备
-                    arr = cp.asarray(data, dtype=dtype)
-                else:
-                    # 检查cupy数组所在的设备是否与当前设备相同
-                    # 所有CuPy数组都有device属性，因此无需hasattr检查
-                    if data.device.id != current_device_idx:
-                        # 数组在不同设备上，迁移到当前设备
+                    # numpy数组迁移到目标CUDA设备，同时转换dtype
+                    with cp.cuda.Device(target_device_idx):
                         arr = cp.asarray(data, dtype=dtype)
+                else:
+                    # 检查cupy数组所在的设备是否与目标设备相同
+                    # 所有CuPy数组都有device属性，因此无需hasattr检查
+                    if data.device.id != target_device_idx:
+                        # 数组在不同设备上，迁移到目标设备
+                        with cp.cuda.Device(target_device_idx):
+                            arr = cp.asarray(data, dtype=dtype)
                     else:
                         # 数组在当前设备上，直接转换dtype
                         arr = data.astype(dtype)
             else:
                 if isinstance(data, cp.ndarray):
+                    # cupy数组迁移到cpu
                     arr = cp.asnumpy(data).astype(dtype)
                 else:
                     arr = data.astype(dtype)
     else:
-        # data不是numpy/cupy数组时转换为相应数组    
-        if dtype is None:
-            arr = array_lib.array(data, dtype=infer_data_type(data))
+        # data是python数据类型时转换为相应数组    
+        if use_cuda:
+            # 在目标CUDA设备上创建新数组
+            with cp.cuda.Device(target_device_idx):
+                if dtype is None:
+                    arr = cp.array(data, dtype=infer_data_type(data))
+                else:
+                    arr = cp.array(data, dtype=dtype)
         else:
-            arr = array_lib.array(data, dtype=dtype)
+            # 创建numpy数组
+            if dtype is None:
+                arr = np.array(data, dtype=infer_data_type(data))
+            else:
+                arr = np.array(data, dtype=dtype)
     
-    tsobj.data = arr
-    
+    tsobj.data = arr    
     tsobj.requires_grad = bool(requires_grad)
     if requires_grad:
         if not is_float_or_complex(tsobj.data.dtype):
@@ -3807,16 +3897,14 @@ def from_numpy(arr:np.ndarray)->TN:
         2. 张量与原始numpy数组共享内存，修改一方会影响另一方
         3. 输入数组必须是数值类型（整数、浮点数、复数等）
     """
-    if isinstance(arr,np.ndarray):
-        if is_numeric_array(arr):
-            tsobj=TN()
-            tsobj.data = arr
-        else:
-            raise TypeError("dtype of numpy array need to be number")
-    else:
-        raise TypeError("array need to be numpy array")
+    array_type = (np.ndarray, cp.ndarray) if CUPY_AVAILABLE else (np.ndarray,)  # type: ignore
+    if not isinstance(data, array_type):
+        raise TypeError("array need to be numpy or cupy array")
     
-    return tsobj
+    if not is_numeric_array(arr):
+        raise TypeError("dtype of array need to be numberic")
+    
+    return tensor(arr)
 
 def _validate_shape(shape:tuple|list):
     '''
@@ -3845,7 +3933,7 @@ def _validate_shape(shape:tuple|list):
         raise RuntimeError(f'{shape} contains non int numbers')
     return newshape
 
-def zeros(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+def zeros(*shape,dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad:bool|None = False)->TN:
     """
     创建一个全零张量。
     
@@ -3854,6 +3942,7 @@ def zeros(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN
     Args:
         *shape: 张量的形状，可以是一个整数序列或一个元组/列表
         dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
@@ -3865,9 +3954,15 @@ def zeros(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN
     """
     shape_val = _validate_shape(shape)
     dt = get_default_dtype() if dtype is None else dtype
-    return tensor(np.zeros(shape_val,dt),requires_grad=requires_grad)
-
-def zeros_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        arr = np.zeros(shape_val,dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            arr = cp.zeros(shape_val,dt)
+    return tensor(arr,device=dev,requires_grad=requires_grad)
+    
+def zeros_like(tsr:TN, dtype:np.dtype|None = None,device:str|int|Device|None = None,requires_grad:bool|None = False)->TN:
     """
     创建一个与给定张量形状相同的全零张量。
     
@@ -3876,6 +3971,7 @@ def zeros_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = Fals
     Args:
         tsr (TN): 参考张量，用于确定输出张量的形状
         dtype (np.dtype, optional): 输出张量的数据类型，如果为None则使用参考张量的数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
@@ -3886,9 +3982,15 @@ def zeros_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = Fals
         >>> y = zeros_like(x)  # 创建与x形状相同的全零张量
     """
     dt = tsr.dtype if dtype is None else dtype
-    return tensor(np.zeros_like(tsr.data,dt),requires_grad=requires_grad)
+    dev = tsr.device if device is None else _get_device(device)
+    if dev.type=='cpu':
+        arr = np.zeros_like(tsr.data,dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            arr = cp.zeros_like(tsr.data,dt)
+    return tensor(arr,device=dev,requires_grad=requires_grad)
 
-def ones(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+def ones(*shape,dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad:bool|None = False)->TN:
     """
     创建一个全一张量。
     
@@ -3897,6 +3999,7 @@ def ones(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
     Args:
         *shape: 张量的形状，可以是一个整数序列或一个元组/列表
         dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
@@ -3908,9 +4011,15 @@ def ones(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
     """
     shape_val = _validate_shape(shape)
     dt = get_default_dtype() if dtype is None else dtype
-    return tensor(np.ones(shape_val,dt),requires_grad=requires_grad)
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        arr = np.ones(shape_val,dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            arr = cp.ones(shape_val,dt)
+    return tensor(arr,device=dev,requires_grad=requires_grad)
 
-def ones_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:  
+def ones_like(tsr:TN, dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad:bool|None = False)->TN:  
     """
     创建一个与给定张量形状相同的全一张量。
     
@@ -3919,6 +4028,7 @@ def ones_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = False
     Args:
         tsr (TN): 参考张量，用于确定输出张量的形状
         dtype (np.dtype, optional): 输出张量的数据类型，如果为None则使用参考张量的数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
@@ -3929,9 +4039,15 @@ def ones_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = False
         >>> y = ones_like(x)  # 创建与x形状相同的全一张量
     """
     dt = tsr.dtype if dtype is None else dtype
-    return tensor(np.ones_like(tsr.data,dt),requires_grad=requires_grad)
+    dev = tsr.device if device is None else _get_device(device)
+    if dev.type=='cpu':
+        arr = np.ones_like(tsr.data,dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            arr = cp.ones_like(tsr.data,dt)
+    return tensor(arr,device=dev,requires_grad=requires_grad)
 
-def empty(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+def empty(*shape,dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad:bool|None = False)->TN:
     """
     创建一个未初始化的张量。
     
@@ -3941,6 +4057,7 @@ def empty(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN
     Args:
         *shape: 张量的形状，可以是一个整数序列或一个元组/列表
         dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
@@ -3955,9 +4072,15 @@ def empty(*shape,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN
     """
     shape_val = _validate_shape(shape)
     dt = get_default_dtype() if dtype is None else dtype
-    return tensor(np.empty(shape_val,dt),requires_grad=requires_grad)
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        arr = np.empty(shape_val,dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            arr = cp.empty(shape_val,dt)
+    return tensor(arr,device=dev,requires_grad=requires_grad)
 
-def empty_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+def empty_like(tsr:TN, dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad:bool|None = False)->TN:
     """
     创建一个与给定张量形状相同的未初始化张量。
     
@@ -3967,6 +4090,7 @@ def empty_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = Fals
     Args:
         tsr (TN): 参考张量，用于确定输出张量的形状
         dtype (np.dtype, optional): 输出张量的数据类型，如果为None则使用参考张量的数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
@@ -3980,9 +4104,15 @@ def empty_like(tsr:TN, dtype:np.dtype|None = None,requires_grad:bool|None = Fals
         由于张量未初始化，其元素值是不确定的，使用前应当先赋值。
     """
     dt = tsr.dtype if dtype is None else dtype
-    return tensor(np.empty_like(tsr.data,dt),requires_grad=requires_grad)
+    dev = tsr.device if device is None else _get_device(device)
+    if dev.type=='cpu':
+        arr = np.empty_like(tsr.data,dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            arr = cp.empty_like(tsr.data,dt)
+    return tensor(arr,device=dev,requires_grad=requires_grad)
 
-def full(*shape,fill_value:Any,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+def full(*shape,fill_value:Any,dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad:bool|None = False)->TN:
     """
     创建一个填充了指定值的张量。
     
@@ -3992,6 +4122,7 @@ def full(*shape,fill_value:Any,dtype:np.dtype|None = None,requires_grad:bool|Non
         *shape: 张量的形状，可以是一个整数序列或一个元组/列表
         fill_value: 用于填充张量的值
         dtype (np.dtype, optional): 张量的数据类型，如果为None则根据fill_value推断
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
@@ -4003,9 +4134,15 @@ def full(*shape,fill_value:Any,dtype:np.dtype|None = None,requires_grad:bool|Non
     """
     shape_val = _validate_shape(shape)
     dt = get_default_dtype() if dtype is None else dtype
-    return tensor(np.full(shape_val,fill_value,dt),requires_grad=requires_grad) 
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        arr = np.full(shape_val,fill_value,dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            arr = cp.full(shape_val,fill_value,dt)
+    return tensor(arr,device=dev,requires_grad=requires_grad) 
 
-def full_like(tsr:TN,fill_value:Any,dtype:np.dtype|None = None,requires_grad:bool|None = False)->TN:
+def full_like(tsr:TN,fill_value:Any,dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad:bool|None = False)->TN:
     """
     创建一个与给定张量形状相同并填充了指定值的张量。
     
@@ -4015,6 +4152,7 @@ def full_like(tsr:TN,fill_value:Any,dtype:np.dtype|None = None,requires_grad:boo
         tsr (TN): 参考张量，用于确定输出张量的形状
         fill_value: 用于填充张量的值
         dtype (np.dtype, optional): 输出张量的数据类型，如果为None则使用参考张量的数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
@@ -4025,9 +4163,15 @@ def full_like(tsr:TN,fill_value:Any,dtype:np.dtype|None = None,requires_grad:boo
         >>> y = full_like(x, 5)  # 创建与x形状相同的张量，所有元素为5
     """
     dt = tsr.dtype if dtype is None else dtype
-    return tensor(np.full_like(tsr.data,fill_value,dt),requires_grad=requires_grad)
+    dev = tsr.device if device is None else _get_device(device)
+    if dev.type=='cpu':
+        arr = np.full_like(tsr.data,fill_value,dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            arr = cp.full_like(tsr.data,fill_value,dt)
+    return tensor(arr,device=dev,requires_grad=requires_grad)
 
-def eye(n: int, m: int | None = None, dtype:np.dtype|None = None,requires_grad:bool|None = False):
+def eye(n: int, m: int | None = None, dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad:bool|None = False):
     """
     创建一个二维单位矩阵。
     
@@ -4038,6 +4182,7 @@ def eye(n: int, m: int | None = None, dtype:np.dtype|None = None,requires_grad:b
         n (int): 矩阵的行数
         m (int, optional): 矩阵的列数，如果为None则默认为n
         dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
@@ -4049,9 +4194,15 @@ def eye(n: int, m: int | None = None, dtype:np.dtype|None = None,requires_grad:b
     """
     dt = get_default_dtype() if dtype is None else dtype
     mm = n if m is None else m
-    return tensor(np.eye(n, mm, 0, dt),requires_grad=requires_grad)
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        arr = np.eye(n, mm, 0, dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            arr = cp.eye(n, mm, 0, dt)
+    return tensor(arr,device=dev,requires_grad=requires_grad)
 
-def rand(*size, requires_grad=False, dtype:np.dtype|None = None) -> TN:
+def rand(*size, requires_grad=False, dtype:np.dtype|None = None,device:str|int|Device|None=None) -> TN:
     """
     创建一个填充了[0,1)均匀分布随机数的张量。
     
@@ -4061,6 +4212,7 @@ def rand(*size, requires_grad=False, dtype:np.dtype|None = None) -> TN:
         *size: 张量的形状，可以是一个整数序列或一个元组/列表
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         
     Returns:
         TN: 填充了[0,1)均匀分布随机数的张量
@@ -4071,10 +4223,15 @@ def rand(*size, requires_grad=False, dtype:np.dtype|None = None) -> TN:
     """
     shape = _validate_shape(size)
     dt = get_default_dtype() if dtype is None else dtype
-    data = np.random.rand(*shape).astype(dt)
-    return tensor(data, requires_grad=requires_grad)
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        data = np.random.rand(*shape).astype(dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            data = cp.random.rand(*shape,dtype=dt)
+    return tensor(data, device=dev, requires_grad=requires_grad)
 
-def randn(*size, requires_grad=False, dtype:np.dtype|None = None) -> TN:
+def randn(*size, requires_grad=False, dtype:np.dtype|None = None,device:str|int|Device|None=None) -> TN:
     """
     创建一个填充了标准正态分布随机数的张量。
     
@@ -4084,6 +4241,7 @@ def randn(*size, requires_grad=False, dtype:np.dtype|None = None) -> TN:
         *size: 张量的形状，可以是一个整数序列或一个元组/列表
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         
     Returns:
         TN: 填充了标准正态分布随机数的张量
@@ -4094,34 +4252,69 @@ def randn(*size, requires_grad=False, dtype:np.dtype|None = None) -> TN:
     """
     shape = _validate_shape(size)
     dt = get_default_dtype() if dtype is None else dtype
-    data = np.random.randn(*shape).astype(dt)
-    return tensor(data, requires_grad=requires_grad)
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        data = np.random.randn(*shape).astype(dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            data = cp.random.randn(*shape,dtype=dt)
+    return tensor(data,device=dev, requires_grad=requires_grad)
 
-def randint(low: int, high: int, size, requires_grad = False, dtype = int64) -> TN:
+def randint(low: int, high = None, size = None, dtype = int64,device:str|int|Device|None=None,requires_grad = False) -> TN:
     """
     创建一个填充了指定区间随机整数的张量。
     
     返回一个形状为指定大小的张量，元素是从[low, high)区间均匀分布的随机整数。
     
     Args:
-        low (int): 随机整数的最小值（包含）
+        low (int, optional): 随机整数的最小值（包含），默认为0
         high (int): 随机整数的最大值（不包含）
         size: 张量的形状，可以是一个整数序列或一个元组/列表
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         dtype (np.dtype, optional): 张量的数据类型，默认为int64
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         
     Returns:
         TN: 填充了[low, high)区间随机整数的张量
         
     Examples:
+        >>> randint(10, size=(3, 4))  # 创建3x4的张量，元素为0到9的随机整数
         >>> randint(0, 10, (3, 4))  # 创建3x4的张量，元素为0到9的随机整数
         >>> randint(5, 15, 6)  # 创建长度为6的一维张量，元素为5到14的随机整数
     """
-    dt = get_default_dtype() if dtype is None else dtype
-    data = np.random.randint(low, high, size=size).astype(dt)
-    return tensor(data, requires_grad=requires_grad)
+    # 处理PyTorch和传统风格的调用方式
+    # 检查是否是PyTorch风格的调用方式：randint(high, size)
+    # 这种情况下，high参数实际上是size，low参数实际上是high
+    if size is None:
+        if high is None:
+            # 调用方式为randint(high)，这是不允许的
+            raise ValueError("Either high or high and size must be specified")
+        elif not isinstance(high, (int, np.integer)):
+            # 调用方式为randint(high, size)，其中size是一个非整数类型（如元组）
+            size = high
+            high = low
+            low = 0
+        elif high < low:
+            # 调用方式为randint(high, size)，其中size是一个整数
+            # 由于high < low，这不可能是传统的randint(low, high, size)调用方式
+            size = high
+            high = low
+            low = 0
+    elif high is None:
+        # 调用方式为randint(high, size=size)
+        high = low
+        low = 0
+    
+    dt = int64 if dtype is None else dtype
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        data = np.random.randint(low, high, size=size).astype(dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            data = cp.random.randint(low, high, size=size,dtype=dt)
+    return tensor(data,device=dev, requires_grad=requires_grad)
 
-def randperm(n: int, requires_grad=False, dtype=int64) -> TN:
+def randperm(n: int, requires_grad=False, dtype=int64,device:str|int|Device|None=None) -> TN:
     """
     创建一个包含0到n-1随机排列的张量。
     
@@ -4131,6 +4324,7 @@ def randperm(n: int, requires_grad=False, dtype=int64) -> TN:
         n (int): 排列的长度，生成的张量将包含从0到n-1的整数
         requires_grad (bool, optional): 是否需要计算梯度，默认为False
         dtype (np.dtype, optional): 张量的数据类型，默认为int64
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         
     Returns:
         TN: 包含0到n-1随机排列的一维张量
@@ -4139,10 +4333,17 @@ def randperm(n: int, requires_grad=False, dtype=int64) -> TN:
         >>> randperm(5)  # 可能返回[3, 1, 4, 0, 2]这样的随机排列
         >>> randperm(10)  # 返回长度为10的0到9的随机排列
     """
-    data = np.random.permutation(n).astype(dtype)
-    return tensor(data, requires_grad=requires_grad)
+    dt = int64 if dtype is None else dtype
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        data = np.random.permutation(n).astype(dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            # cupy.random.permutation不支持dtype参数，先生成排列再转换数据类型
+            data = cp.random.permutation(n).astype(dt)
+    return tensor(data, device=dev, requires_grad=requires_grad)
 
-def normal(mean:float,std:float,size:int|tuple,dtype:np.dtype|None = None)->TN:
+def normal(mean:float,std:float,size:int|tuple,dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad=False)->TN: 
     """
     创建一个填充了指定正态分布随机数的张量。
     
@@ -4153,6 +4354,8 @@ def normal(mean:float,std:float,size:int|tuple,dtype:np.dtype|None = None)->TN:
         std (float): 正态分布的标准差
         size (int|tuple): 张量的形状，可以是一个整数或一个元组/列表
         dtype (np.dtype, optional): 张量的数据类型，如果为None则使用默认数据类型
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
+        requires_grad (bool, optional): 是否需要计算梯度，默认为False
         
     Returns:
         TN: 填充了指定正态分布随机数的张量
@@ -4162,11 +4365,16 @@ def normal(mean:float,std:float,size:int|tuple,dtype:np.dtype|None = None)->TN:
         >>> normal(2, 0.5, 5)  # 创建长度为5的一维张量，元素为均值为2、标准差为0.5的正态分布随机数
     """
     dt = get_default_dtype() if dtype is None else dtype
-    data = np.random.normal(mean,std,size).astype(dt)    
-    return tensor(data)
+    dev = _get_device(device)
+    if dev.type=='cpu':
+        data = np.random.normal(mean,std,size).astype(dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            data = cp.random.normal(mean,std,size,dtype=dt)
+    return tensor(data,device=dev, requires_grad=requires_grad)
 
 # 添加arange函数
-def arange(start: float, end: float | None = None, step: float = 1.0, dtype: np.dtype | None = None, requires_grad: bool = False) -> TN:
+def arange(start: float, end: float | None = None, step: float = 1.0, dtype: np.dtype | None = None, device: str|int|Device|None = None, requires_grad: bool = False) -> TN:
     """
     创建一个一维张量，包含从start到end（不包括end）的等差序列。
     
@@ -4175,6 +4383,7 @@ def arange(start: float, end: float | None = None, step: float = 1.0, dtype: np.
         end: 序列的结束值（不包含）。如果省略，start将被视为end，而start将变为0
         step: 相邻两个元素之间的步长，默认为1.0
         dtype: 返回张量的数据类型。如果未指定，将从其他输入推断
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad: 是否需要计算梯度，默认为False
     
     返回:
@@ -4185,27 +4394,30 @@ def arange(start: float, end: float | None = None, step: float = 1.0, dtype: np.
         end = start  # 先保存用户输入
         # 根据用户输入类型决定起始值类型
         start = 0 if isinstance(end, int) else 0.0  
-    
-    # 使用numpy的arange创建数组
-    data = np.arange(start, end, step, dtype=dtype)
-    
+            
     # 如果没有指定dtype，根据输入类型推断
     if dtype is None:
         # 检查所有输入是否都是整数
         is_all_integer = isinstance(start, int) and isinstance(end, int) and isinstance(step, int)
         if is_all_integer:
             # 所有输入都是整数时使用int64
-            data = data.astype(np.int64)
+            dt = np.int64
         else:
             # 否则使用默认浮点类型
             dt = get_default_dtype()
-            data = data.astype(dt)
+    else:
+        dt = dtype
+
+    # 使用numpy/cupy的arange创建数组
+    dev = _get_device(device)
+    arrlib = np if dev.type == 'cpu' else cp
+    data = arrlib.arange(start, end, step, dtype=dt)
     
     # 创建并返回张量
-    return tensor(data, requires_grad=requires_grad)
+    return tensor(data, device=dev, requires_grad=requires_grad)
 
 # 添加linspace函数
-def linspace(start: float, end: float, steps: int = 100, endpoint: bool = True, dtype: np.dtype | None = None, requires_grad: bool = False) -> TN:
+def linspace(start: float, end: float, steps: int = 100, endpoint: bool = True, dtype: np.dtype | None = None, device: str|int|Device|None = None, requires_grad: bool = False) -> TN:
     """
     创建一个一维张量，包含从start到end的均匀间隔的值。
     
@@ -4215,21 +4427,22 @@ def linspace(start: float, end: float, steps: int = 100, endpoint: bool = True, 
         steps: 生成的样本数量，默认为100
         endpoint: 如果为True，序列包含end；否则不包含，默认为True
         dtype: 返回张量的数据类型。如果未指定，将从其他输入推断
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
         requires_grad: 是否需要计算梯度，默认为False
     
     返回:
         包含均匀间隔值的一维张量
     """
-    # 使用numpy的linspace创建数组
-    data = np.linspace(start, end, num=steps, endpoint=endpoint, dtype=dtype)
-    
     # 如果没有指定dtype，使用默认浮点类型
-    if dtype is None:
-        dt = get_default_dtype()
-        data = data.astype(dt)
+    dt = get_default_dtype() if dtype is None else dtype
+    
+    # 使用numpy的linspace创建数组
+    dev = _get_device(device)
+    arrlib = np if dev.type == 'cpu' else cp
+    data = arrlib.linspace(start, end, num=steps, endpoint=endpoint, dtype=dt)
     
     # 创建并返回张量
-    return tensor(data, requires_grad=requires_grad)
+    return tensor(data, device=dev, requires_grad=requires_grad)
 
 # 定义函数类型别名
 ForwardFunc: TypeAlias = Callable[..., Any]  # 前向函数类型：输入任意数量的参数，返回任意类型
@@ -4514,14 +4727,6 @@ def _setat_backward_right(result_tensor:TN, i:int)->TN:
     right_var_grad = result_tensor.grad_value[index]
     return right_var_grad
 
-def _all_inplace_oper(result_tensor:TN)->bool:
-    all_inplace_oper = True
-    for i in range(len(result_tensor.gradfuncs)-1,-1,-1):
-        if result_tensor.gradfuncs[i] != _setat_inplace_backward:
-            all_inplace_oper = False
-            break
-    return all_inplace_oper
-
 def _setat_inplace_backward(result_tensor:TN, i:int)->TN: 
     index = result_tensor.parms[i][1]
 
@@ -4728,10 +4933,11 @@ def flip(input: TN, dims:List[int]|Tuple[int,...]) -> TN:
         raise TypeError("dims must be a list or tuple")
     
     # 使用numpy.flip执行翻转操作
-    data = np.flip(input.data, dims).copy()
+    arrlib = input._get_array_lib()
+    data = arrlib.flip(input.data, dims).copy()
     
     # 创建新的张量
-    result = tensor(data,requires_grad = (is_grad_enabled() and input.requires_grad))
+    result = tensor(data, device = input.device, requires_grad = (is_grad_enabled() and input.requires_grad))
     result.is_leaf = not result.requires_grad
     
     # 如果需要计算梯度，设置计算图信息
@@ -4809,8 +5015,12 @@ def sum(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     if dim == ():
         dim = None
     
-    sumvalue = np.sum(x.data, axis=dim, keepdims=keepdim)
-    ret=tensor(sumvalue, requires_grad = (is_grad_enabled() and x.requires_grad))
+    # 根据x的数组类型选择使用np或cp
+    arrlib = x._get_array_lib()
+    sumvalue = arrlib.sum(x.data, axis=dim, keepdims=keepdim)
+    
+    # 创建与x在相同设备上的张量
+    ret=tensor(sumvalue, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     ret.is_leaf=not ret.requires_grad
 
     if ret.requires_grad:
@@ -4899,8 +5109,10 @@ def cumsum(input: TN, dim: int, *, dtype: Optional[Union[str, np.dtype]] = None,
         if dim not in [0, -1]:
             raise IndexError(f"Dimension out of range (expected to be in range of [-1, 0], but got {dim})")
     
+    # 根据x的数组类型选择使用np或cp
+    arrlib = input._get_array_lib()
     # 前向计算 - 使用numpy.cumsum
-    result_data = np.cumsum(input.data, axis=dim, dtype=result_dtype)
+    result_data = arrlib.cumsum(input.data, axis=dim, dtype=result_dtype)
     
     # 如果指定了输出张量，将结果写入其中
     if out is not None:
@@ -4908,7 +5120,7 @@ def cumsum(input: TN, dim: int, *, dtype: Optional[Union[str, np.dtype]] = None,
         out.is_leaf = True
     
     # 创建结果张量
-    ret = tensor(result_data, requires_grad=(is_grad_enabled() and input.requires_grad))
+    ret = tensor(result_data, device=input.device, requires_grad=(is_grad_enabled() and input.requires_grad))
     ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
@@ -5072,9 +5284,11 @@ def prod(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     if dim == ():
         dim = None
     
-    # 使用numpy的prod函数计算乘积
-    prod_value = np.prod(x.data, axis=dim, keepdims=keepdim)
-    ret = tensor(prod_value, requires_grad = (is_grad_enabled() and x.requires_grad))
+    # 根据x的数组类型选择使用np或cp
+    arrlib = x._get_array_lib()
+    # 使用numpy/cupy的prod函数计算乘积
+    prod_value = arrlib.prod(x.data, axis=dim, keepdims=keepdim)
+    ret = tensor(prod_value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     ret.is_leaf = not ret.requires_grad
 
     if ret.requires_grad:
@@ -5101,7 +5315,7 @@ def _mean_backward(result_tensor:TN, i:int)->TN:
     else:
         raise TypeError(dim)
 
-    arr = ones_like(x) / tensor(n,dtype=x.dtype)
+    arr = ones_like(x) / tensor(n,dtype=x.dtype,device=x.device)
     
     # 如果mean计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
     if keepdim == False:
@@ -5118,8 +5332,11 @@ def mean(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     
     if dim == ():
         dim = None
-    value = np.mean(x.data, axis=dim, keepdims=keepdim)
-    ret = tensor(value, requires_grad = (is_grad_enabled() and x.requires_grad))
+    
+    # 根据x的数组类型选择使用np或cp
+    arrlib = x._get_array_lib()
+    value = arrlib.mean(x.data, axis=dim, keepdims=keepdim)
+    ret = tensor(value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     ret.is_leaf=not ret.requires_grad
 
     if ret.requires_grad:
@@ -5160,8 +5377,9 @@ def abs(x:TN)->TN:
         >>> b = tensor([[-1.5, 2.5], [3.0, -4.0]])
         >>> abs(b)  # 返回[[1.5, 2.5], [3.0, 4.0]]
     """
-    value = np.abs(x.data)
-    ret = tensor(value, requires_grad = (is_grad_enabled() and x.requires_grad))
+    arrlib = x._get_array_lib()
+    value = arrlib.abs(x.data)
+    ret = tensor(value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     ret.is_leaf = not ret.requires_grad
 
     if ret.requires_grad:
@@ -5219,12 +5437,13 @@ def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
         array([[0., 1., 0.],
                [0., 1., 0.]])
     """
+    arrlib = np if isinstance(arr,np.ndarray) else cp
     # 初始化全0掩码
-    mask_arr = np.zeros_like(arr, dtype=arr.dtype)
+    mask_arr = arrlib.zeros_like(arr, dtype=arr.dtype)
     
     if dim is None:
         # 全局最大值/最小值 - 保持平均分配行为
-        maxmin_val = np.max(arr) if argmaxmin == np.argmax else np.min(arr)
+        maxmin_val = arrlib.max(arr) if argmaxmin == arrlib.argmax else np.min(arr)
         # 创建掩码，标记所有等于最大值/最小值的位置
         equal_mask = (arr == maxmin_val)
         # 归一化掩码，确保总和为1
@@ -5234,13 +5453,13 @@ def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
         # 单轴最大值/最小值 - 只选择第一个最大值位置
         indices = argmaxmin(arr, axis=dim)
         # 为了使用put_along_axis，需要扩展维度
-        indices_expanded = np.expand_dims(indices, axis=dim)
+        indices_expanded = arrlib.expand_dims(indices, axis=dim)
         # 在指定轴上放置1.0，只会在每个切片的第一个最大值位置设置1.0
-        np.put_along_axis(mask_arr, indices_expanded, 1.0, axis=dim)
+        arrlib.put_along_axis(mask_arr, indices_expanded, 1.0, axis=dim)
     elif isinstance(dim, tuple):
         # 多轴最大值/最小值 - 只选择第一个最大值位置
         # 将指定轴移动到前面
-        transposed = np.moveaxis(arr, dim, range(len(dim)))
+        transposed = arrlib.moveaxis(arr, dim, range(len(dim)))
         # 合并轴并展平
         merged_shape = (-1,) + transposed.shape[len(dim):]
         flattened = transposed.reshape(merged_shape)
@@ -5248,9 +5467,9 @@ def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
         maxmin_indices = argmaxmin(flattened, axis=0)
         # 分解索引为原轴坐标
         original_dims = [arr.shape[ax] for ax in dim]
-        multi_indices = np.unravel_index(maxmin_indices, original_dims)
+        multi_indices = arrlib.unravel_index(maxmin_indices, original_dims)
         # 生成其他轴索引
-        other_indices = list(np.ogrid[tuple(slice(s) for s in maxmin_indices.shape)])
+        other_indices = list(arrlib.ogrid[tuple(slice(s) for s in maxmin_indices.shape)])
         # 组合所有索引并转置回原轴顺序
         full_indices = []
         idx_iter = iter(multi_indices)
@@ -5286,8 +5505,9 @@ def _max_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]    
     dim, keepdim = result_tensor.parms[i]
     
-    max_pos_one_like_x = _create_maxmin_mask(x.data, np.argmax, dim)
-    max_pos_one_tensor = tensor(max_pos_one_like_x)
+    arrlib = x._get_array_lib()
+    max_pos_one_like_x = _create_maxmin_mask(x.data, arrlib.argmax, dim)
+    max_pos_one_tensor = tensor(max_pos_one_like_x,device=x.device)
     
     # 如果sum计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
     if keepdim == False:
@@ -5303,8 +5523,9 @@ def _min_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]    
     dim, keepdim = result_tensor.parms[i]
     
-    min_pos_one_like_x = _create_maxmin_mask(x.data, np.argmin, dim)
-    min_pos_one_tensor = tensor(min_pos_one_like_x)
+    arrlib = x._get_array_lib()
+    min_pos_one_like_x = _create_maxmin_mask(x.data, arrlib.argmin, dim)
+    min_pos_one_tensor = tensor(min_pos_one_like_x, device=x.device)
     
     # 如果sum计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
     if keepdim == False:
@@ -5319,9 +5540,11 @@ def max(x:TN, dim:int|None=None, keepdim:bool=False, *, out=None):
     if x.is_complex():
         raise RuntimeError("max() does not support complex input")
     
+    arrlib = x._get_array_lib()
+    dev = x.device
     # 计算最大值 - 利用numpy原生的axis=None行为
-    values_arr = np.max(x.data, axis=dim, keepdims=keepdim)
-    values_tensor = tensor(values_arr, requires_grad=(is_grad_enabled() and x.requires_grad))
+    values_arr = arrlib.max(x.data, axis=dim, keepdims=keepdim)
+    values_tensor = tensor(values_arr, device=dev, requires_grad=(is_grad_enabled() and x.requires_grad))
     values_tensor.is_leaf = not values_tensor.requires_grad
     
     # 为values_tensor设置梯度信息
@@ -5336,10 +5559,10 @@ def max(x:TN, dim:int|None=None, keepdim:bool=False, *, out=None):
         return values_tensor
     else:
         # 当dim不为None时，计算索引并返回包含values和indices的对象
-        indices_arr = np.argmax(x.data, axis=dim)
+        indices_arr = arrlib.argmax(x.data, axis=dim)
         if keepdim:
-            indices_arr = np.expand_dims(indices_arr, axis=dim)
-        indices_tensor = tensor(indices_arr)
+            indices_arr = arrlib.expand_dims(indices_arr, axis=dim)
+        indices_tensor = tensor(indices_arr,device=dev)
         
         return MaxMinReturnType(values_tensor, indices_tensor, "max")
 
@@ -5347,9 +5570,11 @@ def min(x:TN, dim:int|None=None, keepdim:bool=False, *, out=None):
     if x.is_complex():
         raise RuntimeError("min() does not support complex input")
 
+    arrlib = x._get_array_lib()
+    dev = x.device
     # 计算最小值 - 利用numpy原生的axis=None行为
-    values_arr = np.min(x.data, axis=dim, keepdims=keepdim)
-    values_tensor = tensor(values_arr, requires_grad=(is_grad_enabled() and x.requires_grad))
+    values_arr = arrlib.min(x.data, axis=dim, keepdims=keepdim)
+    values_tensor = tensor(values_arr, device=dev, requires_grad=(is_grad_enabled() and x.requires_grad))
     values_tensor.is_leaf = not values_tensor.requires_grad
     
     # 为values_tensor设置梯度信息
@@ -5364,10 +5589,10 @@ def min(x:TN, dim:int|None=None, keepdim:bool=False, *, out=None):
         return values_tensor
     else:
         # 当dim不为None时，计算索引并返回包含values和indices的对象
-        indices_arr = np.argmin(x.data, axis=dim)
+        indices_arr = arrlib.argmin(x.data, axis=dim)
         if keepdim:
-            indices_arr = np.expand_dims(indices_arr, axis=dim)
-        indices_tensor = tensor(indices_arr)
+            indices_arr = arrlib.expand_dims(indices_arr, axis=dim)
+        indices_tensor = tensor(indices_arr,device=dev)
         
         return MaxMinReturnType(values_tensor, indices_tensor, "min")
 
@@ -5395,7 +5620,7 @@ def _var_backward(result_tensor:TN, i:int)->TN:
     # 计算(x - mean(x))的梯度因子
     x_mean = mean(x, dim=dim, keepdim=True)  # 始终使用keepdim=True以保持广播正确
     diff = x - x_mean
-    factor = tensor(2.0 / denom,dtype = x.dtype)
+    factor = tensor(2.0 / denom,dtype = x.dtype, device=x.device)
     
     # 准备梯度值
     grad_value = result_tensor.grad_value
@@ -5427,8 +5652,10 @@ def var(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->
     if dim == ():
         dim = None
     ddof = 1 if unbiased == True else 0
-    value = np.var(x.data, axis=dim, dtype=x.data.dtype, ddof=ddof, keepdims=keepdim)
-    ret=tensor(value, requires_grad = (is_grad_enabled() and x.requires_grad))
+
+    arrlib = x._get_array_lib()
+    value = arrlib.var(x.data, axis=dim, dtype=x.data.dtype, ddof=ddof, keepdims=keepdim)
+    ret=tensor(value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     ret.is_leaf = not ret.requires_grad
 
     if ret.requires_grad:
@@ -5475,7 +5702,7 @@ def var2(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)-
             raise TypeError(f"dim must be int, tuple or None, got {type(dim)}")
         
         if n > 1:  # 避免除以0
-            scaling_factor = tensor(n / (n - 1),dtype=x.dtype)
+            scaling_factor = tensor(n / (n - 1),dtype=x.dtype, device=x.device)
             variance = variance * scaling_factor
     
     return variance.real
@@ -5785,7 +6012,8 @@ def log(x:TN)->TN:
         >>> b = tensor([[1.0, 2.718], [7.389, 20.086]])
         >>> log(b)  # 返回[[0.0, 1.0], [2.0, 3.0]]
     """
-    return tensor(np.log(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.log(x.data), device=x.device)
 
 def log1p(x: TN) -> TN:    
     """
@@ -5832,7 +6060,8 @@ def exp(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
         >>> exp(b)  # 返回[[1.0, 2.718], [7.389, 20.086]]
     """
-    return tensor(np.exp(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.exp(x.data),device=x.device)
 
 def _sin_derivative(x:TN)->tuple[TN]:
     return (cos(x).conj(),)
@@ -5857,7 +6086,8 @@ def sin(x:TN)->TN:
         >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
         >>> sin(b)  # 返回[[0.0, 0.707], [1.0, 0.707]]
     """
-    return tensor(np.sin(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.sin(x.data),device=x.device)
     
 def _cos_derivative(x:TN)->tuple[TN]:
     return (-sin(x).conj(),)
@@ -5882,7 +6112,8 @@ def cos(x:TN)->TN:
         >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
         >>> cos(b)  # 返回[[1.0, 0.707], [0.0, -0.707]]
     """
-    return tensor(np.cos(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.cos(x.data),device=x.device)
 
 def _tan_derivative(x:TN)->tuple[TN]:
     return (1. + (tan(x.conj()))**2.,)
@@ -5907,7 +6138,8 @@ def tan(x:TN)->TN:
         >>> b = tensor([[0.0, pi/6], [pi/3, pi/4]])
         >>> tan(b)  # 返回[[0.0, 0.577], [1.732, 1.0]]
     """
-    return tensor(np.tan(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.tan(x.data),device=x.device)
 
 def cot(x:TN)->TN:
     """
@@ -5948,14 +6180,16 @@ def _arccos_derivative(x:TN)->tuple[TN]:
 
 @track_grad(_arccos_derivative)
 def arccos(x:TN)->TN:
-    return tensor(np.arccos(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.arccos(x.data),device=x.device)
 
 def _arctan_derivative(x:TN)->tuple[TN]:
     return (1./(1. + x**2.).conj(),)
 
 @track_grad(_arctan_derivative)
 def arctan(x:TN)->TN:
-    return tensor(np.arctan(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.arctan(x.data),device=x.device)
 
 def _sinh_derivative(x:TN)->tuple[TN]:
     return (cosh(x).conj(),)
@@ -5980,7 +6214,8 @@ def sinh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> sinh(b)  # 返回[[0.0, 1.175], [3.627, -1.175]]
     """
-    return tensor(np.sinh(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.sinh(x.data),device=x.device)
 
 def _cosh_derivative(x:TN)->tuple[TN]:
     return (sinh(x).conj(),)
@@ -6005,7 +6240,8 @@ def cosh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> cosh(b)  # 返回[[1.0, 1.543], [3.762, 1.543]]
     """
-    return tensor(np.cosh(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.cosh(x.data),device=x.device)
 
 def _tanh_derivative(x:TN)->tuple[TN]:
     return ((1.0 - tanh(x)**2.0).conj(),)
@@ -6030,7 +6266,8 @@ def tanh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> tanh(b)  # 返回[[0.0, 0.762], [0.964, -0.762]]
     """
-    return tensor(np.tanh(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.tanh(x.data),device=x.device)
 
 def coth(x:TN)->TN:
     """
@@ -6118,7 +6355,8 @@ def arcsinh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> arcsinh(b)  # 返回[[0.0, 0.881], [1.444, -0.881]]
     """
-    return tensor(np.arcsinh(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.arcsinh(x.data),device=x.device)
 
 def _arccosh_derivative(x:TN)->tuple[TN]:
     return (1. / sqrt(x**2. - 1.).conj(),)
@@ -6143,7 +6381,8 @@ def arccosh(x:TN)->TN:
         >>> b = tensor([[1.0, 2.0], [3.0, 4.0]])
         >>> arccosh(b)  # 返回[[0.0, 1.317], [1.763, 2.063]]
     """
-    return tensor(np.arccosh(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.arccosh(x.data),device=x.device)
 
 def _arctanh_derivative(x:TN)->tuple[TN]:
     return (1. / (1. - x**2.0).conj(),)
@@ -6168,7 +6407,8 @@ def arctanh(x:TN)->TN:
         >>> b = tensor([[0.0, 0.5], [0.8, -0.8]])
         >>> arctanh(b)  # 返回[[0.0, 0.549], [1.099, -1.099]]
     """
-    return tensor(np.arctanh(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.arctanh(x.data),device=x.device)
 
 def _sign_derivative(x:TN)->tuple[TN]:
     # sign函数在x=0处不可导，在其他点处梯度为0
@@ -6186,7 +6426,8 @@ def sign(x:TN)->TN:
     
     该函数支持实数和复数张量，并正确处理反向传播。
     """
-    return tensor(np.sign(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.sign(x.data),device=x.device)
 
 @overload
 def where(cond: TN, x: None, y: None) -> Tuple[TN, ...]:
@@ -6201,8 +6442,10 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
     if not isinstance(cond,TN):
         cond = tensor(cond)
     
+    arrlib = cond._get_array_lib()
+
     if x is None and y is None:
-        tup = np.where(cond.data)
+        tup = arrlib.where(cond.data)
         lst = []
         for idx_arr in tup:
             lst.append(tensor(idx_arr))
@@ -6212,14 +6455,14 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
         raise RuntimeError('one of x,y is None while the other is Non None')
     
     if not isinstance(x,TN):
-        x = tensor(x)
+        x = tensor(x,device=cond.device)
 
     if not isinstance(y,TN):
-        y = tensor(y)
+        y = tensor(y,device=cond.device)
 
     # 条件选择，cond不参与梯度计算
-    data = np.where(cond.data, x.data, y.data)
-    ret = tensor(data, requires_grad = (is_grad_enabled() and (x.requires_grad or y.requires_grad)))
+    data = arrlib.where(cond.data, x.data, y.data)
+    ret = tensor(data, device = cond.device, requires_grad = (is_grad_enabled() and (x.requires_grad or y.requires_grad)))
     ret.is_leaf = not ret.requires_grad
 
     if ret.requires_grad:
@@ -6246,9 +6489,11 @@ def clamp(x: TN, min: float | None = None, max: float | None = None, out: TN | N
     if out is not None and x.requires_grad:
         raise RuntimeError("clamp(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
     
+    arrlib = x._get_array_lib()
+
     # 将None转换为极值
-    np_min = min if min is not None else -np.inf
-    np_max = max if max is not None else np.inf
+    np_min = min if min is not None else -arrlib.inf
+    np_max = max if max is not None else arrlib.inf
     
     # 如果提供了out参数，执行原地操作
     if out is not None:
@@ -6261,14 +6506,14 @@ def clamp(x: TN, min: float | None = None, max: float | None = None, out: TN | N
             raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible with input tensor shape ({x.shape})")
         
         # 执行原地数值截断操作，直接修改out.data的内容
-        np.clip(x.data, np_min, np_max, out=out.data)
+        arrlib.clip(x.data, np_min, np_max, out=out.data)
         
         # 使用out参数时不设置梯度跟踪
         return out
     
     # 否则创建新的张量
-    data = np.clip(x.data, np_min, np_max)
-    ret = tensor(data, requires_grad = (is_grad_enabled() and x.requires_grad))
+    data = arrlib.clip(x.data, np_min, np_max)
+    ret = tensor(data, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     ret.is_leaf = not ret.requires_grad
 
     if ret.requires_grad:
@@ -6308,13 +6553,14 @@ def split(ts: TN, split_indices, dim: int = 0) -> List[TN]:
         split_indices: 分割点列表或分割份数（整数）
         dim: 分割轴（默认0）
     """
+    arrlib = ts._get_array_lib()
     # 改用array_split支持不均等分割
-    split_data = np.array_split(ts.data, split_indices, axis=dim)
+    split_data = arrlib.array_split(ts.data, split_indices, axis=dim)
     
     # 创建子张量列表（保留计算图）
     sub_tensors = []
     for i, data in enumerate(split_data):
-        subt = tensor(data, requires_grad = (is_grad_enabled() and ts.requires_grad))
+        subt = tensor(data, device=ts.device, requires_grad = (is_grad_enabled() and ts.requires_grad))
         subt.is_leaf = False
         
         # 记录计算图信息
@@ -6412,12 +6658,13 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
     if dim < 0:
         dim += input.ndim
     
+    arrlib = input._get_array_lib()
     # 使用numpy进行排序
     # numpy的sort不支持stable参数，所以这里忽略stable参数
-    sorted_indices = np.argsort(input.data, axis=dim)
+    sorted_indices = arrlib.argsort(input.data, axis=dim)
     
     # 创建用于索引的坐标网格
-    coords = list(np.ogrid[tuple(slice(0, size) for size in input.data.shape)])
+    coords = list(arrlib.ogrid[tuple(slice(0, size) for size in input.data.shape)])
     # 用排序后的索引替换指定维度的坐标
     coords[dim] = sorted_indices
     
@@ -6434,7 +6681,7 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
         # 对于每个子数组，计算原始位置的反转
         # 这部分比较复杂，需要根据具体维度处理
         # 创建一个与sorted_indices形状相同的数组，用于存储反转后的索引
-        reverse_indices = np.empty_like(sorted_indices)
+        reverse_indices = arrlib.empty_like(sorted_indices)
         # 获取指定维度的大小
         dim_size = input.data.shape[dim]
         # 对每个子数组进行处理
@@ -6452,11 +6699,11 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
         sorted_indices = reverse_indices
     
     # 创建排序值张量
-    sorted_values = tensor(sorted_values_data, requires_grad=(is_grad_enabled() and input.requires_grad))
+    sorted_values = tensor(sorted_values_data, device=input.device,requires_grad=(is_grad_enabled() and input.requires_grad))
     sorted_values.is_leaf = not sorted_values.requires_grad
     
     # 创建索引张量（索引张量不需要梯度）
-    sorted_indices_tensor = tensor(sorted_indices, requires_grad=False)
+    sorted_indices_tensor = tensor(sorted_indices, device=input.device,requires_grad=False)
     
     # 设置梯度信息
     if sorted_values.requires_grad:
@@ -6482,8 +6729,8 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
             raise RuntimeError(f"out indices tensor shape ({indices_out.shape}) is incompatible with result shape ({sorted_indices_tensor.shape})")
         
         # 复制数据到out参数
-        np.copyto(values_out.data, sorted_values.data)
-        np.copyto(indices_out.data, sorted_indices_tensor.data)
+        arrlib.copyto(values_out.data, sorted_values.data)
+        arrlib.copyto(indices_out.data, sorted_indices_tensor.data)
         
         # 使用out参数时不设置梯度跟踪
         return (values_out, indices_out)
@@ -6516,12 +6763,13 @@ def argsort(input: TN, dim: int = -1, descending: bool = False, stable: bool = F
     if dim < 0:
         dim += input.ndim
     
-    sorted_indices = np.argsort(input.data, axis=dim)
+    arrlib = input._get_array_lib()
+    sorted_indices = arrlib.argsort(input.data, axis=dim)
     
     if descending:
-        reverse_indices = np.empty_like(sorted_indices)
+        reverse_indices = arrlib.empty_like(sorted_indices)
         dim_size = input.data.shape[dim]
-        it = np.nditer(sorted_indices, flags=['multi_index', 'refs_ok'])
+        it = arrlib.nditer(sorted_indices, flags=['multi_index', 'refs_ok'])
         while not it.finished:
             idx = list(it.multi_index)
             sub_array = sorted_indices[tuple(idx[:dim] + [slice(None)] + idx[dim+1:])]  # type: ignore
@@ -6530,26 +6778,27 @@ def argsort(input: TN, dim: int = -1, descending: bool = False, stable: bool = F
             it.iternext()
         sorted_indices = reverse_indices
     
-    sorted_indices_tensor = tensor(sorted_indices, requires_grad=False)
+    sorted_indices_tensor = tensor(sorted_indices, device=input.device, requires_grad=False)
     
     if out is not None:
         if not isinstance(out, TN):
             raise TypeError("out must be a tensor of type TN")
         if out.shape != sorted_indices_tensor.shape:
             raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible with result shape ({sorted_indices_tensor.shape})")
-        np.copyto(out.data, sorted_indices_tensor.data)
+        arrlib.copyto(out.data, sorted_indices_tensor.data)
         return out
     
     return sorted_indices_tensor
 
 def stack(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
     """沿新维度堆叠张量"""
-    data = np.stack([t.data for t in tensors], axis=dim)
+    arrlib = tensors[0]._get_array_lib()
+    data = arrlib.stack([t.data for t in tensors], axis=dim)
     
     # 梯度需求判断优化为any()
     requires_grad = (is_grad_enabled() and builtins.any(t.requires_grad for t in tensors))
     
-    ret = tensor(data, requires_grad=requires_grad)
+    ret = tensor(data, device=tensors[0].device, requires_grad=requires_grad)
     ret.is_leaf = not requires_grad
 
     if requires_grad:
@@ -6562,11 +6811,12 @@ def stack(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
 
 def concatenate(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
     """沿指定轴连接张量"""
-    data = np.concatenate([t.data for t in tensors], axis=dim)
+    arrlib = tensors[0]._get_array_lib()
+    data = arrlib.concatenate([t.data for t in tensors], axis=dim)
     
     requires_grad = (is_grad_enabled() and builtins.any(t.requires_grad for t in tensors))
     
-    ret = tensor(data, requires_grad=requires_grad)
+    ret = tensor(data, device=tensors[0].device, requires_grad=requires_grad)
     ret.is_leaf = not requires_grad
 
     if requires_grad:
@@ -6640,8 +6890,10 @@ def _concatenate_backward(result_tensor: TN, i: int) -> TN:
     
     # 获取所有输入张量在拼接轴上的尺寸
     split_sizes = [t.data.shape[dim] for t in result_tensor.fromvars]
+    
+    arrlib = result_tensor._get_array_lib()
     # 分割点为前n-1个累积和（如输入两个张量时分割点为一个）
-    split_points = np.cumsum(split_sizes[:-1]).tolist() if len(split_sizes) > 1 else []
+    split_points = arrlib.cumsum(split_sizes[:-1]).tolist() if len(split_sizes) > 1 else []
     
     try:
         grads = split(grad_data,split_points, dim=dim)
@@ -6673,87 +6925,90 @@ def unique(input: TN, sorted: bool = True, return_inverse: bool = False,
     # 将输入张量展平为一维数组
     flat_data = input.data.flatten()
     
+    arrlib = input._get_array_lib()
+    dev = input.device
+
     # 使用NumPy的unique函数获取唯一值
     # 根据不同的参数组合调用不同版本的np.unique
     if return_inverse and return_counts and return_indices:
         # 返回所有可选值
-        unique_values, indices, inverse_indices, counts = np.unique(
+        unique_values, indices, inverse_indices, counts = arrlib.unique(
             flat_data, return_index=True, return_inverse=True, return_counts=True)
         
         # 创建结果张量
-        result = tensor(unique_values)
-        indices_tensor = tensor(indices, dtype=int64)
-        inverse_tensor = tensor(inverse_indices, dtype=int64)
-        counts_tensor = tensor(counts, dtype=int64)
+        result = tensor(unique_values,device=dev)
+        indices_tensor = tensor(indices, dtype=int64,device=dev)
+        inverse_tensor = tensor(inverse_indices, dtype=int64,device=dev)
+        counts_tensor = tensor(counts, dtype=int64,device=dev)
         
         return result, inverse_tensor, indices_tensor, counts_tensor
     elif return_inverse and return_counts:
         # 返回唯一值、逆索引和计数
-        unique_values, inverse_indices, counts = np.unique(
+        unique_values, inverse_indices, counts = arrlib.unique(
             flat_data, return_inverse=True, return_counts=True)
         
         # 创建结果张量
-        result = tensor(unique_values)
-        inverse_tensor = tensor(inverse_indices, dtype=int64)
-        counts_tensor = tensor(counts, dtype=int64)
+        result = tensor(unique_values,device=dev)
+        inverse_tensor = tensor(inverse_indices, dtype=int64,device=dev)
+        counts_tensor = tensor(counts, dtype=int64,device=dev)
         
         return result, inverse_tensor, counts_tensor
     elif return_inverse and return_indices:
         # 返回唯一值、逆索引和首次出现索引
-        unique_values, indices, inverse_indices = np.unique(
+        unique_values, indices, inverse_indices = arrlib.unique(
             flat_data, return_index=True, return_inverse=True)
         
         # 创建结果张量
-        result = tensor(unique_values)
-        indices_tensor = tensor(indices, dtype=int64)
-        inverse_tensor = tensor(inverse_indices, dtype=int64)
+        result = tensor(unique_values,device=dev)
+        indices_tensor = tensor(indices, dtype=int64,device=dev)
+        inverse_tensor = tensor(inverse_indices, dtype=int64,device=dev)
         
         return result, inverse_tensor, indices_tensor
     elif return_counts and return_indices:
         # 返回唯一值、首次出现索引和计数
-        unique_values, indices, counts = np.unique(
+        unique_values, indices, counts = arrlib.unique(
             flat_data, return_index=True, return_counts=True)
         
         # 创建结果张量
-        result = tensor(unique_values)
-        indices_tensor = tensor(indices, dtype=int64)
-        counts_tensor = tensor(counts, dtype=int64)
+        result = tensor(unique_values,device=dev)
+        indices_tensor = tensor(indices, dtype=int64,device=dev)
+        counts_tensor = tensor(counts, dtype=int64,device=dev)
         
         return result, indices_tensor, counts_tensor
     elif return_inverse:
         # 只返回唯一值和逆索引
-        unique_values, inverse_indices = np.unique(
+        unique_values, inverse_indices = arrlib.unique(
             flat_data, return_inverse=True)
         
         # 创建结果张量
-        result = tensor(unique_values)
-        inverse_tensor = tensor(inverse_indices, dtype=int64)
+        result = tensor(unique_values,device=dev)
+        inverse_tensor = tensor(inverse_indices, dtype=int64,device=dev)
         
         return result, inverse_tensor
     elif return_counts:
         # 只返回唯一值和计数
-        unique_values, counts = np.unique(
+        unique_values, counts = arrlib.unique(
             flat_data, return_counts=True)
         
         # 创建结果张量
-        result = tensor(unique_values)
-        counts_tensor = tensor(counts, dtype=int64)
+        result = tensor(unique_values,device=dev)
+        counts_tensor = tensor(counts, dtype=int64,device=dev)
         
         return result, counts_tensor
     elif return_indices:
         # 只返回唯一值和首次出现索引
-        unique_values, indices = np.unique(
+        unique_values, indices = arrlib.unique(
             flat_data, return_index=True)
         
         # 创建结果张量
-        result = tensor(unique_values)
-        indices_tensor = tensor(indices, dtype=int64)
+        result = tensor(unique_values,device=dev)
+        indices_tensor = tensor(indices, dtype=int64,device=dev)
         
         return result, indices_tensor
     else:
         # 只返回唯一值
-        unique_values = np.unique(flat_data)
-        return tensor(unique_values)
+        unique_values = arrlib.unique(flat_data)
+        return tensor(unique_values,device=dev)
 # end of unique
 
 def maximum(input: TN, other: TN) -> TN:
@@ -6779,12 +7034,19 @@ def maximum(input: TN, other: TN) -> TN:
     """
     if not isinstance(input, TN):
         raise TypeError(f"Expected input to be TN tensor, got {type(input)}")
+    
+    arrlib = input._get_array_lib()
+    dev = input.device
+
     if not isinstance(other, TN):
-        other = tensor(other)
+        other = tensor(other,device=dev)
+    
+    if other.device != dev:
+        raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
     
     # 前向计算：使用numpy的maximum
-    value = np.maximum(input.data, other.data)
-    ret = tensor(value, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
+    value = arrlib.maximum(input.data, other.data)
+    ret = tensor(value, device=dev, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
     ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
@@ -6816,8 +7078,9 @@ def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
     # input < other: 0.0
     # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
     mask_dtype = input_tensor.dtype
-    mask = np.where(input_data > other_data, np.array(1.0, dtype=mask_dtype), 
-                   np.where(input_data < other_data, np.array(0.0, dtype=mask_dtype), np.array(0.5, dtype=mask_dtype)))
+    arrlib = input_tensor._get_array_lib()
+    mask = arrlib.where(input_data > other_data, arrlib.array(1.0, dtype=mask_dtype), 
+                   arrlib.where(input_data < other_data, arrlib.array(0.0, dtype=mask_dtype), arrlib.array(0.5, dtype=mask_dtype)))
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -6855,8 +7118,9 @@ def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
     # other < input: 0.0
     # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
     mask_dtype = other_tensor.dtype
-    mask = np.where(other_data > input_data, np.array(1.0, dtype=mask_dtype),
-                   np.where(other_data < input_data, np.array(0.0, dtype=mask_dtype), np.array(0.5, dtype=mask_dtype)))
+    arrlib = other_tensor._get_array_lib()
+    mask = arrlib.where(other_data > input_data, arrlib.array(1.0, dtype=mask_dtype),
+                   arrlib.where(other_data < input_data, arrlib.array(0.0, dtype=mask_dtype), arrlib.array(0.5, dtype=mask_dtype)))
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -6895,12 +7159,19 @@ def minimum(input: TN, other: TN) -> TN:
     """
     if not isinstance(input, TN):
         raise TypeError(f"Expected input to be TN tensor, got {type(input)}")
-    if not isinstance(other, TN):
-        other = tensor(other)
     
+    arrlib = input._get_array_lib()
+    dev = input.device
+
+    if not isinstance(other, TN):
+        other = tensor(other,device=dev)
+    
+    if other.device != dev:
+        raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
+        
     # 前向计算：使用numpy的minimum
-    value = np.minimum(input.data, other.data)
-    ret = tensor(value, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
+    value = arrlib.minimum(input.data, other.data)
+    ret = tensor(value, device=dev, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
     ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
@@ -6932,8 +7203,9 @@ def _minimum_grad_input(result_tensor: TN, i: int) -> TN:
     # input > other: 0.0
     # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
     mask_dtype = input_tensor.dtype
-    mask = np.where(input_data < other_data, np.array(1.0, dtype=mask_dtype), 
-                   np.where(input_data > other_data, np.array(0.0, dtype=mask_dtype), np.array(0.5, dtype=mask_dtype)))
+    arrlib = input_tensor._get_array_lib()
+    mask = arrlib.where(input_data < other_data, arrlib.array(1.0, dtype=mask_dtype), 
+                   arrlib.where(input_data > other_data, arrlib.array(0.0, dtype=mask_dtype), arrlib.array(0.5, dtype=mask_dtype)))
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -6971,8 +7243,9 @@ def _minimum_grad_other(result_tensor: TN, i: int) -> TN:
     # other > input: 0.0
     # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
     mask_dtype = other_tensor.dtype
-    mask = np.where(other_data < input_data, np.array(1.0, dtype=mask_dtype),
-                   np.where(other_data > input_data, np.array(0.0, dtype=mask_dtype), np.array(0.5, dtype=mask_dtype)))
+    arrlib = other_tensor._get_array_lib()
+    mask = arrlib.where(other_data < input_data, arrlib.array(1.0, dtype=mask_dtype),
+                   arrlib.where(other_data > input_data, arrlib.array(0.0, dtype=mask_dtype), arrlib.array(0.5, dtype=mask_dtype)))
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -7092,8 +7365,10 @@ def diagonal(
     # 创建对角线索引
     indices = [slice(None)] * input.ndim
     
+    arrlib = input._get_array_lib()
+
     # 创建对角线位置的索引数组
-    idx = np.arange(diagonal_len, dtype=int)
+    idx = arrlib.arange(diagonal_len, dtype=int)
     
     # 设置dim1和dim2维度的索引
     indices[dim1] = start1 + idx
@@ -7223,7 +7498,8 @@ def fill_diagonal(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int =
     indices = [slice(None)] * input.ndim
     
     # 创建对角线位置的索引数组
-    idx = np.arange(diagonal_len, dtype=int)
+    arrlib = input._get_array_lib()
+    idx = arrlib.arange(diagonal_len, dtype=int)
     
     # 设置dim1和dim2维度的索引，与diagonal函数保持一致
     indices[dim1] = start1 + idx
@@ -7231,7 +7507,7 @@ def fill_diagonal(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int =
  
     # 准备填充值
     if not isinstance(value, TN):
-        fill_value = tensor(value, dtype = input.dtype)
+        fill_value = tensor(value, dtype = input.dtype,device=input.device)
     else:
         fill_value = value
 
@@ -7297,7 +7573,8 @@ def fill_diagonal_(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int 
     indices = [slice(None)] * input.ndim
     
     # 创建对角线位置的索引数组
-    idx = np.arange(diagonal_len, dtype=int)
+    arrlib = input._get_array_lib()
+    idx = arrlib.arange(diagonal_len, dtype=int)
     
     # 设置dim1和dim2维度的索引，与diagonal函数保持一致
     indices[dim1] = start1 + idx
@@ -7305,7 +7582,7 @@ def fill_diagonal_(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int 
  
     # 准备填充值
     if not isinstance(value, TN):
-        fill_value = tensor(value, dtype = input.dtype)
+        fill_value = tensor(value, dtype = input.dtype,device=input.device)
     else:
         fill_value = value
 
@@ -7373,7 +7650,8 @@ def nonzero(input: TN, *, as_tuple: bool = False) -> TN | Tuple[TN, ...]:
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     
     # 获取非零元素的索引
-    indices = np.nonzero(input.data)
+    arrlib = input._get_array_lib()
+    indices = arrlib.nonzero(input.data)
     
     if as_tuple:
         # 返回元组形式，每个维度一个张量
@@ -7382,11 +7660,11 @@ def nonzero(input: TN, *, as_tuple: bool = False) -> TN | Tuple[TN, ...]:
         # 返回二维张量形式，每行是一个坐标
         if len(indices) > 0:
             # 将索引数组堆叠成二维数组
-            result_data = np.stack(indices, axis=1)
+            result_data = arrlib.stack(indices, axis=1)
         else:
             # 如果没有非零元素，返回空的二维数组
-            result_data = np.empty((0, input.ndim), dtype=np.int64)
-        result = tensor(result_data)  # type: ignore
+            result_data = arrlib.empty((0, input.ndim), dtype=np.int64)
+        result = tensor(result_data,device=input.device)  # type: ignore
     
     return result
 
@@ -7439,6 +7717,10 @@ def allclose(a:TN,b:TN,rtol:float=1e-5, atol:float=1e-8, equal_nan:bool=False)->
     if a.shape != b.shape:
         return False
     
+    arrlib = a._get_array_lib()
+    if a.device != b.device:
+        raise RuntimeError(f'Cannot compare tensors on different devices: {a.device} and {b.device}')
+    
     # 获取numpy数组
     a_data = a.data
     b_data = b.data
@@ -7446,22 +7728,22 @@ def allclose(a:TN,b:TN,rtol:float=1e-5, atol:float=1e-8, equal_nan:bool=False)->
     # 如果启用了equal_nan，需要特殊处理NaN值
     if equal_nan:
         # 找出a和b中的NaN位置
-        a_nan = np.isnan(a_data)
-        b_nan = np.isnan(b_data)
+        a_nan = arrlib.isnan(a_data)
+        b_nan = arrlib.isnan(b_data)
         
         # 检查NaN位置是否相同
-        if not np.array_equal(a_nan, b_nan):
+        if not arrlib.array_equal(a_nan, b_nan):
             return False
         
         # 在非NaN位置检查接近相等
         mask = ~a_nan  # 非NaN位置的掩码
-        if np.any(mask):  # 如果有非NaN位置需要检查
+        if arrlib.any(mask):  # 如果有非NaN位置需要检查
             a_valid = a_data[mask]
             b_valid = b_data[mask]
-            diff = np.abs(a_valid - b_valid)
+            diff = arrlib.abs(a_valid - b_valid)
             close = ((diff <= atol + rtol * np.abs(a_valid)) & 
                     (diff <= atol + rtol * np.abs(b_valid)))
-            if not np.all(close):
+            if not arrlib.all(close):
                 return False
         return True
     else:
@@ -7483,8 +7765,9 @@ def isinf(x:TN)->TN:
     if not isinstance(x, TN):
         raise TypeError('x must be a tensor')
     
-    value = np.isinf(x.data)
-    ret = tensor(value)
+    arrlib = x._get_array_lib()
+    value = arrlib.isinf(x.data)
+    ret = tensor(value,device=x.device)
     
     return ret
 
@@ -7501,8 +7784,9 @@ def isnan(x:TN)->TN:
     if not isinstance(x, TN):
         raise TypeError('x must be a tensor')
     
-    value = np.isnan(x.data)
-    ret = tensor(value)
+    arrlib = x._get_array_lib()
+    value = arrlib.isnan(x.data)
+    ret = tensor(value,device=x.device)
     
     return ret
 
@@ -7519,8 +7803,9 @@ def isreal(x:TN)->TN:
     if not isinstance(x, TN):
         raise TypeError('x must be a tensor')
     
-    value = np.isreal(x.data)
-    ret = tensor(value)
+    arrlib = x._get_array_lib()
+    value = arrlib.isreal(x.data)
+    ret = tensor(value,device=x.device)
     
     return ret
 
@@ -7540,10 +7825,11 @@ def tril(input_tensor: TN, diagonal: int = 0) -> TN:
     """
     if not isinstance(input_tensor, TN):
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input_tensor)}")
-    
+       
     # 前向计算
-    data = np.tril(input_tensor.data, k=diagonal)
-    ret = tensor(data, requires_grad = (is_grad_enabled() and input_tensor.requires_grad))
+    arrlib = input_tensor._get_array_lib()
+    data = arrlib.tril(input_tensor.data, k=diagonal)
+    ret = tensor(data, device=input_tensor.device, requires_grad = (is_grad_enabled() and input_tensor.requires_grad))
     ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
@@ -7581,8 +7867,9 @@ def triu(input_tensor: TN, diagonal: int = 0) -> TN:
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input_tensor)}")
     
     # 前向计算
-    data = np.triu(input_tensor.data, k=diagonal)
-    ret = tensor(data, requires_grad = (is_grad_enabled() and input_tensor.requires_grad))
+    arrlib = input_tensor._get_array_lib()
+    data = arrlib.triu(input_tensor.data, k=diagonal)
+    ret = tensor(data, device=input_tensor.device, requires_grad = (is_grad_enabled() and input_tensor.requires_grad))
     ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
