@@ -47,7 +47,6 @@ from . import cuda
 from .cuda import (
     get_default_device, 
     set_default_device, 
-    device, 
-    Device
+    Device as device
 )
 from .serialization import *

@@ -13,13 +13,16 @@ except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)
 
-# 尝试导入PyTorch进行比较
+# 检查CUDA是否可用
 try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    print("警告: 无法导入PyTorch，将只测试riemann的张量创建函数")
-    TORCH_AVAILABLE = False
+    CUDA_AVAILABLE = rm.cuda.is_available()
+except Exception:
+    CUDA_AVAILABLE = False
+
+# 定义设备列表
+device_list = [None, "cpu"]
+if CUDA_AVAILABLE:
+    device_list.extend(["cuda", "cuda:0"])
 
 # 定义颜色类用于美化输出
 class Colors:
@@ -35,6 +38,49 @@ class Colors:
 # 清屏函数
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
+
+# 辅助函数：获取设备名称
+def get_device_name(device):
+    return device if device is not None else "默认设备"
+
+# 辅助函数：检查张量是否与期望值匹配
+def check_tensor_match(rm_tensor, expected_array, device, dtype=None):
+    """检查张量是否与期望值匹配，处理CUDA张量转换"""
+    if device and device.startswith("cuda"):
+        # CUDA张量需要先转回CPU进行检查
+        tensor_data = rm_tensor.to("cpu").numpy()
+    else:
+        tensor_data = rm_tensor.numpy()
+    
+    # 检查值是否匹配
+    if isinstance(expected_array, np.ndarray):
+        if tensor_data.dtype in [np.float32, np.float64, np.complex64, np.complex128]:
+            match = np.allclose(tensor_data, expected_array)
+        else:
+            match = np.array_equal(tensor_data, expected_array)
+    else:
+        # 对于标量比较
+        match = tensor_data.item() == expected_array
+    
+    # 检查数据类型
+    dtype_match = dtype is None or rm_tensor.dtype == dtype
+    
+    return match, dtype_match
+
+# 辅助函数：检查设备是否匹配
+def check_device_match(rm_tensor, expected_device):
+    """检查张量设备是否与期望设备匹配"""
+    if not expected_device:
+        return True
+    
+    actual_device = str(rm_tensor.device)
+    expected_device_str = expected_device if isinstance(expected_device, str) else str(expected_device)
+    
+    # 处理cuda和cuda:0的情况
+    if expected_device_str == "cuda" and actual_device.startswith("cuda:"):
+        return True
+    
+    return actual_device == expected_device_str
 
 # 测试统计类
 class StatisticsCollector:
@@ -169,33 +215,8 @@ stats = StatisticsCollector()
 # 是否作为独立脚本运行
 IS_RUNNING_AS_SCRIPT = False
 
-# 比较函数：比较两个值是否相等
-def compare_values(rm_val, torch_val, atol=1e-6, rtol=1e-6, check_dtype=False):
-    """比较riemann和pytorch的值是否相等"""
-    # 获取实际的数据数组
-    rm_data = rm_val.numpy() if hasattr(rm_val, 'numpy') else rm_val.data if hasattr(rm_val, 'data') else rm_val
-    torch_data = torch_val.detach().numpy() if hasattr(torch_val, 'detach') else torch_val
-    
-    # 检查形状是否相同
-    if np.shape(rm_data) != np.shape(torch_data):
-        return False, f"形状不匹配: {np.shape(rm_data)} vs {np.shape(torch_data)}"
-    
-    # 检查值是否在容差范围内相等
-    try:
-        if not np.allclose(rm_data, torch_data, atol=atol, rtol=rtol):
-            max_diff = np.max(np.abs(rm_data - torch_data))
-            return False, f"值不匹配，最大差异: {max_diff}"
-    except Exception as e:
-        return False, f"比较时出错: {str(e)}"
-    
-    # 检查数据类型是否相同（仅在check_dtype为True时执行）
-    if check_dtype and hasattr(rm_data, 'dtype') and hasattr(torch_data, 'dtype'):
-        if str(rm_data.dtype) != str(torch_data.dtype):
-            return False, f"数据类型不匹配: {rm_data.dtype} vs {torch_data.dtype}"
-    
-    return True, ""
-
 class TestTensorCreationFunctions(unittest.TestCase):
+
     def setUp(self):
         if IS_RUNNING_AS_SCRIPT:
             # 如果作为脚本运行，设置当前测试函数
@@ -208,25 +229,26 @@ class TestTensorCreationFunctions(unittest.TestCase):
             # 如果作为脚本运行，结束当前测试函数的计时
             stats.end_function()
     
-    # 修复test_zeros方法
-    # 将原来的:
     def test_zeros(self):
         """测试zeros函数"""
-        test_cases = [
-            {"name": "标量形状", "shape": (), "dtype": None},
-            {"name": "一维张量", "shape": (5,), "dtype": None},
-            {"name": "二维张量", "shape": (3, 4), "dtype": None},
-            {"name": "三维张量", "shape": (2, 3, 4), "dtype": None},
-            {"name": "指定float32类型", "shape": (3, 4), "dtype": rm.float32},
-            {"name": "指定int32类型", "shape": (3, 4), "dtype": rm.int32},
-        ]
+        test_cases = []
+        for device in device_list:
+            device_name = get_device_name(device)
+            test_cases.extend([
+                {"name": f"标量形状 - 设备:{device_name}", "shape": (), "dtype": None, "device": device},
+                {"name": f"一维张量 - 设备:{device_name}", "shape": (5,), "dtype": None, "device": device},
+                {"name": f"二维张量 - 设备:{device_name}", "shape": (3, 4), "dtype": None, "device": device},
+                {"name": f"三维张量 - 设备:{device_name}", "shape": (2, 3, 4), "dtype": None, "device": device},
+                {"name": f"指定float32类型 - 设备:{device_name}", "shape": (3, 4), "dtype": rm.float32, "device": device},
+                {"name": f"指定int32类型 - 设备:{device_name}", "shape": (3, 4), "dtype": rm.int32, "device": device},
+            ])
         
         for case in test_cases:
             case_name = f"{self.test_zeros.__doc__} - {case['name']}"
             start_time = time.time()
             try:
                 # 使用Riemann创建张量
-                rm_tensor = rm.zeros(case["shape"], dtype=case["dtype"])
+                rm_tensor = rm.zeros(case["shape"], dtype=case["dtype"], device=case["device"])
                 
                 # 检查形状
                 shape_match = rm_tensor.shape == case["shape"]
@@ -235,35 +257,32 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
                 else:
                     # 检查所有元素是否为0
-                    all_zeros = np.allclose(rm_tensor.numpy(), np.zeros(case["shape"]))
-                    if not all_zeros:
+                    expected_array = np.zeros(case["shape"])
+                    value_match, dtype_match = check_tensor_match(rm_tensor, expected_array, case["device"], case["dtype"])
+                    
+                    if not value_match:
                         passed = False
                         error_msg = "不是所有元素都是0"
+                    elif not dtype_match:
+                        passed = False
+                        error_msg = f"数据类型不匹配: 期望{case['dtype']}, 得到{rm_tensor.dtype}"
+                    elif not check_device_match(rm_tensor, case["device"]):
+                        passed = False
+                        error_msg = f"设备不匹配: 期望{case['device']}, 得到{rm_tensor.device}"
                     else:
-                        # 如果PyTorch可用，与PyTorch进行比较
-                        if TORCH_AVAILABLE:
-                            torch_dtype = None
-                            if case["dtype"] == rm.float32:
-                                torch_dtype = torch.float32
-                            elif case["dtype"] == rm.int32:
-                                torch_dtype = torch.int32
-                            
-                            torch_tensor = torch.zeros(case["shape"], dtype=torch_dtype)
-                            passed, error_msg = compare_values(rm_tensor, torch_tensor)
-                        else:
-                            passed = True
-                            error_msg = ""
+                        passed = True
+                        error_msg = ""
                 
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
                 
             except Exception as e:
                 time_taken = time.time() - start_time
@@ -282,75 +301,94 @@ class TestTensorCreationFunctions(unittest.TestCase):
         ]
         
         for case in test_cases:
-            case_name = f"{self.test_zeros_like.__doc__} - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建输入张量
-                input_tensor = rm.ones(case["shape"], dtype=case["dtype"])
-                
-                # 使用Riemann创建zeros_like张量
-                rm_tensor = rm.zeros_like(input_tensor)
-                
-                # 检查形状
-                shape_match = rm_tensor.shape == case["shape"]
-                if not shape_match:
-                    passed = False
-                    error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
-                else:
-                    # 检查所有元素是否为0
-                    all_zeros = np.allclose(rm_tensor.numpy(), np.zeros(case["shape"]))
-                    if not all_zeros:
+            for device in device_list:
+                # 构建设备名称
+                device_name = device if device is not None else "默认设备"
+                case_name = f"{self.test_zeros_like.__doc__} - {case['name']} - 设备:{device_name}"
+                start_time = time.time()
+                try:
+                    # 创建输入张量
+                    input_tensor = rm.ones(case["shape"], dtype=case["dtype"], device=device)
+                    
+                    # 使用Riemann创建zeros_like张量
+                    rm_tensor = rm.zeros_like(input_tensor, device=device)
+                    
+                    # 检查形状
+                    shape_match = rm_tensor.shape == case["shape"]
+                    if not shape_match:
                         passed = False
-                        error_msg = "不是所有元素都是0"
+                        error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
                     else:
-                        # 如果PyTorch可用，与PyTorch进行比较
-                        if TORCH_AVAILABLE:
-                            torch_dtype = None
-                            if case["dtype"] == rm.float32:
-                                torch_dtype = torch.float32
-                            
-                            torch_input = torch.ones(case["shape"], dtype=torch_dtype)
-                            torch_tensor = torch.zeros_like(torch_input)
-                            passed, error_msg = compare_values(rm_tensor, torch_tensor)
+                        # 检查所有元素是否为0
+                        if device and device.startswith("cuda"):
+                            # CUDA张量需要先转回CPU进行检查
+                            all_zeros = np.allclose(rm_tensor.to("cpu").numpy(), np.zeros(case["shape"]))
                         else:
-                            passed = True
-                            error_msg = ""
+                            all_zeros = np.allclose(rm_tensor.numpy(), np.zeros(case["shape"]))
+                        if not all_zeros:
+                            passed = False
+                            error_msg = "不是所有元素都是0"
+                        else:
+                            # 检查数据类型
+                            if case["dtype"] is not None and rm_tensor.dtype != case["dtype"]:
+                                passed = False
+                                error_msg = f"数据类型不匹配: 期望{case['dtype']}, 得到{rm_tensor.dtype}"
+                            else:
+                                # 检查设备
+                                if device:
+                                    expected_device = device if isinstance(device, str) else str(device)
+                                    actual_device = str(rm_tensor.device)
+                                    if expected_device == "cuda" and actual_device.startswith("cuda:"):
+                                        # 处理cuda和cuda:0的情况
+                                        pass
+                                    elif actual_device != expected_device:
+                                        passed = False
+                                        error_msg = f"设备不匹配: 期望{expected_device}, 得到{actual_device}"
+                                    else:
+                                        passed = True
+                                        error_msg = ""
+                                else:
+                                    passed = True
+                                    error_msg = ""
                 
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_ones(self):
         """测试ones函数"""
-        test_cases = [
-            {"name": "标量形状", "shape": (), "dtype": None},
-            {"name": "一维张量", "shape": (5,), "dtype": None},
-            {"name": "二维张量", "shape": (3, 4), "dtype": None},
-            {"name": "三维张量", "shape": (2, 3, 4), "dtype": None},
-            {"name": "指定float32类型", "shape": (3, 4), "dtype": rm.float32},
-            {"name": "指定int32类型", "shape": (3, 4), "dtype": rm.int32},
-        ]
+        test_cases = []
+        for device in device_list:
+            device_name = get_device_name(device)
+            test_cases.extend([
+                {"name": f"标量形状 - 设备:{device_name}", "shape": (), "dtype": None, "device": device},
+                {"name": f"一维张量 - 设备:{device_name}", "shape": (5,), "dtype": None, "device": device},
+                {"name": f"二维张量 - 设备:{device_name}", "shape": (3, 4), "dtype": None, "device": device},
+                {"name": f"三维张量 - 设备:{device_name}", "shape": (2, 3, 4), "dtype": None, "device": device},
+                {"name": f"指定float32类型 - 设备:{device_name}", "shape": (3, 4), "dtype": rm.float32, "device": device},
+                {"name": f"指定int32类型 - 设备:{device_name}", "shape": (3, 4), "dtype": rm.int32, "device": device},
+            ])
         
         for case in test_cases:
             case_name = f"{self.test_ones.__doc__} - {case['name']}"
             start_time = time.time()
             try:
                 # 使用Riemann创建张量
-                rm_tensor = rm.ones(case["shape"], dtype=case["dtype"])
+                rm_tensor = rm.ones(case["shape"], dtype=case["dtype"], device=case["device"])
                 
                 # 检查形状
                 shape_match = rm_tensor.shape == case["shape"]
@@ -359,36 +397,33 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
                 else:
                     # 检查所有元素是否为1
-                    all_ones = np.allclose(rm_tensor.numpy(), np.ones(case["shape"]))
-                    if not all_ones:
+                    expected_array = np.ones(case["shape"])
+                    value_match, dtype_match = check_tensor_match(rm_tensor, expected_array, case["device"], case["dtype"])
+                    
+                    if not value_match:
                         passed = False
                         error_msg = "不是所有元素都是1"
+                    elif not dtype_match:
+                        passed = False
+                        error_msg = f"数据类型不匹配: 期望{case['dtype']}, 得到{rm_tensor.dtype}"
+                    elif not check_device_match(rm_tensor, case["device"]):
+                        passed = False
+                        error_msg = f"设备不匹配: 期望{case['device']}, 得到{rm_tensor.device}"
                     else:
-                        # 如果PyTorch可用，与PyTorch进行比较
-                        if TORCH_AVAILABLE:
-                            torch_dtype = None
-                            if case["dtype"] == rm.float32:
-                                torch_dtype = torch.float32
-                            elif case["dtype"] == rm.int32:
-                                torch_dtype = torch.int32
-                            
-                            torch_tensor = torch.ones(case["shape"], dtype=torch_dtype)
-                            passed, error_msg = compare_values(rm_tensor, torch_tensor)
-                        else:
-                            passed = True
-                            error_msg = ""
+                        passed = True
+                        error_msg = ""
                 
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
-                
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    
             except Exception as e:
                 time_taken = time.time() - start_time
                 if IS_RUNNING_AS_SCRIPT:
@@ -406,57 +441,73 @@ class TestTensorCreationFunctions(unittest.TestCase):
         ]
         
         for case in test_cases:
-            case_name = f"{self.test_ones_like.__doc__} - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建输入张量
-                input_tensor = rm.zeros(case["shape"], dtype=case["dtype"])
-                
-                # 使用Riemann创建ones_like张量
-                rm_tensor = rm.ones_like(input_tensor)
-                
-                # 检查形状
-                shape_match = rm_tensor.shape == case["shape"]
-                if not shape_match:
-                    passed = False
-                    error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
-                else:
-                    # 检查所有元素是否为1
-                    all_ones = np.allclose(rm_tensor.numpy(), np.ones(case["shape"]))
-                    if not all_ones:
+            for device in device_list:
+                # 构建设备名称
+                device_name = device if device is not None else "默认设备"
+                case_name = f"{self.test_ones_like.__doc__} - {case['name']} - 设备:{device_name}"
+                start_time = time.time()
+                try:
+                    # 创建输入张量
+                    input_tensor = rm.zeros(case["shape"], dtype=case["dtype"], device=device)
+                    
+                    # 使用Riemann创建ones_like张量
+                    rm_tensor = rm.ones_like(input_tensor, device=device)
+                    
+                    # 检查形状
+                    shape_match = rm_tensor.shape == case["shape"]
+                    if not shape_match:
                         passed = False
-                        error_msg = "不是所有元素都是1"
+                        error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
                     else:
-                        # 如果PyTorch可用，与PyTorch进行比较
-                        if TORCH_AVAILABLE:
-                            torch_dtype = None
-                            if case["dtype"] == rm.float32:
-                                torch_dtype = torch.float32
-                            
-                            torch_input = torch.zeros(case["shape"], dtype=torch_dtype)
-                            torch_tensor = torch.ones_like(torch_input)
-                            passed, error_msg = compare_values(rm_tensor, torch_tensor)
+                        # 检查所有元素是否为1
+                        if device and device.startswith("cuda"):
+                            # CUDA张量需要先转回CPU进行检查
+                            all_ones = np.allclose(rm_tensor.to("cpu").numpy(), np.ones(case["shape"]))
                         else:
-                            passed = True
-                            error_msg = ""
+                            all_ones = np.allclose(rm_tensor.numpy(), np.ones(case["shape"]))
+                        if not all_ones:
+                            passed = False
+                            error_msg = "不是所有元素都是1"
+                        else:
+                            # 检查数据类型
+                            if case["dtype"] is not None and rm_tensor.dtype != case["dtype"]:
+                                passed = False
+                                error_msg = f"数据类型不匹配: 期望{case['dtype']}, 得到{rm_tensor.dtype}"
+                            else:
+                                # 检查设备
+                                if device:
+                                    expected_device = device if isinstance(device, str) else str(device)
+                                    actual_device = str(rm_tensor.device)
+                                    if expected_device == "cuda" and actual_device.startswith("cuda:"):
+                                        # 处理cuda和cuda:0的情况
+                                        pass
+                                    elif actual_device != expected_device:
+                                        passed = False
+                                        error_msg = f"设备不匹配: 期望{expected_device}, 得到{actual_device}"
+                                    else:
+                                        passed = True
+                                        error_msg = ""
+                                else:
+                                    passed = True
+                                    error_msg = ""
                 
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_empty(self):
         """测试empty函数"""
@@ -467,39 +518,57 @@ class TestTensorCreationFunctions(unittest.TestCase):
         ]
         
         for case in test_cases:
-            case_name = f"{self.test_empty.__doc__} - {case['name']}"
-            start_time = time.time()
-            try:
-                # 使用Riemann创建empty张量
-                rm_tensor = rm.empty(case["shape"])
+            for device in device_list:
+                # 构建设备名称
+                device_name = device if device is not None else "默认设备"
+                case_name = f"{self.test_empty.__doc__} - {case['name']} - 设备:{device_name}"
+                start_time = time.time()
+                try:
+                    # 使用Riemann创建empty张量
+                    rm_tensor = rm.empty(case["shape"], device=device)
+                    
+                    # 检查形状
+                    shape_match = rm_tensor.shape == case["shape"]
+                    if not shape_match:
+                        passed = False
+                        error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
+                    else:
+                        # 检查设备
+                        if device:
+                            expected_device = device if isinstance(device, str) else str(device)
+                            actual_device = str(rm_tensor.device)
+                            if expected_device == "cuda" and actual_device.startswith("cuda:"):
+                                # 处理cuda和cuda:0的情况
+                                pass
+                            elif actual_device != expected_device:
+                                passed = False
+                                error_msg = f"设备不匹配: 期望{expected_device}, 得到{actual_device}"
+                            else:
+                                # 对于empty函数，我们只检查形状和设备，不检查值
+                                passed = True
+                                error_msg = ""
+                        else:
+                            # 对于empty函数，我们只检查形状，不检查值
+                            passed = True
+                            error_msg = ""
                 
-                # 检查形状
-                shape_match = rm_tensor.shape == case["shape"]
-                if not shape_match:
-                    passed = False
-                    error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
-                else:
-                    # 对于empty函数，我们只检查形状，不检查值
-                    passed = True
-                    error_msg = ""
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_empty_like(self):
         """测试empty_like函数"""
@@ -510,59 +579,80 @@ class TestTensorCreationFunctions(unittest.TestCase):
         ]
         
         for case in test_cases:
-            case_name = f"{self.test_empty_like.__doc__} - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建输入张量
-                input_tensor = rm.ones(case["shape"])
+            for device in device_list:
+                # 构建设备名称
+                device_name = device if device is not None else "默认设备"
+                case_name = f"{self.test_empty_like.__doc__} - {case['name']} - 设备:{device_name}"
+                start_time = time.time()
+                try:
+                    # 创建输入张量
+                    input_tensor = rm.ones(case["shape"], device=device)
+                    
+                    # 使用Riemann创建empty_like张量
+                    rm_tensor = rm.empty_like(input_tensor, device=device)
+                    
+                    # 检查形状
+                    shape_match = rm_tensor.shape == case["shape"]
+                    if not shape_match:
+                        passed = False
+                        error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
+                    else:
+                        # 检查设备
+                        if device:
+                            expected_device = device if isinstance(device, str) else str(device)
+                            actual_device = str(rm_tensor.device)
+                            if expected_device == "cuda" and actual_device.startswith("cuda:"):
+                                # 处理cuda和cuda:0的情况
+                                pass
+                            elif actual_device != expected_device:
+                                passed = False
+                                error_msg = f"设备不匹配: 期望{expected_device}, 得到{actual_device}"
+                            else:
+                                # 对于empty_like函数，我们只检查形状和设备，不检查值
+                                passed = True
+                                error_msg = ""
+                        else:
+                            # 对于empty_like函数，我们只检查形状，不检查值
+                            passed = True
+                            error_msg = ""
                 
-                # 使用Riemann创建empty_like张量
-                rm_tensor = rm.empty_like(input_tensor)
+                    time_taken = time.time() - start_time
                 
-                # 检查形状
-                shape_match = rm_tensor.shape == case["shape"]
-                if not shape_match:
-                    passed = False
-                    error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
-                else:
-                    # 对于empty_like函数，我们只检查形状，不检查值
-                    passed = True
-                    error_msg = ""
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_full(self):
         """测试full函数"""
-        test_cases = [
-            {"name": "标量形状整数填充", "shape": (), "fill_value": 5, "dtype": None},
-            {"name": "一维张量浮点数填充", "shape": (5,), "fill_value": 3.14, "dtype": None},
-            {"name": "二维张量整数填充", "shape": (3, 4), "fill_value": 7, "dtype": None},
-            {"name": "指定float32类型", "shape": (3, 4), "fill_value": 3.14, "dtype": rm.float32},
-            {"name": "指定int32类型", "shape": (3, 4), "fill_value": 7, "dtype": rm.int32},
-        ]
+        test_cases = []
+        for device in device_list:
+            device_name = get_device_name(device)
+            test_cases.extend([
+                {"name": f"标量形状整数填充 - 设备:{device_name}", "shape": (), "fill_value": 5, "dtype": None, "device": device},
+                {"name": f"一维张量浮点数填充 - 设备:{device_name}", "shape": (5,), "fill_value": 3.14, "dtype": None, "device": device},
+                {"name": f"二维张量整数填充 - 设备:{device_name}", "shape": (3, 4), "fill_value": 7, "dtype": None, "device": device},
+                {"name": f"指定float32类型 - 设备:{device_name}", "shape": (3, 4), "fill_value": 3.14, "dtype": rm.float32, "device": device},
+                {"name": f"指定int32类型 - 设备:{device_name}", "shape": (3, 4), "fill_value": 7, "dtype": rm.int32, "device": device},
+            ])
         
         for case in test_cases:
             case_name = f"{self.test_full.__doc__} - {case['name']}"
             start_time = time.time()
             try:
                 # 使用Riemann创建张量
-                rm_tensor = rm.full(case["shape"], fill_value=case["fill_value"], dtype=case["dtype"])
+                rm_tensor = rm.full(case["shape"], fill_value=case["fill_value"], dtype=case["dtype"], device=case["device"])
                 
                 # 检查形状
                 shape_match = rm_tensor.shape == case["shape"]
@@ -571,36 +661,32 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
                 else:
                     # 检查所有元素是否为指定值
-                    expected_values = np.full(case["shape"], case["fill_value"])
-                    all_match = np.allclose(rm_tensor.numpy(), expected_values)
-                    if not all_match:
+                    expected_array = np.full(case["shape"], case["fill_value"])
+                    value_match, dtype_match = check_tensor_match(rm_tensor, expected_array, case["device"], case["dtype"])
+                    
+                    if not value_match:
                         passed = False
                         error_msg = f"值不匹配，期望{case['fill_value']}"
+                    elif not dtype_match:
+                        passed = False
+                        error_msg = f"数据类型不匹配: 期望{case['dtype']}, 得到{rm_tensor.dtype}"
+                    elif not check_device_match(rm_tensor, case["device"]):
+                        passed = False
+                        error_msg = f"设备不匹配: 期望{case['device']}, 得到{rm_tensor.device}"
                     else:
-                        # 如果PyTorch可用，与PyTorch进行比较
-                        if TORCH_AVAILABLE:
-                            torch_dtype = None
-                            if case["dtype"] == rm.float32:
-                                torch_dtype = torch.float32
-                            elif case["dtype"] == rm.int32:
-                                torch_dtype = torch.int32
-                            
-                            torch_tensor = torch.full(case["shape"], case["fill_value"], dtype=torch_dtype)
-                            passed, error_msg = compare_values(rm_tensor, torch_tensor)
-                        else:
-                            passed = True
-                            error_msg = ""
+                        passed = True
+                        error_msg = ""
                 
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
                 
             except Exception as e:
                 time_taken = time.time() - start_time
@@ -611,22 +697,25 @@ class TestTensorCreationFunctions(unittest.TestCase):
     
     def test_full_like(self):
         """测试full_like函数"""
-        test_cases = [
-            {"name": "标量输入整数填充", "shape": (), "fill_value": 5, "dtype": None},
-            {"name": "一维张量输入浮点数填充", "shape": (5,), "fill_value": 3.14, "dtype": None},
-            {"name": "二维张量输入整数填充", "shape": (3, 4), "fill_value": 7, "dtype": None},
-            {"name": "float32类型输入", "shape": (3, 4), "fill_value": 3.14, "dtype": rm.float32},
-        ]
+        test_cases = []
+        for device in device_list:
+            device_name = get_device_name(device)
+            test_cases.extend([
+                {"name": f"标量输入整数填充 - 设备:{device_name}", "shape": (), "fill_value": 5, "dtype": None, "device": device},
+                {"name": f"一维张量输入浮点数填充 - 设备:{device_name}", "shape": (5,), "fill_value": 3.14, "dtype": None, "device": device},
+                {"name": f"二维张量输入整数填充 - 设备:{device_name}", "shape": (3, 4), "fill_value": 7, "dtype": None, "device": device},
+                {"name": f"float32类型输入 - 设备:{device_name}", "shape": (3, 4), "fill_value": 3.14, "dtype": rm.float32, "device": device},
+            ])
         
         for case in test_cases:
             case_name = f"{self.test_full_like.__doc__} - {case['name']}"
             start_time = time.time()
             try:
                 # 创建输入张量
-                input_tensor = rm.ones(case["shape"], dtype=case["dtype"])
+                input_tensor = rm.ones(case["shape"], dtype=case["dtype"], device=case["device"])
                 
                 # 使用Riemann创建full_like张量
-                rm_tensor = rm.full_like(input_tensor, case["fill_value"])
+                rm_tensor = rm.full_like(input_tensor, case["fill_value"], device=case["device"])
                 
                 # 检查形状
                 shape_match = rm_tensor.shape == case["shape"]
@@ -635,36 +724,33 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     error_msg = f"形状不匹配: 期望{case['shape']}, 得到{rm_tensor.shape}"
                 else:
                     # 检查所有元素是否为指定值
-                    expected_values = np.full(case["shape"], case["fill_value"])
-                    all_match = np.allclose(rm_tensor.numpy(), expected_values)
-                    if not all_match:
+                    expected_array = np.full(case["shape"], case["fill_value"])
+                    value_match, dtype_match = check_tensor_match(rm_tensor, expected_array, case["device"], case["dtype"])
+                    
+                    if not value_match:
                         passed = False
                         error_msg = f"值不匹配，期望{case['fill_value']}"
+                    elif not dtype_match:
+                        passed = False
+                        error_msg = f"数据类型不匹配: 期望{case['dtype']}, 得到{rm_tensor.dtype}"
+                    elif not check_device_match(rm_tensor, case["device"]):
+                        passed = False
+                        error_msg = f"设备不匹配: 期望{case['device']}, 得到{rm_tensor.device}"
                     else:
-                        # 如果PyTorch可用，与PyTorch进行比较
-                        if TORCH_AVAILABLE:
-                            torch_dtype = None
-                            if case["dtype"] == rm.float32:
-                                torch_dtype = torch.float32
-                            
-                            torch_input = torch.ones(case["shape"], dtype=torch_dtype)
-                            torch_tensor = torch.full_like(torch_input, case["fill_value"])
-                            passed, error_msg = compare_values(rm_tensor, torch_tensor)
-                        else:
-                            passed = True
-                            error_msg = ""
+                        passed = True
+                        error_msg = ""
                 
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
-                
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    
             except Exception as e:
                 time_taken = time.time() - start_time
                 if IS_RUNNING_AS_SCRIPT:
@@ -674,12 +760,15 @@ class TestTensorCreationFunctions(unittest.TestCase):
     
     def test_eye(self):
         """测试eye函数"""
-        test_cases = [
-            {"name": "方阵n=3", "n": 3, "m": None, "dtype": None},
-            {"name": "矩形矩阵n=2,m=4", "n": 2, "m": 4, "dtype": None},
-            {"name": "矩形矩阵n=4,m=2", "n": 4, "m": 2, "dtype": None},
-            {"name": "指定float32类型", "n": 3, "m": None, "dtype": rm.float32},
-        ]
+        test_cases = []
+        for device in device_list:
+            device_name = get_device_name(device)
+            test_cases.extend([
+                {"name": f"方阵n=3 - 设备:{device_name}", "n": 3, "m": None, "dtype": None, "device": device},
+                {"name": f"矩形矩阵n=2,m=4 - 设备:{device_name}", "n": 2, "m": 4, "dtype": None, "device": device},
+                {"name": f"矩形矩阵n=4,m=2 - 设备:{device_name}", "n": 4, "m": 2, "dtype": None, "device": device},
+                {"name": f"指定float32类型 - 设备:{device_name}", "n": 3, "m": None, "dtype": rm.float32, "device": device},
+            ])
         
         for case in test_cases:
             case_name = f"{self.test_eye.__doc__} - {case['name']}"
@@ -687,10 +776,10 @@ class TestTensorCreationFunctions(unittest.TestCase):
             try:
                 # 使用Riemann创建单位矩阵
                 if case["m"] is None:
-                    rm_tensor = rm.eye(case["n"], dtype=case["dtype"])
+                    rm_tensor = rm.eye(case["n"], dtype=case["dtype"], device=case["device"])
                     expected_shape = (case["n"], case["n"])
                 else:
-                    rm_tensor = rm.eye(case["n"], case["m"], dtype=case["dtype"])
+                    rm_tensor = rm.eye(case["n"], case["m"], dtype=case["dtype"], device=case["device"])
                     expected_shape = (case["n"], case["m"])
                 
                 # 检查形状
@@ -703,37 +792,32 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     expected_matrix = np.eye(case["n"], case["m"])
                     
                     # 检查对角线是否为1，其他位置是否为0
-                    all_match = np.allclose(rm_tensor.numpy(), expected_matrix)
-                    if not all_match:
+                    value_match, dtype_match = check_tensor_match(rm_tensor, expected_matrix, case["device"], case["dtype"])
+                    
+                    if not value_match:
                         passed = False
                         error_msg = "对角线元素不为1或非对角线元素不为0"
+                    elif not dtype_match:
+                        passed = False
+                        error_msg = f"数据类型不匹配: 期望{case['dtype']}, 得到{rm_tensor.dtype}"
+                    elif not check_device_match(rm_tensor, case["device"]):
+                        passed = False
+                        error_msg = f"设备不匹配: 期望{case['device']}, 得到{rm_tensor.device}"
                     else:
-                        # 如果PyTorch可用，与PyTorch进行比较
-                        if TORCH_AVAILABLE:
-                            torch_dtype = None
-                            if case["dtype"] == rm.float32:
-                                torch_dtype = torch.float32
-                            
-                            if case["m"] is None:
-                                torch_tensor = torch.eye(case["n"], dtype=torch_dtype)
-                            else:
-                                torch_tensor = torch.eye(case["n"], case["m"], dtype=torch_dtype)
-                            passed, error_msg = compare_values(rm_tensor, torch_tensor)
-                        else:
-                            passed = True
-                            error_msg = ""
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
-                
+                        passed = True
+                        error_msg = ""
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    
             except Exception as e:
                 time_taken = time.time() - start_time
                 if IS_RUNNING_AS_SCRIPT:
@@ -743,12 +827,15 @@ class TestTensorCreationFunctions(unittest.TestCase):
     
     def test_arange(self):
         """测试arange函数"""
-        test_cases = [
-            {"name": "只有end参数", "start": None, "end": 5, "step": None},
-            {"name": "有start和end参数", "start": 2, "end": 10, "step": None},
-            {"name": "有start、end和step参数", "start": 1, "end": 10, "step": 2},
-            {"name": "负step参数", "start": 10, "end": 1, "step": -2},
-        ]
+        test_cases = []
+        for device in device_list:
+            device_name = get_device_name(device)
+            test_cases.extend([
+                {"name": f"只有end参数 - 设备:{device_name}", "start": None, "end": 5, "step": None, "device": device},
+                {"name": f"有start和end参数 - 设备:{device_name}", "start": 2, "end": 10, "step": None, "device": device},
+                {"name": f"有start、end和step参数 - 设备:{device_name}", "start": 1, "end": 10, "step": 2, "device": device},
+                {"name": f"负step参数 - 设备:{device_name}", "start": 10, "end": 1, "step": -2, "device": device},
+            ])
         
         for case in test_cases:
             case_name = f"{self.test_arange.__doc__} - {case['name']}"
@@ -756,11 +843,11 @@ class TestTensorCreationFunctions(unittest.TestCase):
             try:
                 # 使用Riemann创建arange张量
                 if case["start"] is None:
-                    rm_tensor = rm.arange(case["end"])
+                    rm_tensor = rm.arange(case["end"], device=case["device"])
                 elif case["step"] is None:
-                    rm_tensor = rm.arange(case["start"], case["end"])
+                    rm_tensor = rm.arange(case["start"], case["end"], device=case["device"])
                 else:
-                    rm_tensor = rm.arange(case["start"], case["end"], case["step"])
+                    rm_tensor = rm.arange(case["start"], case["end"], case["step"], device=case["device"])
                 
                 # 创建期望的数组
                 if case["start"] is None:
@@ -777,35 +864,29 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     error_msg = f"形状不匹配: 期望{expected_array.shape}, 得到{rm_tensor.shape}"
                 else:
                     # 检查值是否匹配
-                    all_match = np.array_equal(rm_tensor.numpy(), expected_array)
-                    if not all_match:
+                    value_match, _ = check_tensor_match(rm_tensor, expected_array, case["device"])
+                    
+                    if not value_match:
                         passed = False
                         error_msg = "值不匹配"
+                    elif not check_device_match(rm_tensor, case["device"]):
+                        passed = False
+                        error_msg = f"设备不匹配: 期望{case['device']}, 得到{rm_tensor.device}"
                     else:
-                        # 如果PyTorch可用，与PyTorch进行比较
-                        if TORCH_AVAILABLE:
-                            if case["start"] is None:
-                                torch_tensor = torch.arange(case["end"])
-                            elif case["step"] is None:
-                                torch_tensor = torch.arange(case["start"], case["end"])
-                            else:
-                                torch_tensor = torch.arange(case["start"], case["end"], case["step"])
-                            passed, error_msg = compare_values(rm_tensor, torch_tensor)
-                        else:
-                            passed = True
-                            error_msg = ""
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  错误: {error_msg}")
-                
-                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
-                
+                        passed = True
+                        error_msg = ""
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    
             except Exception as e:
                 time_taken = time.time() - start_time
                 if IS_RUNNING_AS_SCRIPT:
@@ -815,19 +896,22 @@ class TestTensorCreationFunctions(unittest.TestCase):
     
     def test_linspace(self):
         """测试linspace函数"""
-        test_cases = [
-            {"name": "基本用法", "start": 0, "end": 1, "num": 5},
-            {"name": "更多点", "start": 0, "end": 10, "num": 11},
-            {"name": "降序", "start": 10, "end": 0, "num": 6},
-            {"name": "单点", "start": 5, "end": 5, "num": 1},
-        ]
+        test_cases = []
+        for device in device_list:
+            device_name = get_device_name(device)
+            test_cases.extend([
+                {"name": f"基本用法 - 设备:{device_name}", "start": 0, "end": 1, "num": 5, "device": device},
+                {"name": f"更多点 - 设备:{device_name}", "start": 0, "end": 10, "num": 11, "device": device},
+                {"name": f"降序 - 设备:{device_name}", "start": 10, "end": 0, "num": 6, "device": device},
+                {"name": f"单点 - 设备:{device_name}", "start": 5, "end": 5, "num": 1, "device": device},
+            ])
         
         for case in test_cases:
             case_name = f"{self.test_linspace.__doc__} - {case['name']}"
             start_time = time.time()
             try:
                 # 使用Riemann创建linspace张量
-                rm_tensor = rm.linspace(case["start"], case["end"], case["num"])
+                rm_tensor = rm.linspace(case["start"], case["end"], case["num"], device=case["device"])
                 
                 # 创建期望的数组
                 expected_array = np.linspace(case["start"], case["end"], case["num"])
@@ -839,18 +923,177 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     error_msg = f"形状不匹配: 期望{expected_array.shape}, 得到{rm_tensor.shape}"
                 else:
                     # 检查值是否匹配
-                    all_match = np.allclose(rm_tensor.numpy(), expected_array)
-                    if not all_match:
+                    value_match, _ = check_tensor_match(rm_tensor, expected_array, case["device"])
+                    
+                    if not value_match:
                         passed = False
                         error_msg = "值不匹配"
+                    elif not check_device_match(rm_tensor, case["device"]):
+                        passed = False
+                        error_msg = f"设备不匹配: 期望{case['device']}, 得到{rm_tensor.device}"
                     else:
-                        # 如果PyTorch可用，与PyTorch进行比较
-                        if TORCH_AVAILABLE:
-                            torch_tensor = torch.linspace(case["start"], case["end"], case["num"])
-                            passed, error_msg = compare_values(rm_tensor, torch_tensor)
-                        else:
-                            passed = True
-                            error_msg = ""
+                        passed = True
+                        error_msg = ""
+                
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {error_msg}")
+                    
+                    self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+                    
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+    
+    def test_tensor(self):
+        """测试tensor函数"""
+        # 检查cupy是否可用
+        try:
+            import cupy as cp
+            CUPY_AVAILABLE = True
+        except ImportError:
+            CUPY_AVAILABLE = False
+        
+        # 构建测试用例列表
+        test_cases = []
+        
+        # 基本测试用例
+        test_cases.extend([
+            {"name": "标量创建", "data": 5},
+            {"name": "一维列表创建", "data": [1, 2, 3, 4, 5]},
+            {"name": "二维列表创建", "data": [[1, 2, 3], [4, 5, 6]]},
+            {"name": "三维列表创建", "data": [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]},
+            {"name": "numpy数组创建", "data": np.array([1, 2, 3, 4, 5])},
+            {"name": "numpy二维数组创建", "data": np.array([[1, 2, 3], [4, 5, 6]])},
+        ])
+        
+        # dtype测试用例
+        test_cases.extend([
+            {"name": "指定float32类型", "data": [1, 2, 3], "dtype": rm.float32},
+            {"name": "指定float64类型", "data": [1, 2, 3], "dtype": rm.float64},
+            {"name": "指定int32类型", "data": [1, 2, 3], "dtype": rm.int32},
+            {"name": "指定int64类型", "data": [1, 2, 3], "dtype": rm.int64},
+            {"name": "指定bool类型", "data": [True, False, True], "dtype": rm.bool_},
+            {"name": "指定complex64类型", "data": [1+2j, 3+4j], "dtype": rm.complex64},
+        ])
+        
+        # device测试用例
+        for device in device_list:
+            device_name = device if device is not None else "默认设备"
+            test_cases.append({
+                "name": f"设备:{device_name}", 
+                "data": [1, 2, 3], 
+                "device": device
+            })
+        
+        # numpy/cupy 跨设备转换测试用例
+        # 1. data是numpy数组，device是GPU，无dtype参数
+        if CUDA_AVAILABLE:
+            test_cases.append({
+                "name": "numpy数组转GPU设备", 
+                "data": np.array([1, 2, 3, 4, 5]), 
+                "device": "cuda"
+            })
+        
+        # 2. data是cupy数组，device是CPU，无dtype参数
+        if CUPY_AVAILABLE:
+            test_cases.append({
+                "name": "cupy数组转CPU设备", 
+                "data": cp.array([1, 2, 3, 4, 5]), 
+                "device": "cpu"
+            })
+        
+        # 3. data是numpy数组，device是GPU，dtype与numpy数组不一致
+        if CUDA_AVAILABLE:
+            test_cases.append({
+                "name": "numpy数组转GPU设备并转换dtype", 
+                "data": np.array([1, 2, 3, 4, 5], dtype=np.int32), 
+                "device": "cuda", 
+                "dtype": rm.float32
+            })
+        
+        # 4. data是cupy数组，device是CPU，dtype与cupy数组不一致
+        if CUPY_AVAILABLE:
+            test_cases.append({
+                "name": "cupy数组转CPU设备并转换dtype", 
+                "data": cp.array([1, 2, 3, 4, 5], dtype=cp.float64), 
+                "device": "cpu", 
+                "dtype": rm.int64
+            })
+        
+        # requires_grad测试用例
+        test_cases.extend([
+            {"name": "启用梯度计算", "data": [1.0, 2.0, 3.0], "requires_grad": True},
+            {"name": "禁用梯度计算", "data": [1.0, 2.0, 3.0], "requires_grad": False},
+        ])
+        
+        for case in test_cases:
+            case_name = f"{self.test_tensor.__doc__} - {case['name']}"
+            start_time = time.time()
+            try:
+                # 提取参数
+                data = case["data"]
+                dtype = case.get("dtype", None)
+                device = case.get("device", None)
+                requires_grad = case.get("requires_grad", False)
+                
+                # 使用Riemann创建tensor张量
+                rm_tensor = rm.tensor(data, dtype=dtype, device=device, requires_grad=requires_grad)
+                
+                # 检查基本属性
+                passed = True
+                error_msg = ""
+                
+                # 检查数据是否正确
+                # 处理cupy数组的转换
+                if CUPY_AVAILABLE and isinstance(data, cp.ndarray):
+                    expected_data = cp.asnumpy(data)
+                else:
+                    expected_data = np.array(data)
+                if dtype is not None:
+                    expected_data = expected_data.astype(dtype)
+                
+                # 根据设备选择正确的比较方式
+                if device and device.startswith("cuda") and CUDA_AVAILABLE:
+                    # CUDA张量需要转换回CPU进行比较
+                    rm_data = rm_tensor.to("cpu").detach().numpy()
+                else:
+                    rm_data = rm_tensor.detach().numpy()
+                
+                if not np.array_equal(rm_data, expected_data):
+                    passed = False
+                    error_msg = "值不匹配"
+                
+                # 检查数据类型
+                if dtype is not None and rm_tensor.dtype != dtype:
+                    passed = False
+                    error_msg = f"数据类型不匹配: 期望{dtype}, 得到{rm_tensor.dtype}"
+                
+                # 检查设备
+                if device:
+                    expected_device = device if isinstance(device, str) else str(device)
+                    actual_device = str(rm_tensor.device)
+                    
+                    # 处理设备名称格式差异："cuda" vs "cuda:0"
+                    if expected_device == "cuda" and actual_device.startswith("cuda:"):
+                        # 如果期望的是"cuda"，而实际是"cuda:X"，则认为匹配
+                        pass
+                    elif actual_device != expected_device:
+                        passed = False
+                        error_msg = f"设备不匹配: 期望{expected_device}, 得到{actual_device}"
+                
+                # 检查requires_grad
+                if rm_tensor.requires_grad != requires_grad:
+                    passed = False
+                    error_msg = f"requires_grad不匹配: 期望{requires_grad}, 得到{rm_tensor.requires_grad}"
                 
                 time_taken = time.time() - start_time
                 

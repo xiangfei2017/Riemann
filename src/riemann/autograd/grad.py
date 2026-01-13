@@ -213,13 +213,16 @@ def grad(outputs:TN,
         
         # 使用原始output作为反向传播的起点
         outputs._init_calc_graph()
-        outputs.grad_value = tensor(1.0,dtype=outputs.dtype,requires_grad=create_graph)
+        outputs.grad_value = tensor(1.0,
+                                    dtype=outputs.dtype,
+                                    device=outputs.device,
+                                    requires_grad=create_graph)
     
     elif isinstance(grad_outputs,TN):
         if grad_outputs.data.shape == outputs.data.shape:
             # 直接使用原始outputs，设置其grad_value为grad_outputs
             outputs._init_calc_graph()
-            outputs.grad_value = grad_outputs.copy().requires_grad_(create_graph)
+            outputs.grad_value = grad_outputs.to(outputs.device).detach().requires_grad_(create_graph)
         else:
             raise RuntimeError('shape of grad_outputs need to be same as the shape of outputs')
     else:
