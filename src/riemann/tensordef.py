@@ -76,7 +76,7 @@ import builtins
 import warnings
 from typing import Callable, Any, List, Tuple, TypeAlias, overload, Union, Optional
 import numpy as np
-from .cuda import Device, CUPY_AVAILABLE, cp, is_in_cuda_context, get_default_device
+from .cuda import Device, CUPY_AVAILABLE, cp, is_in_cuda_context, get_default_device, current_device
 from .dtype import *
 from .gradmode import *
 
@@ -560,7 +560,7 @@ class TN:
         if not self.is_complex():
             return self
             
-        result = tensor(self.data.real, requires_grad=(is_grad_enabled() and self.requires_grad))
+        result = tensor(self.data.real, device=self.device, requires_grad=(is_grad_enabled() and self.requires_grad))
         result.is_leaf = not result.requires_grad
         
         if result.requires_grad:
@@ -971,6 +971,38 @@ class TN:
             ret.is_leaf = True
         
         return ret
+
+    def cuda(self, device=None):
+        """
+        将张量移动到CUDA设备上。
+        
+        Args:
+            device (optional): 目标CUDA设备ID或设备名称，默认为当前设备
+        
+        Returns:
+            TN: 移动到CUDA设备上的新张量
+        """
+        if device is None:
+            # 使用当前CUDA设备
+            device_id = current_device()
+            device_name = f'cuda:{device_id}'
+        elif isinstance(device, int):
+            # 设备ID
+            device_name = f'cuda:{device}'
+        else:
+            # 设备名称
+            device_name = device
+        
+        return self.to(device=device_name)
+
+    def cpu(self):
+        """
+        将张量移动到CPU设备上。
+        
+        Returns:
+            TN: 移动到CPU设备上的新张量
+        """
+        return self.to(device='cpu')
 
     def __getitem__(self, index):
         # 类型转换：TN索引转为NumPy数组
@@ -3819,11 +3851,12 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
                     else:
                         arr = data  # 已经是当前设备上的cp.ndarray
             else: 
-                if isinstance(data, cp.ndarray):
+                if isinstance(data, np.ndarray):
+                    arr = data  # 已经是np.ndarray
+                else:
                     # cupy数组迁移到cpu
                     arr = cp.asnumpy(data)
-                else:
-                    arr = data  # 已经是np.ndarray
+                                    
         else: # dtype is not None
             if use_cuda:
                 if isinstance(data, np.ndarray):
@@ -3841,11 +3874,11 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
                         # 数组在当前设备上，直接转换dtype
                         arr = data.astype(dtype)
             else:
-                if isinstance(data, cp.ndarray):
+                if isinstance(data, np.ndarray):
+                    arr = data.astype(dtype)                    
+                else:
                     # cupy数组迁移到cpu
                     arr = cp.asnumpy(data).astype(dtype)
-                else:
-                    arr = data.astype(dtype)
     else:
         # data是python数据类型时转换为相应数组    
         if use_cuda:

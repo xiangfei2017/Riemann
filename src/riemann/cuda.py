@@ -76,7 +76,14 @@ class Device:
                 self.index = int(idx_str)
             else:
                 self.type = device
-                self.index = 0 if self.type == 'cuda' else None
+                if self.type == 'cuda':
+                    # 检查是否在CUDA上下文中，如果是则使用当前设备索引
+                    if CUPY_AVAILABLE and is_in_cuda_context():
+                        self.index = current_device()
+                    else:
+                        self.index = 0
+                else:
+                    self.index = None
         else:
             raise ValueError(f"Invalid device type: {device}")
         
