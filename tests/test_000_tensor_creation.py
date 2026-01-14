@@ -955,13 +955,6 @@ class TestTensorCreationFunctions(unittest.TestCase):
     
     def test_tensor(self):
         """测试tensor函数"""
-        # 检查cupy是否可用
-        try:
-            import cupy as cp
-            CUPY_AVAILABLE = True
-        except ImportError:
-            CUPY_AVAILABLE = False
-        
         # 构建测试用例列表
         test_cases = []
         
@@ -1004,10 +997,10 @@ class TestTensorCreationFunctions(unittest.TestCase):
             })
         
         # 2. data是cupy数组，device是CPU，无dtype参数
-        if CUPY_AVAILABLE:
+        if rm.cuda.CUPY_AVAILABLE:
             test_cases.append({
                 "name": "cupy数组转CPU设备", 
-                "data": cp.array([1, 2, 3, 4, 5]), 
+                "data": rm.cuda.cp.array([1, 2, 3, 4, 5]), 
                 "device": "cpu"
             })
         
@@ -1021,10 +1014,10 @@ class TestTensorCreationFunctions(unittest.TestCase):
             })
         
         # 4. data是cupy数组，device是CPU，dtype与cupy数组不一致
-        if CUPY_AVAILABLE:
+        if rm.cuda.CUPY_AVAILABLE:
             test_cases.append({
                 "name": "cupy数组转CPU设备并转换dtype", 
-                "data": cp.array([1, 2, 3, 4, 5], dtype=cp.float64), 
+                "data": rm.cuda.cp.array([1, 2, 3, 4, 5], dtype=rm.cuda.cp.float64), 
                 "device": "cpu", 
                 "dtype": rm.int64
             })
@@ -1054,8 +1047,8 @@ class TestTensorCreationFunctions(unittest.TestCase):
                 
                 # 检查数据是否正确
                 # 处理cupy数组的转换
-                if CUPY_AVAILABLE and isinstance(data, cp.ndarray):
-                    expected_data = cp.asnumpy(data)
+                if rm.cuda.CUPY_AVAILABLE and isinstance(data, rm.cuda.cp.ndarray):
+                    expected_data = rm.cuda.cp.asnumpy(data)
                 else:
                     expected_data = np.array(data)
                 if dtype is not None:

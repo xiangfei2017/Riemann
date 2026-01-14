@@ -32,23 +32,9 @@ class Colors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-# 检查CUDA是否可用
-try:
-    # 检查是否能导入cupy
-    import cupy as cp
-    CUPY_AVAILABLE = True
-    # 检查CUDA设备数量
-    CUDA_DEVICE_COUNT = cp.cuda.runtime.getDeviceCount()
-    if CUDA_DEVICE_COUNT == 0:
-        CUPY_AVAILABLE = False
-        print("警告: CUDA设备不可用，将跳过CUDA相关测试")
-except ImportError:
-    CUPY_AVAILABLE = False
-    print("警告: 无法导入CuPy，将跳过CUDA相关测试")
-
 # 定义设备列表：始终包含CPU，CUDA可用时添加CUDA
 device_list = [None, "cpu"]
-if CUPY_AVAILABLE:
+if rm.cuda.CUPY_AVAILABLE:
     device_list.extend(["cuda", "cuda:0"])  # 添加cuda和cuda:0
 
 # 辅助函数：获取设备名称
