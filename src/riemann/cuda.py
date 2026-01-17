@@ -49,7 +49,6 @@ except ImportError:
     CUPY_AVAILABLE = False
     cp = None
 
-from contextlib import contextmanager
 import threading
 
 # 线程本地存储，用于跟踪当前是否在CUDA设备上下文中

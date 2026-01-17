@@ -4963,11 +4963,11 @@ def flip(input: TN, dims:List[int]|Tuple[int,...]) -> TN:
     """
     # 确保dims是列表或元组
     if not isinstance(dims, (list, tuple)):
-        raise TypeError("dims must be a list or tuple")
+        dims = (dims,)
     
-    # 使用numpy.flip执行翻转操作
+    # 使用numpy.flip或cupy.flip执行翻转操作
     arrlib = input._get_array_lib()
-    data = arrlib.flip(input.data, dims).copy()
+    data = arrlib.flip(input.data, tuple(dims)).copy()
     
     # 创建新的张量
     result = tensor(data, device = input.device, requires_grad = (is_grad_enabled() and input.requires_grad))
@@ -5487,8 +5487,19 @@ def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
         indices = argmaxmin(arr, axis=dim)
         # 为了使用put_along_axis，需要扩展维度
         indices_expanded = arrlib.expand_dims(indices, axis=dim)
-        # 在指定轴上放置1.0，只会在每个切片的第一个最大值位置设置1.0
-        arrlib.put_along_axis(mask_arr, indices_expanded, 1.0, axis=dim)
+        
+        # 使用numpy和cupy都支持的向量化操作替代put_along_axis
+        # 创建一个与mask_arr形状相同的索引数组，其中dim轴的索引来自indices_expanded
+        shape = mask_arr.shape
+        
+        # 创建一个包含所有轴索引的元组
+        grid = arrlib.indices(shape)
+        
+        # 将dim轴的索引替换为indices_expanded
+        grid[dim] = indices_expanded
+        
+        # 使用高级索引设置值为1.0
+        mask_arr[tuple(grid)] = 1.0
     elif isinstance(dim, tuple):
         # 多轴最大值/最小值 - 只选择第一个最大值位置
         # 将指定轴移动到前面
@@ -5687,7 +5698,7 @@ def var(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->
     ddof = 1 if unbiased == True else 0
 
     arrlib = x._get_array_lib()
-    value = arrlib.var(x.data, axis=dim, dtype=x.data.dtype, ddof=ddof, keepdims=keepdim)
+    value = arrlib.var(x.data, axis=dim, ddof=ddof, keepdims=keepdim)
     ret=tensor(value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     ret.is_leaf = not ret.requires_grad
 
@@ -5696,9 +5707,7 @@ def var(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->
         ret.parms=((dim,unbiased,keepdim),)
         ret.gradfuncs=(_var_backward,)
     
-    # 复数张量的方差是复数与均值差的模的平方的均值，
-    # 理论上是实数，但numpy计算结果的数据类型保持复数，所以结果要取实部
-    return ret.real
+    return ret
 
 # 利用mean函数计算var的版本，无需构造梯度回调函数
 def var2(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->TN:
