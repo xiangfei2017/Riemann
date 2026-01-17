@@ -10,10 +10,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 # 导入Riemann库
 import riemann as rm
 from riemann import tensor
+# 从rm.cuda获取cupy引用和CUDA可用性
+CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+cp = rm.cuda.cp
 # 尝试导入PyTorch
 try:
     import torch
     TORCH_AVAILABLE = True
+    # 清理资源
+    torch.cuda.empty_cache() if torch.cuda.is_available() else None
 except ImportError:
     TORCH_AVAILABLE = False
 
@@ -190,37 +195,56 @@ class StatisticsCollector:
 stats = StatisticsCollector()
 
 # 比较值函数
-def compare_values(riemann_val, torch_val):
+def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
+    """比较Riemann和PyTorch的值是否接近"""
     # 处理None值的情况
-    if riemann_val is None and torch_val is None:
+    if not TORCH_AVAILABLE:
+        # 如果没有PyTorch，只检查riemann结果是否存在
+        return rm_result is not None
+    
+    if rm_result is None and torch_result is None:
         return True
-    if riemann_val is None or torch_val is None:
+    if rm_result is None or torch_result is None:
         return False
     
-    # 转换为numpy数组
-    if hasattr(riemann_val, 'data'):
-        riemann_np = riemann_val.data
-    else:
-        riemann_np = riemann_val
+    # 处理嵌套元组/列表的情况
+    if isinstance(rm_result, (list, tuple)) and isinstance(torch_result, (list, tuple)):
+        if len(rm_result) != len(torch_result):
+            return False
+        
+        all_passed = True
+        for i, (r, t) in enumerate(zip(rm_result, torch_result)):
+            if not compare_values(r, t, atol, rtol):
+                all_passed = False
+                break
+        
+        return all_passed
     
-    if hasattr(torch_val, 'detach'):
-        torch_np = torch_val.detach().cpu().numpy()
-    else:
-        torch_np = torch_val
+    # 转换为numpy数组
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
     
     # 处理形状不匹配的情况
     try:
-        # 增加容差参数，特别是对于梯度比较
-        np.testing.assert_allclose(riemann_np, torch_np, rtol=1e-3, atol=1e-3)
+        # 增加容差参数
+        np.testing.assert_allclose(rm_data, torch_data, rtol=rtol, atol=atol)
         return True
-    except AssertionError as e:
-        # 打印错误信息以便调试
-        print(f"比较失败: {e}")
-        print(f"Riemann值形状: {riemann_np.shape}, PyTorch值形状: {torch_np.shape}")
-        # 打印部分值进行比较
-        if riemann_np.size > 0:
-            print(f"Riemann样本值: {riemann_np.flat[:3]}")
-            print(f"PyTorch样本值: {torch_np.flat[:3]}")
+    except AssertionError:
         return False
 
 class TestBasicFunctions(unittest.TestCase):
@@ -245,160 +269,172 @@ class TestBasicFunctions(unittest.TestCase):
     
     def _test_function(self, func_name, riemann_func, torch_func, test_cases):
         """通用函数测试模板"""
-        for case in test_cases:
-            start_time = time.time()
-            try:
-                # 获取测试参数
-                name = case["name"]
-                shape = case["shape"]
-                dtype = case["dtype"]
-                is_complex = case.get("complex", False)
-                
-                # 生成测试数据
-                np.random.seed(42)
-                if is_complex:
-                    # 生成复数数据 - 确保返回numpy数组
-                    real_part = np.array(np.random.randn(*shape), dtype=np.float64)
-                    imag_part = np.array(np.random.randn(*shape), dtype=np.float64)
-                    input_data = (real_part + 1j * imag_part).astype(dtype)
-                else:
-                    # 生成实数数据 - 确保返回numpy数组
-                    input_data = np.array(np.random.randn(*shape), dtype=dtype)
-                
-                # 确保数据在有效范围内（避免某些函数的域错误）
-                if func_name == "arcsin" or func_name == "arccos" or func_name == "arcsinh" or func_name == "arccosh":
-                    # 对于这些函数，限制输入范围
-                    if not is_complex:
-                        # 实数情况下的范围限制
-                        if func_name in ["arcsin", "arccos"]:
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                start_time = time.time()
+                try:
+                    # 获取测试参数
+                    base_name = case["name"]
+                    name = f"{base_name} - {device}"
+                    shape = case["shape"]
+                    dtype = case["dtype"]
+                    is_complex = case.get("complex", False)
+                    
+                    # 生成测试数据
+                    np.random.seed(42)
+                    if is_complex:
+                        # 生成复数数据 - 确保返回numpy数组
+                        real_part = np.array(np.random.randn(*shape), dtype=np.float64)
+                        imag_part = np.array(np.random.randn(*shape), dtype=np.float64)
+                        input_data = (real_part + 1j * imag_part).astype(dtype)
+                    else:
+                        # 生成实数数据 - 确保返回numpy数组
+                        input_data = np.array(np.random.randn(*shape), dtype=dtype)
+                    
+                    # 确保数据在有效范围内（避免某些函数的域错误）
+                    if func_name == "arcsin" or func_name == "arccos" or func_name == "arcsinh" or func_name == "arccosh":
+                        # 对于这些函数，限制输入范围
+                        if not is_complex:
+                            # 实数情况下的范围限制
+                            if func_name in ["arcsin", "arccos"]:
+                                input_data = np.clip(input_data, -0.99, 0.99)
+                            elif func_name == "arccosh":
+                                input_data = np.abs(input_data) + 1.1  # arccosh要求x >= 1
+                    elif func_name == "arctanh":
+                        if not is_complex:
                             input_data = np.clip(input_data, -0.99, 0.99)
-                        elif func_name == "arccosh":
-                            input_data = np.abs(input_data) + 1.1  # arccosh要求x >= 1
-                elif func_name == "arctanh":
-                    if not is_complex:
-                        input_data = np.clip(input_data, -0.99, 0.99)
-                elif func_name == "log" or func_name == "sqrt":
-                    if not is_complex:
-                        if func_name == "log":
-                            input_data = np.abs(input_data) + 1e-6  # log要求x > 0
+                    elif func_name == "log" or func_name == "sqrt":
+                        if not is_complex:
+                            if func_name == "log":
+                                input_data = np.abs(input_data) + 1e-6  # log要求x > 0
+                            else:
+                                input_data = np.abs(input_data)  # sqrt要求x >= 0
+                    elif func_name == "log1p":
+                        if not is_complex:
+                            input_data = np.abs(input_data)  # log1p要求x > -1
+                    
+                    # Riemann计算
+                    riemann_input = tensor(input_data, requires_grad=True, device=device)
+                    riemann_result = riemann_func(riemann_input)
+                    
+                    # 反向传播 - 为了简化，我们对所有元素求和
+                    sum_result = riemann_result.sum()
+                    # 对于复数结果，需要显式提供梯度张量
+                    if np.issubdtype(sum_result.dtype, np.complexfloating):
+                        # 创建与sum_result形状相同的复数全1张量作为梯度
+                        grad_tensor = tensor(np.ones_like(sum_result.data, dtype=sum_result.dtype), device=device)
+                        sum_result.backward(grad_tensor)
+                    else:
+                        # 对于实数结果，可以隐式创建梯度
+                        sum_result.backward()
+                    
+                    riemann_grad = riemann_input.grad
+                    
+                    # 检查数据类型一致性
+                    riemann_value_dtype = riemann_result.dtype
+                    riemann_grad_dtype = riemann_grad.dtype
+                    
+                    # PyTorch计算
+                    torch_result = None
+                    torch_grad = None
+                    
+                    if TORCH_AVAILABLE:
+                        # 转换为PyTorch张量
+                        torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        # 应用对应的PyTorch函数
+                        torch_result = torch_func(torch_input)
+                        # 反向传播
+                        torch_sum = torch_result.sum()
+                        if torch_sum.dtype.is_complex:
+                            # 对于复数结果，需要显式提供梯度张量
+                            torch_grad_tensor = torch.ones_like(torch_sum, dtype=torch_sum.dtype, device=device)
+                            torch_sum.backward(torch_grad_tensor)
                         else:
-                            input_data = np.abs(input_data)  # sqrt要求x >= 0
-                elif func_name == "log1p":
-                    if not is_complex:
-                        input_data = np.abs(input_data)  # log1p要求x > -1
-                
-                # Riemann计算
-                riemann_input = tensor(input_data, requires_grad=True)
-                riemann_result = riemann_func(riemann_input)
-                
-                # 反向传播 - 为了简化，我们对所有元素求和
-                sum_result = riemann_result.sum()
-                # 对于复数结果，需要显式提供梯度张量
-                if np.issubdtype(sum_result.dtype, np.complexfloating):
-                    # 创建与sum_result形状相同的复数全1张量作为梯度
-                    grad_tensor = tensor(np.ones_like(sum_result.data, dtype=sum_result.dtype))
-                    sum_result.backward(grad_tensor)
-                else:
-                    # 对于实数结果，可以隐式创建梯度
-                    sum_result.backward()
-                
-                riemann_grad = riemann_input.grad
-                
-                # 检查数据类型一致性
-                riemann_value_dtype = riemann_result.dtype
-                riemann_grad_dtype = riemann_grad.dtype
-                
-                # PyTorch计算
-                torch_result = None
-                torch_grad = None
-                
-                if TORCH_AVAILABLE:
-                    # 转换为PyTorch张量
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    # 应用对应的PyTorch函数
-                    torch_result = torch_func(torch_input)
-                    # 反向传播
-                    torch_sum = torch_result.sum()
-                    if torch_sum.dtype.is_complex:
-                        # 对于复数结果，需要显式提供梯度张量
-                        torch_grad_tensor = torch.ones_like(torch_sum, dtype=torch_sum.dtype)
-                        torch_sum.backward(torch_grad_tensor)
-                    else:
-                        torch_sum.backward()
-                    torch_grad = torch_input.grad
-                    
-                    # 比较值和梯度
-                    values_match = compare_values(riemann_result, torch_result)
-                    
-                    # 特殊处理arccosh的复数测试（包括向量和矩阵）
-                    if func_name == "arccosh" and "复数测试" in name and is_complex:
-                        # 对于arccosh在复数域的梯度比较，考虑多值性带来的符号差异
-                        try:
-                            # 尝试直接比较
-                            np.testing.assert_allclose(riemann_grad.data, torch_grad.detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
-                            grads_match = True
-                        except AssertionError:
-                            # 如果直接比较失败，尝试比较绝对值
+                            torch_sum.backward()
+                        torch_grad = torch_input.grad
+                        
+                        # 比较值和梯度
+                        values_match = compare_values(riemann_result, torch_result)
+                        
+                        # 特殊处理arccosh的复数测试（包括向量和矩阵）
+                        if func_name == "arccosh" and "复数测试" in base_name and is_complex:
+                            # 对于arccosh在复数域的梯度比较，考虑多值性带来的符号差异
                             try:
-                                np.testing.assert_allclose(np.abs(riemann_grad.data), np.abs(torch_grad.detach().cpu().numpy()), rtol=1e-3, atol=1e-3)
+                                # 获取梯度数据，确保转换为NumPy数组
+                                riemann_grad_data = riemann_grad.data.get() if hasattr(riemann_grad.data, 'get') else riemann_grad.data
+                                torch_grad_data = torch_grad.detach().cpu().numpy()
+                                # 尝试直接比较
+                                np.testing.assert_allclose(riemann_grad_data, torch_grad_data, rtol=1e-3, atol=1e-3)
                                 grads_match = True
-                                print(f"  注意: arccosh函数在复数域存在多值性，梯度存在符号差异但绝对值匹配")
                             except AssertionError:
-                                grads_match = False
-                                # 调用compare_values获取详细的错误信息
-                                compare_values(riemann_grad, torch_grad)
+                                # 如果直接比较失败，尝试比较绝对值
+                                try:
+                                    riemann_grad_data = riemann_grad.data.get() if hasattr(riemann_grad.data, 'get') else riemann_grad.data
+                                    torch_grad_data = torch_grad.detach().cpu().numpy()
+                                    np.testing.assert_allclose(np.abs(riemann_grad_data), np.abs(torch_grad_data), rtol=1e-3, atol=1e-3)
+                                    grads_match = True
+                                    print(f"  注意: arccosh函数在复数域存在多值性，梯度存在符号差异但绝对值匹配")
+                                except AssertionError:
+                                    grads_match = False
+                                    # 调用compare_values获取详细的错误信息
+                                    compare_values(riemann_grad, torch_grad)
+                        else:
+                            # 其他情况正常比较
+                            grads_match = compare_values(riemann_grad, torch_grad)
                     else:
-                        # 其他情况正常比较
-                        grads_match = compare_values(riemann_grad, torch_grad)
-                else:
-                    # 如果PyTorch不可用，只检查Riemann的计算
-                    values_match = True
-                    grads_match = True
-                
-                # 清理梯度
-                riemann_input.grad = None
-                
-                # 检查数据类型是否与输入一致
-                input_dtype = riemann_input.dtype
-                
-                # 特殊情况处理：对于abs函数，复数输入应该产生实数值输出
-                if func_name == 'abs' and is_complex:
-                    # 对于复数输入的abs函数，输出应该是实数类型
-                    expected_value_dtype = np.float64 if input_dtype == np.complex128 else np.float32
-                    dtype_value_match = riemann_value_dtype == expected_value_dtype
-                else:
-                    # 其他情况要求输出类型与输入类型一致
-                    dtype_value_match = riemann_value_dtype == input_dtype
+                        # 如果PyTorch不可用，只检查Riemann的计算
+                        values_match = True
+                        grads_match = True
                     
-                # 梯度类型应始终与输入类型一致
-                dtype_grad_match = riemann_grad_dtype == input_dtype
-                
-                # 判断是否通过
-                passed = values_match and grads_match and dtype_value_match and dtype_grad_match
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  值比较: {'通过' if values_match else '失败'}")
-                        print(f"  梯度比较: {'通过' if grads_match else '失败'}")
-                        print(f"  函数值数据类型: {'通过' if dtype_value_match else f'失败 (期望: {input_dtype}, 实际: {riemann_value_dtype})'}")
-                        print(f"  梯度数据类型: {'通过' if dtype_grad_match else f'失败 (期望: {input_dtype}, 实际: {riemann_grad_dtype})'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(values_match, f"值比较失败: {name}")
-                self.assertTrue(grads_match, f"梯度比较失败: {name}")
-                self.assertTrue(dtype_value_match, f"函数值数据类型不一致: {name}")
-                self.assertTrue(dtype_grad_match, f"梯度数据类型不一致: {name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(name, False, [str(e)])
-                    print(f"  {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 清理梯度
+                    riemann_input.grad = None
+                    
+                    # 检查数据类型是否与输入一致
+                    input_dtype = riemann_input.dtype
+                    
+                    # 特殊情况处理：对于abs函数，复数输入应该产生实数值输出
+                    if func_name == 'abs' and is_complex:
+                        # 对于复数输入的abs函数，输出应该是实数类型
+                        expected_value_dtype = np.float64 if input_dtype == np.complex128 else np.float32
+                        dtype_value_match = riemann_value_dtype == expected_value_dtype
+                    else:
+                        # 其他情况要求输出类型与输入类型一致
+                        dtype_value_match = riemann_value_dtype == input_dtype
+                        
+                    # 梯度类型应始终与输入类型一致
+                    dtype_grad_match = riemann_grad_dtype == input_dtype
+                    
+                    # 判断是否通过
+                    passed = values_match and grads_match and dtype_value_match and dtype_grad_match
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: {'通过' if values_match else '失败'}")
+                            print(f"  梯度比较: {'通过' if grads_match else '失败'}")
+                            print(f"  函数值数据类型: {'通过' if dtype_value_match else f'失败 (期望: {input_dtype}, 实际: {riemann_value_dtype})'}")
+                            print(f"  梯度数据类型: {'通过' if dtype_grad_match else f'失败 (期望: {input_dtype}, 实际: {riemann_grad_dtype})'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(values_match, f"值比较失败: {name}")
+                    self.assertTrue(grads_match, f"梯度比较失败: {name}")
+                    self.assertTrue(dtype_value_match, f"函数值数据类型不一致: {name}")
+                    self.assertTrue(dtype_grad_match, f"梯度数据类型不一致: {name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(name, False, [str(e)])
+                        print(f"  {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_abs(self):
         """测试绝对值函数abs"""

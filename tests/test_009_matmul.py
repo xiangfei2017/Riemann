@@ -4,15 +4,18 @@ import time
 import sys, os
 
 # 添加项目根目录到sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # 导入riemann模块
 try:
     import riemann as rm
     from riemann import tensor
-    from riemann import TN
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    # 从rm.cuda获取CUDA支持
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -217,14 +220,46 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         
         return all_passed
     
-    # 直接调用detach().numpy()，不进行hasattr检查，让错误正确暴露
-    rm_data = rm_result.detach().numpy()
-    torch_data = torch_result.detach().numpy()
+    # 处理CUDA张量，先移动到CPU再转换为numpy数组
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'device'):
+            # 检查是否为CUDA设备
+            is_cuda = False
+            try:
+                device = rm_result.device
+                if isinstance(device, str) and 'cuda' in device.lower():
+                    is_cuda = True
+                elif hasattr(device, 'type') and device.type == 'cuda':
+                    is_cuda = True
+            except Exception:
+                pass
+            
+            if is_cuda:
+                # 如果是CUDA张量，先移动到CPU
+                rm_data = rm_result.cpu().detach().numpy()
+            else:
+                rm_data = rm_result.detach().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
     
     # 处理形状不匹配的情况
     # 增加容差参数
-    np.testing.assert_allclose(rm_data, torch_data, rtol=rtol, atol=atol)
-    return True
+    try:
+        np.testing.assert_allclose(rm_data, torch_data, rtol=rtol, atol=atol)
+        return True
+    except AssertionError:
+        return False
 
 class TestMatmulFunctions(unittest.TestCase):
     def setUp(self):
@@ -247,103 +282,35 @@ class TestMatmulFunctions(unittest.TestCase):
     
     def test_vector_multiplication(self):
         """测试场景1: 向量乘法（替代标量乘法）"""
-        case_name = "向量乘法"
-        start_time = time.time()
-        try:
-            # 创建测试数据 - 一维向量（避免标量）
-            np_x = np.array([2.0], dtype=np.float64)
-            np_y = np.array([3.0], dtype=np.float64)
-            
-            # 创建Riemann张量
-            rm_x = tensor(np_x, requires_grad=True)
-            rm_y = tensor(np_y, requires_grad=True)
-            
-            # 创建PyTorch张量
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(np_x, requires_grad=True)
-                torch_y = torch.tensor(np_y, requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            # 执行矩阵乘法
-            rm_z = rm_x @ rm_y
-            rm_z_sum = rm_z.sum()
-            
-            if TORCH_AVAILABLE:
-                torch_z = torch_x @ torch_y
-                torch_z_sum = torch_z.sum()
-            else:
-                torch_z, torch_z_sum = None, None
-            
-            # 反向传播
-            rm_z_sum.backward()
-            if TORCH_AVAILABLE:
-                torch_z_sum.backward()
-            
-            # 比较乘法结果
-            passed_z = compare_values(rm_z, torch_z)
-            
-            # 比较梯度
-            passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
-            passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
-            
-            # 综合结果
-            passed = passed_z and passed_dx and passed_dy
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                # 记录子用例结果
-                stats.add_sub_case_result(passed)
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    if not passed_z:
-                        print(f"  乘积值比较: 失败")
-                    if not passed_dx:
-                        print(f"  x梯度比较: 失败")
-                    if not passed_dy:
-                        print(f"  y梯度比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"矩阵乘法测试失败: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
-    
-    def test_vector_matrix_multiplication(self):
-        """测试场景2: 向量与矩阵乘法"""
-        case_name = "向量与矩阵乘法"
-        start_time = time.time()
-        try:
-            # 测试用例列表
-            test_cases = [
-                # (测试名称, x形状, y形状)
-                ("一维向量与二维矩阵乘法", (3,), (3, 4)),
-                ("二维行向量与二维矩阵乘法", (1, 3), (3, 4)),
-                ("二维列向量与二维矩阵乘法", (3, 1), (1, 4)),
-                ("二维矩阵与一维向量乘法", (3, 4), (4,)),
-            ]
-            
-            all_passed = True
-            
-            for sub_case_name, x_shape, y_shape in test_cases:
-                # 创建测试数据
-                np_x = np.random.randn(*x_shape).astype(np.float64)
-                np_y = np.random.randn(*y_shape).astype(np.float64)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            case_name = f"向量乘法 - {device}"
+            start_time = time.time()
+            try:
+                # 创建测试数据 - 一维向量（避免标量）
+                np_x = np.array([2.0], dtype=np.float64)
+                np_y = np.array([3.0], dtype=np.float64)
                 
                 # 创建Riemann张量
-                rm_x = tensor(np_x, requires_grad=True)
-                rm_y = tensor(np_y, requires_grad=True)
+                if device == "cpu":
+                    rm_x = tensor(np_x, requires_grad=True)
+                    rm_y = tensor(np_y, requires_grad=True)
+                else:  # cuda
+                    rm_x = tensor(np_x, requires_grad=True, device=device)
+                    rm_y = tensor(np_y, requires_grad=True, device=device)
                 
                 # 创建PyTorch张量
                 if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                    torch_y = torch.tensor(np_y, requires_grad=True)
+                    if device == "cpu":
+                        torch_x = torch.tensor(np_x, requires_grad=True)
+                        torch_y = torch.tensor(np_y, requires_grad=True)
+                    else:  # cuda
+                        torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        torch_y = torch.tensor(np_y, requires_grad=True, device=device)
                 else:
                     torch_x, torch_y = None, None
                 
@@ -370,55 +337,163 @@ class TestMatmulFunctions(unittest.TestCase):
                 passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
                 
                 # 综合结果
-                case_passed = passed_z and passed_dx and passed_dy
-                if not case_passed:
-                    all_passed = False
-                    
-                # 记录子用例结果
+                passed = passed_z and passed_dx and passed_dy
+                time_taken = time.time() - start_time
+                
                 if IS_RUNNING_AS_SCRIPT:
-                    stats.add_sub_case_result(case_passed)
-                    status = "通过" if case_passed else "失败"
-                    print(f"  子用例: {sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
-                    if not case_passed:
+                    # 记录子用例结果
+                    stats.add_sub_case_result(passed)
+                    stats.add_result(case_name, passed)
+                    status = "通过" if passed else "失败"
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    if not passed:
                         if not passed_z:
-                            print(f"    乘积值比较: 失败")
+                            print(f"  乘积值比较: 失败")
                         if not passed_dx:
-                            print(f"    x梯度比较: 失败")
+                            print(f"  x梯度比较: 失败")
                         if not passed_dy:
-                            print(f"    y梯度比较: 失败")
+                            print(f"  y梯度比较: 失败")
                 
-                # 重置梯度
-                if hasattr(rm_x, 'grad'):
-                    rm_x.grad = None
-                if hasattr(rm_y, 'grad'):
-                    rm_y.grad = None
+                # 断言确保测试通过
+                self.assertTrue(passed, f"矩阵乘法测试失败: {case_name}")
                 
-                if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
-                    torch_x.grad = None
-                if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
-                    torch_y.grad = None
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+    
+    def test_vector_matrix_multiplication(self):
+        """测试场景2: 向量与矩阵乘法"""
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        all_passed = True
+        start_time = time.time()
+        
+        try:
+            # 测试用例列表
+            test_cases = [
+                # (测试名称, x形状, y形状)
+                ("一维向量与二维矩阵乘法", (3,), (3, 4)),
+                ("二维行向量与二维矩阵乘法", (1, 3), (3, 4)),
+                ("二维列向量与二维矩阵乘法", (3, 1), (1, 4)),
+                ("二维矩阵与一维向量乘法", (3, 4), (4,)),
+            ]
+            
+            for device in devices:
+                device_case_name = f"向量与矩阵乘法 - {device}"
+                device_all_passed = True
+                
+                for sub_case_name, x_shape, y_shape in test_cases:
+                    full_sub_case_name = f"{sub_case_name} - {device}"
+                    
+                    # 创建测试数据
+                    np_x = np.random.randn(*x_shape).astype(np.float64)
+                    np_y = np.random.randn(*y_shape).astype(np.float64)
+                    
+                    # 创建Riemann张量
+                    if device == "cpu":
+                        rm_x = tensor(np_x, requires_grad=True)
+                        rm_y = tensor(np_y, requires_grad=True)
+                    else:  # cuda
+                        rm_x = tensor(np_x, requires_grad=True, device=device)
+                        rm_y = tensor(np_y, requires_grad=True, device=device)
+                    
+                    # 创建PyTorch张量
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                            torch_y = torch.tensor(np_y, requires_grad=True)
+                        else:  # cuda
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                            torch_y = torch.tensor(np_y, requires_grad=True, device=device)
+                    else:
+                        torch_x, torch_y = None, None
+                    
+                    # 执行矩阵乘法
+                    rm_z = rm_x @ rm_y
+                    rm_z_sum = rm_z.sum()
+                    
+                    if TORCH_AVAILABLE:
+                        torch_z = torch_x @ torch_y
+                        torch_z_sum = torch_z.sum()
+                    else:
+                        torch_z, torch_z_sum = None, None
+                    
+                    # 反向传播
+                    rm_z_sum.backward()
+                    if TORCH_AVAILABLE:
+                        torch_z_sum.backward()
+                    
+                    # 比较乘法结果
+                    passed_z = compare_values(rm_z, torch_z)
+                    
+                    # 比较梯度
+                    passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
+                    passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
+                    
+                    # 综合结果
+                    case_passed = passed_z and passed_dx and passed_dy
+                    if not case_passed:
+                        device_all_passed = False
+                        all_passed = False
+                        
+                    # 记录子用例结果
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_sub_case_result(case_passed)
+                        status = "通过" if case_passed else "失败"
+                        print(f"  子用例: {full_sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                        if not case_passed:
+                            if not passed_z:
+                                print(f"    乘积值比较: 失败")
+                            if not passed_dx:
+                                print(f"    x梯度比较: 失败")
+                            if not passed_dy:
+                                print(f"    y梯度比较: 失败")
+                    
+                    # 重置梯度
+                    if hasattr(rm_x, 'grad'):
+                        rm_x.grad = None
+                    if hasattr(rm_y, 'grad'):
+                        rm_y.grad = None
+                    
+                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                        torch_x.grad = None
+                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
+                        torch_y.grad = None
+                
+                # 记录设备测试结果
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(device_case_name, device_all_passed)
+                    status = "通过" if device_all_passed else "失败"
+                    print(f"测试用例: {device_case_name} - {Colors.OKGREEN if device_all_passed else Colors.FAIL}{status}{Colors.ENDC}")
             
             time_taken = time.time() - start_time
             
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, all_passed)
-                status = "通过" if all_passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if all_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(all_passed, f"矩阵乘法测试失败: {case_name}")
+            # 断言确保所有测试通过
+            self.assertTrue(all_passed, f"矩阵乘法测试失败: 向量与矩阵乘法")
             
         except Exception as e:
             time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                stats.add_result("向量与矩阵乘法", False, [str(e)])
+                print(f"测试用例: 向量与矩阵乘法 - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
     
     def test_matrix_matrix_multiplication(self):
         """测试场景3: 矩阵与矩阵乘法"""
-        case_name = "矩阵与矩阵乘法"
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        all_passed = True
         start_time = time.time()
+        
         try:
             # 测试用例列表（移除可能不兼容的形状组合）
             test_cases = [
@@ -429,104 +504,126 @@ class TestMatmulFunctions(unittest.TestCase):
                 ("三维矩阵与三维矩阵乘法", (2, 3, 4), (2, 4, 5)),
             ]
             
-            all_passed = True
-            
-            for sub_case_name, x_shape, y_shape in test_cases:
-                try:
-                    # 创建测试数据
-                    np_x = np.random.randn(*x_shape).astype(np.float64)
-                    np_y = np.random.randn(*y_shape).astype(np.float64)
+            for device in devices:
+                device_case_name = f"矩阵与矩阵乘法 - {device}"
+                device_all_passed = True
+                
+                for sub_case_name, x_shape, y_shape in test_cases:
+                    full_sub_case_name = f"{sub_case_name} - {device}"
                     
-                    # 创建Riemann张量
-                    rm_x = tensor(np_x, requires_grad=True)
-                    rm_y = tensor(np_y, requires_grad=True)
-                    
-                    # 创建PyTorch张量
-                    if TORCH_AVAILABLE:
-                        torch_x = torch.tensor(np_x, requires_grad=True)
-                        torch_y = torch.tensor(np_y, requires_grad=True)
-                    else:
-                        torch_x, torch_y = None, None
-                    
-                    # 执行矩阵乘法
-                    rm_z = rm_x @ rm_y
-                    rm_z_sum = rm_z.sum()
-                    
-                    if TORCH_AVAILABLE:
-                        torch_z = torch_x @ torch_y
-                        torch_z_sum = torch_z.sum()
-                    else:
-                        torch_z, torch_z_sum = None, None
-                    
-                    # 实数矩阵的反向传播
-                    rm_z_sum.backward()
-                    
-                    if TORCH_AVAILABLE:
-                        torch_z_sum.backward()
-                    
-                    # 比较乘法结果
-                    passed_z = compare_values(rm_z, torch_z)
-                    
-                    # 比较梯度
-                    passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
-                    passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
-                    
-                    # 综合结果
-                    case_passed = passed_z and passed_dx and passed_dy
-                    if not case_passed:
-                        all_passed = False
+                    try:
+                        # 创建测试数据
+                        np_x = np.random.randn(*x_shape).astype(np.float64)
+                        np_y = np.random.randn(*y_shape).astype(np.float64)
                         
-                    # 记录子用例结果
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_sub_case_result(case_passed)
-                        status = "通过" if case_passed else "失败"
-                        print(f"  子用例: {sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                        # 创建Riemann张量
+                        if device == "cpu":
+                            rm_x = tensor(np_x, requires_grad=True)
+                            rm_y = tensor(np_y, requires_grad=True)
+                        else:  # cuda
+                            rm_x = tensor(np_x, requires_grad=True, device=device)
+                            rm_y = tensor(np_y, requires_grad=True, device=device)
+                        
+                        # 创建PyTorch张量
+                        if TORCH_AVAILABLE:
+                            if device == "cpu":
+                                torch_x = torch.tensor(np_x, requires_grad=True)
+                                torch_y = torch.tensor(np_y, requires_grad=True)
+                            else:  # cuda
+                                torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                                torch_y = torch.tensor(np_y, requires_grad=True, device=device)
+                        else:
+                            torch_x, torch_y = None, None
+                        
+                        # 执行矩阵乘法
+                        rm_z = rm_x @ rm_y
+                        rm_z_sum = rm_z.sum()
+                        
+                        if TORCH_AVAILABLE:
+                            torch_z = torch_x @ torch_y
+                            torch_z_sum = torch_z.sum()
+                        else:
+                            torch_z, torch_z_sum = None, None
+                        
+                        # 实数矩阵的反向传播
+                        rm_z_sum.backward()
+                        
+                        if TORCH_AVAILABLE:
+                            torch_z_sum.backward()
+                        
+                        # 比较乘法结果
+                        passed_z = compare_values(rm_z, torch_z)
+                        
+                        # 比较梯度
+                        passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
+                        passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
+                        
+                        # 综合结果
+                        case_passed = passed_z and passed_dx and passed_dy
                         if not case_passed:
-                            if not passed_z:
-                                print(f"    乘积值比较: 失败")
-                            if not passed_dx:
-                                print(f"    x梯度比较: 失败")
-                            if not passed_dy:
-                                print(f"    y梯度比较: 失败")
-                except Exception as e:
-                    all_passed = False
-                    # 记录子用例失败结果
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_sub_case_result(False)
-                        print(f"  子用例: {sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                            device_all_passed = False
+                            all_passed = False
+                            
+                        # 记录子用例结果
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_sub_case_result(case_passed)
+                            status = "通过" if case_passed else "失败"
+                            print(f"  子用例: {full_sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                            if not case_passed:
+                                if not passed_z:
+                                    print(f"    乘积值比较: 失败")
+                                if not passed_dx:
+                                    print(f"    x梯度比较: 失败")
+                                if not passed_dy:
+                                    print(f"    y梯度比较: 失败")
+                    except Exception as e:
+                        device_all_passed = False
+                        all_passed = False
+                        # 记录子用例失败结果
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_sub_case_result(False)
+                            print(f"  子用例: {full_sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                        continue
+                    
+                    # 重置梯度
+                    if hasattr(rm_x, 'grad'):
+                        rm_x.grad = None
+                    if hasattr(rm_y, 'grad'):
+                        rm_y.grad = None
+                    
+                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                        torch_x.grad = None
+                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
+                        torch_y.grad = None
                 
-                # 重置梯度
-                if hasattr(rm_x, 'grad'):
-                    rm_x.grad = None
-                if hasattr(rm_y, 'grad'):
-                    rm_y.grad = None
-                
-                if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
-                    torch_x.grad = None
-                if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
-                    torch_y.grad = None
+                # 记录设备测试结果
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(device_case_name, device_all_passed)
+                    status = "通过" if device_all_passed else "失败"
+                    print(f"测试用例: {device_case_name} - {Colors.OKGREEN if device_all_passed else Colors.FAIL}{status}{Colors.ENDC}")
             
             time_taken = time.time() - start_time
             
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, all_passed)
-                status = "通过" if all_passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if all_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(all_passed, f"矩阵乘法测试失败: {case_name}")
+            # 断言确保所有测试通过
+            self.assertTrue(all_passed, f"矩阵乘法测试失败: 矩阵与矩阵乘法")
             
         except Exception as e:
             time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                stats.add_result("矩阵与矩阵乘法", False, [str(e)])
+                print(f"测试用例: 矩阵与矩阵乘法 - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
     
     def test_high_dimensional_multiplication(self):
         """测试场景4: 高维矩阵乘法"""
-        case_name = "高维矩阵乘法"
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        all_passed = True
         start_time = time.time()
+        
         try:
             # 测试用例列表 - 高维张量乘法
             test_cases = [
@@ -535,104 +632,126 @@ class TestMatmulFunctions(unittest.TestCase):
                 ("五维矩阵乘法", (1, 2, 3, 4, 5), (1, 2, 3, 5, 6)),
             ]
             
-            all_passed = True
-            
-            for sub_case_name, x_shape, y_shape in test_cases:
-                try:
-                    # 创建测试数据
-                    np_x = np.random.randn(*x_shape).astype(np.float64)
-                    np_y = np.random.randn(*y_shape).astype(np.float64)
+            for device in devices:
+                device_case_name = f"高维矩阵乘法 - {device}"
+                device_all_passed = True
+                
+                for sub_case_name, x_shape, y_shape in test_cases:
+                    full_sub_case_name = f"{sub_case_name} - {device}"
                     
-                    # 创建Riemann张量
-                    rm_x = tensor(np_x, requires_grad=True)
-                    rm_y = tensor(np_y, requires_grad=True)
-                    
-                    # 创建PyTorch张量
-                    if TORCH_AVAILABLE:
-                        torch_x = torch.tensor(np_x, requires_grad=True)
-                        torch_y = torch.tensor(np_y, requires_grad=True)
-                    else:
-                        torch_x, torch_y = None, None
-                    
-                    # 执行矩阵乘法
-                    rm_z = rm_x @ rm_y
-                    rm_z_sum = rm_z.sum()
-                    
-                    if TORCH_AVAILABLE:
-                        torch_z = torch_x @ torch_y
-                        torch_z_sum = torch_z.sum()
-                    else:
-                        torch_z, torch_z_sum = None, None
-                    
-                    # 实数矩阵的反向传播
-                    rm_z_sum.backward()
-                    
-                    if TORCH_AVAILABLE:
-                        torch_z_sum.backward()
-                    
-                    # 比较乘法结果
-                    passed_z = compare_values(rm_z, torch_z)
-                    
-                    # 比较梯度
-                    passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
-                    passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
-                    
-                    # 综合结果
-                    case_passed = passed_z and passed_dx and passed_dy
-                    if not case_passed:
-                        all_passed = False
+                    try:
+                        # 创建测试数据
+                        np_x = np.random.randn(*x_shape).astype(np.float64)
+                        np_y = np.random.randn(*y_shape).astype(np.float64)
                         
-                    # 记录子用例结果
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_sub_case_result(case_passed)
-                        status = "通过" if case_passed else "失败"
-                        print(f"  子用例: {sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                        # 创建Riemann张量
+                        if device == "cpu":
+                            rm_x = tensor(np_x, requires_grad=True)
+                            rm_y = tensor(np_y, requires_grad=True)
+                        else:  # cuda
+                            rm_x = tensor(np_x, requires_grad=True, device=device)
+                            rm_y = tensor(np_y, requires_grad=True, device=device)
+                        
+                        # 创建PyTorch张量
+                        if TORCH_AVAILABLE:
+                            if device == "cpu":
+                                torch_x = torch.tensor(np_x, requires_grad=True)
+                                torch_y = torch.tensor(np_y, requires_grad=True)
+                            else:  # cuda
+                                torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                                torch_y = torch.tensor(np_y, requires_grad=True, device=device)
+                        else:
+                            torch_x, torch_y = None, None
+                        
+                        # 执行矩阵乘法
+                        rm_z = rm_x @ rm_y
+                        rm_z_sum = rm_z.sum()
+                        
+                        if TORCH_AVAILABLE:
+                            torch_z = torch_x @ torch_y
+                            torch_z_sum = torch_z.sum()
+                        else:
+                            torch_z, torch_z_sum = None, None
+                        
+                        # 实数矩阵的反向传播
+                        rm_z_sum.backward()
+                        
+                        if TORCH_AVAILABLE:
+                            torch_z_sum.backward()
+                        
+                        # 比较乘法结果
+                        passed_z = compare_values(rm_z, torch_z)
+                        
+                        # 比较梯度
+                        passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
+                        passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
+                        
+                        # 综合结果
+                        case_passed = passed_z and passed_dx and passed_dy
                         if not case_passed:
-                            if not passed_z:
-                                print(f"    乘积值比较: 失败")
-                            if not passed_dx:
-                                print(f"    x梯度比较: 失败")
-                            if not passed_dy:
-                                print(f"    y梯度比较: 失败")
-                except Exception as e:
-                    all_passed = False
-                    # 记录子用例失败结果
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_sub_case_result(False)
-                        print(f"  子用例: {sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                            device_all_passed = False
+                            all_passed = False
+                            
+                        # 记录子用例结果
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_sub_case_result(case_passed)
+                            status = "通过" if case_passed else "失败"
+                            print(f"  子用例: {full_sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                            if not case_passed:
+                                if not passed_z:
+                                    print(f"    乘积值比较: 失败")
+                                if not passed_dx:
+                                    print(f"    x梯度比较: 失败")
+                                if not passed_dy:
+                                    print(f"    y梯度比较: 失败")
+                    except Exception as e:
+                        device_all_passed = False
+                        all_passed = False
+                        # 记录子用例失败结果
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_sub_case_result(False)
+                            print(f"  子用例: {full_sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                        continue
+                    
+                    # 重置梯度
+                    if hasattr(rm_x, 'grad'):
+                        rm_x.grad = None
+                    if hasattr(rm_y, 'grad'):
+                        rm_y.grad = None
+                    
+                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                        torch_x.grad = None
+                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
+                        torch_y.grad = None
                 
-                # 重置梯度
-                if hasattr(rm_x, 'grad'):
-                    rm_x.grad = None
-                if hasattr(rm_y, 'grad'):
-                    rm_y.grad = None
-                
-                if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
-                    torch_x.grad = None
-                if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
-                    torch_y.grad = None
+                # 记录设备测试结果
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(device_case_name, device_all_passed)
+                    status = "通过" if device_all_passed else "失败"
+                    print(f"测试用例: {device_case_name} - {Colors.OKGREEN if device_all_passed else Colors.FAIL}{status}{Colors.ENDC}")
             
             time_taken = time.time() - start_time
             
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, all_passed)
-                status = "通过" if all_passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if all_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(all_passed, f"矩阵乘法测试失败: {case_name}")
+            # 断言确保所有测试通过
+            self.assertTrue(all_passed, f"矩阵乘法测试失败: 高维矩阵乘法")
             
         except Exception as e:
             time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                stats.add_result("高维矩阵乘法", False, [str(e)])
+                print(f"测试用例: 高维矩阵乘法 - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
     
     def test_complex_vector_matrix_multiplication(self):
         """测试场景5: 复数向量与矩阵乘法"""
-        case_name = "复数向量与矩阵乘法"
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        all_passed = True
         start_time = time.time()
+        
         try:
             # 测试用例列表
             test_cases = [
@@ -643,111 +762,133 @@ class TestMatmulFunctions(unittest.TestCase):
                 ("二维复数矩阵与一维复数向量乘法", (3, 4), (4,)),
             ]
             
-            all_passed = True
-            
-            for sub_case_name, x_shape, y_shape in test_cases:
-                try:
-                    # 创建复数测试数据
-                    np_x_real = np.random.randn(*x_shape).astype(np.float64)
-                    np_x_imag = np.random.randn(*x_shape).astype(np.float64)
-                    np_x = np_x_real + 1j * np_x_imag
+            for device in devices:
+                device_case_name = f"复数向量与矩阵乘法 - {device}"
+                device_all_passed = True
+                
+                for sub_case_name, x_shape, y_shape in test_cases:
+                    full_sub_case_name = f"{sub_case_name} - {device}"
                     
-                    np_y_real = np.random.randn(*y_shape).astype(np.float64)
-                    np_y_imag = np.random.randn(*y_shape).astype(np.float64)
-                    np_y = np_y_real + 1j * np_y_imag
-                    
-                    # 创建Riemann张量
-                    rm_x = tensor(np_x, requires_grad=True)
-                    rm_y = tensor(np_y, requires_grad=True)
-                    
-                    # 创建PyTorch张量
-                    if TORCH_AVAILABLE:
-                        # PyTorch复数张量需要从实数和虚数部分构造
-                        torch_x = torch.tensor(np_x, dtype=torch.complex128, requires_grad=True)
-                        torch_y = torch.tensor(np_y, dtype=torch.complex128, requires_grad=True)
-                    else:
-                        torch_x, torch_y = None, None
-                    
-                    # 执行矩阵乘法
-                    rm_z = rm_x @ rm_y
-                    rm_z_sum = rm_z.sum()
-                    
-                    if TORCH_AVAILABLE:
-                        torch_z = torch_x @ torch_y
-                        torch_z_sum = torch_z.sum()
-                    else:
-                        torch_z, torch_z_sum = None, None
-                    
-                    # 反向传播 - 将复数和转换为实部以支持PyTorch的反向传播
-                    rm_z_sum_real = rm_z_sum.real
-                    rm_z_sum_real.backward()
-                    if TORCH_AVAILABLE:
-                        torch_z_sum_real = torch_z_sum.real
-                        torch_z_sum_real.backward()
-                    
-                    # 比较乘法结果
-                    passed_z = compare_values(rm_z, torch_z)
-                    
-                    # 比较梯度
-                    passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
-                    passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
-                    
-                    # 综合结果
-                    case_passed = passed_z and passed_dx and passed_dy
-                    if not case_passed:
-                        all_passed = False
+                    try:
+                        # 创建复数测试数据
+                        np_x_real = np.random.randn(*x_shape).astype(np.float64)
+                        np_x_imag = np.random.randn(*x_shape).astype(np.float64)
+                        np_x = np_x_real + 1j * np_x_imag
                         
-                    # 记录子用例结果
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_sub_case_result(case_passed)
-                        status = "通过" if case_passed else "失败"
-                        print(f"  子用例: {sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                        np_y_real = np.random.randn(*y_shape).astype(np.float64)
+                        np_y_imag = np.random.randn(*y_shape).astype(np.float64)
+                        np_y = np_y_real + 1j * np_y_imag
+                        
+                        # 创建Riemann张量
+                        if device == "cpu":
+                            rm_x = tensor(np_x, requires_grad=True)
+                            rm_y = tensor(np_y, requires_grad=True)
+                        else:  # cuda
+                            rm_x = tensor(np_x, requires_grad=True, device=device)
+                            rm_y = tensor(np_y, requires_grad=True, device=device)
+                        
+                        # 创建PyTorch张量
+                        if TORCH_AVAILABLE:
+                            if device == "cpu":
+                                # PyTorch复数张量需要从实数和虚数部分构造
+                                torch_x = torch.tensor(np_x, dtype=torch.complex128, requires_grad=True)
+                                torch_y = torch.tensor(np_y, dtype=torch.complex128, requires_grad=True)
+                            else:  # cuda
+                                torch_x = torch.tensor(np_x, dtype=torch.complex128, requires_grad=True, device=device)
+                                torch_y = torch.tensor(np_y, dtype=torch.complex128, requires_grad=True, device=device)
+                        else:
+                            torch_x, torch_y = None, None
+                        
+                        # 执行矩阵乘法
+                        rm_z = rm_x @ rm_y
+                        rm_z_sum = rm_z.sum()
+                        
+                        if TORCH_AVAILABLE:
+                            torch_z = torch_x @ torch_y
+                            torch_z_sum = torch_z.sum()
+                        else:
+                            torch_z, torch_z_sum = None, None
+                        
+                        # 反向传播 - 将复数和转换为实部以支持PyTorch的反向传播
+                        rm_z_sum_real = rm_z_sum.real
+                        rm_z_sum_real.backward()
+                        if TORCH_AVAILABLE:
+                            torch_z_sum_real = torch_z_sum.real
+                            torch_z_sum_real.backward()
+                        
+                        # 比较乘法结果
+                        passed_z = compare_values(rm_z, torch_z)
+                        
+                        # 比较梯度
+                        passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
+                        passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
+                        
+                        # 综合结果
+                        case_passed = passed_z and passed_dx and passed_dy
                         if not case_passed:
-                            if not passed_z:
-                                print(f"    乘积值比较: 失败")
-                            if not passed_dx:
-                                print(f"    x梯度比较: 失败")
-                            if not passed_dy:
-                                print(f"    y梯度比较: 失败")
-                except Exception as e:
-                    all_passed = False
-                    # 记录子用例失败结果
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_sub_case_result(False)
-                        print(f"  子用例: {sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                            device_all_passed = False
+                            all_passed = False
+                            
+                        # 记录子用例结果
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_sub_case_result(case_passed)
+                            status = "通过" if case_passed else "失败"
+                            print(f"  子用例: {full_sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                            if not case_passed:
+                                if not passed_z:
+                                    print(f"    乘积值比较: 失败")
+                                if not passed_dx:
+                                    print(f"    x梯度比较: 失败")
+                                if not passed_dy:
+                                    print(f"    y梯度比较: 失败")
+                    except Exception as e:
+                        device_all_passed = False
+                        all_passed = False
+                        # 记录子用例失败结果
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_sub_case_result(False)
+                            print(f"  子用例: {full_sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                        continue
+                    
+                    # 重置梯度
+                    if hasattr(rm_x, 'grad'):
+                        rm_x.grad = None
+                    if hasattr(rm_y, 'grad'):
+                        rm_y.grad = None
+                    
+                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                        torch_x.grad = None
+                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
+                        torch_y.grad = None
                 
-                # 重置梯度
-                if hasattr(rm_x, 'grad'):
-                    rm_x.grad = None
-                if hasattr(rm_y, 'grad'):
-                    rm_y.grad = None
-                
-                if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
-                    torch_x.grad = None
-                if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
-                    torch_y.grad = None
+                # 记录设备测试结果
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(device_case_name, device_all_passed)
+                    status = "通过" if device_all_passed else "失败"
+                    print(f"测试用例: {device_case_name} - {Colors.OKGREEN if device_all_passed else Colors.FAIL}{status}{Colors.ENDC}")
             
             time_taken = time.time() - start_time
             
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, all_passed)
-                status = "通过" if all_passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if all_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(all_passed, f"复数矩阵乘法测试失败: {case_name}")
+            # 断言确保所有测试通过
+            self.assertTrue(all_passed, f"复数矩阵乘法测试失败: 复数向量与矩阵乘法")
             
         except Exception as e:
             time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                stats.add_result("复数向量与矩阵乘法", False, [str(e)])
+                print(f"测试用例: 复数向量与矩阵乘法 - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
     
     def test_complex_vector_vector_multiplication(self):
         """测试场景7: 复数向量与复数向量乘法"""
-        case_name = "复数向量与复数向量乘法"
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        all_passed = True
         start_time = time.time()
+        
         try:
             # 测试用例列表
             test_cases = [
@@ -757,116 +898,137 @@ class TestMatmulFunctions(unittest.TestCase):
                 ("二维复数列向量与二维复数行向量乘法", (3, 1), (1, 3)),
             ]
             
-            all_passed = True
-            
-            for sub_case_name, x_shape, y_shape in test_cases:
-                try:
-                    # 创建复数测试数据
-                    np_x_real = np.random.randn(*x_shape).astype(np.float64)
-                    np_x_imag = np.random.randn(*x_shape).astype(np.float64)
-                    np_x = np_x_real + 1.0j * np_x_imag
+            for device in devices:
+                device_case_name = f"复数向量与复数向量乘法 - {device}"
+                device_all_passed = True
+                
+                for sub_case_name, x_shape, y_shape in test_cases:
+                    full_sub_case_name = f"{sub_case_name} - {device}"
                     
-                    np_y_real = np.random.randn(*y_shape).astype(np.float64)
-                    np_y_imag = np.random.randn(*y_shape).astype(np.float64)
-                    np_y = np_y_real + 1.0j * np_y_imag
-                    
-                    # 创建Riemann张量
-                    rm_x = tensor(np_x, requires_grad=True)
-                    rm_y = tensor(np_y, requires_grad=True)
-                    
-                    # 创建PyTorch张量
-                    if TORCH_AVAILABLE:
-                        torch_x = torch.tensor(np_x, dtype=torch.complex128, requires_grad=True)
-                        torch_y = torch.tensor(np_y, dtype=torch.complex128, requires_grad=True)
-                    else:
-                        torch_x, torch_y = None, None
-                    
-                    # 执行矩阵乘法
-                    rm_z = rm_x @ rm_y
-                    rm_z_sum = rm_z.sum()
-                    
-                    if TORCH_AVAILABLE:
-                        # torch 2.6.0版本有bug，1D复数向量内积计算错误(为0)，改为手动计算内积
-                        if torch_x.ndim == 1 and torch_y.ndim == 1:
-                            torch_z = (torch_x * torch_y).sum()
-                        else:
-                            torch_z = torch_x @ torch_y
-                        torch_z_sum = torch_z.sum()
-                    else:
-                        torch_z, torch_z_sum = None, None
-                    
-                    # 反向传播 - 将复数和转换为实部以支持PyTorch的反向传播
-                    rm_z_sum_real = rm_z_sum.real
-                    rm_z_sum_real.backward()
-                    if TORCH_AVAILABLE:
-                        torch_z_sum_real = torch_z_sum.real
-                        torch_z_sum_real.backward()
-                    
-                    # 比较乘法结果
-                    passed_z = compare_values(rm_z, torch_z)
-                    
-                    # 比较梯度
-                    passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
-                    passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
-                    
-                    # 综合结果
-                    case_passed = passed_z and passed_dx and passed_dy
-                    if not case_passed:
-                        all_passed = False
+                    try:
+                        # 创建复数测试数据
+                        np_x_real = np.random.randn(*x_shape).astype(np.float64)
+                        np_x_imag = np.random.randn(*x_shape).astype(np.float64)
+                        np_x = np_x_real + 1.0j * np_x_imag
                         
-                    if IS_RUNNING_AS_SCRIPT:
-                        # 记录子用例结果
-                        stats.add_sub_case_result(case_passed)
-                        status = "通过" if case_passed else "失败"
-                        print(f"  子用例: {sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
-                    if not case_passed:
-                        if not passed_z:
-                            print(f"    乘积值比较: 失败")
-                        if not passed_dx:
-                            print(f"    x梯度比较: 失败")
-                        if not passed_dy:
-                            print(f"    y梯度比较: 失败")
-                except Exception as e:
-                        all_passed = False
-                        # 记录子用例失败结果
+                        np_y_real = np.random.randn(*y_shape).astype(np.float64)
+                        np_y_imag = np.random.randn(*y_shape).astype(np.float64)
+                        np_y = np_y_real + 1.0j * np_y_imag
+                        
+                        # 创建Riemann张量
+                        if device == "cpu":
+                            rm_x = tensor(np_x, requires_grad=True)
+                            rm_y = tensor(np_y, requires_grad=True)
+                        else:  # cuda
+                            rm_x = tensor(np_x, requires_grad=True, device=device)
+                            rm_y = tensor(np_y, requires_grad=True, device=device)
+                        
+                        # 创建PyTorch张量
+                        if TORCH_AVAILABLE:
+                            if device == "cpu":
+                                torch_x = torch.tensor(np_x, dtype=torch.complex128, requires_grad=True)
+                                torch_y = torch.tensor(np_y, dtype=torch.complex128, requires_grad=True)
+                            else:  # cuda
+                                torch_x = torch.tensor(np_x, dtype=torch.complex128, requires_grad=True, device=device)
+                                torch_y = torch.tensor(np_y, dtype=torch.complex128, requires_grad=True, device=device)
+                        else:
+                            torch_x, torch_y = None, None
+                        
+                        # 执行矩阵乘法
+                        rm_z = rm_x @ rm_y
+                        rm_z_sum = rm_z.sum()
+                        
+                        if TORCH_AVAILABLE:
+                            # torch 2.6.0版本有bug，1D复数向量内积计算错误(为0)，改为手动计算内积
+                            if torch_x.ndim == 1 and torch_y.ndim == 1:
+                                torch_z = (torch_x * torch_y).sum()
+                            else:
+                                torch_z = torch_x @ torch_y
+                            torch_z_sum = torch_z.sum()
+                        else:
+                            torch_z, torch_z_sum = None, None
+                        
+                        # 反向传播 - 将复数和转换为实部以支持PyTorch的反向传播
+                        rm_z_sum_real = rm_z_sum.real
+                        rm_z_sum_real.backward()
+                        if TORCH_AVAILABLE:
+                            torch_z_sum_real = torch_z_sum.real
+                            torch_z_sum_real.backward()
+                        
+                        # 比较乘法结果
+                        passed_z = compare_values(rm_z, torch_z)
+                        
+                        # 比较梯度
+                        passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
+                        passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
+                        
+                        # 综合结果
+                        case_passed = passed_z and passed_dx and passed_dy
+                        if not case_passed:
+                            device_all_passed = False
+                            all_passed = False
+                            
                         if IS_RUNNING_AS_SCRIPT:
-                            # print(f'rm_z={rm_z},\nrm_x={rm_x},\nrm_y={rm_y}')
-                            # print(f'torch_z={torch_z},\ntorch_x={torch_x},\ntorch_y={torch_y}')
-                            stats.add_sub_case_result(False)
-                            print(f"  子用例: {sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                            # 记录子用例结果
+                            stats.add_sub_case_result(case_passed)
+                            status = "通过" if case_passed else "失败"
+                            print(f"  子用例: {full_sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                        if not case_passed:
+                            if not passed_z:
+                                print(f"    乘积值比较: 失败")
+                            if not passed_dx:
+                                print(f"    x梯度比较: 失败")
+                            if not passed_dy:
+                                print(f"    y梯度比较: 失败")
+                    except Exception as e:
+                            device_all_passed = False
+                            all_passed = False
+                            # 记录子用例失败结果
+                            if IS_RUNNING_AS_SCRIPT:
+                                # print(f'rm_z={rm_z},\nrm_x={rm_x},\nrm_y={rm_y}')
+                                # print(f'torch_z={torch_z},\ntorch_x={torch_x},\ntorch_y={torch_y}')
+                                stats.add_sub_case_result(False)
+                                print(f"  子用例: {full_sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                    
+                    # 重置梯度
+                    if hasattr(rm_x, 'grad'):
+                        rm_x.grad = None
+                    if hasattr(rm_y, 'grad'):
+                        rm_y.grad = None
+                    
+                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                        torch_x.grad = None
+                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
+                        torch_y.grad = None
                 
-                # 重置梯度
-                if hasattr(rm_x, 'grad'):
-                    rm_x.grad = None
-                if hasattr(rm_y, 'grad'):
-                    rm_y.grad = None
-                
-                if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
-                    torch_x.grad = None
-                if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
-                    torch_y.grad = None
+                # 记录设备测试结果
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(device_case_name, device_all_passed)
+                    status = "通过" if device_all_passed else "失败"
+                    print(f"测试用例: {device_case_name} - {Colors.OKGREEN if device_all_passed else Colors.FAIL}{status}{Colors.ENDC}")
             
             time_taken = time.time() - start_time
             
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, all_passed)
-                status = "通过" if all_passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if all_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(all_passed, f"复数矩阵乘法测试失败: {case_name}")
+            # 断言确保所有测试通过
+            self.assertTrue(all_passed, f"复数矩阵乘法测试失败: 复数向量与复数向量乘法")
             
         except Exception as e:
             time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                stats.add_result("复数向量与复数向量乘法", False, [str(e)])
+                print(f"测试用例: 复数向量与复数向量乘法 - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
 
     def test_complex_matrix_matrix_multiplication(self):
         """测试场景6: 复数矩阵与矩阵乘法"""
-        case_name = "复数矩阵与矩阵乘法"
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        all_passed = True
         start_time = time.time()
+        
         try:
             # 测试用例列表
             test_cases = [
@@ -876,105 +1038,120 @@ class TestMatmulFunctions(unittest.TestCase):
                 ("三维复数矩阵与三维复数矩阵乘法", (2, 3, 4), (2, 4, 5)),
             ]
             
-            all_passed = True
-            
-            for sub_case_name, x_shape, y_shape in test_cases:
-                try:
-                    # 创建复数测试数据
-                    np_x_real = np.random.randn(*x_shape).astype(np.float64)
-                    np_x_imag = np.random.randn(*x_shape).astype(np.float64)
-                    np_x = np_x_real + 1.j * np_x_imag
+            for device in devices:
+                device_case_name = f"复数矩阵与矩阵乘法 - {device}"
+                device_all_passed = True
+                
+                for sub_case_name, x_shape, y_shape in test_cases:
+                    full_sub_case_name = f"{sub_case_name} - {device}"
                     
-                    np_y_real = np.random.randn(*y_shape).astype(np.float64)
-                    np_y_imag = np.random.randn(*y_shape).astype(np.float64)
-                    np_y = np_y_real + 1.j * np_y_imag
-                    
-                    # 创建Riemann张量
-                    rm_x = tensor(np_x, requires_grad=True)
-                    rm_y = tensor(np_y, requires_grad=True)
-                    
-                    # 创建PyTorch张量
-                    if TORCH_AVAILABLE:
-                        # PyTorch复数张量需要从实数和虚数部分构造
-                        torch_x = torch.tensor(np_x, dtype=torch.complex128, requires_grad=True)
-                        torch_y = torch.tensor(np_y, dtype=torch.complex128, requires_grad=True)
-                    else:
-                        torch_x, torch_y = None, None
-                    
-                    # 执行矩阵乘法
-                    rm_z = rm_x @ rm_y
-                    rm_z_sum = rm_z.sum()
-                    
-                    if TORCH_AVAILABLE:
-                        torch_z = torch_x @ torch_y
-                        torch_z_sum = torch_z.sum()
-                    else:
-                        torch_z, torch_z_sum = None, None
-                    
-                    # 反向传播 - 将复数和转换为实部以支持PyTorch的反向传播
-                    rm_z_sum_real = rm_z_sum.real
-                    rm_z_sum_real.backward()
-                    if TORCH_AVAILABLE:
-                        torch_z_sum_real = torch_z_sum.real
-                        torch_z_sum_real.backward()
-                    
-                    # 比较乘法结果
-                    passed_z = compare_values(rm_z, torch_z)
-                    
-                    # 比较梯度
-                    passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
-                    passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
-                    
-                    # 综合结果
-                    case_passed = passed_z and passed_dx and passed_dy
-                    if not case_passed:
-                        all_passed = False
+                    try:
+                        # 创建复数测试数据
+                        np_x_real = np.random.randn(*x_shape).astype(np.float64)
+                        np_x_imag = np.random.randn(*x_shape).astype(np.float64)
+                        np_x = np_x_real + 1.j * np_x_imag
                         
-                    if IS_RUNNING_AS_SCRIPT:
-                        # 记录子用例结果
-                        stats.add_sub_case_result(case_passed)
-                        status = "通过" if case_passed else "失败"
-                        print(f"  子用例: {sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                        np_y_real = np.random.randn(*y_shape).astype(np.float64)
+                        np_y_imag = np.random.randn(*y_shape).astype(np.float64)
+                        np_y = np_y_real + 1.j * np_y_imag
+                        
+                        # 创建Riemann张量
+                        if device == "cpu":
+                            rm_x = tensor(np_x, requires_grad=True)
+                            rm_y = tensor(np_y, requires_grad=True)
+                        else:  # cuda
+                            rm_x = tensor(np_x, requires_grad=True, device=device)
+                            rm_y = tensor(np_y, requires_grad=True, device=device)
+                        
+                        # 创建PyTorch张量
+                        if TORCH_AVAILABLE:
+                            if device == "cpu":
+                                # PyTorch复数张量需要从实数和虚数部分构造
+                                torch_x = torch.tensor(np_x, dtype=torch.complex128, requires_grad=True)
+                                torch_y = torch.tensor(np_y, dtype=torch.complex128, requires_grad=True)
+                            else:  # cuda
+                                torch_x = torch.tensor(np_x, dtype=torch.complex128, requires_grad=True, device=device)
+                                torch_y = torch.tensor(np_y, dtype=torch.complex128, requires_grad=True, device=device)
+                        else:
+                            torch_x, torch_y = None, None
+                        
+                        # 执行矩阵乘法
+                        rm_z = rm_x @ rm_y
+                        rm_z_sum = rm_z.sum()
+                        
+                        if TORCH_AVAILABLE:
+                            torch_z = torch_x @ torch_y
+                            torch_z_sum = torch_z.sum()
+                        else:
+                            torch_z, torch_z_sum = None, None
+                        
+                        # 反向传播 - 将复数和转换为实部以支持PyTorch的反向传播
+                        rm_z_sum_real = rm_z_sum.real
+                        rm_z_sum_real.backward()
+                        if TORCH_AVAILABLE:
+                            torch_z_sum_real = torch_z_sum.real
+                            torch_z_sum_real.backward()
+                        
+                        # 比较乘法结果
+                        passed_z = compare_values(rm_z, torch_z)
+                        
+                        # 比较梯度
+                        passed_dx = compare_values(rm_x.grad, torch_x.grad if TORCH_AVAILABLE else None)
+                        passed_dy = compare_values(rm_y.grad, torch_y.grad if TORCH_AVAILABLE else None)
+                        
+                        # 综合结果
+                        case_passed = passed_z and passed_dx and passed_dy
                         if not case_passed:
-                            if not passed_z:
-                                print(f"    乘积值比较: 失败")
-                            if not passed_dx:
-                                print(f"    x梯度比较: 失败")
-                            if not passed_dy:
-                                print(f"    y梯度比较: 失败")
-                except Exception as e:
-                        all_passed = False
-                        # 记录子用例失败结果
+                            device_all_passed = False
+                            all_passed = False
+                            
                         if IS_RUNNING_AS_SCRIPT:
-                            stats.add_sub_case_result(False)
-                            print(f"  子用例: {sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                            # 记录子用例结果
+                            stats.add_sub_case_result(case_passed)
+                            status = "通过" if case_passed else "失败"
+                            print(f"  子用例: {full_sub_case_name} - {Colors.OKGREEN if case_passed else Colors.FAIL}{status}{Colors.ENDC}")
+                            if not case_passed:
+                                if not passed_z:
+                                    print(f"    乘积值比较: 失败")
+                                if not passed_dx:
+                                    print(f"    x梯度比较: 失败")
+                                if not passed_dy:
+                                    print(f"    y梯度比较: 失败")
+                    except Exception as e:
+                            device_all_passed = False
+                            all_passed = False
+                            # 记录子用例失败结果
+                            if IS_RUNNING_AS_SCRIPT:
+                                stats.add_sub_case_result(False)
+                                print(f"  子用例: {full_sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+                    
+                    # 重置梯度
+                    if hasattr(rm_x, 'grad'):
+                        rm_x.grad = None
+                    if hasattr(rm_y, 'grad'):
+                        rm_y.grad = None
+                    
+                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                        torch_x.grad = None
+                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
+                        torch_y.grad = None
                 
-                # 重置梯度
-                if hasattr(rm_x, 'grad'):
-                    rm_x.grad = None
-                if hasattr(rm_y, 'grad'):
-                    rm_y.grad = None
-                
-                if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
-                    torch_x.grad = None
-                if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
-                    torch_y.grad = None
+                # 记录设备测试结果
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(device_case_name, device_all_passed)
+                    status = "通过" if device_all_passed else "失败"
+                    print(f"测试用例: {device_case_name} - {Colors.OKGREEN if device_all_passed else Colors.FAIL}{status}{Colors.ENDC}")
             
             time_taken = time.time() - start_time
             
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, all_passed)
-                status = "通过" if all_passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if all_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(all_passed, f"复数矩阵乘法测试失败: {case_name}")
+            # 断言确保所有测试通过
+            self.assertTrue(all_passed, f"复数矩阵乘法测试失败: 复数矩阵与矩阵乘法")
             
         except Exception as e:
             time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                stats.add_result("复数矩阵与矩阵乘法", False, [str(e)])
+                print(f"测试用例: 复数矩阵与矩阵乘法 - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
 
 if __name__ == '__main__':

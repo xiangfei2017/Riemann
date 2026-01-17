@@ -10,6 +10,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 try:
     import riemann as rm
     from riemann.nn import functional as F
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)
@@ -174,10 +177,11 @@ stats = StatisticsCollector()
 IS_RUNNING_AS_SCRIPT = False
 
 # 比较值的函数
-def compare_values(rm_result, torch_result, atol=1e-2, rtol=1e-2):
+def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     """比较Riemann和PyTorch的值是否接近"""
     # 处理None值的情况
     if not TORCH_AVAILABLE:
+        # 如果没有PyTorch，只检查riemann结果是否存在
         return rm_result is not None
     
     if rm_result is None and torch_result is None:
@@ -198,48 +202,31 @@ def compare_values(rm_result, torch_result, atol=1e-2, rtol=1e-2):
         
         return all_passed
     
-    # 获取数据部分
+    # 转换为numpy数组
     try:
-        # 从Riemann结果中提取数据
-        if hasattr(rm_result, 'data'):
-            rm_data = rm_result.data
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
         else:
-            rm_data = rm_result
-            
-        # 从PyTorch结果中提取数据
-        if hasattr(torch_result, 'data'):
-            torch_data = torch_result.data
-        elif hasattr(torch_result, 'detach'):
-            # 对于PyTorch张量，直接使用numpy()方法
-            torch_data = torch_result.detach().numpy()
-        else:
-            torch_data = torch_result
-            
-        # 转换为numpy数组
-        if not isinstance(rm_data, np.ndarray):
-            try:
-                rm_data = np.asarray(rm_data)  # 使用asarray替代array
-            except:
-                rm_data = np.array(rm_data)
+            rm_data = rm_result.detach().numpy()
         
-        if not isinstance(torch_data, np.ndarray):
-            try:
-                torch_data = np.asarray(torch_data)  # 使用asarray替代array
-            except:
-                # 尝试其他转换方式
-                if hasattr(torch_data, 'tolist'):
-                    torch_data = np.array(torch_data.tolist())
-                else:
-                    torch_data = np.array(torch_data)
-    
-        # 比较形状
-        if rm_data.shape != torch_data.shape:
-            return False
-            
-        # 比较数值
-        return np.allclose(rm_data, torch_data, atol=atol, rtol=rtol)
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
     except Exception as e:
-        print(f"比较值时出错: {e}")
+        print(f"比较值转换错误: {e}")
+        return False
+    
+    # 处理形状不匹配的情况
+    try:
+        # 增加容差参数
+        np.testing.assert_allclose(rm_data, torch_data, rtol=rtol, atol=atol)
+        return True
+    except AssertionError:
         return False
 
 # 生成测试数据的函数
@@ -298,69 +285,87 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "大负值", "shape": (5,), "values": np.array([-10.0, -20.0, -30.0, -40.0, -50.0])},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.sigmoid(rm_input)
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.sigmoid(rm_input)
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch_F.sigmoid(torch_input)
+                        value_match = compare_values(rm_output, torch_output)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出，处理标量输入
+                    if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
+                        grad_output = np.random.randn(*input_data.shape)
+                    else:
+                        grad_output = np.float32(np.random.randn())
+                    grad_output = grad_output.astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        grad_match = compare_values(rm_grad, torch_grad)
+                    else:
+                        grad_match = True
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch_F.sigmoid(torch_input)
-                    value_match = compare_values(rm_output, torch_output)
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度
-                # 随机生成梯度输出，处理标量输入
-                if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
-                    grad_output = np.random.randn(*input_data.shape)
-                else:
-                    grad_output = np.float32(np.random.randn())
-                grad_output = grad_output.astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    grad_match = compare_values(rm_grad, torch_grad)
-                else:
-                    grad_match = True
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
     
     def test_softmax(self):
         """测试softmax激活函数"""
@@ -374,65 +379,83 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "三维张量-维度2", "shape": (3, 4, 5), "dim": 2},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.softmax(rm_input, dim=case["dim"])
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.softmax(rm_input, dim=case["dim"])
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch_F.softmax(torch_input, dim=case["dim"])
+                        value_match = compare_values(rm_output, torch_output)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出
+                    grad_output = np.random.randn(*input_data.shape).astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        grad_match = compare_values(rm_grad, torch_grad)
+                    else:
+                        grad_match = True
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch_F.softmax(torch_input, dim=case["dim"])
-                    value_match = compare_values(rm_output, torch_output)
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度
-                # 随机生成梯度输出
-                grad_output = np.random.randn(*input_data.shape).astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    grad_match = compare_values(rm_grad, torch_grad)
-                else:
-                    grad_match = True
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
     
     def test_relu(self):
         """测试relu激活函数"""
@@ -448,70 +471,88 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "正值输入", "shape": (3, 3), "values": np.random.rand(3, 3)},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.relu(rm_input)
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.relu(rm_input)
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch.relu(torch_input)
+                        value_match = compare_values(rm_output, torch_output)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出，处理标量输入
+                    if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
+                        grad_output = np.random.randn(*input_data.shape)
+                    else:
+                        grad_output = np.random.randn()
+                    # 将grad_output转换为numpy数组后再调用astype
+                    grad_output = np.array(grad_output).astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        grad_match = compare_values(rm_grad, torch_grad)
+                    else:
+                        grad_match = True
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch.relu(torch_input)
-                    value_match = compare_values(rm_output, torch_output)
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度
-                # 随机生成梯度输出，处理标量输入
-                if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
-                    grad_output = np.random.randn(*input_data.shape)
-                else:
-                    grad_output = np.random.randn()
-                # 将grad_output转换为numpy数组后再调用astype
-                grad_output = np.array(grad_output).astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    grad_match = compare_values(rm_grad, torch_grad)
-                else:
-                    grad_match = True
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
 
     def test_leaky_relu(self):
         """测试leaky_relu激活函数"""
@@ -526,70 +567,88 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "边界值", "shape": (5,), "values": np.array([-10.0, -5.0, 0.0, 5.0, 10.0])},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
-                alpha = case.get("alpha", 0.01)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.leaky_relu(rm_input, alpha=alpha)
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    alpha = case.get("alpha", 0.01)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.leaky_relu(rm_input, alpha=alpha)
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch_F.leaky_relu(torch_input, negative_slope=alpha)
+                        value_match = compare_values(rm_output, torch_output)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出
+                    if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
+                        grad_output = np.random.randn(*input_data.shape)
+                    else:
+                        grad_output = np.float32(np.random.randn())
+                    grad_output = grad_output.astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        grad_match = compare_values(rm_grad, torch_grad)
+                    else:
+                        grad_match = True
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch_F.leaky_relu(torch_input, negative_slope=alpha)
-                    value_match = compare_values(rm_output, torch_output)
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度
-                # 随机生成梯度输出
-                if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
-                    grad_output = np.random.randn(*input_data.shape)
-                else:
-                    grad_output = np.float32(np.random.randn())
-                grad_output = grad_output.astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    grad_match = compare_values(rm_grad, torch_grad)
-                else:
-                    grad_match = True
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
 
     def test_prelu(self):
         """测试prelu激活函数"""
@@ -601,73 +660,95 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "三维张量", "shape": (3, 4, 5)},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
-                # 随机生成参数并转换为TN张量
-                alpha_value = np.random.rand() * 0.5  # 生成0-0.5之间的随机值            
-                alpha_tensor = rm.tensor([alpha_value], requires_grad=True)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.prelu(rm_input, alpha=alpha_tensor)
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    # 随机生成参数并转换为TN张量
+                    alpha_value = np.random.rand() * 0.5  # 生成0-0.5之间的随机值            
+                    if device == "cpu":
+                        alpha_tensor = rm.tensor([alpha_value], requires_grad=True)
+                    else:  # cuda
+                        alpha_tensor = rm.tensor([alpha_value], requires_grad=True, device=device)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.prelu(rm_input, alpha=alpha_tensor)
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                            torch_alpha = torch.tensor([alpha_value], requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                            torch_alpha = torch.tensor([alpha_value], requires_grad=True, device=device)
+                        torch_output = torch_F.prelu(torch_input, torch_alpha)
+                        value_match = compare_values(rm_output, torch_output)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出
+                    if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
+                        grad_output = np.random.randn(*input_data.shape)
+                    else:
+                        grad_output = np.float32(np.random.randn())
+                    grad_output = grad_output.astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        grad_match = compare_values(rm_grad, torch_grad)
+                    else:
+                        grad_match = True
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_alpha = torch.tensor([alpha_value], requires_grad=True)
-                    torch_output = torch_F.prelu(torch_input, torch_alpha)
-                    value_match = compare_values(rm_output, torch_output)
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度
-                # 随机生成梯度输出
-                if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
-                    grad_output = np.random.randn(*input_data.shape)
-                else:
-                    grad_output = np.float32(np.random.randn())
-                grad_output = grad_output.astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    grad_match = compare_values(rm_grad, torch_grad)
-                else:
-                    grad_match = True
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
 
     def test_rrelu(self):
         """测试rrelu激活函数"""
@@ -681,69 +762,84 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "三维张量", "shape": (3, 4, 5)},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
-                lower = case.get("lower", 1./8.)
-                upper = case.get("upper", 1./3.)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.rrelu(rm_input, lower=lower, upper=upper)
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    lower = case.get("lower", 1./8.)
+                    upper = case.get("upper", 1./3.)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.rrelu(rm_input, lower=lower, upper=upper)
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        # 注意：由于RReLU使用随机负斜率，这里只检查输出是否在合理范围内
+                        # 为了测试稳定性，我们可以多次运行取平均
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch_F.rrelu(torch_input, lower=lower, upper=upper)
+                        # 对于随机函数，我们只检查输出是否在合理范围内
+                        value_match = True  # 由于随机性，我们不进行严格比较
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度 (同样考虑随机性)
+                    # 随机生成梯度输出
+                    if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
+                        grad_output = np.random.randn(*input_data.shape)
+                    else:
+                        grad_output = np.float32(np.random.randn())
+                    grad_output = grad_output.astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # 由于RReLU是随机函数，我们只确保梯度不为None
+                    grad_match = rm_grad is not None
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    # 注意：由于RReLU使用随机负斜率，这里只检查输出是否在合理范围内
-                    # 为了测试稳定性，我们可以多次运行取平均
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch_F.rrelu(torch_input, lower=lower, upper=upper)
-                    # 对于随机函数，我们只检查输出是否在合理范围内
-                    value_match = True  # 由于随机性，我们不进行严格比较
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度 (同样考虑随机性)
-                # 随机生成梯度输出
-                if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
-                    grad_output = np.random.randn(*input_data.shape)
-                else:
-                    grad_output = np.float32(np.random.randn())
-                grad_output = grad_output.astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # 由于RReLU是随机函数，我们只确保梯度不为None
-                grad_match = rm_grad is not None
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"输出值检查通过, 梯度存在"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  输出值检查: {'通过' if value_match else '失败'}")
-                        print(f"  梯度存在: {'是' if grad_match else '否'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"输出值检查通过, 梯度存在"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  输出值检查: {'通过' if value_match else '失败'}")
+                            print(f"  梯度存在: {'是' if grad_match else '否'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
 
     def test_gelu(self):
         """测试gelu激活函数"""
@@ -756,73 +852,89 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "边界值", "shape": (5,), "values": np.array([-10.0, -5.0, 0.0, 5.0, 10.0])},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.gelu(rm_input)
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.gelu(rm_input)
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch_F.gelu(torch_input)
+                        # 修改这里，传入更低的精度要求
+                        value_match = compare_values(rm_output, torch_output, atol=1e-3, rtol=1e-3)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出
+                    if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
+                        grad_output = np.random.randn(*input_data.shape)
+                    else:
+                        grad_output = np.float32(np.random.randn())
+                    grad_output = grad_output.astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        # 在test_gelu函数中，将梯度比较的精度进一步降低
+                        grad_match = compare_values(rm_grad, torch_grad, atol=1e-2, rtol=1e-2)
+                    else:
+                        grad_match = True
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch_F.gelu(torch_input)
-                    # 修改这里，传入更低的精度要求
-                    value_match = compare_values(rm_output, torch_output, atol=1e-3, rtol=1e-3)
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度
-                # 随机生成梯度输出
-                if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
-                    grad_output = np.random.randn(*input_data.shape)
-                else:
-                    grad_output = np.float32(np.random.randn())
-                grad_output = grad_output.astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    # 在test_gelu函数中，将梯度比较的精度进一步降低
-                    grad_match = compare_values(rm_grad, torch_grad, atol=1e-2, rtol=1e-2)
-                else:
-                    grad_match = True
-                
-
-
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
 
     def test_log_softmax(self):
         """测试log_softmax激活函数"""
@@ -836,65 +948,83 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "三维张量-维度2", "shape": (3, 4, 5), "dim": 2},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.log_softmax(rm_input, dim=case["dim"])
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.log_softmax(rm_input, dim=case["dim"])
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch_F.log_softmax(torch_input, dim=case["dim"])
+                        value_match = compare_values(rm_output, torch_output)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出
+                    grad_output = np.random.randn(*input_data.shape).astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        grad_match = compare_values(rm_grad, torch_grad)
+                    else:
+                        grad_match = True
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch_F.log_softmax(torch_input, dim=case["dim"])
-                    value_match = compare_values(rm_output, torch_output)
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度
-                # 随机生成梯度输出
-                grad_output = np.random.randn(*input_data.shape).astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    grad_match = compare_values(rm_grad, torch_grad)
-                else:
-                    grad_match = True
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
 
     def test_softplus(self):
         """测试softplus激活函数"""
@@ -910,69 +1040,87 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "大正值", "shape": (3, 3), "values": 100 * np.ones((3, 3))},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.softplus(rm_input)
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
                     
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch_F.softplus(torch_input)
-                    value_match = compare_values(rm_output, torch_output)
-                else:
-                    value_match = True
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.softplus(rm_input)
+                        
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch_F.softplus(torch_input)
+                        value_match = compare_values(rm_output, torch_output)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出
+                    if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
+                        grad_output = np.random.randn(*input_data.shape)
+                    else:
+                        grad_output = np.float32(np.random.randn())
+                    grad_output = grad_output.astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        grad_match = compare_values(rm_grad, torch_grad)
+                    else:
+                        grad_match = True
                 
-                # 2. 测试梯度
-                # 随机生成梯度输出
-                if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
-                    grad_output = np.random.randn(*input_data.shape)
-                else:
-                    grad_output = np.float32(np.random.randn())
-                grad_output = grad_output.astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    grad_match = compare_values(rm_grad, torch_grad)
-                else:
-                    grad_match = True
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
 
     def test_tanh(self):
         """测试tanh激活函数"""
@@ -988,69 +1136,87 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "大负值", "shape": (3, 3), "values": -50 * np.ones((3, 3))},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.tanh(rm_input)
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.tanh(rm_input)
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch_F.tanh(torch_input)
+                        value_match = compare_values(rm_output, torch_output)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出
+                    if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
+                        grad_output = np.random.randn(*input_data.shape)
+                    else:
+                        grad_output = np.float32(np.random.randn())
+                    grad_output = grad_output.astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        grad_match = compare_values(rm_grad, torch_grad)
+                    else:
+                        grad_match = True
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch_F.tanh(torch_input)
-                    value_match = compare_values(rm_output, torch_output)
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度
-                # 随机生成梯度输出
-                if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
-                    grad_output = np.random.randn(*input_data.shape)
-                else:
-                    grad_output = np.float32(np.random.randn())
-                grad_output = grad_output.astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    grad_match = compare_values(rm_grad, torch_grad)
-                else:
-                    grad_match = True
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
 
     def test_silu(self):
         """测试silu激活函数"""
@@ -1066,69 +1232,87 @@ class TestActivationFunctions(unittest.TestCase):
             {"name": "大负值", "shape": (3, 3), "values": -50 * np.ones((3, 3))},
         ]
         
-        for case in test_cases:
-            case_name = f"{func_name}: {case['name']}"
-            start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
             
-            try:
-                # 使用generate_test_data函数生成测试数据
-                input_data = generate_test_data(case)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{func_name}: {case['name']} - {device}"
+                start_time = time.time()
                 
-                # 1. 测试函数值
-                # Riemann计算
-                rm_input = rm.tensor(input_data, requires_grad=True)
-                rm_output = F.silu(rm_input)
+                try:
+                    # 使用generate_test_data函数生成测试数据
+                    input_data = generate_test_data(case)
+                    
+                    # 1. 测试函数值
+                    # Riemann计算
+                    if device == "cpu":
+                        rm_input = rm.tensor(input_data, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(input_data, requires_grad=True, device=device)
+                    rm_output = F.silu(rm_input)
+                    
+                    # PyTorch计算
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_input = torch.tensor(input_data, requires_grad=True)
+                        else:  # cuda
+                            torch_input = torch.tensor(input_data, requires_grad=True, device=device)
+                        torch_output = torch_F.silu(torch_input)
+                        value_match = compare_values(rm_output, torch_output)
+                    else:
+                        value_match = True
+                    
+                    # 2. 测试梯度
+                    # 随机生成梯度输出
+                    if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
+                        grad_output = np.random.randn(*input_data.shape)
+                    else:
+                        grad_output = np.float32(np.random.randn())
+                    grad_output = grad_output.astype(rm.get_default_dtype())
+                    
+                    # Riemann反向传播
+                    if device == "cpu":
+                        rm_output.backward(rm.tensor(grad_output))
+                    else:  # cuda
+                        rm_output.backward(rm.tensor(grad_output, device=device))
+                    rm_grad = rm_input.grad
+                    
+                    # PyTorch反向传播
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_output.backward(torch.tensor(grad_output))
+                        else:  # cuda
+                            torch_output.backward(torch.tensor(grad_output, device=device))
+                        torch_grad = torch_input.grad
+                        grad_match = compare_values(rm_grad, torch_grad)
+                    else:
+                        grad_match = True
                 
-                # PyTorch计算
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(input_data, requires_grad=True)
-                    torch_output = torch_F.silu(torch_input)
-                    value_match = compare_values(rm_output, torch_output)
-                else:
-                    value_match = True
-                
-                # 2. 测试梯度
-                # 随机生成梯度输出
-                if isinstance(input_data, np.ndarray) and input_data.ndim > 0:
-                    grad_output = np.random.randn(*input_data.shape)
-                else:
-                    grad_output = np.float32(np.random.randn())
-                grad_output = grad_output.astype(rm.get_default_dtype())
-                
-                # Riemann反向传播
-                rm_output.backward(rm.tensor(grad_output))
-                rm_grad = rm_input.grad
-                
-                # PyTorch反向传播
-                if TORCH_AVAILABLE:
-                    torch_output.backward(torch.tensor(grad_output))
-                    torch_grad = torch_input.grad
-                    grad_match = compare_values(rm_grad, torch_grad)
-                else:
-                    grad_match = True
-                
-                # 判断测试是否通过
-                passed = value_match and grad_match
-                details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
-                stats.add_result(case_name, passed, details)
-                
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  函数值匹配: {'通过' if value_match else '失败'}")
-                        print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
-                
-                # 使用断言确保测试结果
-                self.assertTrue(passed, f"{case_name} 测试失败: {details}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                stats.add_result(case_name, False, f"执行出错: {str(e)}")
-                if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                self.fail(f"{case_name} 执行出错: {str(e)}")
+                    # 判断测试是否通过
+                    passed = value_match and grad_match
+                    details = f"函数值匹配: {value_match}, 梯度匹配: {grad_match}"
+                    stats.add_result(case_name, passed, details)
+                    
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  函数值匹配: {'通过' if value_match else '失败'}")
+                            print(f"  梯度匹配: {'通过' if grad_match else '失败'}")
+                    
+                    # 使用断言确保测试结果
+                    self.assertTrue(passed, f"{case_name} 测试失败: {details}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, f"执行出错: {str(e)}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    self.fail(f"{case_name} 执行出错: {str(e)}")
 
 # 如果作为独立脚本运行
 if __name__ == "__main__":

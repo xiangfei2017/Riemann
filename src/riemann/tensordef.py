@@ -72,9 +72,11 @@ Example usage:
 """
 
 from __future__ import annotations
+from itertools import accumulate
 import builtins
 import warnings
 from typing import Callable, Any, List, Tuple, TypeAlias, overload, Union, Optional
+import math
 import numpy as np
 from .cuda import Device, CUPY_AVAILABLE, cp, is_in_cuda_context, get_default_device, current_device
 from .dtype import *
@@ -994,7 +996,11 @@ class TN:
             device_name = device
         
         return self.to(device=device_name)
-
+    
+    @property
+    def is_cuda(self):
+        return self.device.type == 'cuda'
+    
     def cpu(self):
         """
         将张量移动到CPU设备上。
@@ -1004,6 +1010,10 @@ class TN:
         """
         return self.to(device='cpu')
 
+    @property
+    def is_cpu(self):
+        return self.device.type == 'cpu'
+    
     def __getitem__(self, index):
         # 类型转换：TN索引转为NumPy数组
         index_val = _convert_TNindex_to_numpy(index)
@@ -2569,7 +2579,7 @@ class TN:
 
     def clone(self):
         '''返回一个新张量，与self共享内存，依赖self'''
-        ret=tensor(self.data.copy(),
+        ret=tensor(self.data.copy(),device=self.device,
                     requires_grad=(is_grad_enabled() and self.requires_grad))
         ret.is_leaf = not ret.requires_grad
         if ret.requires_grad:
@@ -2863,7 +2873,7 @@ class TN:
                 raise RuntimeError(f"Invalid shape dimension {invalid_dim}")
             
             # 计算新形状的元素总数
-            new_size = np.prod(processed_shape)            
+            new_size = math.prod(processed_shape)
             if new_size != original_size:
                 raise RuntimeError(
                     f"shape '{processed_shape}' is invalid for input of size {original_size}"
@@ -6215,7 +6225,8 @@ def _arcsin_derivative(x:TN)->tuple[TN]:
 
 @track_grad(_arcsin_derivative)
 def arcsin(x:TN)->TN:
-    return tensor(np.arcsin(x.data))
+    arrlib = x._get_array_lib()
+    return tensor(arrlib.arcsin(x.data), device=x.device)
 
 def _arccos_derivative(x:TN)->tuple[TN]:
     return (-1.0/sqrt(1. - x**2.).conj(),)
@@ -6933,9 +6944,8 @@ def _concatenate_backward(result_tensor: TN, i: int) -> TN:
     # 获取所有输入张量在拼接轴上的尺寸
     split_sizes = [t.data.shape[dim] for t in result_tensor.fromvars]
     
-    arrlib = result_tensor._get_array_lib()
-    # 分割点为前n-1个累积和（如输入两个张量时分割点为一个）
-    split_points = arrlib.cumsum(split_sizes[:-1]).tolist() if len(split_sizes) > 1 else []
+    # 使用Python内置的accumulate函数计算累积和，避免不必要的数组转换
+    split_points = list(accumulate(split_sizes[:-1])) if len(split_sizes) > 1 else []
     
     try:
         grads = split(grad_data,split_points, dim=dim)

@@ -9,10 +9,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 # 导入riemann模块
 try:
     import riemann as rm
-    from riemann.tensordef import TN
-    import builtins
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -186,10 +188,34 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     if rm_result is None or torch_result is None:
         return False
     
+    # 处理嵌套元组/列表的情况
+    if isinstance(rm_result, (list, tuple)) and isinstance(torch_result, (list, tuple)):
+        if len(rm_result) != len(torch_result):
+            return False
+        
+        all_passed = True
+        for i, (r, t) in enumerate(zip(rm_result, torch_result)):
+            if not compare_values(r, t, atol, rtol):
+                all_passed = False
+                break
+        
+        return all_passed
+    
     # 转换为numpy数组
     try:
-        rm_data = rm_result.data if hasattr(rm_result, 'data') else rm_result.numpy()
-        torch_data = torch_result.detach().numpy()
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -385,6 +411,11 @@ class TestStackConcatenateOperations(unittest.TestCase):
     
     def test_concatenate(self):
         """测试concatenate函数"""
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+            
         test_cases = [
             {"name": "基本concatenate操作", "tensor_shapes": [(2, 3), (2, 3)], "dim": 0},
             {"name": "沿中间维度concatenate", "tensor_shapes": [(2, 3), (2, 4)], "dim": 1},
@@ -393,89 +424,101 @@ class TestStackConcatenateOperations(unittest.TestCase):
             {"name": "三维张量concatenate", "tensor_shapes": [(2, 3, 4), (2, 5, 4)], "dim": 1},
         ]
         
-        for case in test_cases:
-            case_name = f"concatenate - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                rm_tensors = []
-                torch_tensors = []
-                for shape in case["tensor_shapes"]:
-                    np_data = np.random.randn(*shape)
-                    rm_tensor = rm.tensor(np_data, requires_grad=True)
-                    rm_tensors.append(rm_tensor)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"concatenate - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    rm_tensors = []
+                    torch_tensors = []
+                    for shape in case["tensor_shapes"]:
+                        np_data = np.random.randn(*shape)
+                        if device == "cpu":
+                            rm_tensor = rm.tensor(np_data, requires_grad=True)
+                        else:  # cuda
+                            rm_tensor = rm.tensor(np_data, requires_grad=True, device=device)
+                        rm_tensors.append(rm_tensor)
+                        if TORCH_AVAILABLE:
+                            if device == "cpu":
+                                torch_tensor = torch.tensor(np_data, requires_grad=True)
+                            else:  # cuda
+                                torch_tensor = torch.tensor(np_data, requires_grad=True, device=device)
+                            torch_tensors.append(torch_tensor)
+                    
+                    # 前向传播测试
+                    rm_result = rm.concatenate(rm_tensors, dim=case["dim"])
+                    torch_result = None
                     if TORCH_AVAILABLE:
-                        torch_tensor = torch.tensor(np_data, requires_grad=True)
-                        torch_tensors.append(torch_tensor)
-                
-                # 前向传播测试
-                rm_result = rm.concatenate(rm_tensors, dim=case["dim"])
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    try:
-                        torch_result = torch.cat(torch_tensors, dim=case["dim"])
-                    except Exception as e:
-                        self.fail(f"PyTorch concatenate失败: {str(e)}")
-                
-                # 比较前向传播结果
-                value_passed = compare_values(rm_result, torch_result)
-                shape_passed = compare_shapes(rm_result, torch_result)
-                dtype_passed = compare_dtypes(rm_result, torch_result)
-                forward_passed = value_passed and shape_passed and dtype_passed
-                
-                # 反向传播测试
-                backward_passed = True
-                grad_value_passed = True
-                grad_shape_passed = True
-                grad_dtype_passed = True
-                
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+                        try:
+                            torch_result = torch.cat(torch_tensors, dim=case["dim"])
+                        except Exception as e:
+                            self.fail(f"PyTorch concatenate失败: {str(e)}")
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 比较前向传播结果
+                    value_passed = compare_values(rm_result, torch_result)
+                    shape_passed = compare_shapes(rm_result, torch_result)
+                    dtype_passed = compare_dtypes(rm_result, torch_result)
+                    forward_passed = value_passed and shape_passed and dtype_passed
                     
-                    # 比较每个输入张量的梯度
-                    for i, (rm_tensor, torch_tensor) in enumerate(zip(rm_tensors, torch_tensors)):
-                        grad_value_passed = grad_value_passed and compare_values(rm_tensor.grad, torch_tensor.grad)
-                        grad_shape_passed = grad_shape_passed and compare_shapes(rm_tensor.grad, torch_tensor.grad)
-                        grad_dtype_passed = grad_dtype_passed and compare_dtypes(rm_tensor.grad, torch_tensor.grad)
+                    # 反向传播测试
+                    backward_passed = True
+                    grad_value_passed = True
+                    grad_shape_passed = True
+                    grad_dtype_passed = True
                     
-                    backward_passed = grad_value_passed and grad_shape_passed and grad_dtype_passed
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"    值比较: {'通过' if value_passed else '失败'}")
-                        print(f"    形状比较: {'通过' if shape_passed else '失败'} - Riemann: {rm_result.shape}, PyTorch: {torch_result.shape}")
-                        print(f"    数据类型比较: {'通过' if dtype_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"    梯度值比较: {'通过' if grad_value_passed else '失败'}")
-                        print(f"    梯度形状比较: {'通过' if grad_shape_passed else '失败'}")
-                        print(f"    梯度数据类型比较: {'通过' if grad_dtype_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"concatenate测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较每个输入张量的梯度
+                        for i, (rm_tensor, torch_tensor) in enumerate(zip(rm_tensors, torch_tensors)):
+                            grad_value_passed = grad_value_passed and compare_values(rm_tensor.grad, torch_tensor.grad)
+                            grad_shape_passed = grad_shape_passed and compare_shapes(rm_tensor.grad, torch_tensor.grad)
+                            grad_dtype_passed = grad_dtype_passed and compare_dtypes(rm_tensor.grad, torch_tensor.grad)
+                        
+                        backward_passed = grad_value_passed and grad_shape_passed and grad_dtype_passed
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"    值比较: {'通过' if value_passed else '失败'}")
+                            print(f"    形状比较: {'通过' if shape_passed else '失败'} - Riemann: {rm_result.shape}, PyTorch: {torch_result.shape}")
+                            print(f"    数据类型比较: {'通过' if dtype_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"    梯度值比较: {'通过' if grad_value_passed else '失败'}")
+                            print(f"    梯度形状比较: {'通过' if grad_shape_passed else '失败'}")
+                            print(f"    梯度数据类型比较: {'通过' if grad_dtype_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"concatenate测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_vstack(self):
         """测试vstack函数"""
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+            
         test_cases = [
             {"name": "基本vstack操作", "tensor_shapes": [(2, 3), (2, 3)]},
             {"name": "多个张量vstack", "tensor_shapes": [(2, 3), (2, 3), (2, 3)]},
@@ -483,89 +526,101 @@ class TestStackConcatenateOperations(unittest.TestCase):
             {"name": "三维张量vstack", "tensor_shapes": [(2, 3, 4), (2, 3, 4)]},
         ]
         
-        for case in test_cases:
-            case_name = f"vstack - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                rm_tensors = []
-                torch_tensors = []
-                for shape in case["tensor_shapes"]:
-                    np_data = np.random.randn(*shape)
-                    rm_tensor = rm.tensor(np_data, requires_grad=True)
-                    rm_tensors.append(rm_tensor)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"vstack - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    rm_tensors = []
+                    torch_tensors = []
+                    for shape in case["tensor_shapes"]:
+                        np_data = np.random.randn(*shape)
+                        if device == "cpu":
+                            rm_tensor = rm.tensor(np_data, requires_grad=True)
+                        else:  # cuda
+                            rm_tensor = rm.tensor(np_data, requires_grad=True, device=device)
+                        rm_tensors.append(rm_tensor)
+                        if TORCH_AVAILABLE:
+                            if device == "cpu":
+                                torch_tensor = torch.tensor(np_data, requires_grad=True)
+                            else:  # cuda
+                                torch_tensor = torch.tensor(np_data, requires_grad=True, device=device)
+                            torch_tensors.append(torch_tensor)
+                    
+                    # 前向传播测试
+                    rm_result = rm.vstack(rm_tensors)
+                    torch_result = None
                     if TORCH_AVAILABLE:
-                        torch_tensor = torch.tensor(np_data, requires_grad=True)
-                        torch_tensors.append(torch_tensor)
-                
-                # 前向传播测试
-                rm_result = rm.vstack(rm_tensors)
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    try:
-                        torch_result = torch.vstack(torch_tensors)
-                    except Exception as e:
-                        self.fail(f"PyTorch vstack失败: {str(e)}")
-                
-                # 比较前向传播结果
-                value_passed = compare_values(rm_result, torch_result)
-                shape_passed = compare_shapes(rm_result, torch_result)
-                dtype_passed = compare_dtypes(rm_result, torch_result)
-                forward_passed = value_passed and shape_passed and dtype_passed
-                
-                # 反向传播测试
-                backward_passed = True
-                grad_value_passed = True
-                grad_shape_passed = True
-                grad_dtype_passed = True
-                
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+                        try:
+                            torch_result = torch.vstack(torch_tensors)
+                        except Exception as e:
+                            self.fail(f"PyTorch vstack失败: {str(e)}")
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 比较前向传播结果
+                    value_passed = compare_values(rm_result, torch_result)
+                    shape_passed = compare_shapes(rm_result, torch_result)
+                    dtype_passed = compare_dtypes(rm_result, torch_result)
+                    forward_passed = value_passed and shape_passed and dtype_passed
                     
-                    # 比较每个输入张量的梯度
-                    for i, (rm_tensor, torch_tensor) in enumerate(zip(rm_tensors, torch_tensors)):
-                        grad_value_passed = grad_value_passed and compare_values(rm_tensor.grad, torch_tensor.grad)
-                        grad_shape_passed = grad_shape_passed and compare_shapes(rm_tensor.grad, torch_tensor.grad)
-                        grad_dtype_passed = grad_dtype_passed and compare_dtypes(rm_tensor.grad, torch_tensor.grad)
+                    # 反向传播测试
+                    backward_passed = True
+                    grad_value_passed = True
+                    grad_shape_passed = True
+                    grad_dtype_passed = True
                     
-                    backward_passed = grad_value_passed and grad_shape_passed and grad_dtype_passed
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"    值比较: {'通过' if value_passed else '失败'}")
-                        print(f"    形状比较: {'通过' if shape_passed else '失败'} - Riemann: {rm_result.shape}, PyTorch: {torch_result.shape}")
-                        print(f"    数据类型比较: {'通过' if dtype_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"    梯度值比较: {'通过' if grad_value_passed else '失败'}")
-                        print(f"    梯度形状比较: {'通过' if grad_shape_passed else '失败'}")
-                        print(f"    梯度数据类型比较: {'通过' if grad_dtype_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"vstack测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较每个输入张量的梯度
+                        for i, (rm_tensor, torch_tensor) in enumerate(zip(rm_tensors, torch_tensors)):
+                            grad_value_passed = grad_value_passed and compare_values(rm_tensor.grad, torch_tensor.grad)
+                            grad_shape_passed = grad_shape_passed and compare_shapes(rm_tensor.grad, torch_tensor.grad)
+                            grad_dtype_passed = grad_dtype_passed and compare_dtypes(rm_tensor.grad, torch_tensor.grad)
+                        
+                        backward_passed = grad_value_passed and grad_shape_passed and grad_dtype_passed
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"    值比较: {'通过' if value_passed else '失败'}")
+                            print(f"    形状比较: {'通过' if shape_passed else '失败'} - Riemann: {rm_result.shape}, PyTorch: {torch_result.shape}")
+                            print(f"    数据类型比较: {'通过' if dtype_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"    梯度值比较: {'通过' if grad_value_passed else '失败'}")
+                            print(f"    梯度形状比较: {'通过' if grad_shape_passed else '失败'}")
+                            print(f"    梯度数据类型比较: {'通过' if grad_dtype_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"vstack测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_hstack(self):
         """测试hstack函数"""
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+            
         test_cases = [
             {"name": "基本hstack操作", "tensor_shapes": [(2, 3), (2, 4)]},
             {"name": "多个张量hstack", "tensor_shapes": [(2, 3), (2, 4), (2, 5)]},
@@ -573,86 +628,93 @@ class TestStackConcatenateOperations(unittest.TestCase):
             {"name": "三维张量hstack", "tensor_shapes": [(2, 3, 4), (2, 5, 4)]},
         ]
         
-        for case in test_cases:
-            case_name = f"hstack - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                rm_tensors = []
-                torch_tensors = []
-                for shape in case["tensor_shapes"]:
-                    np_data = np.random.randn(*shape)
-                    rm_tensor = rm.tensor(np_data, requires_grad=True)
-                    rm_tensors.append(rm_tensor)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"hstack - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    rm_tensors = []
+                    torch_tensors = []
+                    for shape in case["tensor_shapes"]:
+                        np_data = np.random.randn(*shape)
+                        if device == "cpu":
+                            rm_tensor = rm.tensor(np_data, requires_grad=True)
+                        else:  # cuda
+                            rm_tensor = rm.tensor(np_data, requires_grad=True, device=device)
+                        rm_tensors.append(rm_tensor)
+                        if TORCH_AVAILABLE:
+                            if device == "cpu":
+                                torch_tensor = torch.tensor(np_data, requires_grad=True)
+                            else:  # cuda
+                                torch_tensor = torch.tensor(np_data, requires_grad=True, device=device)
+                            torch_tensors.append(torch_tensor)
+                    
+                    # 前向传播测试
+                    rm_result = rm.hstack(rm_tensors)
+                    torch_result = None
                     if TORCH_AVAILABLE:
-                        torch_tensor = torch.tensor(np_data, requires_grad=True)
-                        torch_tensors.append(torch_tensor)
-                
-                # 前向传播测试
-                rm_result = rm.hstack(rm_tensors)
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    try:
-                        torch_result = torch.hstack(torch_tensors)
-                    except Exception as e:
-                        self.fail(f"PyTorch hstack失败: {str(e)}")
-                
-                # 比较前向传播结果
-                value_passed = compare_values(rm_result, torch_result)
-                shape_passed = compare_shapes(rm_result, torch_result)
-                dtype_passed = compare_dtypes(rm_result, torch_result)
-                forward_passed = value_passed and shape_passed and dtype_passed
-                
-                # 反向传播测试
-                backward_passed = True
-                grad_value_passed = True
-                grad_shape_passed = True
-                grad_dtype_passed = True
-                
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+                        try:
+                            torch_result = torch.hstack(torch_tensors)
+                        except Exception as e:
+                            self.fail(f"PyTorch hstack失败: {str(e)}")
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 比较前向传播结果
+                    value_passed = compare_values(rm_result, torch_result)
+                    shape_passed = compare_shapes(rm_result, torch_result)
+                    dtype_passed = compare_dtypes(rm_result, torch_result)
+                    forward_passed = value_passed and shape_passed and dtype_passed
                     
-                    # 比较每个输入张量的梯度
-                    for i, (rm_tensor, torch_tensor) in enumerate(zip(rm_tensors, torch_tensors)):
-                        grad_value_passed = grad_value_passed and compare_values(rm_tensor.grad, torch_tensor.grad)
-                        grad_shape_passed = grad_shape_passed and compare_shapes(rm_tensor.grad, torch_tensor.grad)
-                        grad_dtype_passed = grad_dtype_passed and compare_dtypes(rm_tensor.grad, torch_tensor.grad)
+                    # 反向传播测试
+                    backward_passed = True
+                    grad_value_passed = True
+                    grad_shape_passed = True
+                    grad_dtype_passed = True
                     
-                    backward_passed = grad_value_passed and grad_shape_passed and grad_dtype_passed
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"    值比较: {'通过' if value_passed else '失败'}")
-                        print(f"    形状比较: {'通过' if shape_passed else '失败'} - Riemann: {rm_result.shape}, PyTorch: {torch_result.shape}")
-                        print(f"    数据类型比较: {'通过' if dtype_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"    梯度值比较: {'通过' if grad_value_passed else '失败'}")
-                        print(f"    梯度形状比较: {'通过' if grad_shape_passed else '失败'}")
-                        print(f"    梯度数据类型比较: {'通过' if grad_dtype_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"hstack测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较每个输入张量的梯度
+                        for i, (rm_tensor, torch_tensor) in enumerate(zip(rm_tensors, torch_tensors)):
+                            grad_value_passed = grad_value_passed and compare_values(rm_tensor.grad, torch_tensor.grad)
+                            grad_shape_passed = grad_shape_passed and compare_shapes(rm_tensor.grad, torch_tensor.grad)
+                            grad_dtype_passed = grad_dtype_passed and compare_dtypes(rm_tensor.grad, torch_tensor.grad)
+                        
+                        backward_passed = grad_value_passed and grad_shape_passed and grad_dtype_passed
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"    值比较: {'通过' if value_passed else '失败'}")
+                            print(f"    形状比较: {'通过' if shape_passed else '失败'} - Riemann: {rm_result.shape}, PyTorch: {torch_result.shape}")
+                            print(f"    数据类型比较: {'通过' if dtype_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"    梯度值比较: {'通过' if grad_value_passed else '失败'}")
+                            print(f"    梯度形状比较: {'通过' if grad_shape_passed else '失败'}")
+                            print(f"    梯度数据类型比较: {'通过' if grad_dtype_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"hstack测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
 
 # 主函数，用于独立运行测试
 if __name__ == '__main__':

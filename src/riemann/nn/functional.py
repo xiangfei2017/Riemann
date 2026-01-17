@@ -150,6 +150,9 @@ def linear(input: TN, weight: TN, bias: Optional[TN] = None) -> TN:
     if bias is not None and not isinstance(bias, TN):
         raise TypeError(f"Expected bias type to be TN tensor or None, but received type: {type(bias)}")
     
+    if input.device != weight.device or (bias is not None and bias.device != weight.device):
+        raise ValueError("input, weight, and bias must have the same device")
+    
     # 检查维度兼容性
     if input.ndim < 1:
         raise ValueError("input must have at least 1 dimension")
@@ -191,11 +194,12 @@ def sigmoid(x: TN) -> TN:
     # 对于较大的正值，直接返回1.0以避免exp溢出
     # 对于较小的负值，直接返回0.0以避免exp溢出
     # 对于中间值，使用标准公式
-    data = np.where(x_data > 20, 1.0, 
-                   np.where(x_data < -20, 0.0, 
-                           1. / (1. + np.exp(-x_data))))
+    arrlib = x._get_array_lib()
+    data = arrlib.where(x_data > 20, 1.0, 
+                   arrlib.where(x_data < -20, 0.0, 
+                           1. / (1. + arrlib.exp(-x_data))))
     
-    ret = tensor(data, requires_grad=x.requires_grad)
+    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
     ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
@@ -284,9 +288,11 @@ def relu(x: TN) -> TN:
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
     
-    # 前向计算
-    data = np.maximum(0, x.data)
-    ret = tensor(data, requires_grad=x.requires_grad)
+    # 前向计算：使用np.maximum实现条件选择
+    # 对于输入为负值，直接返回0.0以避免数值不稳定性
+    arrlib = x._get_array_lib()
+    data = arrlib.maximum(0, x.data)
+    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
     ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
@@ -303,8 +309,10 @@ def _relu_backward(result_tensor: TN, i: int) -> TN:
 
 def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
     # 前向计算：使用np.where实现条件选择
-    data = np.where(x.data > 0, x.data, alpha * x.data)
-    ret = tensor(data, requires_grad=x.requires_grad)
+    # 对于输入为负值，返回alpha倍的输入值
+    arrlib = x._get_array_lib()
+    data = arrlib.where(x.data > 0, x.data, alpha * x.data)
+    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
     ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
@@ -325,9 +333,10 @@ def prelu(x: TN, alpha: TN) -> TN:
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
-    # 前向计算：alpha为可训练参数
-    data = np.where(x.data > 0, x.data, alpha.data * x.data)
-    ret = tensor(data, requires_grad=(x.requires_grad or alpha.requires_grad))
+    # 前向计算：alpha为可训练参数，用于控制负值的缩放
+    arrlib = x._get_array_lib()
+    data = arrlib.where(x.data > 0, x.data, alpha.data * x.data)
+    ret = tensor(data, device=x.device, requires_grad=(x.requires_grad or alpha.requires_grad))
     ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
@@ -353,16 +362,17 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
-    # 训练时随机生成alpha，测试时用平均值
+    # 训练时随机生成alpha，测试时用平均值作为alpha
+    arrlib = x._get_array_lib()
     if training:
-        alpha = np.random.uniform(low=lower, high=upper, size=x.data.shape)
+        alpha = arrlib.random.uniform(low=lower, high=upper, size=x.data.shape)
     else:
-        alpha = (lower + upper) / 2.0 * np.ones_like(x.data)
+        alpha = (lower + upper) / 2.0 * arrlib.ones_like(x.data)
     alpha = alpha.astype(x.dtype)
 
     # 前向计算
-    data = np.where(x.data > 0, x.data, alpha.data * x.data)
-    ret = tensor(data, requires_grad=x.requires_grad)
+    data = arrlib.where(x.data > 0, x.data, alpha * x.data)
+    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
     ret.is_leaf = not ret.requires_grad
     
     if x.requires_grad:
@@ -386,10 +396,11 @@ def gelu(x: TN) -> TN:
 
     # 使用PyTorch使用的GELU公式（Hendrycks & Gimpel 2016）
     # 精确的GELU公式: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-    c = np.sqrt(2.0 / np.pi, dtype=x.dtype)
+    arrlib = x._get_array_lib()
+    c = arrlib.sqrt(2.0 / arrlib.pi, dtype=x.dtype)
     x_data = x.data
-    data = 0.5 * x_data * (1.0 + np.tanh(c * (x_data + 0.044715 * x_data**3.0)))
-    ret = tensor(data, requires_grad=x.requires_grad)
+    data = 0.5 * x_data * (1.0 + arrlib.tanh(c * (x_data + 0.044715 * x_data**3.0)))
+    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
     ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
@@ -468,16 +479,16 @@ def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
                 return zeros_like(target)
             else:
                 # return tensor(np.zeros(input.shape[0], dtype=np.float32))
-                return zeros(input.shape[0],input.dtype)
+                return zeros(input.shape[0],input.dtype,device=input.device)
         elif reduction == 'sum':
-            return tensor(0.0, dtype=input.dtype)
+            return tensor(0.0, dtype=input.dtype,device=input.device)
         elif reduction == 'mean':
             # PyTorch在这种情况下返回nan（除以零）
-            return tensor(float('nan'),dtype=input.dtype)
+            return tensor(float('nan'),dtype=input.dtype,device=input.device)
     
     # 核心计算 - 计算所有样本的损失
     # 对于被忽略的样本，target值可能超出范围，所以我们需要使用临时target
-    temp_target = where(mask, target, zeros_like(target, dtype=int64))
+    temp_target = where(mask, target, zeros_like(target))
     target_expanded = temp_target.unsqueeze(1)
     
     selected_log_probs = input.gather(1, target_expanded).squeeze(1)
@@ -516,7 +527,8 @@ def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
     elif reduction == 'mean':
         if weight is None:
             # 没有权重时，直接除以有效样本数
-            return valid_loss.sum() / tensor(valid_samples,dtype=input.dtype)
+            # return valid_loss.sum() / valid_loss.numel()
+            return valid_loss.mean()
         else:
             # 有权重时，使用权重和进行归一化
             return valid_loss.sum() / weight_sum            
@@ -545,7 +557,7 @@ def one_hot(target: TN, num_classes: int) -> TN:
     result_shape = target.shape + (num_classes,)
     
     # 创建全零张量
-    result = zeros(result_shape)
+    result = zeros(result_shape,device=target.device)
     
     # 获取最后一个维度作为scatter的维度
     dim = -1
@@ -583,7 +595,8 @@ def mse_loss(input: TN, target: TN, size_average=None, reduce=None, reduction: s
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-
+    if input.device != target.device:
+        raise ValueError("Input and target must be on the same device")
     # 处理旧版参数
     if size_average is not None or reduce is not None:
         reduction = _get_reduction(size_average, reduce)
@@ -611,7 +624,8 @@ def l1_loss(input: TN, target: TN, size_average=None, reduce=None, reduction: st
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-
+    if input.device != target.device:
+        raise ValueError("Input and target must be on the same device")
     # 处理旧版参数
     if size_average is not None or reduce is not None:
         reduction = _get_reduction(size_average, reduce)
@@ -639,7 +653,8 @@ def smooth_l1_loss(input: TN, target: TN, size_average=None, reduce=None, reduct
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-
+    if input.device != target.device:
+        raise ValueError("Input and target must be on the same device")
     # 处理旧版参数
     if size_average is not None or reduce is not None:
         reduction = _get_reduction(size_average, reduce)
@@ -675,7 +690,8 @@ def cross_entropy(input: TN, target: TN, weight: Optional[TN] = None,
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-
+    if input.device != target.device:
+        raise ValueError("Input and target must be on the same device")
     # 处理旧版参数
     if size_average is not None or reduce is not None:
         reduction = _get_reduction(size_average, reduce)
@@ -766,7 +782,7 @@ def binary_cross_entropy_with_logits(input: TN, target: TN, weight: Optional[TN]
         reduction = _get_reduction(size_average, reduce)
     
     # 数值稳定性处理：避免log(0)问题
-    max_val = where(-input > 0, -input, tensor(0.0))
+    max_val = where(-input > 0, -input, 0.0)
     
     # 稳定的交叉熵计算：input - input * target + log(1 + exp(-input))
     loss = input - input * target + max_val + log(1.0 + exp(-abs(input)))
@@ -805,7 +821,9 @@ def huber_loss(input: TN, target: TN, delta: float = 1.0,
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-        
+    if input.device != target.device:
+        raise ValueError("Input and target must be on the same device")
+    
     # 处理旧版参数
     if size_average is not None or reduce is not None:
         reduction = _get_reduction(size_average, reduce)
@@ -962,20 +980,21 @@ def unfold(input: TN, kernel_size, dilation=1, padding=0, stride=1) -> TN:
         padded_input = input
     
     # 完全向量化版本：展开输入，避免双重循环
-    h_starts = np.arange(H_out) * stride[0]
-    w_starts = np.arange(W_out) * stride[1]
-    h_k_range = np.arange(kernel_size[0]) * dilation[0]
-    w_k_range = np.arange(kernel_size[1]) * dilation[1]
+    arrlib = input._get_array_lib()
+    h_starts = arrlib.arange(H_out) * stride[0]
+    w_starts = arrlib.arange(W_out) * stride[1]
+    h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
+    w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
     
     # 生成所有内核位置的坐标偏移 (kh, kw)
-    kh_indices, kw_indices = np.meshgrid(h_k_range, w_k_range, indexing='ij')
+    kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
     
     # 生成所有输出位置的坐标网格 (H_out, W_out)
-    h_indices, w_indices = np.meshgrid(h_starts, w_starts, indexing='ij')
+    h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
     
     # 计算所有需要提取的高度和宽度索引，形状为 (kh, kw, H_out, W_out)
-    all_h_indices = h_indices[np.newaxis, np.newaxis, :, :] + kh_indices[:, :, np.newaxis, np.newaxis]
-    all_w_indices = w_indices[np.newaxis, np.newaxis, :, :] + kw_indices[:, :, np.newaxis, np.newaxis]
+    all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kh_indices[:, :, arrlib.newaxis, arrlib.newaxis]
+    all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kw_indices[:, :, arrlib.newaxis, arrlib.newaxis]
     
     # 一次性提取所有展开块，避免双重循环，直接得到形状 (N, C, kh, kw, H_out, W_out)
     unfolded_blocks = padded_input[:, :, all_h_indices, all_w_indices]
@@ -1085,22 +1104,23 @@ def unfold2d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
         padded_input = input
         
     # 完全向量化版本：展开输入，避免双重循环
-    h_starts = np.arange(H_out) * stride[0]
-    w_starts = np.arange(W_out) * stride[1]
-    h_k_range = np.arange(kernel_size[0]) * dilation[0]
-    w_k_range = np.arange(kernel_size[1]) * dilation[1]
+    arrlib = input._get_array_lib()
+    h_starts = arrlib.arange(H_out) * stride[0]
+    w_starts = arrlib.arange(W_out) * stride[1]
+    h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
+    w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
     
     kh, kw = kernel_size
     
     # 生成所有内核位置的坐标偏移 (kh, kw)
-    kh_indices, kw_indices = np.meshgrid(h_k_range, w_k_range, indexing='ij')
+    kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
     
     # 生成所有输出位置的坐标网格 (H_out, W_out)
-    h_indices, w_indices = np.meshgrid(h_starts, w_starts, indexing='ij')
+    h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
     
     # 计算所有需要提取的高度和宽度索引，形状为 (kh, kw, H_out, W_out)
-    all_h_indices = h_indices[np.newaxis, np.newaxis, :, :] + kh_indices[:, :, np.newaxis, np.newaxis]
-    all_w_indices = w_indices[np.newaxis, np.newaxis, :, :] + kw_indices[:, :, np.newaxis, np.newaxis]
+    all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kh_indices[:, :, arrlib.newaxis, arrlib.newaxis]
+    all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kw_indices[:, :, arrlib.newaxis, arrlib.newaxis]
     
     # 一次性提取所有展开块，避免双重循环，直接得到形状 (N, C, kh, kw, H_out, W_out)
     unfolded_blocks = padded_input[:, :, all_h_indices, all_w_indices]
@@ -1158,25 +1178,26 @@ def fold(input: TN, output_size, kernel_size, dilation=1, padding=0, stride=1) -
     padded_W = output_size[1] + 2 * padding[1]
     
     # 创建形状为(N, C, padded_H, padded_W)的零张量
-    output = zeros((N, C, padded_H, padded_W), dtype=input.dtype)
+    output = zeros((N, C, padded_H, padded_W), dtype=input.dtype,device=input.device)
     
     # 向量化版本：将展开的块放回输出张量的正确位置
-    h_starts = np.arange(H_out) * stride[0]
-    w_starts = np.arange(W_out) * stride[1]
-    h_k_range = np.arange(kernel_size[0]) * dilation[0]
-    w_k_range = np.arange(kernel_size[1]) * dilation[1]
+    arrlib = input._get_array_lib()
+    h_starts = arrlib.arange(H_out) * stride[0]
+    w_starts = arrlib.arange(W_out) * stride[1]
+    h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
+    w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
     
     kh, kw = kernel_size
     
     # 生成所有内核位置的坐标偏移 (kh, kw)
-    kh_indices, kw_indices = np.meshgrid(h_k_range, w_k_range, indexing='ij')
+    kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
     
     # 生成所有输出位置的坐标网格 (H_out, W_out)
-    h_indices, w_indices = np.meshgrid(h_starts, w_starts, indexing='ij')
+    h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
     
     # 计算所有需要更新的高度和宽度索引，形状为 (kh, kw, H_out, W_out)
-    all_h_indices = h_indices[np.newaxis, np.newaxis, :, :] + kh_indices[:, :, np.newaxis, np.newaxis]
-    all_w_indices = w_indices[np.newaxis, np.newaxis, :, :] + kw_indices[:, :, np.newaxis, np.newaxis]
+    all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kh_indices[:, :, arrlib.newaxis, arrlib.newaxis]
+    all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kw_indices[:, :, arrlib.newaxis, arrlib.newaxis]
     
     # 直接将输入重塑为 (N, C, kh, kw, H_out, W_out)，无需额外reshape
     folded_input = input.reshape(N, C, kh, kw, H_out, W_out)
@@ -1308,7 +1329,7 @@ def unfold3d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
         
         # 创建最终填充后的张量
         padded_shape = (N, C, final_padded_depth, final_padded_height, final_padded_width)
-        padded_input = full(padded_shape, fill_value=padvalue, dtype=input.dtype)
+        padded_input = full(padded_shape, fill_value=padvalue, dtype=input.dtype,device=input.device)
         
         # 将原始数据复制到填充后的张量中（考虑显式padding和额外填充）
         data_index = (slice(None), slice(None), 
@@ -1320,25 +1341,26 @@ def unfold3d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
         padded_input = input
         
     # 完全向量化版本：展开输入，避免三重循环
-    d_starts = np.arange(D_out) * stride[0]
-    h_starts = np.arange(H_out) * stride[1]
-    w_starts = np.arange(W_out) * stride[2]
-    d_k_range = np.arange(kernel_size[0]) * dilation[0]
-    h_k_range = np.arange(kernel_size[1]) * dilation[1]
-    w_k_range = np.arange(kernel_size[2]) * dilation[2]
+    arrlib = input._get_array_lib()
+    d_starts = arrlib.arange(D_out) * stride[0]
+    h_starts = arrlib.arange(H_out) * stride[1]
+    w_starts = arrlib.arange(W_out) * stride[2]
+    d_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
+    h_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
+    w_k_range = arrlib.arange(kernel_size[2]) * dilation[2]
     
     kd, kh, kw = kernel_size
     
     # 生成所有内核位置的坐标偏移 (kd, kh, kw)
-    kd_indices, kh_indices, kw_indices = np.meshgrid(d_k_range, h_k_range, w_k_range, indexing='ij')
+    kd_indices, kh_indices, kw_indices = arrlib.meshgrid(d_k_range, h_k_range, w_k_range, indexing='ij')
     
     # 生成所有输出位置的坐标网格 (D_out, H_out, W_out)
-    d_indices, h_indices, w_indices = np.meshgrid(d_starts, h_starts, w_starts, indexing='ij')
+    d_indices, h_indices, w_indices = arrlib.meshgrid(d_starts, h_starts, w_starts, indexing='ij')
     
     # 计算所有需要提取的深度、高度和宽度索引，形状为 (kd, kh, kw, D_out, H_out, W_out)
-    all_d_indices = d_indices[np.newaxis, np.newaxis, np.newaxis, :, :, :] + kd_indices[:, :, :, np.newaxis, np.newaxis, np.newaxis]
-    all_h_indices = h_indices[np.newaxis, np.newaxis, np.newaxis, :, :, :] + kh_indices[:, :, :, np.newaxis, np.newaxis, np.newaxis]
-    all_w_indices = w_indices[np.newaxis, np.newaxis, np.newaxis, :, :, :] + kw_indices[:, :, :, np.newaxis, np.newaxis, np.newaxis]
+    all_d_indices = d_indices[arrlib.newaxis, arrlib.newaxis, arrlib.newaxis, :, :, :] + kd_indices[:, :, :, arrlib.newaxis, arrlib.newaxis, arrlib.newaxis]
+    all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, arrlib.newaxis, :, :, :] + kh_indices[:, :, :, arrlib.newaxis, arrlib.newaxis, arrlib.newaxis]
+    all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, arrlib.newaxis, :, :, :] + kw_indices[:, :, :, arrlib.newaxis, arrlib.newaxis, arrlib.newaxis]
     
     # 一次性提取所有展开块，避免三重循环，直接得到形状 (N, C, kd, kh, kw, D_out, H_out, W_out)
     unfolded_blocks = padded_input[:, :, all_d_indices, all_h_indices, all_w_indices]
@@ -1368,8 +1390,15 @@ def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         其中:
         L_out = floor((L_in + 2*padding - dilation*(K-1) - 1)/stride + 1)
     """
-    if not isinstance(input, TN) or not isinstance(weight, TN):
-        raise TypeError(f"Expected input and weight to be TN tensors, but received input type: {type(input)}, weight type: {type(weight)}")
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    if not isinstance(weight, TN):
+        raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
+    if bias is not None and not isinstance(bias, TN):
+        raise TypeError(f"Expected bias type to be TN tensor or None, but received type: {type(bias)}")
+    
+    if input.device != weight.device or (bias is not None and bias.device != weight.device):
+        raise ValueError("input, weight, and bias must have the same device")
     
     if input.ndim != 3 or weight.ndim != 3:
         raise ValueError(f"Expected 3D tensors for input and weight, but got input dim: {input.ndim}, weight dim: {weight.ndim}")
@@ -1396,21 +1425,22 @@ def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
     # 先对输入进行填充
     if padding != 0:
         # 使用非原地操作创建填充后的输入，确保计算图完整
-        left_pad = zeros((N, C_in, padding), dtype=input.dtype)
-        right_pad = zeros((N, C_in, padding), dtype=input.dtype)
+        left_pad = zeros((N, C_in, padding), dtype=input.dtype,device=input.device)
+        right_pad = zeros((N, C_in, padding), dtype=input.dtype,device=input.device)
         padded_input = concatenate((left_pad, input, right_pad), dim=2)
     else:
         padded_input = input
     
     # 展开输入 - 向量化实现
-    # 使用numpy生成所有内核索引的起始位置
-    l_starts = np.arange(L_out) * stride
+    # 使用numpy.arange生成所有内核索引的起始位置
+    arrlib = input._get_array_lib()
+    l_starts = arrlib.arange(L_out) * stride
     
     # 预计算所有内核块的索引范围
-    k_range = np.arange(K) * dilation
+    k_range = arrlib.arange(K) * dilation
     
     # 一次性生成所有需要的索引
-    all_indices = l_starts[:, np.newaxis] + k_range
+    all_indices = l_starts[:, arrlib.newaxis] + k_range
     
     # 使用高级索引一次性提取所有内核块
     # 首先创建一个形状为 (N, C_in, L_out, K) 的临时张量
@@ -1429,7 +1459,7 @@ def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         weight_reshaped = weight.reshape(groups, C_out // groups, C_in_per_group * K)
         
         # 对每个组进行矩阵乘法
-        output = zeros((N, groups, C_out // groups, L_out), dtype=input.dtype)
+        output = zeros((N, groups, C_out // groups, L_out), dtype=input.dtype,device=input.device)
         for g in range(groups):
             # weight_reshaped[g]形状: (C_out_per_group, C_in_per_group*K)
             # unfolded_input[:, g, :, :]形状: (N, C_in_per_group*K, L_out)
@@ -1485,8 +1515,15 @@ def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         H_out = floor((H_in + 2*padding[0] - dilation[0]*(K_h-1) - 1)/stride[0] + 1)
         W_out = floor((W_in + 2*padding[1] - dilation[1]*(K_w-1) - 1)/stride[1] + 1)
     """
-    if not isinstance(input, TN) or not isinstance(weight, TN):
-        raise TypeError(f"Expected input and weight to be TN tensors, but received input type: {type(input)}, weight type: {type(weight)}")
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    if not isinstance(weight, TN):
+        raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
+    if bias is not None and not isinstance(bias, TN):
+        raise TypeError(f"Expected bias type to be TN tensor or None, but received type: {type(bias)}")
+    
+    if input.device != weight.device or (bias is not None and bias.device != weight.device):
+        raise ValueError("input, weight, and bias must have the same device")
     
     if input.ndim != 4 or weight.ndim != 4:
         raise ValueError(f"Expected 4D tensors for input and weight, but got input dim: {input.ndim}, weight dim: {weight.ndim}")
@@ -1523,7 +1560,7 @@ def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         weight_reshaped = weight.reshape(groups, C_out // groups, C_in_per_group * K_h * K_w)
         
         # 对每个组进行矩阵乘法
-        output = zeros((N, groups, C_out // groups, H_out * W_out), dtype=input.dtype)
+        output = zeros((N, groups, C_out // groups, H_out * W_out), dtype=input.dtype,device=input.device)
         for g in range(groups):
             # 直接使用批量矩阵乘法，避免冗余转置
             # weight_reshaped[g]形状: (C_out_per_group, C_in_per_group*K_h*K_w)
@@ -1553,8 +1590,6 @@ def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
     
     # 添加偏置项
     if bias is not None:
-        if not isinstance(bias, TN):
-            raise TypeError(f"Expected bias to be TN tensor, but received type: {type(bias)}")
         if bias.shape != (C_out,):
             raise ValueError(f"bias shape ({bias.shape}) must match output channels ({C_out})")
         
@@ -1588,8 +1623,15 @@ def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         H_out = floor((H_in + 2*padding[1] - dilation[1]*(K_h-1) - 1)/stride[1] + 1)
         W_out = floor((W_in + 2*padding[2] - dilation[2]*(K_w-1) - 1)/stride[2] + 1)
     """
-    if not isinstance(input, TN) or not isinstance(weight, TN):
-        raise TypeError(f"Expected input and weight to be TN tensors, but received input type: {type(input)}, weight type: {type(weight)}")
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    if not isinstance(weight, TN):
+        raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
+    if bias is not None and not isinstance(bias, TN):
+        raise TypeError(f"Expected bias type to be TN tensor or None, but received type: {type(bias)}")
+    
+    if input.device != weight.device or (bias is not None and bias.device != weight.device):
+        raise ValueError("input, weight, and bias must have the same device")
     
     if input.ndim != 5 or weight.ndim != 5:
         raise ValueError(f"Expected 5D tensors for input and weight, but got input dim: {input.ndim}, weight dim: {weight.ndim}")
@@ -1626,7 +1668,7 @@ def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         weight_reshaped = weight.reshape(groups, C_out // groups, C_in_per_group * K_d * K_h * K_w)
         
         # 对每个组进行矩阵乘法
-        output = zeros((N, groups, C_out // groups, D_out * H_out * W_out), dtype=input.dtype)
+        output = zeros((N, groups, C_out // groups, D_out * H_out * W_out), dtype=input.dtype,device=input.device)
         for g in range(groups):
             # 直接使用批量矩阵乘法，避免冗余转置
             # weight_reshaped[g]形状: (C_out_per_group, C_in_per_group*K_d*K_h*K_w)
@@ -1656,8 +1698,6 @@ def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
     
     # 添加偏置项
     if bias is not None:
-        if not isinstance(bias, TN):
-            raise TypeError(f"Expected bias to be TN tensor, but received type: {type(bias)}")
         if bias.shape != (C_out,):
             raise ValueError(f"bias shape ({bias.shape}) must match output channels ({C_out})")
         
@@ -1722,8 +1762,8 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     if padding != 0:
         # 使用非原地操作创建填充后的输入，确保计算图完整
         # 创建左右填充张量，使用负无穷大填充以正确计算边界窗口的最大值
-        left_pad = full((N, C, padding), fill_value=-np.inf, dtype=input.dtype)
-        right_pad = full((N, C, padding), fill_value=-np.inf, dtype=input.dtype)
+        left_pad = full((N, C, padding), fill_value=-np.inf, dtype=input.dtype,device=input.device)
+        right_pad = full((N, C, padding), fill_value=-np.inf, dtype=input.dtype,device=input.device)
         # 沿时间维度拼接填充和原始输入
         padded_input = concatenate((left_pad, input, right_pad), dim=2)
     else:
@@ -1731,10 +1771,11 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     
     # 展开输入 - 优化版本
     # 直接生成形状为 (N*C, L_out, K) 的张量，避免多次转置和重塑
-    l_starts = np.arange(L_out) * stride
-    k_range = np.arange(K) * dilation
+    arrlib = input._get_array_lib()
+    l_starts = arrlib.arange(L_out) * stride
+    k_range = arrlib.arange(K) * dilation
     all_indices = l_starts[:, np.newaxis] + k_range
-    all_indices = np.clip(all_indices, 0, padded_input.shape[2] - 1)
+    all_indices = arrlib.clip(all_indices, 0, padded_input.shape[2] - 1)
     
     # 使用高级索引提取所有内核块，然后直接重塑为 (N*C, L_out, K)
     unfolded_temp = padded_input[:, :, all_indices]
@@ -1758,7 +1799,7 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         indices_reshaped = indices_data.reshape(N*C, L_out)
         
         # 创建网格坐标 (L_out)
-        grid_l = np.arange(L_out).reshape(1, L_out).repeat(N*C, axis=0)
+        grid_l = arrlib.arange(L_out).reshape(1, L_out).repeat(N*C, axis=0)
         
         # 计算核内坐标
         indices_k = indices_reshaped
@@ -1768,10 +1809,10 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         
         # 将输入坐标转换为展平的索引 (L_in)
         # 确保坐标在有效范围内
-        input_l = np.clip(input_l, 0, L_in - 1)
+        input_l = arrlib.clip(input_l, 0, L_in - 1)
         
         flattened_indices = input_l.reshape(N, C, L_out)
-        flattened_indices = tensor(flattened_indices)
+        flattened_indices = tensor(flattened_indices, device=input.device)
         return output, flattened_indices
     else:
         return output
@@ -1849,7 +1890,8 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         indices_reshaped = indices_data.reshape(N*C, H_out*W_out)
         
         # 创建网格坐标 (H_out, W_out)
-        grid_y, grid_x = np.meshgrid(np.arange(H_out), np.arange(W_out), indexing='ij')
+        arrlib = input._get_array_lib()
+        grid_y, grid_x = arrlib.meshgrid(arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
         grid_y = grid_y.reshape(1, H_out*W_out).repeat(N*C, axis=0)
         grid_x = grid_x.reshape(1, H_out*W_out).repeat(N*C, axis=0)
         
@@ -1864,7 +1906,7 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         # 将输入坐标转换为展平的索引 (H*W)        
         flattened_indices = input_y * W_in + input_x
         flattened_indices = flattened_indices.reshape(N, C, H_out, W_out)
-        flattened_indices = tensor(flattened_indices)
+        flattened_indices = tensor(flattened_indices, device=input.device)
         return output, flattened_indices
     else:
         return output
@@ -1944,7 +1986,8 @@ def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         indices_reshaped = indices_data.reshape(N*C, D_out*H_out*W_out)
         
         # 创建网格坐标 (D_out, H_out, W_out)
-        grid_d, grid_h, grid_w = np.meshgrid(np.arange(D_out), np.arange(H_out), np.arange(W_out), indexing='ij')
+        arrlib = input._get_array_lib()
+        grid_d, grid_h, grid_w = arrlib.meshgrid(arrlib.arange(D_out), arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
         grid_d = grid_d.reshape(1, D_out*H_out*W_out).repeat(N*C, axis=0)
         grid_h = grid_h.reshape(1, D_out*H_out*W_out).repeat(N*C, axis=0)
         grid_w = grid_w.reshape(1, D_out*H_out*W_out).repeat(N*C, axis=0)
@@ -2032,7 +2075,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         
         # 创建最终填充后的张量
         padded_shape = (N, C, final_padded_length)
-        padded_input = zeros(padded_shape, dtype=input.dtype)
+        padded_input = zeros(padded_shape, dtype=input.dtype,device=input.device)
         
         # 将原始数据复制到填充后的张量中（考虑显式padding和额外填充）
         data_index = (slice(None), slice(None), slice(padding, padding + L_in))
@@ -2042,16 +2085,17 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     
     # 展开输入 - 优化版本
     # 使用numpy生成所有内核索引的起始位置
-    l_starts = np.arange(L_out) * stride
+    arrlib = input._get_array_lib()
+    l_starts = arrlib.arange(L_out) * stride
     
     # 预计算所有内核块的索引范围
-    k_range = np.arange(K) * dilation
+    k_range = arrlib.arange(K) * dilation
     
     # 一次性生成所有需要的索引
     all_indices = l_starts[:, np.newaxis] + k_range
     
     # 确保索引在有效范围内
-    all_indices = np.clip(all_indices, 0, padded_input.shape[2] - 1)
+    all_indices = arrlib.clip(all_indices, 0, padded_input.shape[2] - 1)
     
     # 使用高级索引一次性提取所有内核块
     # 首先创建一个形状为 (N, C, L_out, K) 的临时张量
@@ -2063,7 +2107,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     # 计算平均值
     if divisor_override is not None:
         # 使用指定的除数，确保除数与输入张量具有相同的数据类型
-        divisor_tensor = tensor(divisor_override, dtype=input.dtype)
+        divisor_tensor = tensor(divisor_override, dtype=input.dtype,device=input.device)
         avg_values = unfolded_input_reshaped.sum(dim=2) / divisor_tensor
     elif not count_include_pad:
         # 不包含填充区域时，使用实际元素数作为除数
@@ -2073,7 +2117,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # 对掩码进行填充，与输入的填充方式相同
         if padding != 0 or ceil_mode:
             mask_padded_shape = (N, C, final_padded_length)
-            mask_padded_input = zeros(mask_padded_shape, dtype=input.dtype)
+            mask_padded_input = zeros(mask_padded_shape, dtype=input.dtype,device=input.device)
             mask_data_index = (slice(None), slice(None), slice(padding, padding + L_in))
             mask_padded_input.setat_(mask_data_index, input_mask)
         else:
@@ -2096,7 +2140,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # 辅助函数：向量化计算所有窗口位置的有效元素数
         def compute_effective_counts_vectorized():
             # 生成所有窗口的起始位置
-            l_starts = np.arange(L_out) * stride
+            l_starts = arrlib.arange(L_out) * stride
             
             # 计算每个窗口的结束位置
             l_ends = l_starts + effective_K
@@ -2106,9 +2150,9 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
             padded_l_end = L_in + 2 * padding
             
             # 计算窗口与显式padding后输入的交集（向量化操作）
-            valid_l_starts = np.maximum(l_starts, padded_l_start)
-            valid_l_ends = np.minimum(l_ends, padded_l_end)
-            valid_l = np.maximum(0, valid_l_ends - valid_l_starts)
+            valid_l_starts = arrlib.maximum(l_starts, padded_l_start)
+            valid_l_ends = arrlib.minimum(l_ends, padded_l_end)
+            valid_l = arrlib.maximum(0, valid_l_ends - valid_l_starts)
             
             return valid_l
                 
@@ -2116,7 +2160,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         all_counts = compute_effective_counts_vectorized()
         
         # 将numpy数组转换为Tensor并扩展到批次和通道维度
-        effective_counts = tensor(all_counts, dtype=input.dtype)
+        effective_counts = tensor(all_counts, dtype=input.dtype,device=input.device)
         effective_counts = effective_counts.unsqueeze(0)  # 添加维度变为(1, L_out)
         effective_counts = effective_counts.expand(N*C, -1)  # 扩展到(N*C, L_out)
         
@@ -2175,7 +2219,7 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     # 计算平均值
     if divisor_override is not None:
         # 使用指定的除数，确保除数与输入张量具有相同的数据类型
-        divisor_tensor = tensor(divisor_override, dtype=input.dtype)
+        divisor_tensor = tensor(divisor_override, dtype=input.dtype,device=input.device)
         avg_values = unfolded_result.sum(dim=1) / divisor_tensor
     elif not count_include_pad:
         # 不包含填充区域时，使用实际元素数作为除数
@@ -2202,8 +2246,9 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # count_include_pad=True时的处理
         # 辅助函数：向量化计算所有窗口位置的有效元素数
         def compute_effective_counts_vectorized():
-            # 生成所有窗口的坐标网格
-            i_indices, j_indices = np.meshgrid(np.arange(H_out), np.arange(W_out), indexing='ij')
+            # 生成所有窗口的坐标网格 (H_out, W_out)
+            arrlib = input._get_array_lib()
+            i_indices, j_indices = arrlib.meshgrid(arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
             
             # 计算每个窗口的起始和结束位置
             h_start = i_indices * stride[0]
@@ -2218,13 +2263,13 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
             padded_w_end = W_in + 2 * padding[1]
             
             # 计算窗口与显式padding后输入的交集
-            valid_h_start = np.maximum(h_start, padded_h_start)
-            valid_h_end = np.minimum(h_end, padded_h_end)
-            valid_h = np.maximum(0, valid_h_end - valid_h_start)
+            valid_h_start = arrlib.maximum(h_start, padded_h_start)
+            valid_h_end = arrlib.minimum(h_end, padded_h_end)
+            valid_h = arrlib.maximum(0, valid_h_end - valid_h_start)
             
-            valid_w_start = np.maximum(w_start, padded_w_start)
-            valid_w_end = np.minimum(w_end, padded_w_end)
-            valid_w = np.maximum(0, valid_w_end - valid_w_start)
+            valid_w_start = arrlib.maximum(w_start, padded_w_start)
+            valid_w_end = arrlib.minimum(w_end, padded_w_end)
+            valid_w = arrlib.maximum(0, valid_w_end - valid_w_start)
             
             # 计算每个窗口的有效元素数
             counts = valid_h * valid_w
@@ -2236,7 +2281,7 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         all_counts = compute_effective_counts_vectorized()
         
         # 创建结果张量并重复到所有N*C批次
-        effective_counts = tensor(all_counts, dtype=input.dtype)
+        effective_counts = tensor(all_counts, dtype=input.dtype,device=input.device)
         effective_counts = effective_counts.unsqueeze(0)  # 添加一个维度，形状变为(1, total_windows)
         effective_counts = effective_counts.expand(N*C, -1)  # 扩展到N*C批次
         
@@ -2296,7 +2341,7 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     # 计算平均值
     if divisor_override is not None:
         # 使用指定的除数，确保除数与输入张量具有相同的数据类型
-        divisor_tensor = tensor(divisor_override, dtype=input.dtype)
+        divisor_tensor = tensor(divisor_override, dtype=input.dtype,device=input.device)
         avg_values = unfolded_result.sum(dim=1) / divisor_tensor
     elif not count_include_pad:
         # 不包含填充区域时，使用实际元素数作为除数
@@ -2324,7 +2369,8 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # 辅助函数：向量化计算所有窗口位置的有效元素数
         def compute_effective_counts_vectorized():
             # 生成所有窗口的坐标网格
-            d_indices, h_indices, w_indices = np.meshgrid(np.arange(D_out), np.arange(H_out), np.arange(W_out), indexing='ij')
+            arrlib = input._get_array_lib()
+            d_indices, h_indices, w_indices = arrlib.meshgrid(arrlib.arange(D_out), arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
             
             # 计算每个窗口的起始和结束位置
             d_start = d_indices * stride[0]
@@ -2343,17 +2389,17 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
             padded_w_end = W_in + 2 * padding[2]
             
             # 计算窗口与显式padding后输入的交集
-            valid_d_start = np.maximum(d_start, padded_d_start)
-            valid_d_end = np.minimum(d_end, padded_d_end)
-            valid_d = np.maximum(0, valid_d_end - valid_d_start)
+            valid_d_start = arrlib.maximum(d_start, padded_d_start)
+            valid_d_end = arrlib.minimum(d_end, padded_d_end)
+            valid_d = arrlib.maximum(0, valid_d_end - valid_d_start)
             
-            valid_h_start = np.maximum(h_start, padded_h_start)
-            valid_h_end = np.minimum(h_end, padded_h_end)
-            valid_h = np.maximum(0, valid_h_end - valid_h_start)
+            valid_h_start = arrlib.maximum(h_start, padded_h_start)
+            valid_h_end = arrlib.minimum(h_end, padded_h_end)
+            valid_h = arrlib.maximum(0, valid_h_end - valid_h_start)
             
-            valid_w_start = np.maximum(w_start, padded_w_start)
-            valid_w_end = np.minimum(w_end, padded_w_end)
-            valid_w = np.maximum(0, valid_w_end - valid_w_start)
+            valid_w_start = arrlib.maximum(w_start, padded_w_start)
+            valid_w_end = arrlib.minimum(w_end, padded_w_end)
+            valid_w = arrlib.maximum(0, valid_w_end - valid_w_start)
             
             # 计算每个窗口的有效元素数
             counts = valid_d * valid_h * valid_w
@@ -2365,7 +2411,7 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         all_counts = compute_effective_counts_vectorized()
         
         # 创建结果张量并重复到所有N*C批次
-        effective_counts = tensor(all_counts, dtype=input.dtype)
+        effective_counts = tensor(all_counts, dtype=input.dtype,device=input.device)
         effective_counts = effective_counts.unsqueeze(0)  # 添加一个维度，形状变为(1, total_windows)
         effective_counts = effective_counts.expand(N*C, -1)  # 扩展到N*C批次
         
@@ -2592,8 +2638,12 @@ def embedding(
         - 当前版本支持scale_grad_by_freq参数
         - 当前版本不支持sparse参数（会忽略该参数并使用密集存储）
     """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input to be TN tensor, but received type: {type(input)}")
     if not isinstance(weight, TN):
         raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
+    if input.device != weight.device:
+        raise ValueError("input and weight must have the same device")
     
     # 检查输入数据类型是否为整数类型
     if input.dtype.kind not in ['i', 'u']:
@@ -2603,6 +2653,7 @@ def embedding(
     if weight.ndim != 2:
         raise ValueError(f"Expected weight to be 2-dimensional, but received: {weight.ndim} dimensions")
     
+    arrlib = input._get_array_lib()
     num_embeddings, embedding_dim = weight.shape
     
     # 处理padding_idx
@@ -2620,7 +2671,7 @@ def embedding(
     # 处理max_norm
     if max_norm is not None:
         # 使用张量操作计算每个嵌入向量的范数，保持维度
-        norms = np.linalg.norm(weight.data, ord=norm_type, axis=1, keepdims=True)
+        norms = arrlib.linalg.norm(weight.data, ord=norm_type, axis=1, keepdims=True)
         # 创建掩码，找出范数超过max_norm的嵌入向量
         mask = norms > max_norm  # type: ignore
         
@@ -2629,7 +2680,7 @@ def embedding(
         # 计算重归一化后的嵌入向量
         normalized = weight.data / norms * max_norm
         # 使用where操作更新权重
-        weight_data = np.where(mask, normalized, weight.data)
+        weight_data = arrlib.where(mask, normalized, weight.data)
     
     # PyTorch不会自动将padding_idx的权重设为0，只是不计算其梯度
     # 因此这里不做额外处理，保持与PyTorch行为一致
@@ -2642,7 +2693,7 @@ def embedding(
         unique_indices, counts = unique(input_flat, return_counts=True)  # type: ignore
         
         # 创建频率数组
-        freq = ones(num_embeddings)
+        freq = ones(num_embeddings,device=input.device)
         
         # 更新出现过的索引的频率
         for idx, count in zip(unique_indices, counts):
@@ -2657,7 +2708,7 @@ def embedding(
     
     # 创建输出张量
     requires_grad = (is_grad_enabled() and weight.requires_grad)
-    output = tensor(output_data, requires_grad =requires_grad )
+    output = tensor(output_data, device=input.device, requires_grad =requires_grad )
     output.is_leaf = not requires_grad
 
     # 如果需要跟踪梯度
@@ -2771,6 +2822,10 @@ def embedding2(
     """
     if not isinstance(weight, TN):
         raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input to be TN tensor, but received type: {type(input)}")
+    if input.device != weight.device:
+        raise ValueError("input and weight must have the same device")
     
     # 检查输入数据类型是否为整数类型
     # 使用dtype.kind检查，'i'表示有符号整数，'u'表示无符号整数
