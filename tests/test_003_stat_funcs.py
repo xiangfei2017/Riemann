@@ -21,6 +21,17 @@ except ImportError:
     print("警告: 无法导入PyTorch，将只测试riemann的max/min函数")
     TORCH_AVAILABLE = False
 
+# 检查CUDA是否可用
+try:
+    CUDA_AVAILABLE = rm.cuda.is_available()
+except Exception:
+    CUDA_AVAILABLE = False
+
+# 定义设备列表
+device_list = ["cpu"]
+if CUDA_AVAILABLE:
+    device_list.extend(["cuda", "cuda:0"])
+
 # 定义颜色类用于美化输出
 class Colors:
     HEADER = '\033[95m'
@@ -362,6 +373,59 @@ class TestMaxMinFunctions(unittest.TestCase):
                 stats.add_result(case["name"], False, [str(e)])
                 print(f"测试用例: {case['name']} - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                 raise
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的max函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试max函数:")
+                
+                test_cases = [
+                    {"name": "无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.float32},
+                    {"name": "沿轴0，不保留维度", "shape": (5, 6), "dim": 0, "keepdim": False, "dtype": np.float64},
+                    {"name": "沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.float32}
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        # 使用rm.cuda.cp直接创建数组，提高效率
+                        cp_data = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor = rm.tensor(cp_data, device=device)
+                        rm_result = rm_tensor.max(dim=case["dim"], keepdim=case["keepdim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        # 梯度测试
+                        if np.issubdtype(case["dtype"], np.floating):
+                            # 创建梯度测试数据
+                            cp_data_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            rm_tensor_grad = rm.tensor(cp_data_grad, requires_grad=True, device=device)
+                            rm_max_val = rm_tensor_grad.max(dim=case["dim"], keepdim=case["keepdim"])
+                            rm_loss_val = rm_max_val.values if hasattr(rm_max_val, 'values') else rm_max_val
+                            rm_loss = rm.sum(rm_loss_val)
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor_grad.grad)
+                            self.assertEqual(rm_tensor_grad.grad.shape, rm_tensor_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的max函数测试失败: {case_name} - {str(e)}")
     
     def test_min(self):
         """测试min函数 - 包括前向计算和梯度跟踪场景"""
@@ -481,11 +545,65 @@ class TestMaxMinFunctions(unittest.TestCase):
                     if IS_RUNNING_AS_SCRIPT:
                         print(f"测试用例: {case['name']}(梯度) - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                     raise
-                    
             except Exception as e:
+                time_taken = time.time() - start_time
                 if IS_RUNNING_AS_SCRIPT:
-                    print(f"测试用例: {case['name']}(梯度) - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                    stats.add_result(case["name"], False, [str(e)])
+                    print(f"测试用例: {case['name']} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                 raise
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的min函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试min函数:")
+                
+                test_cases = [
+                    {"name": "无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.float32},
+                    {"name": "沿轴0，不保留维度", "shape": (5, 6), "dim": 0, "keepdim": False, "dtype": np.float64},
+                    {"name": "沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.float32}
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        # 使用rm.cuda.cp直接创建数组，提高效率
+                        cp_data = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor = rm.tensor(cp_data, device=device)
+                        rm_result = rm_tensor.min(dim=case["dim"], keepdim=case["keepdim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        # 梯度测试
+                        if np.issubdtype(case["dtype"], np.floating):
+                            # 创建梯度测试数据
+                            cp_data_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            rm_tensor_grad = rm.tensor(cp_data_grad, requires_grad=True, device=device)
+                            rm_min_val = rm_tensor_grad.min(dim=case["dim"], keepdim=case["keepdim"])
+                            rm_loss_val = rm_min_val.values if hasattr(rm_min_val, 'values') else rm_min_val
+                            rm_loss = rm.sum(rm_loss_val)
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor_grad.grad)
+                            self.assertEqual(rm_tensor_grad.grad.shape, rm_tensor_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的min函数测试失败: {case_name} - {str(e)}")
                 
     def test_argmax(self):
         """测试argmax函数 - 返回最大值的索引"""
@@ -503,8 +621,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                 # 创建测试数据
                 np_data = np.random.rand(*case["shape"]).astype(case["dtype"])
                 
-                # 前向计算测试
-                # 创建Riemann张量
+                # 前向计算测试，创建Riemann张量
                 rm_tensor = rm.tensor(np_data)
                 rm_result = rm_tensor.argmax(dim=case["dim"], keepdim=case["keepdim"])
                 
@@ -536,6 +653,45 @@ class TestMaxMinFunctions(unittest.TestCase):
                     stats.add_result(case["name"], False, [str(e)])
                     print(f"测试用例: {case['name']} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                 raise
+                
+        # argmax添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的argmax函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试argmax函数:")
+                
+                test_cases = [
+                    {"name": "无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.float32},
+                    {"name": "沿轴0，不保留维度", "shape": (5, 6), "dim": 0, "keepdim": False, "dtype": np.float64},
+                    {"name": "沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.float32}
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        # 使用rm.cuda.cp直接创建数组，提高效率
+                        cp_data = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor = rm.tensor(cp_data, device=device)
+                        rm_result = rm_tensor.argmax(dim=case["dim"], keepdim=case["keepdim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的argmax函数测试失败: {case_name} - {str(e)}")
     
     def test_argmin(self):
         """测试argmin函数 - 返回最小值的索引"""
@@ -591,6 +747,46 @@ class TestMaxMinFunctions(unittest.TestCase):
                     stats.add_result(case["name"], False, [str(e)])
                     print(f"测试用例: {case['name']} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                 raise
+        
+        # argmin添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的argmin函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试argmin函数:")
+                
+                test_cases = [
+                    {"name": "无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.float32},
+                    {"name": "沿轴0，不保留维度", "shape": (5, 6), "dim": 0, "keepdim": False, "dtype": np.float64},
+                    {"name": "沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.float32}
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        # 使用rm.cuda.cp直接创建数组，提高效率
+                        cp_data = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor = rm.tensor(cp_data, device=device)
+                        rm_result = rm_tensor.argmin(dim=case["dim"], keepdim=case["keepdim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的argmin函数测试失败: {case_name} - {str(e)}")
+
 
     def test_sum(self):
         """测试sum函数 - 包括前向计算和梯度跟踪场景"""
@@ -723,6 +919,66 @@ class TestMaxMinFunctions(unittest.TestCase):
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"测试用例: {case['name']}(梯度) - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                 raise
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的sum函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试sum函数:")
+                
+                test_cases = [
+                    {"name": "无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.float32},
+                    {"name": "沿轴0，不保留维度", "shape": (5, 6), "dim": 0, "keepdim": False, "dtype": np.float64},
+                    {"name": "沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.float32},
+                    # 复数场景测试用例
+                    {"name": "复数，无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.complex64}
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        # 使用rm.cuda.cp直接创建数组，提高效率
+                        cp_data = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor = rm.tensor(cp_data, device=device)
+                        rm_result = rm_tensor.sum(dim=case["dim"], keepdim=case["keepdim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        # 梯度测试
+                        if np.issubdtype(case["dtype"], np.floating) or np.issubdtype(case["dtype"], np.complexfloating):
+                            # 创建梯度测试数据
+                            cp_data_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            rm_tensor_grad = rm.tensor(cp_data_grad, requires_grad=True, device=device)
+                            rm_sum_val = rm_tensor_grad.sum(dim=case["dim"], keepdim=case["keepdim"])
+                            
+                            # 计算损失并反向传播
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                rm_loss = rm.sum(rm.mean(rm.abs(rm_sum_val)))
+                            else:
+                                rm_loss = rm.sum(rm_sum_val) if case["dim"] is not None else rm_sum_val
+                            
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor_grad.grad)
+                            self.assertEqual(rm_tensor_grad.grad.shape, rm_tensor_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的sum函数测试失败: {case_name} - {str(e)}")
     
     def test_mean(self):
         """测试mean函数 - 包括前向计算和梯度跟踪场景"""
@@ -855,6 +1111,66 @@ class TestMaxMinFunctions(unittest.TestCase):
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"测试用例: {case['name']}(梯度) - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                 raise
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的mean函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试mean函数:")
+                
+                test_cases = [
+                    {"name": "无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.float32},
+                    {"name": "沿轴0，不保留维度", "shape": (5, 6), "dim": 0, "keepdim": False, "dtype": np.float64},
+                    {"name": "沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.float32},
+                    # 复数场景测试用例
+                    {"name": "复数，无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.complex64}
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        # 使用rm.cuda.cp直接创建数组，提高效率
+                        cp_data = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor = rm.tensor(cp_data, device=device)
+                        rm_result = rm_tensor.mean(dim=case["dim"], keepdim=case["keepdim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        # 梯度测试
+                        if np.issubdtype(case["dtype"], np.floating) or np.issubdtype(case["dtype"], np.complexfloating):
+                            # 创建梯度测试数据
+                            cp_data_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            rm_tensor_grad = rm.tensor(cp_data_grad, requires_grad=True, device=device)
+                            rm_mean_val = rm_tensor_grad.mean(dim=case["dim"], keepdim=case["keepdim"])
+                            
+                            # 计算损失并反向传播
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                rm_loss = rm.sum(rm.mean(rm.abs(rm_mean_val)))
+                            else:
+                                rm_loss = rm.sum(rm_mean_val) if case["dim"] is not None else rm_mean_val
+                            
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor_grad.grad)
+                            self.assertEqual(rm_tensor_grad.grad.shape, rm_tensor_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的mean函数测试失败: {case_name} - {str(e)}")
     
     def test_prod(self):
         """测试prod函数 - 包括前向计算和梯度跟踪场景"""
@@ -1038,7 +1354,74 @@ class TestMaxMinFunctions(unittest.TestCase):
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"测试用例: {case['name']}(梯度) - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                 raise
-
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的prod函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试prod函数:")
+                
+                test_cases = [
+                    {"name": "无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.float32},
+                    {"name": "沿轴0，不保留维度", "shape": (5, 6), "dim": 0, "keepdim": False, "dtype": np.float64},
+                    {"name": "沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.float32},
+                    # 复数场景测试用例
+                    {"name": "复数，无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.complex64}
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        if np.issubdtype(case["dtype"], np.complexfloating):
+                            # 使用rm.cuda.cp直接创建复数数组，提高效率
+                            cp_data = (rm.cuda.cp.random.rand(*case["shape"]) + 1j * rm.cuda.cp.random.rand(*case["shape"])).astype(case["dtype"])
+                        else:
+                            # 使用rm.cuda.cp直接创建实数数组，提高效率
+                            cp_data = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor = rm.tensor(cp_data, device=device)
+                        rm_result = rm_tensor.prod(dim=case["dim"], keepdim=case["keepdim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        # 梯度测试
+                        if np.issubdtype(case["dtype"], np.floating) or np.issubdtype(case["dtype"], np.complexfloating):
+                            # 创建梯度测试数据
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                cp_data_grad = (rm.cuda.cp.random.rand(*case["shape"]) + 1j * rm.cuda.cp.random.rand(*case["shape"])).astype(case["dtype"])
+                            else:
+                                cp_data_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            rm_tensor_grad = rm.tensor(cp_data_grad, requires_grad=True, device=device)
+                            rm_prod_val = rm_tensor_grad.prod(dim=case["dim"], keepdim=case["keepdim"])
+                            
+                            # 计算损失并反向传播
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                rm_loss = rm.sum(rm.mean(rm.abs(rm_prod_val)))
+                            else:
+                                rm_loss = rm.sum(rm_prod_val) if case["dim"] is not None else rm_prod_val
+                            
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor_grad.grad)
+                            self.assertEqual(rm_tensor_grad.grad.shape, rm_tensor_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的prod函数测试失败: {case_name} - {str(e)}")
+    
     def test_var(self):
         """测试var函数 - 包括前向计算和梯度跟踪场景"""
         test_cases = [
@@ -1170,6 +1553,73 @@ class TestMaxMinFunctions(unittest.TestCase):
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"测试用例: {case['name']}(梯度) - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                 raise
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的var函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试var函数:")
+                
+                test_cases = [
+                    {"name": "无维度，不保留维度，有偏", "shape": (3, 4), "dim": None, "keepdim": False, "unbiased": False, "dtype": np.float32},
+                    {"name": "沿轴0，不保留维度，无偏", "shape": (5, 6), "dim": 0, "keepdim": False, "unbiased": True, "dtype": np.float64},
+                    {"name": "沿轴1，保留维度，有偏", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "unbiased": False, "dtype": np.float32},
+                    # 复数场景测试用例
+                    {"name": "复数，无维度，不保留维度，无偏", "shape": (3, 4), "dim": None, "keepdim": False, "unbiased": True, "dtype": np.complex64}
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        if np.issubdtype(case["dtype"], np.complexfloating):
+                            # 使用rm.cuda.cp直接创建复数数组，提高效率
+                            cp_data = (rm.cuda.cp.random.rand(*case["shape"]) + 1j * rm.cuda.cp.random.rand(*case["shape"])).astype(case["dtype"])
+                        else:
+                            # 使用rm.cuda.cp直接创建实数数组，提高效率
+                            cp_data = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor = rm.tensor(cp_data, device=device)
+                        rm_result = rm_tensor.var(dim=case["dim"], unbiased=case["unbiased"], keepdim=case["keepdim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        # 梯度测试
+                        if np.issubdtype(case["dtype"], np.floating) or np.issubdtype(case["dtype"], np.complexfloating):
+                            # 创建梯度测试数据
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                cp_data_grad = (rm.cuda.cp.random.rand(*case["shape"]) + 1j * rm.cuda.cp.random.rand(*case["shape"])).astype(case["dtype"])
+                            else:
+                                cp_data_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            rm_tensor_grad = rm.tensor(cp_data_grad, requires_grad=True, device=device)
+                            rm_var_val = rm_tensor_grad.var(dim=case["dim"], unbiased=case["unbiased"], keepdim=case["keepdim"])
+                            
+                            # 计算损失并反向传播
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                rm_loss = rm.sum(rm_var_val)
+                            else:
+                                rm_loss = rm.sum(rm_var_val) if case["dim"] is not None else rm_var_val
+                            
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor_grad.grad)
+                            self.assertEqual(rm_tensor_grad.grad.shape, rm_tensor_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的var函数测试失败: {case_name} - {str(e)}")
 
     def test_std(self):
         """测试std函数 - 包括前向计算和梯度跟踪场景"""
@@ -1323,6 +1773,73 @@ class TestMaxMinFunctions(unittest.TestCase):
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"测试用例: {case['name']}(梯度) - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                 raise
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的std函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试std函数:")
+                
+                test_cases = [
+                    {"name": "无维度，不保留维度，有偏", "shape": (3, 4), "dim": None, "keepdim": False, "unbiased": False, "dtype": np.float32},
+                    {"name": "沿轴0，不保留维度，无偏", "shape": (5, 6), "dim": 0, "keepdim": False, "unbiased": True, "dtype": np.float64},
+                    {"name": "沿轴1，保留维度，有偏", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "unbiased": False, "dtype": np.float32},
+                    # 复数场景测试用例
+                    {"name": "复数，无维度，不保留维度，无偏", "shape": (3, 4), "dim": None, "keepdim": False, "unbiased": True, "dtype": np.complex64}
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        if np.issubdtype(case["dtype"], np.complexfloating):
+                            # 使用rm.cuda.cp直接创建复数数组，提高效率
+                            cp_data = (rm.cuda.cp.random.rand(*case["shape"]) + 1j * rm.cuda.cp.random.rand(*case["shape"])).astype(case["dtype"])
+                        else:
+                            # 使用rm.cuda.cp直接创建实数数组，提高效率
+                            cp_data = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor = rm.tensor(cp_data, device=device)
+                        rm_result = rm_tensor.std(dim=case["dim"], unbiased=case["unbiased"], keepdim=case["keepdim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        # 梯度测试
+                        if np.issubdtype(case["dtype"], np.floating) or np.issubdtype(case["dtype"], np.complexfloating):
+                            # 创建梯度测试数据
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                cp_data_grad = (rm.cuda.cp.random.rand(*case["shape"]) + 1j * rm.cuda.cp.random.rand(*case["shape"])).astype(case["dtype"])
+                            else:
+                                cp_data_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            rm_tensor_grad = rm.tensor(cp_data_grad, requires_grad=True, device=device)
+                            rm_std_val = rm_tensor_grad.std(dim=case["dim"], unbiased=case["unbiased"], keepdim=case["keepdim"])
+                            
+                            # 计算损失并反向传播
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                rm_loss = rm.sum(rm.abs(rm_std_val))
+                            else:
+                                rm_loss = rm.sum(rm_std_val) if case["dim"] is not None else rm_std_val
+                            
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor_grad.grad)
+                            self.assertEqual(rm_tensor_grad.grad.shape, rm_tensor_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的std函数测试失败: {case_name} - {str(e)}")
 
     def test_cumsum(self):
         """测试cumsum函数 - 包括前向计算和梯度跟踪场景"""
@@ -1448,9 +1965,90 @@ class TestMaxMinFunctions(unittest.TestCase):
                     raise
                     
             except Exception as e:
-                    if IS_RUNNING_AS_SCRIPT:
-                        print(f"测试用例: {case['name']}(梯度) - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
-                    raise
+                if IS_RUNNING_AS_SCRIPT:
+                    print(f"测试用例: {case['name']}(梯度) - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                raise
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的cumsum函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试cumsum函数:")
+                
+                test_cases = [
+                    {"name": "1D向量累积求和", "shape": (5,), "dim": 0, "dtype": np.float32},
+                    {"name": "2D张量沿轴0累积求和", "shape": (3, 4), "dim": 0, "dtype": np.float64},
+                    {"name": "2D张量沿轴1累积求和", "shape": (3, 4), "dim": 1, "dtype": np.float32},
+                    {"name": "3D张量沿轴2累积求和", "shape": (2, 3, 4), "dim": 2, "dtype": np.float64},
+                    # 复数场景测试用例
+                    {"name": "复数1D向量累积求和", "shape": (5,), "dim": 0, "dtype": np.complex64},
+                    {"name": "复数2D张量沿轴0累积求和", "shape": (3, 4), "dim": 0, "dtype": np.complex128},
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        if np.issubdtype(case["dtype"], np.complexfloating):
+                            # 直接创建实数和虚数部分的NumPy数组，然后组合成复数数组
+                            np_data_real = np.random.rand(*case["shape"]).astype(np.float32)
+                            np_data_imag = np.random.rand(*case["shape"]).astype(np.float32)
+                            np_data = (np_data_real + 1j * np_data_imag).astype(case["dtype"])
+                        else:
+                            # 直接创建实数的NumPy数组
+                            np_data = np.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 直接创建CUDA张量，不经过CuPy数组
+                        rm_tensor = rm.tensor(np_data, device=device)
+                        rm_result = rm_tensor.cumsum(dim=case["dim"])
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        self.assertEqual(rm_result.shape, rm_tensor.shape)
+                        
+                        # 梯度测试
+                        if np.issubdtype(case["dtype"], np.floating) or np.issubdtype(case["dtype"], np.complexfloating):
+                            # 断言case["shape"]是元组类型，否则抛出错误
+                            self.assertIsInstance(case["shape"], tuple, f"case['shape']应该是元组类型，但实际是{type(case['shape'])}类型: {case['shape']}")
+                            
+                            # 创建梯度测试数据
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                # 直接创建实数和虚数部分的NumPy数组，然后组合成复数数组
+                                np_data_grad_real = np.random.rand(*case["shape"]).astype(np.float32)
+                                np_data_grad_imag = np.random.rand(*case["shape"]).astype(np.float32)
+                                np_data_grad = (np_data_grad_real + 1j * np_data_grad_imag).astype(case["dtype"])
+                            else:
+                                # 直接创建实数的NumPy数组
+                                np_data_grad = np.random.rand(*case["shape"]).astype(case["dtype"])
+                            
+                            # 直接创建CUDA张量，不经过CuPy数组
+                            rm_tensor_grad = rm.tensor(np_data_grad, requires_grad=True, device=device)
+                            rm_cumsum_val = rm_tensor_grad.cumsum(dim=case["dim"])
+                            
+                            # 计算损失并反向传播
+                            if np.issubdtype(case["dtype"], np.complexfloating):
+                                rm_loss = rm.sum(rm.mean(rm.abs(rm_cumsum_val)))
+                            else:
+                                rm_loss = rm.sum(rm_cumsum_val)
+                            
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor_grad.grad)
+                            self.assertEqual(rm_tensor_grad.grad.shape, rm_tensor_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                                
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的cumsum函数测试失败: {case_name} - {str(e)}")
 
     def test_maximum(self):
         """测试maximum函数 - 与torch.maximum对比，包括前向计算和梯度跟踪场景"""
@@ -1656,6 +2254,90 @@ class TestMaxMinFunctions(unittest.TestCase):
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"测试用例: {case['name']} - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                 raise
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的maximum函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试maximum函数:")
+                
+                test_cases = [
+                    # 基本场景
+                    {"name": "2D张量基本比较", "shape": (3, 4), "dtype": np.float32},
+                    {"name": "1D向量比较", "shape": (5,), "dtype": np.float64},
+                    
+                    # 广播场景
+                    {"name": "张量与标量广播", "shape": (3, 4), "other_shape": (), "dtype": np.float32},
+                    {"name": "张量与1D广播", "shape": (3, 4), "other_shape": (4,), "dtype": np.float64},
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        if "other_shape" in case:
+                            # 广播场景
+                            if case["other_shape"] == ():
+                                # 标量情况
+                                cp_data1 = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                                cp_data2 = rm.cuda.cp.array(rm.cuda.cp.random.rand()).astype(case["dtype"])
+                            else:
+                                # 不同形状张量广播
+                                cp_data1 = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                                cp_data2 = rm.cuda.cp.random.rand(*case["other_shape"]).astype(case["dtype"])
+                        else:
+                            # 相同形状情况
+                            cp_data1 = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            cp_data2 = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor1 = rm.tensor(cp_data1, device=device)
+                        rm_tensor2 = rm.tensor(cp_data2, device=device)
+                        rm_result = rm.maximum(rm_tensor1, rm_tensor2)
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        # 梯度测试（仅对浮点类型）
+                        if np.issubdtype(case["dtype"], np.floating):
+                            # 创建需要梯度的张量
+                            cp_data1_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            if "other_shape" in case:
+                                if case["other_shape"] == ():
+                                    cp_data2_grad = rm.cuda.cp.array(rm.cuda.cp.random.rand()).astype(case["dtype"])
+                                else:
+                                    cp_data2_grad = rm.cuda.cp.random.rand(*case["other_shape"]).astype(case["dtype"])
+                            else:
+                                cp_data2_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            
+                            rm_tensor1_grad = rm.tensor(cp_data1_grad, requires_grad=True, device=device)
+                            rm_tensor2_grad = rm.tensor(cp_data2_grad, requires_grad=True, device=device)
+                            
+                            # 计算maximum
+                            rm_max_val = rm.maximum(rm_tensor1_grad, rm_tensor2_grad)
+                            
+                            # 计算损失并反向传播
+                            rm_loss = rm.sum(rm_max_val)
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor1_grad.grad)
+                            self.assertEqual(rm_tensor1_grad.grad.shape, rm_tensor1_grad.shape)
+                            self.assertIsNotNone(rm_tensor2_grad.grad)
+                            self.assertEqual(rm_tensor2_grad.grad.shape, rm_tensor2_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的maximum函数测试失败: {case_name} - {str(e)}")
 
     def test_minimum(self):
         """测试minimum函数 - 与torch.minimum对比，包括前向计算和梯度跟踪场景"""
@@ -1861,6 +2543,90 @@ class TestMaxMinFunctions(unittest.TestCase):
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"测试用例: {case['name']} - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                 raise
+        
+        # 添加CUDA张量测试用例
+        if CUDA_AVAILABLE:
+            print(f"\n{Colors.HEADER}开始测试CUDA张量的minimum函数{Colors.ENDC}")
+            
+            for device in ["cuda", "cuda:0"]:
+                device_name = device
+                print(f"\n在设备 {device_name} 上测试minimum函数:")
+                
+                test_cases = [
+                    # 基本场景
+                    {"name": "2D张量基本比较", "shape": (3, 4), "dtype": np.float32},
+                    {"name": "1D向量比较", "shape": (5,), "dtype": np.float64},
+                    
+                    # 广播场景
+                    {"name": "张量与标量广播", "shape": (3, 4), "other_shape": (), "dtype": np.float32},
+                    {"name": "张量与1D广播", "shape": (3, 4), "other_shape": (4,), "dtype": np.float64},
+                ]
+                
+                for case in test_cases:
+                    case_name = f"{device_name}: {case['name']}"
+                    start_time = time.time()
+                    try:
+                        # 创建测试数据
+                        if "other_shape" in case:
+                            # 广播场景
+                            if case["other_shape"] == ():
+                                # 标量情况
+                                cp_data1 = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                                cp_data2 = rm.cuda.cp.array(rm.cuda.cp.random.rand()).astype(case["dtype"])
+                            else:
+                                # 不同形状张量广播
+                                cp_data1 = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                                cp_data2 = rm.cuda.cp.random.rand(*case["other_shape"]).astype(case["dtype"])
+                        else:
+                            # 相同形状情况
+                            cp_data1 = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            cp_data2 = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                        
+                        # 创建CUDA张量
+                        rm_tensor1 = rm.tensor(cp_data1, device=device)
+                        rm_tensor2 = rm.tensor(cp_data2, device=device)
+                        rm_result = rm.minimum(rm_tensor1, rm_tensor2)
+                        
+                        # 前向计算结果验证
+                        self.assertIsNotNone(rm_result)
+                        
+                        # 梯度测试（仅对浮点类型）
+                        if np.issubdtype(case["dtype"], np.floating):
+                            # 创建需要梯度的张量
+                            cp_data1_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            if "other_shape" in case:
+                                if case["other_shape"] == ():
+                                    cp_data2_grad = rm.cuda.cp.array(rm.cuda.cp.random.rand()).astype(case["dtype"])
+                                else:
+                                    cp_data2_grad = rm.cuda.cp.random.rand(*case["other_shape"]).astype(case["dtype"])
+                            else:
+                                cp_data2_grad = rm.cuda.cp.random.rand(*case["shape"]).astype(case["dtype"])
+                            
+                            rm_tensor1_grad = rm.tensor(cp_data1_grad, requires_grad=True, device=device)
+                            rm_tensor2_grad = rm.tensor(cp_data2_grad, requires_grad=True, device=device)
+                            
+                            # 计算minimum
+                            rm_min_val = rm.minimum(rm_tensor1_grad, rm_tensor2_grad)
+                            
+                            # 计算损失并反向传播
+                            rm_loss = rm.sum(rm_min_val)
+                            rm_loss.backward()
+                            
+                            # 验证梯度
+                            self.assertIsNotNone(rm_tensor1_grad.grad)
+                            self.assertEqual(rm_tensor1_grad.grad.shape, rm_tensor1_grad.shape)
+                            self.assertIsNotNone(rm_tensor2_grad.grad)
+                            self.assertEqual(rm_tensor2_grad.grad.shape, rm_tensor2_grad.shape)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, True)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            
+                    except Exception as e:
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                        self.fail(f"CUDA张量的minimum函数测试失败: {case_name} - {str(e)}")
 
 # 如果作为独立脚本运行
 if __name__ == '__main__':
