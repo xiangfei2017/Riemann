@@ -9,9 +9,14 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 # 导入riemann模块
 try:
     import riemann as rm
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
+
 
 # 尝试导入PyTorch进行比较
 try:
@@ -214,8 +219,19 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     
     # 转换为numpy数组
     try:
-        rm_data = rm_result.data if hasattr(rm_result, 'data') else rm_result.numpy()
-        torch_data = torch_result.detach().numpy()
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -259,64 +275,79 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "向量reshape为标量", "shape": (1,), "new_shape": ()},
         ]
         
-        for case in test_cases:
-            case_name = f"reshape - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                rm_result = rm_x.reshape(*case["new_shape"])
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    # 修复：PyTorch的reshape接受形状元组，而不是解包参数
-                    torch_result = torch_x.reshape(case["new_shape"])
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"reshape - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"reshape测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    rm_result = rm_x.reshape(*case["new_shape"])
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        # 修复：PyTorch的reshape接受形状元组，而不是解包参数
+                        torch_result = torch_x.reshape(case["new_shape"])
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"reshape测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_view(self):
         """测试view函数（通常与reshape功能类似）"""
@@ -326,66 +357,81 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "多维view", "shape": (2, 3, 4), "new_shape": (3, 2, 4)},
         ]
         
-        for case in test_cases:
-            case_name = f"view - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                rm_result = rm_x.view(*case["new_shape"])
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    try:
-                        torch_result = torch_x.view(*case["new_shape"])
-                    except RuntimeError:
-                        # 如果PyTorch报错，我们也期望Riemann报错
-                        self.fail(f"PyTorch view失败但Riemann成功: {case_name}")
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"view - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"view测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    rm_result = rm_x.view(*case["new_shape"])
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        try:
+                            torch_result = torch_x.view(*case["new_shape"])
+                        except RuntimeError:
+                            # 如果PyTorch报错，我们也期望Riemann报错
+                            self.fail(f"PyTorch view失败但Riemann成功: {case_name}")
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"view测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_flatten(self):
         """测试flatten函数"""
@@ -395,70 +441,85 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "指定start_dim和end_dim的flatten", "shape": (2, 3, 4, 5), "start_dim": 1, "end_dim": 2},
         ]
         
-        for case in test_cases:
-            case_name = f"flatten - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                if case["start_dim"] is None and case["end_dim"] is None:
-                    rm_result = rm_x.flatten()
-                    if TORCH_AVAILABLE:
-                        torch_result = torch_x.flatten()
-                elif case["end_dim"] is None:
-                    rm_result = rm_x.flatten(start_dim=case["start_dim"])
-                    if TORCH_AVAILABLE:
-                        torch_result = torch_x.flatten(start_dim=case["start_dim"])
-                else:
-                    rm_result = rm_x.flatten(start_dim=case["start_dim"], end_dim=case["end_dim"])
-                    if TORCH_AVAILABLE:
-                        torch_result = torch_x.flatten(start_dim=case["start_dim"], end_dim=case["end_dim"])
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"flatten - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"flatten测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    if case["start_dim"] is None and case["end_dim"] is None:
+                        rm_result = rm_x.flatten()
+                        if TORCH_AVAILABLE:
+                            torch_result = torch_x.flatten()
+                    elif case["end_dim"] is None:
+                        rm_result = rm_x.flatten(start_dim=case["start_dim"])
+                        if TORCH_AVAILABLE:
+                            torch_result = torch_x.flatten(start_dim=case["start_dim"])
+                    else:
+                        rm_result = rm_x.flatten(start_dim=case["start_dim"], end_dim=case["end_dim"])
+                        if TORCH_AVAILABLE:
+                            torch_result = torch_x.flatten(start_dim=case["start_dim"], end_dim=case["end_dim"])
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"flatten测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_squeeze(self):
         """测试squeeze函数"""
@@ -471,72 +532,87 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "空元组squeeze(应返回原张量)", "shape": (2, 3), "dim": ()},
         ]
         
-        for case in test_cases:
-            case_name = f"squeeze - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                if case["dim"] is None:
-                    rm_result = rm_x.squeeze()
-                    if TORCH_AVAILABLE:
-                        torch_result = torch_x.squeeze()
-                else:
-                    rm_result = rm_x.squeeze(case["dim"])
-                    if TORCH_AVAILABLE:
-                        try:
-                            torch_result = torch_x.squeeze(case["dim"])
-                        except Exception:
-                            # 处理PyTorch可能抛出的异常
-                            pass
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    if torch_result is not None:
-                        torch_loss = torch_result.sum()
-                        # 反向传播
-                        torch_loss.backward()
-                    # 反向传播
-                    rm_loss.backward()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"squeeze - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad if torch_result is not None else None)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"squeeze测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 前向传播测试
+                    if case["dim"] is None:
+                        rm_result = rm_x.squeeze()
+                        if TORCH_AVAILABLE:
+                            torch_result = torch_x.squeeze()
+                    else:
+                        rm_result = rm_x.squeeze(case["dim"])
+                        if TORCH_AVAILABLE:
+                            try:
+                                torch_result = torch_x.squeeze(case["dim"])
+                            except Exception:
+                                # 处理PyTorch可能抛出的异常
+                                pass
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        if torch_result is not None:
+                            torch_loss = torch_result.sum()
+                            # 反向传播
+                            torch_loss.backward()
+                        # 反向传播
+                        rm_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad if torch_result is not None else None)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"squeeze测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_unsqueeze(self):
         """测试unsqueeze函数"""
@@ -548,87 +624,102 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "空元组unsqueeze(应返回原张量)", "shape": (2, 3), "dim": ()},
         ]
         
-        for case in test_cases:
-            case_name = f"unsqueeze - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                rm_result = rm_x.unsqueeze(case["dim"])
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    # 检查是否是元组维度，PyTorch不支持元组维度
-                    if isinstance(case["dim"], tuple):
-                        # 对于元组维度（包括空元组），PyTorch不支持，跳过PyTorch部分的测试
-                        pass
-                    else:
-                        try:
-                            torch_result = torch_x.unsqueeze(case["dim"])
-                        except Exception:
-                            # 处理其他可能的异常
-                            pass
-                
-                # 修改前向传播比较逻辑
-                if isinstance(case["dim"], tuple):
-                    # 对于元组维度（包括空元组），我们只验证Riemann的结果
-                    # 对于空元组，验证结果是否与原张量相同
-                    if len(case["dim"]) == 0:
-                        forward_passed = (rm_result is rm_x)  # 空元组应返回原张量
-                    else:
-                        forward_passed = True  # 非空元组维度测试只验证Riemann是否正常运行
-                else:
-                    forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
-                
-                # 初始化backward_passed，确保在所有情况下都有定义
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    # 只有当不是元组维度测试时才计算PyTorch的损失和反向传播
-                    if not isinstance(case["dim"], tuple):
-                        if torch_result is not None:
-                            torch_loss = torch_result.sum()
-                            torch_loss.backward()
-                        
-                        # 执行Riemann的反向传播（修正缩进，确保总是执行）
-                        rm_loss.backward()
-                        
-                        # 修改反向传播比较逻辑
-                        if isinstance(case["dim"], tuple):
-                            # 对于元组维度（包括空元组），我们只验证Riemann是否能正常反向传播
-                            backward_passed = rm_x.grad is not None  # 只要梯度存在就认为通过
-                        else:
-                            backward_passed = compare_values(rm_x.grad, torch_x.grad if torch_result is not None else None)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"unsqueeze - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"unsqueeze测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 前向传播测试
+                    rm_result = rm_x.unsqueeze(case["dim"])
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        # 检查是否是元组维度，PyTorch不支持元组维度
+                        if isinstance(case["dim"], tuple):
+                            # 对于元组维度（包括空元组），PyTorch不支持，跳过PyTorch部分的测试
+                            pass
+                        else:
+                            try:
+                                torch_result = torch_x.unsqueeze(case["dim"])
+                            except Exception:
+                                # 处理其他可能的异常
+                                pass
+                    
+                    # 修改前向传播比较逻辑
+                    if isinstance(case["dim"], tuple):
+                        # 对于元组维度（包括空元组），我们只验证Riemann的结果
+                        # 对于空元组，验证结果是否与原张量相同
+                        if len(case["dim"]) == 0:
+                            forward_passed = (rm_result is rm_x)  # 空元组应返回原张量
+                        else:
+                            forward_passed = True  # 非空元组维度测试只验证Riemann是否正常运行
+                    else:
+                        forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
+                    
+                    # 初始化backward_passed，确保在所有情况下都有定义
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        # 只有当不是元组维度测试时才计算PyTorch的损失和反向传播
+                        if not isinstance(case["dim"], tuple):
+                            if torch_result is not None:
+                                torch_loss = torch_result.sum()
+                                torch_loss.backward()
+                    
+                    # 执行Riemann的反向传播（修正缩进，确保总是执行）
+                    rm_loss.backward()
+                    
+                    # 修改反向传播比较逻辑
+                    if isinstance(case["dim"], tuple):
+                        # 对于元组维度（包括空元组），我们只验证Riemann是否能正常反向传播
+                        backward_passed = rm_x.grad is not None  # 只要梯度存在就认为通过
+                    else:
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad if torch_result is not None else None)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"unsqueeze测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_expand(self):
         """测试expand函数"""
@@ -642,66 +733,81 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "expand带-1参数(固定行)", "shape": (2, 1), "size": (-1, 5)},
         ]
         
-        for case in test_cases:
-            case_name = f"expand - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                rm_result = rm_x.expand(*case["size"])
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    try:
-                        torch_result = torch_x.expand(*case["size"])
-                    except RuntimeError:
-                        # 如果PyTorch报错，我们也期望Riemann报错
-                        self.fail(f"PyTorch expand失败但Riemann成功: {case_name}")
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"expand - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"expand测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    rm_result = rm_x.expand(*case["size"])
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        try:
+                            torch_result = torch_x.expand(*case["size"])
+                        except RuntimeError:
+                            # 如果PyTorch报错，我们也期望Riemann报错
+                            self.fail(f"PyTorch expand失败但Riemann成功: {case_name}")
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"expand测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_expand_as(self):
         """测试expand_as函数"""
@@ -710,72 +816,92 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "多维expand_as", "src_shape": (1, 1, 3), "target_shape": (2, 4, 3)},
         ]
         
-        for case in test_cases:
-            case_name = f"expand_as - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["src_shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                
-                np_target = np.random.randn(*case["target_shape"])
-                rm_target = rm.tensor(np_target)
-                
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                    torch_target = torch.tensor(np_target)
-                else:
-                    torch_x = None
-                    torch_target = None
-                
-                # 前向传播测试
-                rm_result = rm_x.expand_as(rm_target)
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    try:
-                        torch_result = torch_x.expand_as(torch_target)
-                    except RuntimeError:
-                        # 如果PyTorch报错，我们也期望Riemann报错
-                        self.fail(f"PyTorch expand_as失败但Riemann成功: {case_name}")
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"expand_as - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["src_shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建源张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"expand_as测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 创建目标张量
+                    np_target = np.random.randn(*case["target_shape"])
+                    if device == "cpu":
+                        rm_target = rm.tensor(np_target)
+                    else:  # cuda
+                        rm_target = rm.tensor(np_target, device=device)
+                    
+                    # 根据设备创建PyTorch张量
+                    if TORCH_AVAILABLE:
+                        if device == "cpu":
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                            torch_target = torch.tensor(np_target)
+                        else:  # cuda
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                            torch_target = torch.tensor(np_target, device=device)
+                    else:
+                        torch_x = None
+                        torch_target = None
+                    
+                    # 前向传播测试
+                    rm_result = rm_x.expand_as(rm_target)
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        try:
+                            torch_result = torch_x.expand_as(torch_target)
+                        except RuntimeError:
+                            # 如果PyTorch报错，我们也期望Riemann报错
+                            self.fail(f"PyTorch expand_as失败但Riemann成功: {case_name}")
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"expand_as测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_permute(self):
         """测试permute函数"""
@@ -786,63 +912,78 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "包含负数索引的permute", "shape": (2, 3, 4), "dims": (-1, -2, -3)},
         ]
         
-        for case in test_cases:
-            case_name = f"permute - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                rm_result = rm_x.permute(case["dims"])
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    # 移除异常处理，直接调用
-                    torch_result = torch_x.permute(case["dims"])
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"permute - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"permute测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    rm_result = rm_x.permute(case["dims"])
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        # 移除异常处理，直接调用
+                        torch_result = torch_x.permute(case["dims"])
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"permute测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_transpose(self):
         """测试transpose函数"""
@@ -852,66 +993,81 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "使用负数索引的transpose", "shape": (2, 3, 4), "dim0": -2, "dim1": -1},
         ]
         
-        for case in test_cases:
-            case_name = f"transpose - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                rm_result = rm_x.transpose(case["dim0"], case["dim1"])
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    try:
-                        torch_result = torch_x.transpose(case["dim0"], case["dim1"])
-                    except RuntimeError:
-                        # 如果PyTorch报错，我们也期望Riemann报错
-                        self.fail(f"PyTorch transpose失败但Riemann成功: {case_name}")
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"transpose - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"transpose测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    rm_result = rm_x.transpose(case["dim0"], case["dim1"])
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        try:
+                            torch_result = torch_x.transpose(case["dim0"], case["dim1"])
+                        except RuntimeError:
+                            # 如果PyTorch报错，我们也期望Riemann报错
+                            self.fail(f"PyTorch transpose失败但Riemann成功: {case_name}")
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"transpose测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
 
     def test_transpose_property_T(self):
         """测试.Riemann的.T转置属性（只测试Riemann实现，不使用PyTorch）"""
@@ -922,45 +1078,56 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "四维张量T", "shape": (1, 2, 3, 4)},
         ]
         
-        for case in test_cases:
-            case_name = f"T - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                
-                # 前向传播测试 - 仅测试Riemann部分
-                rm_result = rm_x.T
-                forward_passed = rm_result is not None
-                
-                # 反向传播测试
-                rm_loss = rm_result.sum()
-                rm_loss.backward()
-                backward_passed = rm_x.grad is not None
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  前向传播测试: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播测试: {'通过' if backward_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"T属性测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"T - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                    
+                    # 前向传播测试 - 仅测试Riemann部分
+                    rm_result = rm_x.T
+                    forward_passed = rm_result is not None
+                    
+                    # 反向传播测试
+                    rm_loss = rm_result.sum()
+                    rm_loss.backward()
+                    backward_passed = rm_x.grad is not None
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  前向传播测试: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播测试: {'通过' if backward_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"T属性测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_transpose_property_mT(self):
         """测试.mT转置属性（交换最后两个维度）"""
@@ -970,63 +1137,78 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "四维张量mT", "shape": (1, 2, 3, 4)},
         ]
         
-        for case in test_cases:
-            case_name = f"mT - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                rm_result = rm_x.mT
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_x.mT
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"mT - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"mT属性测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    rm_result = rm_x.mT
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_x.mT
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"mT属性测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_flip(self):
         """测试flip函数与PyTorch的一致性"""
@@ -1041,65 +1223,80 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "高维张量多维度翻转", "shape": (2, 2, 3, 4), "dims": [1, 3]}
         ]
         
-        for case in test_cases:
-            case_name = f"flip - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_x = np.random.randn(*case["shape"])
-                rm_x = rm.tensor(np_x, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_x = torch.tensor(np_x, requires_grad=True)
-                else:
-                    torch_x = None
-                
-                # 前向传播测试
-                rm_result = rm_x.flip(dims=case["dims"])
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    # PyTorch的flip接受dims参数
-                    torch_result = torch_x.flip(dims=case["dims"])
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"flip - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_x.grad, torch_x.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  测试维度: {case['dims']}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"flip测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    rm_result = rm_x.flip(dims=case["dims"])
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        # PyTorch的flip接受dims参数
+                        torch_result = torch_x.flip(dims=case["dims"])
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  测试维度: {case['dims']}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"flip测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
 
 if __name__ == '__main__':
     # 设置为独立脚本运行模式

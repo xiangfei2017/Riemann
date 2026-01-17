@@ -9,8 +9,11 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 # 导入riemann模块
 try:
     import riemann as rm
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -199,9 +202,17 @@ def compare_values(rm_result, expected_result, atol=1e-6, rtol=1e-6):
     
     # 处理张量和numpy数组的情况
     try:
-        # 提取数据
-        if hasattr(rm_result, 'data'):
+        # 提取Riemann结果数据
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        elif hasattr(rm_result, 'detach'):
+            rm_data = rm_result.detach().numpy()
+        elif hasattr(rm_result, 'data'):
             rm_data = rm_result.data
+            # 处理CuPy数组
+            if hasattr(rm_data, 'get'):
+                rm_data = rm_data.get()
         elif hasattr(rm_result, 'numpy'):
             rm_data = rm_result.numpy()
         else:
@@ -210,8 +221,15 @@ def compare_values(rm_result, expected_result, atol=1e-6, rtol=1e-6):
         # 转换预期结果为numpy数组
         if isinstance(expected_result, (list, tuple)):
             expected_data = np.array(expected_result)
+        elif hasattr(expected_result, 'is_cuda') and expected_result.is_cuda:
+            expected_data = expected_result.detach().cpu().numpy()
+        elif hasattr(expected_result, 'detach'):
+            expected_data = expected_result.detach().numpy()
         elif hasattr(expected_result, 'data'):
             expected_data = expected_result.data
+            # 处理CuPy数组
+            if hasattr(expected_data, 'get'):
+                expected_data = expected_data.get()
         elif hasattr(expected_result, 'numpy'):
             expected_data = expected_result.numpy()
         else:
@@ -263,51 +281,57 @@ class TestTensorValueFunctions(unittest.TestCase):
             {"name": "多维度all", "data": np.ones((2, 3, 4), dtype=bool), "dim": (0, 1), "keepdim": False, "expected": np.ones(4, dtype=bool)},
         ]
         
-        for case in test_cases:
-            case_name = f"all - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据 - 只有浮点型张量才设置requires_grad=True
-                requires_grad = isinstance(case["data"], np.ndarray) and np.issubdtype(case["data"].dtype, np.floating)
-                rm_x = rm.tensor(case["data"], requires_grad=requires_grad)
-                
-                # 测试all函数
-                rm_result = rm_x.all(dim=case["dim"], keepdim=case["keepdim"])
-                
-                # 如果没有指定维度，结果应该是标量
-                if case["dim"] is None or case["dim"] == ():
-                    rm_result_value = rm_result.item()
-                else:
-                    rm_result_value = rm_result
-                
-                # 比较结果
-                passed = compare_values(rm_result_value, case["expected"])
-                
-                # 检查数据类型
-                type_passed = isinstance(rm_result, rm.TN) and rm_result.dtype == np.bool_
-                passed = passed and type_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  预期结果: {case['expected']}")
-                        print(f"  实际结果: {rm_result_value}")
-                        print(f"  数据类型: {rm_result.dtype}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"all测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False)
-                    print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
-                    print(f"  错误信息: {str(e)}")
-                self.fail(f"all测试异常: {case_name}, 错误: {str(e)}")
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"all - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据 - 只有浮点型张量才设置requires_grad=True
+                    requires_grad = isinstance(case["data"], np.ndarray) and np.issubdtype(case["data"].dtype, np.floating)
+                    rm_x = rm.tensor(case["data"], requires_grad=requires_grad, device=device)
+                    
+                    # 测试all函数
+                    rm_result = rm_x.all(dim=case["dim"], keepdim=case["keepdim"])
+                    
+                    # 如果没有指定维度，结果应该是标量
+                    if case["dim"] is None or case["dim"] == ():
+                        rm_result_value = rm_result.item()
+                    else:
+                        rm_result_value = rm_result
+                    
+                    # 比较结果
+                    passed = compare_values(rm_result_value, case["expected"])
+                    
+                    # 检查数据类型
+                    type_passed = isinstance(rm_result, rm.TN) and rm_result.dtype == np.bool_
+                    passed = passed and type_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  预期结果: {case['expected']}")
+                            print(f"  实际结果: {rm_result_value}")
+                            print(f"  数据类型: {rm_result.dtype}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"all测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False)
+                        print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
+                        print(f"  错误信息: {str(e)}")
+                    self.fail(f"all测试异常: {case_name}, 错误: {str(e)}")
     
     def test_any(self):
         """测试any函数"""
@@ -321,51 +345,57 @@ class TestTensorValueFunctions(unittest.TestCase):
             {"name": "多维度any", "data": np.array([[[False, True], [False, False]], [[False, False], [False, False]]]), "dim": (0, 1), "keepdim": False, "expected": np.array([False, True])},
         ]
         
-        for case in test_cases:
-            case_name = f"any - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据 - 只有浮点型张量才设置requires_grad=True
-                requires_grad = isinstance(case["data"], np.ndarray) and np.issubdtype(case["data"].dtype, np.floating)
-                rm_x = rm.tensor(case["data"], requires_grad=requires_grad)
-                
-                # 测试any函数
-                rm_result = rm_x.any(dim=case["dim"], keepdim=case["keepdim"])
-                
-                # 如果没有指定维度，结果应该是标量
-                if case["dim"] is None or case["dim"] == ():
-                    rm_result_value = rm_result.item()
-                else:
-                    rm_result_value = rm_result
-                
-                # 比较结果
-                passed = compare_values(rm_result_value, case["expected"])
-                
-                # 检查数据类型
-                type_passed = isinstance(rm_result, rm.TN) and rm_result.dtype == np.bool_
-                passed = passed and type_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  预期结果: {case['expected']}")
-                        print(f"  实际结果: {rm_result_value}")
-                        print(f"  数据类型: {rm_result.dtype}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"any测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False)
-                    print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
-                    print(f"  错误信息: {str(e)}")
-                self.fail(f"any测试异常: {case_name}, 错误: {str(e)}")
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"any - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据 - 只有浮点型张量才设置requires_grad=True
+                    requires_grad = isinstance(case["data"], np.ndarray) and np.issubdtype(case["data"].dtype, np.floating)
+                    rm_x = rm.tensor(case["data"], requires_grad=requires_grad, device=device)
+                    
+                    # 测试any函数
+                    rm_result = rm_x.any(dim=case["dim"], keepdim=case["keepdim"])
+                    
+                    # 如果没有指定维度，结果应该是标量
+                    if case["dim"] is None or case["dim"] == ():
+                        rm_result_value = rm_result.item()
+                    else:
+                        rm_result_value = rm_result
+                    
+                    # 比较结果
+                    passed = compare_values(rm_result_value, case["expected"])
+                    
+                    # 检查数据类型
+                    type_passed = isinstance(rm_result, rm.TN) and rm_result.dtype == np.bool_
+                    passed = passed and type_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  预期结果: {case['expected']}")
+                            print(f"  实际结果: {rm_result_value}")
+                            print(f"  数据类型: {rm_result.dtype}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"any测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False)
+                        print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
+                        print(f"  错误信息: {str(e)}")
+                    self.fail(f"any测试异常: {case_name}, 错误: {str(e)}")
     
     def test_equal(self):
         """测试equal函数"""
@@ -433,47 +463,53 @@ class TestTensorValueFunctions(unittest.TestCase):
             {"name": "多维张量", "data1": np.ones((2, 3, 4)), "data2": np.zeros((2, 3, 4)), "expected": True},
         ]
         
-        for case in test_cases:
-            case_name = f"not_equal - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据 - 仅对浮点型张量设置requires_grad
-                requires_grad1 = isinstance(case["data1"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data1"].flatten()) > 0 else False
-                requires_grad2 = isinstance(case["data2"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data2"].flatten()) > 0 else False
-                rm_x1 = rm.tensor(case["data1"], requires_grad=requires_grad1)
-                rm_x2 = rm.tensor(case["data2"], requires_grad=requires_grad2)
-                
-                # 测试not_equal函数
-                rm_result = rm.not_equal(rm_x1, rm_x2)
-                
-                # 比较结果
-                passed = compare_values(rm_result, case["expected"])
-                
-                # 检查结果是否为布尔类型
-                type_passed = isinstance(rm_result, bool)
-                passed = passed and type_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  预期结果: {case['expected']}")
-                        print(f"  实际结果: {rm_result}")
-                        print(f"  数据类型: {type(rm_result).__name__}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"not_equal测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False)
-                    print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
-                    print(f"  错误信息: {str(e)}")
-                self.fail(f"not_equal测试异常: {case_name}, 错误: {str(e)}")
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"not_equal - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据 - 仅对浮点型张量设置requires_grad
+                    requires_grad1 = isinstance(case["data1"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data1"].flatten()) > 0 else False
+                    requires_grad2 = isinstance(case["data2"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data2"].flatten()) > 0 else False
+                    rm_x1 = rm.tensor(case["data1"], requires_grad=requires_grad1, device=device)
+                    rm_x2 = rm.tensor(case["data2"], requires_grad=requires_grad2, device=device)
+                    
+                    # 测试not_equal函数
+                    rm_result = rm.not_equal(rm_x1, rm_x2)
+                    
+                    # 比较结果
+                    passed = compare_values(rm_result, case["expected"])
+                    
+                    # 检查结果是否为布尔类型
+                    type_passed = isinstance(rm_result, bool)
+                    passed = passed and type_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  预期结果: {case['expected']}")
+                            print(f"  实际结果: {rm_result}")
+                            print(f"  数据类型: {type(rm_result).__name__}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"not_equal测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False)
+                        print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
+                        print(f"  错误信息: {str(e)}")
+                    self.fail(f"not_equal测试异常: {case_name}, 错误: {str(e)}")
     
     def test_allclose(self):
         """测试allclose函数"""
@@ -495,47 +531,53 @@ class TestTensorValueFunctions(unittest.TestCase):
             {"name": "全部NaN (equal_nan=False)", "data1": np.array([np.nan, np.nan]), "data2": np.array([np.nan, np.nan]), "rtol": 1e-5, "atol": 1e-8, "equal_nan": False, "expected": False},
         ]
         
-        for case in test_cases:
-            case_name = f"allclose - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据 - 仅对浮点型张量设置requires_grad
-                requires_grad1 = isinstance(case["data1"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data1"].flatten()) > 0 else False
-                requires_grad2 = isinstance(case["data2"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data2"].flatten()) > 0 else False
-                rm_x1 = rm.tensor(case["data1"], requires_grad=requires_grad1)
-                rm_x2 = rm.tensor(case["data2"], requires_grad=requires_grad2)
-                
-                # 测试allclose函数
-                rm_result = rm.allclose(rm_x1, rm_x2, rtol=case["rtol"], atol=case["atol"], equal_nan=case["equal_nan"])
-                
-                # 比较结果
-                passed = compare_values(rm_result, case["expected"])
-                
-                # 检查结果是否为布尔类型
-                type_passed = isinstance(rm_result, bool)
-                passed = passed and type_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  预期结果: {case['expected']}")
-                        print(f"  实际结果: {rm_result}")
-                        print(f"  数据类型: {type(rm_result).__name__}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"allclose测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False)
-                    print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
-                    print(f"  错误信息: {str(e)}")
-                self.fail(f"allclose测试异常: {case_name}, 错误: {str(e)}")
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"allclose - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据 - 仅对浮点型张量设置requires_grad
+                    requires_grad1 = isinstance(case["data1"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data1"].flatten()) > 0 else False
+                    requires_grad2 = isinstance(case["data2"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data2"].flatten()) > 0 else False
+                    rm_x1 = rm.tensor(case["data1"], requires_grad=requires_grad1, device=device)
+                    rm_x2 = rm.tensor(case["data2"], requires_grad=requires_grad2, device=device)
+                    
+                    # 测试allclose函数
+                    rm_result = rm.allclose(rm_x1, rm_x2, rtol=case["rtol"], atol=case["atol"], equal_nan=case["equal_nan"])
+                    
+                    # 比较结果
+                    passed = compare_values(rm_result, case["expected"])
+                    
+                    # 检查结果是否为布尔类型
+                    type_passed = isinstance(rm_result, bool)
+                    passed = passed and type_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  预期结果: {case['expected']}")
+                            print(f"  实际结果: {rm_result}")
+                            print(f"  数据类型: {type(rm_result).__name__}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"allclose测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False)
+                        print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
+                        print(f"  错误信息: {str(e)}")
+                    self.fail(f"allclose测试异常: {case_name}, 错误: {str(e)}")
     
     def test_unique(self):
         """测试unique函数"""
@@ -551,59 +593,65 @@ class TestTensorValueFunctions(unittest.TestCase):
             {"name": "布尔张量", "data": np.array([True, False, True, False]), "sorted": True, "return_inverse": False, "return_counts": False, "return_indices": False, "expected": [False, True]},
         ]
         
-        for case in test_cases:
-            case_name = f"unique - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据 - 仅对浮点型张量设置requires_grad
-                requires_grad = isinstance(case["data"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data"].flatten()) > 0 else False
-                rm_x = rm.tensor(case["data"], requires_grad=requires_grad)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"unique - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据 - 仅对浮点型张量设置requires_grad
+                    requires_grad = isinstance(case["data"].flatten()[0], (np.float16, np.float32, np.float64)) if len(case["data"].flatten()) > 0 else False
+                    rm_x = rm.tensor(case["data"], requires_grad=requires_grad, device=device)
                 
-                # 测试unique函数
-                rm_result = rm.unique(
-                    rm_x, 
-                    sorted=case["sorted"],
-                    return_inverse=case["return_inverse"],
-                    return_counts=case["return_counts"],
-                    return_indices=case["return_indices"]
-                )
-                
-                # 比较结果
-                passed = compare_values(rm_result, case["expected"])
-                
-                # 检查返回类型
-                if case["return_inverse"] or case["return_counts"] or case["return_indices"]:
-                    # 应该返回元组
-                    type_passed = isinstance(rm_result, tuple)
-                    # 检查元组中每个元素是否为TN类型
-                    for item in rm_result:
-                        type_passed = type_passed and isinstance(item, rm.TN)
-                else:
-                    # 应该返回单个TN对象
-                    type_passed = isinstance(rm_result, rm.TN)
-                
-                passed = passed and type_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  预期结果类型: {type(case['expected']).__name__}")
-                        print(f"  实际结果类型: {type(rm_result).__name__}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"unique测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False)
-                    print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
-                    print(f"  错误信息: {str(e)}")
-                self.fail(f"unique测试异常: {case_name}, 错误: {str(e)}")
+                    # 测试unique函数
+                    rm_result = rm.unique(
+                        rm_x, 
+                        sorted=case["sorted"],
+                        return_inverse=case["return_inverse"],
+                        return_counts=case["return_counts"],
+                        return_indices=case["return_indices"]
+                    )
+                    
+                    # 比较结果
+                    passed = compare_values(rm_result, case["expected"])
+                    
+                    # 检查返回类型
+                    if case["return_inverse"] or case["return_counts"] or case["return_indices"]:
+                        # 应该返回元组
+                        type_passed = isinstance(rm_result, tuple)
+                        # 检查元组中每个元素是否为TN类型
+                        for item in rm_result:
+                            type_passed = type_passed and isinstance(item, rm.TN)
+                    else:
+                        # 应该返回单个TN对象
+                        type_passed = isinstance(rm_result, rm.TN)
+                    
+                    passed = passed and type_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  预期结果类型: {type(case['expected']).__name__}")
+                            print(f"  实际结果类型: {type(rm_result).__name__}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"unique测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False)
+                        print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
+                        print(f"  错误信息: {str(e)}")
+                    self.fail(f"unique测试异常: {case_name}, 错误: {str(e)}")
     
     def test_nonzero(self):
         """测试nonzero函数"""
@@ -625,53 +673,60 @@ class TestTensorValueFunctions(unittest.TestCase):
             {"name": "单元素非零张量(as_tuple=True)", "data": np.array([[0, 0, 0], [0, 5, 0]]), "as_tuple": True, "expected": ([1], [1])},
         ]
         
-        for case in test_cases:
-            case_name = f"nonzero - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                rm_x = rm.tensor(case["data"])
-                
-                # 测试nonzero函数
-                rm_result = rm.nonzero(rm_x, as_tuple=case["as_tuple"])
-                
-                # 比较结果
-                passed = compare_values(rm_result, case["expected"])
-                
-                # 检查返回类型
-                if case["as_tuple"]:
-                    # as_tuple=True时应该返回元组
-                    type_passed = isinstance(rm_result, tuple)
-                    # 检查元组中每个元素是否为TN类型
-                    for item in rm_result:
-                        type_passed = type_passed and isinstance(item, rm.TN)
-                else:
-                    # as_tuple=False时应该返回TN类型
-                    type_passed = isinstance(rm_result, rm.TN)
-                
-                passed = passed and type_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  预期结果: {case['expected']}")
-                        print(f"  实际结果: {rm_result}")
-                        print(f"  返回类型: {type(rm_result).__name__}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"nonzero测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False)
-                    print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
-                    print(f"  错误信息: {str(e)}")
-                self.fail(f"nonzero测试异常: {case_name}, 错误: {str(e)}")
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"nonzero - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据 - 只有浮点型张量才设置requires_grad=True
+                    requires_grad = isinstance(case["data"], np.ndarray) and np.issubdtype(case["data"].dtype, np.floating)
+                    rm_x = rm.tensor(case["data"], requires_grad=requires_grad, device=device)
+                    
+                    # 测试nonzero函数
+                    rm_result = rm.nonzero(rm_x, as_tuple=case["as_tuple"])
+                    
+                    # 比较结果
+                    passed = compare_values(rm_result, case["expected"])
+                    
+                    # 检查返回类型
+                    if case["as_tuple"]:
+                        # as_tuple=True时应该返回元组
+                        type_passed = isinstance(rm_result, tuple)
+                        # 检查元组中每个元素是否为TN类型
+                        for item in rm_result:
+                            type_passed = type_passed and isinstance(item, rm.TN)
+                    else:
+                        # as_tuple=False时应该返回TN类型
+                        type_passed = isinstance(rm_result, rm.TN)
+                    
+                    passed = passed and type_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  预期结果: {case['expected']}")
+                            print(f"  实际结果: {rm_result}")
+                            print(f"  返回类型: {type(rm_result).__name__}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"nonzero测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False)
+                        print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time_taken:.4f}秒)")
+                        print(f"  错误信息: {str(e)}")
+                    self.fail(f"nonzero测试异常: {case_name}, 错误: {str(e)}")
 
 if __name__ == '__main__':
     # 标记为独立脚本运行
