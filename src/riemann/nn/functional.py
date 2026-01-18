@@ -2452,6 +2452,18 @@ def batch_norm(input: TN, running_mean: Optional[TN] = None, running_var: Option
     if input.ndim not in [2, 3, 4, 5]:
         raise ValueError(f"Expected 2D, 3D, 4D or 5D tensor for input, but got {input.ndim}D tensor")
     
+    if weight is not None:
+        if not isinstance(weight, TN):
+            raise TypeError(f"Expected weight to be TN tensor, but received type: {type(weight)}")
+        elif weight.device != input.device:
+            raise ValueError(f"Expected weight to have device {input.device}, but got {weight.device}")
+    
+    if bias is not None:
+        if not isinstance(bias, TN):
+            raise TypeError(f"Expected bias to be TN tensor, but received type: {type(bias)}")
+        elif bias.device != input.device:
+            raise ValueError(f"Expected bias to have device {input.device}, but got {bias.device}")
+    
     # 获取通道数
     C = input.shape[1]
     

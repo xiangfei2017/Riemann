@@ -163,7 +163,8 @@ class Optimizer:
                     else:
                         # 处理非叶子梯度的情况，与PyTorch保持一致
                         if hasattr(p.grad, 'is_leaf') and not p.grad.is_leaf:
-                            p.grad = p.grad.detach()
+                            p.grad.detach_()  # 原地操作，更节省内存
+                            p.grad.zero_()
                         else:
                             p.grad.zero_()
     

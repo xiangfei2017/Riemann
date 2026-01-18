@@ -26,13 +26,21 @@ from typing import Tuple, Dict, Any
 # 添加Riemann库路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+# 导入Riemann库
 import riemann as rm
 from riemann.nn import BatchNorm1d, BatchNorm2d, BatchNorm3d
 from riemann.nn import LayerNorm
 from riemann.nn import MSELoss
 
+# 从rm.cuda获取cupy引用和CUDA可用性
+CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+cp = rm.cuda.cp
+
 import torch
 import torch.nn as tnn
+
+# 设置PyTorch可用性标志
+TORCH_AVAILABLE = True
 
 
 class Colors:
@@ -228,40 +236,56 @@ class StatisticsCollector:
 
 def copy_weights_torch_to_riemann(torch_layer, riemann_layer):
     """将PyTorch层的权重复制到Riemann层，使用深拷贝避免内存共享"""
+    # 复制权重参数
     if hasattr(torch_layer, 'weight') and hasattr(riemann_layer, 'weight'):
         if torch_layer.weight is not None:
+            # 获取PyTorch权重的numpy数组
             torch_weight = torch_layer.weight.detach().numpy()
             # 使用深拷贝创建独立的numpy数组，避免内存共享
             torch_weight_copy = np.array(torch_weight, copy=True)
-            # 直接赋值numpy数组，避免创建嵌套TN对象
+            # 直接赋值numpy数组，Riemann会自动处理设备转换
             riemann_layer.weight.data = torch_weight_copy
     
+    # 复制偏置参数
     if hasattr(torch_layer, 'bias') and hasattr(riemann_layer, 'bias'):
         if torch_layer.bias is not None:
+            # 获取PyTorch偏置的numpy数组
             torch_bias = torch_layer.bias.detach().numpy()
             # 使用深拷贝创建独立的numpy数组，避免内存共享
             torch_bias_copy = np.array(torch_bias, copy=True)
-            # 直接赋值numpy数组，避免创建嵌套TN对象
+            # 直接赋值numpy数组，Riemann会自动处理设备转换
             riemann_layer.bias.data = torch_bias_copy
     
-    # 复制运行时统计量
+    # 复制BatchNorm的运行时统计量
     if hasattr(torch_layer, 'running_mean') and hasattr(riemann_layer, 'running_mean'):
         if torch_layer.running_mean is not None:
             running_mean = torch_layer.running_mean.detach().numpy()
             running_mean_copy = np.array(running_mean, copy=True)
+            # 直接赋值numpy数组，Riemann会自动处理设备转换
             riemann_layer.running_mean.data = running_mean_copy
     
     if hasattr(torch_layer, 'running_var') and hasattr(riemann_layer, 'running_var'):
         if torch_layer.running_var is not None:
             running_var = torch_layer.running_var.detach().numpy()
             running_var_copy = np.array(running_var, copy=True)
+            # 直接赋值numpy数组，Riemann会自动处理设备转换
             riemann_layer.running_var.data = running_var_copy
 
 
 def tensor_allclose(rm_tensor, torch_tensor, rtol=1e-4, atol=1e-6):
     """比较Riemann张量和PyTorch张量是否接近"""
-    rm_data = rm_tensor.data if hasattr(rm_tensor, 'data') else rm_tensor
-    torch_data = torch_tensor.detach().numpy()
+    # 处理Riemann结果
+    if rm_tensor.is_cuda:
+        rm_data = rm_tensor.detach().cpu().numpy()
+    else:
+        rm_data = rm_tensor.detach().numpy()
+    
+    # 处理PyTorch结果
+    if torch_tensor.is_cuda:
+        torch_data = torch_tensor.detach().cpu().numpy()
+    else:
+        torch_data = torch_tensor.detach().numpy()
+    
     return np.allclose(rm_data, torch_data, rtol=rtol, atol=atol)
 
 
@@ -273,167 +297,247 @@ def compare_gradients(torch_param, riemann_param, name="parameter"):
     if torch_param.grad is None or riemann_param.grad is None:
         return False, f"梯度状态不一致: torch={torch_param.grad is not None}, riemann={riemann_param.grad is not None}"
     
-    torch_grad = torch_param.grad.detach().numpy()
-    riemann_grad = riemann_param.grad.data if hasattr(riemann_param.grad, 'data') else riemann_param.grad
+    # 处理PyTorch梯度
+    if torch_param.grad.is_cuda:
+        torch_grad = torch_param.grad.detach().cpu().numpy()
+    else:
+        torch_grad = torch_param.grad.detach().numpy()
     
-    close_result = np.allclose(torch_grad, riemann_grad, rtol=1e-4, atol=1e-6)
+    # 处理Riemann梯度 - 使用与PyTorch相同的转换方式
+    if riemann_param.grad.is_cuda:
+        riemann_grad = riemann_param.grad.detach().cpu().numpy()
+    else:
+        riemann_grad = riemann_param.grad.detach().numpy()
+    
+    # 对于CUDA设备，增加容差阈值，因为不同实现之间可能存在细微差异
+    if torch_param.grad.is_cuda or hasattr(riemann_param.grad, 'is_cuda') and riemann_param.grad.is_cuda:
+        close_result = np.allclose(torch_grad, riemann_grad, rtol=1e-3, atol=1e-3)
+    else:
+        close_result = np.allclose(torch_grad, riemann_grad, rtol=1e-4, atol=1e-6)
+    
     diff = np.abs(torch_grad - riemann_grad).max()
     
     return close_result, f"梯度差异: {diff:.6f}"
 
 
-def compare_batch_norm(rm_bn, torch_bn, input_data, test_name, stats, mode="train"):
-    """测试Riemann BatchNorm与PyTorch BatchNorm的比较"""
-    # ... existing code ...
-
-
-def compare_layer_norm(rm_ln, torch_ln, input_data, test_name, stats):
+def compare_layer_norm(rm_ln_class, torch_ln, input_data, test_name, stats, **rm_ln_kwargs):
     """测试Riemann LayerNorm与PyTorch LayerNorm的比较"""
     try:
-        # 复制权重，确保两个模块参数完全一致
-        copy_weights_torch_to_riemann(torch_ln, rm_ln)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            devices.append("cuda")
         
-        # 确保输入数据完全一致：使用深拷贝创建独立的numpy数组，避免内存共享
-        input_data_copy = np.array(input_data, copy=True)
-        rm_input = rm.tensor(input_data_copy, requires_grad=True)
-        torch_input = torch.tensor(input_data_copy, requires_grad=True)
-        
-        # 验证输入张量形状一致
-        input_shape_match = rm_input.shape == torch_input.shape
-        stats.add_result(f"{test_name}-输入形状", input_shape_match,
-                        f"Riemann: {rm_input.shape}, PyTorch: {torch_input.shape}")
-        
-        # 前向传播
-        rm_output = rm_ln(rm_input)
-        torch_output = torch_ln(torch_input)
-        
-        # 比较输出
-        forward_close = tensor_allclose(rm_output, torch_output, rtol=1e-4, atol=1e-6)
-        stats.add_result(f"{test_name}-前向传播", forward_close, 
-                        f"输出形状: rm={rm_output.shape}, torch={torch_output.shape}")
-        
-        # 计算损失
-        target_data = np.random.randn(*rm_output.shape).astype(np.float32)
-        target_rm = rm.tensor(target_data)
-        target_torch = torch.tensor(target_data)
-        
-        rm_loss = MSELoss()(rm_output, target_rm)
-        torch_loss = tnn.MSELoss()(torch_output, target_torch)
-        
-        # 比较损失
-        loss_close = tensor_allclose(rm_loss, torch_loss, rtol=1e-4, atol=1e-6)
-        stats.add_result(f"{test_name}-损失计算", loss_close,
-                        f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
-        
-        # 反向传播
-        rm_loss.backward()
-        torch_loss.backward()
-        
-        # 比较梯度
-        gradient_tests_passed = 0
-        gradient_tests_total = 0
-        
-        # 比较权重梯度
-        if hasattr(rm_ln, 'weight') and rm_ln.weight is not None:
-            gradient_tests_total += 1
-            weight_close, weight_msg = compare_gradients(torch_ln.weight, rm_ln.weight, "weight")
-            stats.add_result(f"{test_name}-weight梯度", weight_close, weight_msg)
-            if weight_close:
-                gradient_tests_passed += 1
-        
-        # 比较偏置梯度
-        if hasattr(rm_ln, 'bias') and rm_ln.bias is not None:
-            gradient_tests_total += 1
-            bias_close, bias_msg = compare_gradients(torch_ln.bias, rm_ln.bias, "bias")
-            stats.add_result(f"{test_name}-bias梯度", bias_close, bias_msg)
-            if bias_close:
-                gradient_tests_passed += 1
-        
-        # 梯度总体通过率
-        if gradient_tests_total > 0:
-            gradient_pass_rate = gradient_tests_passed / gradient_tests_total * 100
-            stats.add_result(f"{test_name}-梯度总体", gradient_pass_rate >= 90,
-                            f"梯度通过率: {gradient_pass_rate:.1f}% ({gradient_tests_passed}/{gradient_tests_total})")
+        for device in devices:
+            device_test_name = f"{test_name}-{device}"
+            
+            # 创建新的Riemann LayerNorm层实例，指定设备
+            rm_ln = rm_ln_class(device=device, **rm_ln_kwargs)
+            
+            # 为每个设备测试创建一个新的PyTorch LayerNorm层
+            # 获取原始LayerNorm的参数
+            normalized_shape = torch_ln.normalized_shape
+            eps = torch_ln.eps
+            elementwise_affine = torch_ln.elementwise_affine
+            
+            # 创建新的PyTorch LayerNorm层
+            new_torch_ln = tnn.LayerNorm(normalized_shape, eps=eps, elementwise_affine=elementwise_affine)
+            
+            # 复制原始PyTorch层的权重和偏置到新层
+            if elementwise_affine:
+                new_torch_ln.weight.data = torch_ln.weight.data.clone()
+                new_torch_ln.bias.data = torch_ln.bias.data.clone()
+            
+            # 复制权重，确保两个模块参数完全一致
+            copy_weights_torch_to_riemann(new_torch_ln, rm_ln)
+            
+            # 确保输入数据完全一致：使用深拷贝创建独立的numpy数组，避免内存共享
+            input_data_copy = np.array(input_data, copy=True)
+            
+            # 创建Riemann张量，指定设备
+            rm_input = rm.tensor(input_data_copy, requires_grad=True, device=device)
+            
+            # 创建PyTorch张量，指定设备
+            torch_input = torch.tensor(input_data_copy, requires_grad=True, device=device)
+            new_torch_ln.to(device)
+            
+            # 将Riemann层移动到指定设备
+            rm_ln.to(device)
+            
+            # 验证输入张量形状一致
+            input_shape_match = rm_input.shape == torch_input.shape
+            stats.add_result(f"{device_test_name}-输入形状", input_shape_match,
+                            f"Riemann: {rm_input.shape}, PyTorch: {torch_input.shape}")
+            
+            # 前向传播
+            rm_output = rm_ln(rm_input)
+            torch_output = new_torch_ln(torch_input)
+            
+            # 比较输出
+            forward_close = tensor_allclose(rm_output, torch_output, rtol=1e-4, atol=1e-6)
+            stats.add_result(f"{device_test_name}-前向传播", forward_close, 
+                            f"输出形状: rm={rm_output.shape}, torch={torch_output.shape}")
+            
+            # 计算损失
+            target_data = np.random.randn(*rm_output.shape).astype(np.float32)
+            target_rm = rm.tensor(target_data, device=device)
+            target_torch = torch.tensor(target_data, device=device)
+            
+            rm_loss = MSELoss()(rm_output, target_rm)
+            torch_loss = tnn.MSELoss()(torch_output, target_torch)
+            
+            # 比较损失
+            loss_close = tensor_allclose(rm_loss, torch_loss, rtol=1e-4, atol=1e-6)
+            stats.add_result(f"{device_test_name}-损失计算", loss_close,
+                            f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
+            
+            # 反向传播
+            rm_loss.backward()
+            torch_loss.backward()
+            
+            # 比较梯度
+            gradient_tests_passed = 0
+            gradient_tests_total = 0
+            
+            # 比较权重梯度
+            if hasattr(rm_ln, 'weight') and rm_ln.weight is not None:
+                gradient_tests_total += 1
+                weight_close, weight_msg = compare_gradients(new_torch_ln.weight, rm_ln.weight, "weight")
+                stats.add_result(f"{device_test_name}-weight梯度", weight_close, weight_msg)
+                if weight_close:
+                    gradient_tests_passed += 1
+            
+            # 比较偏置梯度
+            if hasattr(rm_ln, 'bias') and rm_ln.bias is not None:
+                gradient_tests_total += 1
+                bias_close, bias_msg = compare_gradients(new_torch_ln.bias, rm_ln.bias, "bias")
+                stats.add_result(f"{device_test_name}-bias梯度", bias_close, bias_msg)
+                if bias_close:
+                    gradient_tests_passed += 1
+            
+            # 梯度总体通过率
+            if gradient_tests_total > 0:
+                gradient_pass_rate = gradient_tests_passed / gradient_tests_total * 100
+                stats.add_result(f"{device_test_name}-梯度总体", gradient_pass_rate >= 90,
+                                f"梯度通过率: {gradient_pass_rate:.1f}% ({gradient_tests_passed}/{gradient_tests_total})")
         
     except Exception as e:
         stats.add_result(f"{test_name}", False, f"测试异常: {str(e)}")
 
 
-def compare_batch_norm(rm_bn, torch_bn, input_data, test_name, stats, mode="train"):
+def compare_batch_norm(rm_bn_class, torch_bn, input_data, test_name, stats, mode="train", **rm_bn_kwargs):
     """测试Riemann BatchNorm与PyTorch BatchNorm的比较"""
     try:
-        # 复制权重和运行时统计量，确保两个模块参数完全一致
-        copy_weights_torch_to_riemann(torch_bn, rm_bn)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            devices.append("cuda")
         
-        # 设置模式
-        if mode == "train":
-            rm_bn.train()
-            torch_bn.train()
-        else:
-            rm_bn.eval()
-            torch_bn.eval()
-        
-        # 确保输入数据完全一致：使用深拷贝创建独立的numpy数组，避免内存共享
-        input_data_copy = np.array(input_data, copy=True)
-        rm_input = rm.tensor(input_data_copy, requires_grad=True)
-        torch_input = torch.tensor(input_data_copy, requires_grad=True)
-        
-        # 验证输入张量形状一致
-        input_shape_match = rm_input.shape == torch_input.shape
-        stats.add_result(f"{test_name}-输入形状", input_shape_match,
-                        f"Riemann: {rm_input.shape}, PyTorch: {torch_input.shape}")
-        
-        # 前向传播
-        rm_output = rm_bn(rm_input)
-        torch_output = torch_bn(torch_input)
-        
-        # 比较输出
-        forward_close = tensor_allclose(rm_output, torch_output, rtol=1e-4, atol=1e-6)
-        stats.add_result(f"{test_name}-前向传播", forward_close, 
-                        f"输出形状: rm={rm_output.shape}, torch={torch_output.shape}")
-        
-        # 计算损失
-        target_data = np.random.randn(*rm_output.shape).astype(np.float32)
-        target_rm = rm.tensor(target_data)
-        target_torch = torch.tensor(target_data)
-        
-        rm_loss = MSELoss()(rm_output, target_rm)
-        torch_loss = tnn.MSELoss()(torch_output, target_torch)
-        
-        # 比较损失
-        loss_close = tensor_allclose(rm_loss, torch_loss, rtol=1e-4, atol=1e-6)
-        stats.add_result(f"{test_name}-损失计算", loss_close,
-                        f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
-        
-        # 反向传播
-        rm_loss.backward()
-        torch_loss.backward()
-        
-        # 比较梯度
-        gradient_tests_passed = 0
-        gradient_tests_total = 0
-        
-        # 比较权重梯度
-        if hasattr(rm_bn, 'weight') and rm_bn.weight is not None:
-            gradient_tests_total += 1
-            weight_close, weight_msg = compare_gradients(torch_bn.weight, rm_bn.weight, "weight")
-            stats.add_result(f"{test_name}-weight梯度", weight_close, weight_msg)
-            if weight_close:
-                gradient_tests_passed += 1
-        
-        # 比较偏置梯度
-        if hasattr(rm_bn, 'bias') and rm_bn.bias is not None:
-            gradient_tests_total += 1
-            bias_close, bias_msg = compare_gradients(torch_bn.bias, rm_bn.bias, "bias")
-            stats.add_result(f"{test_name}-bias梯度", bias_close, bias_msg)
-            if bias_close:
-                gradient_tests_passed += 1
-        
-        # 梯度总体通过率
-        if gradient_tests_total > 0:
-            gradient_pass_rate = gradient_tests_passed / gradient_tests_total * 100
-            stats.add_result(f"{test_name}-梯度总体", gradient_pass_rate >= 90,
-                            f"梯度通过率: {gradient_pass_rate:.1f}% ({gradient_tests_passed}/{gradient_tests_total})")
+        for device in devices:
+            device_test_name = f"{test_name}-{device}"
+            
+            # 创建新的Riemann BatchNorm层实例，指定设备
+            rm_bn = rm_bn_class(device=device, **rm_bn_kwargs)
+            
+            # 为每个设备测试创建一个新的PyTorch BatchNorm层，确保状态一致
+            # 获取原始PyTorch层的参数
+            num_features = torch_bn.num_features
+            affine = torch_bn.affine
+            track_running_stats = torch_bn.track_running_stats
+            
+            # 创建新的PyTorch BatchNorm层
+            new_torch_bn = tnn.BatchNorm1d(num_features, affine=affine, track_running_stats=track_running_stats) if rm_bn_class.__name__ == 'BatchNorm1d' else \
+                         tnn.BatchNorm2d(num_features, affine=affine, track_running_stats=track_running_stats) if rm_bn_class.__name__ == 'BatchNorm2d' else \
+                         tnn.BatchNorm3d(num_features, affine=affine, track_running_stats=track_running_stats)
+            
+            # 复制原始PyTorch层的权重和运行时统计量到新层
+            if affine:
+                new_torch_bn.weight.data = torch_bn.weight.data.clone()
+                new_torch_bn.bias.data = torch_bn.bias.data.clone()
+            if track_running_stats:
+                new_torch_bn.running_mean.data = torch_bn.running_mean.data.clone()
+                new_torch_bn.running_var.data = torch_bn.running_var.data.clone()
+            
+            # 设置模式
+            if mode == "train":
+                rm_bn.train()
+                new_torch_bn.train()
+            else:
+                rm_bn.eval()
+                new_torch_bn.eval()
+            
+            # 复制权重和运行时统计量到Riemann层
+            copy_weights_torch_to_riemann(new_torch_bn, rm_bn)
+            
+            # 确保输入数据完全一致：使用深拷贝创建独立的numpy数组，避免内存共享
+            input_data_copy = np.array(input_data, copy=True)
+            
+            # 创建Riemann张量，指定设备
+            rm_input = rm.tensor(input_data_copy, requires_grad=True, device=device)
+            
+            # 创建PyTorch张量，指定设备
+            torch_input = torch.tensor(input_data_copy, requires_grad=True, device=device)
+            new_torch_bn.to(device)
+            
+            # 将Riemann层移动到指定设备
+            rm_bn.to(device)
+            
+            # 验证输入张量形状一致
+            input_shape_match = rm_input.shape == torch_input.shape
+            stats.add_result(f"{device_test_name}-输入形状", input_shape_match,
+                            f"Riemann: {rm_input.shape}, PyTorch: {torch_input.shape}")
+            
+            # 前向传播
+            rm_output = rm_bn(rm_input)
+            torch_output = new_torch_bn(torch_input)
+            
+            # 比较输出
+            forward_close = tensor_allclose(rm_output, torch_output, rtol=1e-4, atol=1e-6)
+            stats.add_result(f"{device_test_name}-前向传播", forward_close, 
+                            f"输出形状: rm={rm_output.shape}, torch={torch_output.shape}")
+            
+            # 计算损失
+            target_data = np.random.randn(*rm_output.shape).astype(np.float32)
+            target_rm = rm.tensor(target_data, device=device)
+            target_torch = torch.tensor(target_data, device=device)
+            
+            rm_loss = MSELoss()(rm_output, target_rm)
+            torch_loss = tnn.MSELoss()(torch_output, target_torch)
+            
+            # 比较损失
+            loss_close = tensor_allclose(rm_loss, torch_loss, rtol=1e-4, atol=1e-6)
+            stats.add_result(f"{device_test_name}-损失计算", loss_close,
+                            f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
+            
+            # 反向传播
+            rm_loss.backward()
+            torch_loss.backward()
+            
+            # 比较梯度
+            gradient_tests_passed = 0
+            gradient_tests_total = 0
+            
+            # 比较权重梯度
+            if hasattr(rm_bn, 'weight') and rm_bn.weight is not None:
+                gradient_tests_total += 1
+                weight_close, weight_msg = compare_gradients(new_torch_bn.weight, rm_bn.weight, "weight")
+                stats.add_result(f"{device_test_name}-weight梯度", weight_close, weight_msg)
+                if weight_close:
+                    gradient_tests_passed += 1
+            
+            # 比较偏置梯度
+            if hasattr(rm_bn, 'bias') and rm_bn.bias is not None:
+                gradient_tests_total += 1
+                bias_close, bias_msg = compare_gradients(new_torch_bn.bias, rm_bn.bias, "bias")
+                stats.add_result(f"{device_test_name}-bias梯度", bias_close, bias_msg)
+                if bias_close:
+                    gradient_tests_passed += 1
+            
+            # 梯度总体通过率
+            if gradient_tests_total > 0:
+                gradient_pass_rate = gradient_tests_passed / gradient_tests_total * 100
+                stats.add_result(f"{device_test_name}-梯度总体", gradient_pass_rate >= 90,
+                                f"梯度通过率: {gradient_pass_rate:.1f}% ({gradient_tests_passed}/{gradient_tests_total})")
         
     except Exception as e:
         stats.add_result(f"{test_name}", False, f"测试异常: {str(e)}")
@@ -469,12 +573,12 @@ def test_batch_norm_1d(stats=None):
         for i, config in enumerate(test_configs):
             print(f"  配置{i+1}: {config['desc']}")
             
-            # 创建Riemann和PyTorch的BatchNorm1d
-            rm_bn = BatchNorm1d(num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
+            # 创建PyTorch的BatchNorm1d
             torch_bn = tnn.BatchNorm1d(num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
             
             test_name = f"BatchNorm1d-2D-配置{i+1}"
-            compare_batch_norm(rm_bn, torch_bn, input_data_2d, test_name, stats, config['mode'])
+            compare_batch_norm(BatchNorm1d, torch_bn, input_data_2d, test_name, stats, config['mode'], 
+                             num_features=num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
         
         # 测试3D输入 (N, C, L)
         print("\n测试3D输入 (N, C, L):")
@@ -484,12 +588,12 @@ def test_batch_norm_1d(stats=None):
         for i, config in enumerate(test_configs):
             print(f"  配置{i+1}: {config['desc']}")
             
-            # 创建Riemann和PyTorch的BatchNorm1d
-            rm_bn = BatchNorm1d(num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
+            # 创建PyTorch的BatchNorm1d
             torch_bn = tnn.BatchNorm1d(num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
             
             test_name = f"BatchNorm1d-3D-配置{i+1}"
-            compare_batch_norm(rm_bn, torch_bn, input_data_3d, test_name, stats, config['mode'])
+            compare_batch_norm(BatchNorm1d, torch_bn, input_data_3d, test_name, stats, config['mode'], 
+                             num_features=num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
             
     finally:
         stats.end_function()
@@ -523,12 +627,12 @@ def test_batch_norm_2d(stats=None):
         for i, config in enumerate(test_configs):
             print(f"  配置{i+1}: {config['desc']}")
             
-            # 创建Riemann和PyTorch的BatchNorm2d
-            rm_bn = BatchNorm2d(num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
+            # 创建PyTorch的BatchNorm2d
             torch_bn = tnn.BatchNorm2d(num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
             
             test_name = f"BatchNorm2d-4D-配置{i+1}"
-            compare_batch_norm(rm_bn, torch_bn, input_data_4d, test_name, stats, config['mode'])
+            compare_batch_norm(BatchNorm2d, torch_bn, input_data_4d, test_name, stats, config['mode'], 
+                             num_features=num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
             
     finally:
         stats.end_function()
@@ -563,12 +667,12 @@ def test_layer_norm(stats=None):
         for i, config in enumerate(test_configs):
             print(f"    配置{i+1}: {config['desc']}")
             
-            # 创建Riemann和PyTorch的LayerNorm
-            rm_ln = LayerNorm(feature_dim, affine=config['affine'])
+            # 创建PyTorch的LayerNorm
             torch_ln = tnn.LayerNorm(feature_dim, elementwise_affine=config['affine'])
             
             test_name = f"LayerNorm-1D-配置{i+1}"
-            compare_layer_norm(rm_ln, torch_ln, input_data_1d, test_name, stats)
+            compare_layer_norm(LayerNorm, torch_ln, input_data_1d, test_name, stats, 
+                             normalized_shape=feature_dim, affine=config['affine'])
         
         # 测试2D输入 (N, C, L)
         print("\n  2D输入 (N, C, L):")
@@ -578,12 +682,12 @@ def test_layer_norm(stats=None):
         for i, config in enumerate(test_configs):
             print(f"    配置{i+1}: {config['desc']}")
             
-            # 创建Riemann和PyTorch的LayerNorm
-            rm_ln = LayerNorm((seq_len, feature_dim), affine=config['affine'])
+            # 创建PyTorch的LayerNorm
             torch_ln = tnn.LayerNorm((seq_len, feature_dim), elementwise_affine=config['affine'])
             
             test_name = f"LayerNorm-2D-配置{i+1}"
-            compare_layer_norm(rm_ln, torch_ln, input_data_2d, test_name, stats)
+            compare_layer_norm(LayerNorm, torch_ln, input_data_2d, test_name, stats, 
+                             normalized_shape=(seq_len, feature_dim), affine=config['affine'])
         
         # 测试3D输入 (N, C, H, W)
         print("\n  3D输入 (N, C, H, W):")
@@ -593,12 +697,12 @@ def test_layer_norm(stats=None):
         for i, config in enumerate(test_configs):
             print(f"    配置{i+1}: {config['desc']}")
             
-            # 创建Riemann和PyTorch的LayerNorm
-            rm_ln = LayerNorm((channels, height, width), affine=config['affine'])
+            # 创建PyTorch的LayerNorm
             torch_ln = tnn.LayerNorm((channels, height, width), elementwise_affine=config['affine'])
             
             test_name = f"LayerNorm-3D-配置{i+1}"
-            compare_layer_norm(rm_ln, torch_ln, input_data_3d, test_name, stats)
+            compare_layer_norm(LayerNorm, torch_ln, input_data_3d, test_name, stats, 
+                             normalized_shape=(channels, height, width), affine=config['affine'])
             
     finally:
         stats.end_function()
@@ -632,12 +736,12 @@ def test_batch_norm_3d(stats=None):
         for i, config in enumerate(test_configs):
             print(f"  配置{i+1}: {config['desc']}")
             
-            # 创建Riemann和PyTorch的BatchNorm3d
-            rm_bn = BatchNorm3d(num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
+            # 创建PyTorch的BatchNorm3d
             torch_bn = tnn.BatchNorm3d(num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
             
             test_name = f"BatchNorm3d-5D-配置{i+1}"
-            compare_batch_norm(rm_bn, torch_bn, input_data_5d, test_name, stats, config['mode'])
+            compare_batch_norm(BatchNorm3d, torch_bn, input_data_5d, test_name, stats, config['mode'], 
+                             num_features=num_features, affine=config['affine'], track_running_stats=config['track_running_stats'])
             
     finally:
         stats.end_function()

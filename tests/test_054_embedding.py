@@ -9,8 +9,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # 导入riemann模块
 try:
     import riemann as rm
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -199,10 +203,34 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     if rm_result is None or torch_result is None:
         return False
     
+    # 处理嵌套元组/列表的情况
+    if isinstance(rm_result, (list, tuple)) and isinstance(torch_result, (list, tuple)):
+        if len(rm_result) != len(torch_result):
+            return False
+        
+        all_passed = True
+        for i, (r, t) in enumerate(zip(rm_result, torch_result)):
+            if not compare_values(r, t, atol, rtol):
+                all_passed = False
+                break
+        
+        return all_passed
+    
     # 转换为numpy数组
     try:
-        rm_data = rm_result.data if hasattr(rm_result, 'data') else rm_result.numpy()
-        torch_data = torch_result.detach().numpy()
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -243,67 +271,84 @@ class TestEmbedding(unittest.TestCase):
             {"name": "多维输入形状", "input_shape": (3, 3), "weight_shape": (10, 3)},
         ]
         
-        for case in test_cases:
-            case_name = f"embedding - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                weight_data = np.random.randn(*case["weight_shape"])
-                input_data = np.random.randint(0, case["weight_shape"][0], size=case["input_shape"])
-                
-                rm_weight = rm.tensor(weight_data, requires_grad=True)
-                rm_input = rm.tensor(input_data, dtype='int32')
-                
-                torch_weight = None
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_weight = torch.tensor(weight_data, requires_grad=True)
-                    torch_input = torch.tensor(input_data, dtype=torch.long)
-                
-                # 前向传播测试
-                rm_output = rm.nn.functional.embedding(rm_input, rm_weight)
-                torch_output = None
-                if TORCH_AVAILABLE:
-                    torch_output = torch.nn.functional.embedding(torch_input, torch_weight)
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_output, torch_output)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_output.sum()
-                    torch_loss = torch_output.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"embedding - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    weight_data = np.random.randn(*case["weight_shape"])
+                    input_data = np.random.randint(0, case["weight_shape"][0], size=case["input_shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_weight = rm.tensor(weight_data, requires_grad=True)
+                        rm_input = rm.tensor(input_data, dtype='int32')
+                        if TORCH_AVAILABLE:
+                            torch_weight = torch.tensor(weight_data, requires_grad=True)
+                            torch_input = torch.tensor(input_data, dtype=torch.long)
+                        else:
+                            torch_weight = None
+                            torch_input = None
+                    else:  # cuda
+                        rm_weight = rm.tensor(weight_data, requires_grad=True, device=device)
+                        rm_input = rm.tensor(input_data, dtype='int32', device=device)
+                        if TORCH_AVAILABLE:
+                            torch_weight = torch.tensor(weight_data, requires_grad=True, device=device)
+                            torch_input = torch.tensor(input_data, dtype=torch.long, device=device)
+                        else:
+                            torch_weight = None
+                            torch_input = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"embedding测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    rm_output = rm.nn.functional.embedding(rm_input, rm_weight)
+                    torch_output = None
+                    if TORCH_AVAILABLE:
+                        torch_output = torch.nn.functional.embedding(torch_input, torch_weight)
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_output, torch_output)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_output.sum()
+                        torch_loss = torch_output.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"embedding测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_padding_idx(self):
         """测试padding_idx参数"""
@@ -313,79 +358,96 @@ class TestEmbedding(unittest.TestCase):
             {"name": "padding_idx=-1与scale_grad_by_freq结合", "padding_idx": -1, "scale_grad_by_freq": True},
         ]
         
-        for case in test_cases:
-            case_name = f"embedding - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                weight_shape = (10, 3)
-                weight_data = np.random.randn(*weight_shape)
-                input_data = np.array([0, 2, 0, 4]) if case["padding_idx"] == 0 else np.array([0, 2, 8, 9])
-                
-                rm_weight = rm.tensor(weight_data, requires_grad=True)
-                rm_input = rm.tensor(input_data, dtype='int32')
-                
-                torch_weight = None
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_weight = torch.tensor(weight_data, requires_grad=True)
-                    torch_input = torch.tensor(input_data, dtype=torch.long)
-                
-                # 前向传播测试
-                scale_grad_by_freq = case.get("scale_grad_by_freq", False)
-                rm_output = rm.nn.functional.embedding(rm_input, rm_weight, padding_idx=case["padding_idx"], scale_grad_by_freq=scale_grad_by_freq)
-                torch_output = None
-                if TORCH_AVAILABLE:
-                    torch_output = torch.nn.functional.embedding(torch_input, torch_weight, padding_idx=case["padding_idx"], scale_grad_by_freq=scale_grad_by_freq)
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_output, torch_output)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_output.sum()
-                    torch_loss = torch_output.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"embedding - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    weight_shape = (10, 3)
+                    weight_data = np.random.randn(*weight_shape)
+                    input_data = np.array([0, 2, 0, 4]) if case["padding_idx"] == 0 else np.array([0, 2, 8, 9])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_weight = rm.tensor(weight_data, requires_grad=True)
+                        rm_input = rm.tensor(input_data, dtype='int32')
+                        if TORCH_AVAILABLE:
+                            torch_weight = torch.tensor(weight_data, requires_grad=True)
+                            torch_input = torch.tensor(input_data, dtype=torch.long)
+                        else:
+                            torch_weight = None
+                            torch_input = None
+                    else:  # cuda
+                        rm_weight = rm.tensor(weight_data, requires_grad=True, device=device)
+                        rm_input = rm.tensor(input_data, dtype='int32', device=device)
+                        if TORCH_AVAILABLE:
+                            torch_weight = torch.tensor(weight_data, requires_grad=True, device=device)
+                            torch_input = torch.tensor(input_data, dtype=torch.long, device=device)
+                        else:
+                            torch_weight = None
+                            torch_input = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
-                
-                # 检查padding_idx的梯度是否为0
-                padding_idx_grad_passed = True
-                actual_padding_idx = case["padding_idx"]
-                if actual_padding_idx < 0:
-                    actual_padding_idx = weight_shape[0] + actual_padding_idx
-                if not all(rm_weight.grad[actual_padding_idx].data == 0):
-                    padding_idx_grad_passed = False
-                    print(f"  padding_idx={case['padding_idx']}的梯度不为0")
-                
-                passed = forward_passed and backward_passed and padding_idx_grad_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  padding_idx梯度检查: {'通过' if padding_idx_grad_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"embedding测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    scale_grad_by_freq = case.get("scale_grad_by_freq", False)
+                    rm_output = rm.nn.functional.embedding(rm_input, rm_weight, padding_idx=case["padding_idx"], scale_grad_by_freq=scale_grad_by_freq)
+                    torch_output = None
+                    if TORCH_AVAILABLE:
+                        torch_output = torch.nn.functional.embedding(torch_input, torch_weight, padding_idx=case["padding_idx"], scale_grad_by_freq=scale_grad_by_freq)
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_output, torch_output)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_output.sum()
+                        torch_loss = torch_output.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
+                    
+                    # 检查padding_idx的梯度是否为0
+                    padding_idx_grad_passed = True
+                    actual_padding_idx = case["padding_idx"]
+                    if actual_padding_idx < 0:
+                        actual_padding_idx = weight_shape[0] + actual_padding_idx
+                    if not all(rm_weight.grad[actual_padding_idx].data == 0):
+                        padding_idx_grad_passed = False
+                        print(f"  padding_idx={case['padding_idx']}的梯度不为0")
+                    
+                    passed = forward_passed and backward_passed and padding_idx_grad_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  padding_idx梯度检查: {'通过' if padding_idx_grad_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"embedding测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_max_norm(self):
         """测试max_norm参数"""
@@ -400,85 +462,102 @@ class TestEmbedding(unittest.TestCase):
             {"name": "不同norm_type值 - norm_type=3.0(L3范数)", "max_norm": 2.0, "padding_idx": None, "norm_type": 3.0},
         ]
         
-        for case in test_cases:
-            case_name = f"embedding - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建嵌入矩阵，其中有些向量的范数较大
-                weight_data = np.array([
-                    [3.0, 0.0, 0.0],  # 范数3
-                    [0.0, 2.0, 0.0],  # 范数2
-                    [1.0, 1.0, 1.0],  # 范数≈1.732
-                    [0.0, 0.0, 4.0],  # 范数4
-                    [2.0, 2.0, 2.0],  # 范数≈3.464
-                ])
-                
-                # 对于scale_grad_by_freq=True的情况，使用包含重复索引的输入数据
-                if case.get("scale_grad_by_freq", False):
-                    input_data = np.array([0, 1, 0, 2, 1, 3, 4, 1])  # 包含重复索引
-                else:
-                    if case["padding_idx"] == 0:
-                        input_data = np.array([0, 1, 0, 3, 4])
-                    elif case["padding_idx"] == -1:
-                        input_data = np.array([0, 1, 4, 3, 4])  # 包含padding_idx=-1（对应索引4）
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"embedding - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建嵌入矩阵，其中有些向量的范数较大
+                    weight_data = np.array([
+                        [3.0, 0.0, 0.0],  # 范数3
+                        [0.0, 2.0, 0.0],  # 范数2
+                        [1.0, 1.0, 1.0],  # 范数≈1.732
+                        [0.0, 0.0, 4.0],  # 范数4
+                        [2.0, 2.0, 2.0],  # 范数≈3.464
+                    ])
+                    
+                    # 对于scale_grad_by_freq=True的情况，使用包含重复索引的输入数据
+                    if case.get("scale_grad_by_freq", False):
+                        input_data = np.array([0, 1, 0, 2, 1, 3, 4, 1])  # 包含重复索引
                     else:
-                        input_data = np.array([0, 1, 2, 3, 4])
-                
-                rm_weight = rm.tensor(weight_data, requires_grad=True)
-                rm_input = rm.tensor(input_data, dtype='int32')
-                
-                torch_weight = None
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_weight = torch.tensor(weight_data, requires_grad=True)
-                    torch_input = torch.tensor(input_data, dtype=torch.long)
-                
-                # 前向传播测试
-                scale_grad_by_freq = case.get("scale_grad_by_freq", False)
-                norm_type = case.get("norm_type", 2.0)
-                rm_output = rm.nn.functional.embedding(rm_input, rm_weight, max_norm=case["max_norm"], padding_idx=case["padding_idx"], scale_grad_by_freq=scale_grad_by_freq, norm_type=norm_type)
-                torch_output = None
-                if TORCH_AVAILABLE:
-                    torch_output = torch.nn.functional.embedding(torch_input, torch_weight, max_norm=case["max_norm"], padding_idx=case["padding_idx"], scale_grad_by_freq=scale_grad_by_freq, norm_type=norm_type)
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_output, torch_output)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_output.sum()
-                    torch_loss = torch_output.sum()
+                        if case["padding_idx"] == 0:
+                            input_data = np.array([0, 1, 0, 3, 4])
+                        elif case["padding_idx"] == -1:
+                            input_data = np.array([0, 1, 4, 3, 4])  # 包含padding_idx=-1（对应索引4）
+                        else:
+                            input_data = np.array([0, 1, 2, 3, 4])
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_weight = rm.tensor(weight_data, requires_grad=True)
+                        rm_input = rm.tensor(input_data, dtype='int32')
+                        if TORCH_AVAILABLE:
+                            torch_weight = torch.tensor(weight_data, requires_grad=True)
+                            torch_input = torch.tensor(input_data, dtype=torch.long)
+                        else:
+                            torch_weight = None
+                            torch_input = None
+                    else:  # cuda
+                        rm_weight = rm.tensor(weight_data, requires_grad=True, device=device)
+                        rm_input = rm.tensor(input_data, dtype='int32', device=device)
+                        if TORCH_AVAILABLE:
+                            torch_weight = torch.tensor(weight_data, requires_grad=True, device=device)
+                            torch_input = torch.tensor(input_data, dtype=torch.long, device=device)
+                        else:
+                            torch_weight = None
+                            torch_input = None
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"embedding测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    scale_grad_by_freq = case.get("scale_grad_by_freq", False)
+                    norm_type = case.get("norm_type", 2.0)
+                    rm_output = rm.nn.functional.embedding(rm_input, rm_weight, max_norm=case["max_norm"], padding_idx=case["padding_idx"], scale_grad_by_freq=scale_grad_by_freq, norm_type=norm_type)
+                    torch_output = None
+                    if TORCH_AVAILABLE:
+                        torch_output = torch.nn.functional.embedding(torch_input, torch_weight, max_norm=case["max_norm"], padding_idx=case["padding_idx"], scale_grad_by_freq=scale_grad_by_freq, norm_type=norm_type)
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_output, torch_output)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_output.sum()
+                        torch_loss = torch_output.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"embedding测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_scale_grad_by_freq(self):
         """测试scale_grad_by_freq参数"""
@@ -488,75 +567,92 @@ class TestEmbedding(unittest.TestCase):
             {"name": "scale_grad_by_freq与padding_idx=-1结合", "padding_idx": -1, "scale_grad_by_freq": True},
         ]
         
-        for case in test_cases:
-            case_name = f"embedding - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                weight_shape = (5, 3)
-                weight_data = np.random.randn(*weight_shape)
-                
-                # 根据padding_idx调整输入数据
-                if case["padding_idx"] == 0:
-                    input_data = np.array([0, 1, 0, 2, 1, 1])  # 0出现2次（作为padding），1出现3次，2出现1次
-                elif case["padding_idx"] == -1:
-                    input_data = np.array([0, 1, 4, 2, 1, 4])  # 4出现2次（作为padding_idx=-1），0出现1次，1出现2次，2出现1次
-                else:
-                    input_data = np.array([0, 1, 0, 2, 1, 1])  # 0出现2次，1出现3次，2出现1次
-                
-                rm_weight = rm.tensor(weight_data, requires_grad=True)
-                rm_input = rm.tensor(input_data, dtype='int32')
-                
-                torch_weight = None
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_weight = torch.tensor(weight_data, requires_grad=True)
-                    torch_input = torch.tensor(input_data, dtype=torch.long)
-                
-                # 前向传播测试
-                rm_output = rm.nn.functional.embedding(rm_input, rm_weight, padding_idx=case["padding_idx"], scale_grad_by_freq=case["scale_grad_by_freq"])
-                torch_output = None
-                if TORCH_AVAILABLE:
-                    torch_output = torch.nn.functional.embedding(torch_input, torch_weight, padding_idx=case["padding_idx"], scale_grad_by_freq=case["scale_grad_by_freq"])
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_output, torch_output)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_output.sum()
-                    torch_loss = torch_output.sum()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"embedding - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    weight_shape = (5, 3)
+                    weight_data = np.random.randn(*weight_shape)
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 根据padding_idx调整输入数据
+                    if case["padding_idx"] == 0:
+                        input_data = np.array([0, 1, 0, 2, 1, 1])  # 0出现2次（作为padding），1出现3次，2出现1次
+                    elif case["padding_idx"] == -1:
+                        input_data = np.array([0, 1, 4, 2, 1, 4])  # 4出现2次（作为padding_idx=-1），0出现1次，1出现2次，2出现1次
+                    else:
+                        input_data = np.array([0, 1, 0, 2, 1, 1])  # 0出现2次，1出现3次，2出现1次
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"embedding测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_weight = rm.tensor(weight_data, requires_grad=True)
+                        rm_input = rm.tensor(input_data, dtype='int32')
+                        if TORCH_AVAILABLE:
+                            torch_weight = torch.tensor(weight_data, requires_grad=True)
+                            torch_input = torch.tensor(input_data, dtype=torch.long)
+                        else:
+                            torch_weight = None
+                            torch_input = None
+                    else:  # cuda
+                        rm_weight = rm.tensor(weight_data, requires_grad=True, device=device)
+                        rm_input = rm.tensor(input_data, dtype='int32', device=device)
+                        if TORCH_AVAILABLE:
+                            torch_weight = torch.tensor(weight_data, requires_grad=True, device=device)
+                            torch_input = torch.tensor(input_data, dtype=torch.long, device=device)
+                        else:
+                            torch_weight = None
+                            torch_input = None
+                    
+                    # 前向传播测试
+                    rm_output = rm.nn.functional.embedding(rm_input, rm_weight, padding_idx=case["padding_idx"], scale_grad_by_freq=case["scale_grad_by_freq"])
+                    torch_output = None
+                    if TORCH_AVAILABLE:
+                        torch_output = torch.nn.functional.embedding(torch_input, torch_weight, padding_idx=case["padding_idx"], scale_grad_by_freq=case["scale_grad_by_freq"])
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_output, torch_output)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_output.sum()
+                        torch_loss = torch_output.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"embedding测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_comprehensive_comparison(self):
         """与PyTorch进行全面比较"""
@@ -573,74 +669,86 @@ class TestEmbedding(unittest.TestCase):
             {"name": "max_norm=2.0与norm_type=1.0(L1范数)", "input_data": [0, 1, 2, 3, 4], "padding_idx": None, "max_norm": 2.0, "norm_type": 1.0, "scale_grad_by_freq": False},
         ]
         
-        for case in test_cases:
-            case_name = f"embedding - 与PyTorch比较 - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                weight_shape = (5, 3)
-                weight_data = np.random.randn(*weight_shape)
-                input_data = np.array(case["input_data"])
-                
-                rm_weight = rm.tensor(weight_data, requires_grad=True)
-                rm_input = rm.tensor(input_data, dtype='int32')
-                
-                torch_weight = torch.tensor(weight_data, requires_grad=True)
-                torch_input = torch.tensor(input_data, dtype=torch.long)
-                
-                # 前向传播测试
-                norm_type = case.get("norm_type", 2.0)
-                rm_output = rm.nn.functional.embedding(
-                    rm_input, rm_weight, 
-                    padding_idx=case["padding_idx"], 
-                    max_norm=case["max_norm"], 
-                    norm_type=norm_type,
-                    scale_grad_by_freq=case["scale_grad_by_freq"]
-                )
-                torch_output = torch.nn.functional.embedding(
-                    torch_input, torch_weight, 
-                    padding_idx=case["padding_idx"], 
-                    max_norm=case["max_norm"], 
-                    norm_type=norm_type,
-                    scale_grad_by_freq=case["scale_grad_by_freq"]
-                )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_output, torch_output)
-                
-                # 反向传播测试
-                # 计算损失
-                rm_loss = rm_output.sum()
-                torch_loss = torch_output.sum()
-                
-                # 反向传播
-                rm_loss.backward()
-                torch_loss.backward()
-                
-                # 比较梯度
-                backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"embedding测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"embedding - 与PyTorch比较 - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    weight_shape = (5, 3)
+                    weight_data = np.random.randn(*weight_shape)
+                    input_data = np.array(case["input_data"])
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_weight = rm.tensor(weight_data, requires_grad=True)
+                        rm_input = rm.tensor(input_data, dtype='int32')
+                        torch_weight = torch.tensor(weight_data, requires_grad=True)
+                        torch_input = torch.tensor(input_data, dtype=torch.long)
+                    else:  # cuda
+                        rm_weight = rm.tensor(weight_data, requires_grad=True, device=device)
+                        rm_input = rm.tensor(input_data, dtype='int32', device=device)
+                        torch_weight = torch.tensor(weight_data, requires_grad=True, device=device)
+                        torch_input = torch.tensor(input_data, dtype=torch.long, device=device)
+                    
+                    # 前向传播测试
+                    norm_type = case.get("norm_type", 2.0)
+                    rm_output = rm.nn.functional.embedding(
+                        rm_input, rm_weight, 
+                        padding_idx=case["padding_idx"], 
+                        max_norm=case["max_norm"], 
+                        norm_type=norm_type,
+                        scale_grad_by_freq=case["scale_grad_by_freq"]
+                    )
+                    torch_output = torch.nn.functional.embedding(
+                        torch_input, torch_weight, 
+                        padding_idx=case["padding_idx"], 
+                        max_norm=case["max_norm"], 
+                        norm_type=norm_type,
+                        scale_grad_by_freq=case["scale_grad_by_freq"]
+                    )
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_output, torch_output)
+                    
+                    # 反向传播测试
+                    # 计算损失
+                    rm_loss = rm_output.sum()
+                    torch_loss = torch_output.sum()
+                    
+                    # 反向传播
+                    rm_loss.backward()
+                    torch_loss.backward()
+                    
+                    # 比较梯度
+                    backward_passed = compare_values(rm_weight.grad, torch_weight.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"embedding测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_embedding_class(self):
         """测试Embedding类的特有功能"""
@@ -651,58 +759,67 @@ class TestEmbedding(unittest.TestCase):
             embedding_dim = 3
             padding_idx = 0
             
-            # 测试1: 类的基本使用
-            rm_embedding = rm.nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
-            self.assertIsInstance(rm_embedding, rm.nn.Module)
-            self.assertEqual(rm_embedding.num_embeddings, num_embeddings)
-            self.assertEqual(rm_embedding.embedding_dim, embedding_dim)
-            self.assertEqual(rm_embedding.padding_idx, padding_idx)
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
             
-            # 测试2: 参数管理（权重注册）
-            self.assertIn('weight', rm_embedding._parameters)
-            self.assertIsInstance(rm_embedding.weight, rm.nn.Parameter)
-            self.assertEqual(rm_embedding.weight.shape, (num_embeddings, embedding_dim))
-            
-            # 测试3: padding_idx的权重初始化
-            self.assertTrue(np.allclose(rm_embedding.weight.data[padding_idx], 0.0))
-            
-            # 测试4: 前向传播
-            input_data = np.array([0, 1, 2, 0, 3])
-            rm_input = rm.tensor(input_data, dtype='int32')
-            rm_output = rm_embedding(rm_input)
-            self.assertEqual(rm_output.shape, (len(input_data), embedding_dim))
-            
-            # 测试5: 与PyTorch的兼容性
-            if TORCH_AVAILABLE:
-                torch_embedding = torch.nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx)
-                torch_embedding.weight.data = torch.tensor(rm_embedding.weight.data)
+            for device in devices:
+                case_name = f"Embedding类测试 - {device}"
                 
-                torch_input = torch.tensor(input_data, dtype=torch.long)
-                torch_output = torch_embedding(torch_input)
+                # 测试1: 类的基本使用
+                rm_embedding = rm.nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx, device=device)
+                self.assertIsInstance(rm_embedding, rm.nn.Module)
+                self.assertEqual(rm_embedding.num_embeddings, num_embeddings)
+                self.assertEqual(rm_embedding.embedding_dim, embedding_dim)
+                self.assertEqual(rm_embedding.padding_idx, padding_idx)
                 
-                self.assertTrue(compare_values(rm_output, torch_output))
+                # 测试2: 参数管理（权重注册）
+                self.assertIn('weight', rm_embedding._parameters)
+                self.assertIsInstance(rm_embedding.weight, rm.nn.Parameter)
+                self.assertEqual(rm_embedding.weight.shape, (num_embeddings, embedding_dim))
+                # 只比较设备类型，不比较设备索引
+                self.assertTrue(device in str(rm_embedding.weight.device))
                 
-                # 反向传播测试
-                rm_loss = rm_output.sum()
-                torch_loss = torch_output.sum()
+                # 测试3: padding_idx的权重初始化
+                self.assertTrue(np.allclose(rm_embedding.weight.data[padding_idx], 0.0))
                 
-                rm_loss.backward()
-                torch_loss.backward()
+                # 测试4: 前向传播
+                input_data = np.array([0, 1, 2, 0, 3])
+                rm_input = rm.tensor(input_data, dtype='int32', device=device)
+                rm_output = rm_embedding(rm_input)
+                self.assertEqual(rm_output.shape, (len(input_data), embedding_dim))
+                # 只比较设备类型，不比较设备索引
+                self.assertTrue(device in str(rm_output.device))
                 
-                self.assertTrue(compare_values(rm_embedding.weight.grad, torch_embedding.weight.grad))
-            
-            # 测试6: 类的额外表示信息
-            repr_str = rm_embedding.extra_repr()
-            self.assertIn(f"{num_embeddings}, {embedding_dim}", repr_str)
-            self.assertIn(f"padding_idx={padding_idx}", repr_str)
-            
-            case_name = "Embedding类测试"
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, True)
-                status = "通过"
-                time_taken = time.time() - start_time
-                print(f"测试用例: {case_name} - {Colors.OKGREEN}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
+                # 测试5: 与PyTorch的兼容性
+                if TORCH_AVAILABLE:
+                    torch_embedding = torch.nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx, device=device)
+                    torch_embedding.weight.data = torch.tensor(rm_embedding.weight.data, device=device)
+                    
+                    torch_input = torch.tensor(input_data, dtype=torch.long, device=device)
+                    torch_output = torch_embedding(torch_input)
+                    
+                    self.assertTrue(compare_values(rm_output, torch_output))
+                    
+                    # 反向传播测试
+                    rm_loss = rm_output.sum()
+                    torch_loss = torch_output.sum()
+                    
+                    rm_loss.backward()
+                    torch_loss.backward()
+                    
+                    self.assertTrue(compare_values(rm_embedding.weight.grad, torch_embedding.weight.grad))
+                
+                # 测试6: 类的额外表示信息
+                repr_str = rm_embedding.extra_repr()
+                self.assertIn(f"{num_embeddings}, {embedding_dim}", repr_str)
+                self.assertIn(f"padding_idx={padding_idx}", repr_str)
+                
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, True)
+                    status = "通过"
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}{status}{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
         except Exception as e:
             case_name = "Embedding类测试"
             time_taken = time.time() - start_time

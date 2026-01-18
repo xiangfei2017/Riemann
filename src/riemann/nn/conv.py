@@ -82,6 +82,10 @@ class Conv1d(Module):
             默认值: 1
         bias (bool, optional): 是否使用偏置项。是否为每个输出通道添加可学习的偏置。
             默认值: True
+        dtype (np.dtype, optional): 张量的数据类型。
+            默认值: None
+        device (str or int or Device, optional): 张量所在的设备。
+            默认值: None
     
     Shape:
         - Input: 形状为 (N, C_in, L) 的张量
@@ -116,7 +120,7 @@ class Conv1d(Module):
     """
     
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, 
-                 padding=0, dilation=1, groups=1, bias=True):
+                 padding=0, dilation=1, groups=1, bias=True, dtype=None, device=None):
         super().__init__()
         
         self.in_channels = in_channels
@@ -129,11 +133,11 @@ class Conv1d(Module):
         
         # 初始化权重参数
         weight_shape = (out_channels, in_channels // groups, kernel_size if isinstance(kernel_size, int) else kernel_size[0])
-        self.weight = Parameter(randn(weight_shape) * 0.1)
+        self.weight = Parameter(randn(weight_shape, dtype=dtype, device=device) * 0.1)
         
         # 初始化偏置参数
         if bias:
-            self.bias = Parameter(zeros(out_channels))
+            self.bias = Parameter(zeros(out_channels, dtype=dtype, device=device))
         else:
             self.register_parameter('bias', None)
     
@@ -179,6 +183,10 @@ class Conv2d(Module):
             默认值: 1
         bias (bool, optional): 是否使用偏置项。是否为每个输出通道添加可学习的偏置。
             默认值: True
+        dtype (np.dtype, optional): 张量的数据类型。
+            默认值: None
+        device (str or int or Device, optional): 张量所在的设备。
+            默认值: None
     
     Shape:
         - Input: 形状为 (N, C_in, H_in, W_in) 的张量
@@ -220,7 +228,7 @@ class Conv2d(Module):
     """
     
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, dilation=1, groups=1, bias=True):
+                 padding=0, dilation=1, groups=1, bias=True, dtype=None, device=None):
         super().__init__()
         
         self.in_channels = in_channels
@@ -237,11 +245,11 @@ class Conv2d(Module):
         else:
             weight_shape = (out_channels, in_channels // groups, kernel_size[0], kernel_size[1])
         
-        self.weight = Parameter(randn(weight_shape) * 0.1)
+        self.weight = Parameter(randn(weight_shape, dtype=dtype, device=device) * 0.1)
         
         # 初始化偏置参数
         if bias:
-            self.bias = Parameter(zeros(out_channels))
+            self.bias = Parameter(zeros(out_channels, dtype=dtype, device=device))
         else:
             self.register_parameter('bias', None)
     
@@ -289,6 +297,10 @@ class Conv3d(Module):
             默认值: 1
         bias (bool, optional): 是否使用偏置项。是否为每个输出通道添加可学习的偏置。
             默认值: True
+        dtype (np.dtype, optional): 张量的数据类型。
+            默认值: None
+        device (str or int or Device, optional): 张量所在的设备。
+            默认值: None
     
     Shape:
         - Input: 形状为 (N, C_in, D_in, H_in, W_in) 的张量
@@ -332,7 +344,7 @@ class Conv3d(Module):
     """
     
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, dilation=1, groups=1, bias=True):
+                 padding=0, dilation=1, groups=1, bias=True, dtype=None, device=None):
         super().__init__()
         
         self.in_channels = in_channels
@@ -349,11 +361,11 @@ class Conv3d(Module):
         else:
             weight_shape = (out_channels, in_channels // groups, kernel_size[0], kernel_size[1], kernel_size[2])
         
-        self.weight = Parameter(randn(*weight_shape) * 0.1)
+        self.weight = Parameter(randn(*weight_shape, dtype=dtype, device=device) * 0.1)
         
         # 初始化偏置参数
         if bias:
-            self.bias = Parameter(zeros(out_channels))
+            self.bias = Parameter(zeros(out_channels, dtype=dtype, device=device))
         else:
             self.register_parameter('bias', None)
     
