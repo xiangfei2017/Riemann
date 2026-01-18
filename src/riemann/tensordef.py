@@ -1402,10 +1402,13 @@ class TN:
     
     def _adjust_right_val(self, target_data, val):
         if not isinstance(val,TN):
-            right_val = tensor(val, dtype = self.dtype)
+            right_val = tensor(val, dtype = self.dtype,device=self.device)
         else:
             right_val = val
-        
+
+            if right_val.device != self.device:
+                raise ValueError(f"Right value device {right_val.device} does not match target device {self.device}")
+
             # 确保val和self的dtype相同
             if right_val.dtype != self.dtype:
                 right_val = right_val.type(self.dtype)           
@@ -4644,7 +4647,7 @@ def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
         return input
 
     # 创建全1张量并与输入相乘，利用numpy的广播机制
-    ones_tensor = ones(*size, dtype=input.dtype, requires_grad=False)
+    ones_tensor = ones(*size, dtype=input.dtype, device=input.device, requires_grad=False)
     result = input * ones_tensor
     
     # 确保结果的形状正确
