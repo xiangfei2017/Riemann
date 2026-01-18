@@ -244,6 +244,46 @@ class Module:
         self._parameters = {}
         self._buffers = {}
         self.training = True  # 训练/评估模式标志 
+    
+    def to(self, device):
+        """
+        将模块的所有参数和缓冲区移动到指定设备
+        
+        参数:
+            device: 目标设备，可以是字符串（如'cpu'、'cuda'）或Device对象
+            
+        返回:
+            Module: 移动设备后的模块本身（原地操作）
+        """
+        # 移动所有参数
+        for name, param in self._parameters.items():
+            if param is not None:
+                # 直接对参数张量调用to方法,清除计算图依赖，确保新参数不会向旧参数传递梯度
+                new_param = param.to(device).detach_()
+                # 重新设置requires_grad，因为detach_()会将其设为False
+                new_param.requires_grad = param.requires_grad
+                # 设置为叶子节点
+                new_param.is_leaf = True
+                # 更新参数
+                self._parameters[name] = new_param
+                # 更新实例属性引用
+                setattr(self, name, new_param)
+        
+        # 移动所有缓冲区
+        for name, buffer in self._buffers.items():
+            if buffer is not None:
+                # 直接对缓冲区张量调用to方法,并清除计算图依赖
+                new_buffer = buffer.to(device).detach_()
+                # 更新缓冲区
+                self._buffers[name] = new_buffer
+                # 更新实例属性引用
+                setattr(self, name, new_buffer)
+        
+        # 递归移动所有子模块
+        for name, module in self._modules.items():
+            module.to(device)
+        
+        return self
 
     def _get_name(self):
         """
@@ -2406,6 +2446,7 @@ class Linear(Module):
         out_features (int): 输出特征数量
         bias (bool, optional): 是否使用偏置。默认值: True
         dtype (np.dtype, optional): 参数的数据类型。默认值: None（使用默认类型）
+        device (str|int|Device, optional): 参数的设备。默认值: None（使用当前设备）
         
     Attributes:
         weight (Parameter): 权重矩阵，形状为(out_features, in_features)
@@ -2437,7 +2478,7 @@ class Linear(Module):
         - 权重形状与PyTorch保持一致：(out_features, in_features)
         - 常用于分类器、回归器或网络中的特征变换
     """
-    def __init__(self, in_features, out_features, bias=True,dtype:np.dtype|None=None):
+    def __init__(self, in_features, out_features, bias=True, device=None, dtype:np.dtype|None=None):
         """
         初始化线性层 (Initialize Linear Layer)
         
@@ -2448,6 +2489,7 @@ class Linear(Module):
             out_features (int): 输出特征数量  
             bias (bool, optional): 是否使用偏置项。默认值: True
             dtype (np.dtype, optional): 参数的数据类型。默认值: None（使用默认类型）
+            device (str|int|Device, optional): 参数的设备。默认值: None（使用当前设备）
             
         Examples:
             >>> layer = Linear(10, 5)  # 输入10维，输出5维，使用偏置
@@ -2464,12 +2506,12 @@ class Linear(Module):
         # Xavier初始化需要确保数值类型正确
         # 与PyTorch保持一致：权重形状为 [out_features, in_features]
         stdv = 1.0 / sqrt(in_features)
-        w_para = randn(out_features, in_features, dtype=dt) * stdv
+        w_para = randn(out_features, in_features, dtype=dt, device=device) * stdv
         self.weight = Parameter(w_para)
         
         # 偏置处理需要完整注册逻辑
         if bias:
-            b_para = randn(out_features,dtype=dt) * stdv
+            b_para = randn(out_features,dtype=dt, device=device) * stdv
             self.bias = Parameter(b_para)
         else:
             self.register_parameter('bias', None)  # 显式注册空参数
@@ -2973,6 +3015,8 @@ class BatchNorm1d(Module):
         momentum (float, optional): 运行时均值和方差的动量。默认值: 0.1
         affine (bool, optional): 是否使用可学习的仿射参数γ和β。默认值: True
         track_running_stats (bool, optional): 是否跟踪运行时均值和方差。默认值: True
+        device (optional): 参数和缓冲区的设备，默认为None
+        dtype (optional): 参数和缓冲区的数据类型，默认为None
     
     Shape:
         - Input: (N, C) 或 (N, C, L) 批次大小N，通道数C，序列长度L(可选)
@@ -3015,7 +3059,7 @@ class BatchNorm1d(Module):
     """
     
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True, 
-                 track_running_stats=True):
+                 track_running_stats=True, device=None, dtype=None):
         super().__init__()
         self.num_features = num_features
         self.eps = eps
@@ -3025,17 +3069,17 @@ class BatchNorm1d(Module):
         
         # 创建可学习参数
         if self.affine:
-            self.weight = Parameter(ones(num_features))
-            self.bias = Parameter(zeros(num_features))
+            self.weight = Parameter(ones(num_features, device=device, dtype=dtype))
+            self.bias = Parameter(zeros(num_features, device=device, dtype=dtype))
         else:
             self.register_parameter('weight', None)
             self.register_parameter('bias', None)
         
         # 创建运行时统计量缓冲区
         if self.track_running_stats:
-            self.register_buffer('running_mean', zeros(num_features))
-            self.register_buffer('running_var', ones(num_features))
-            self.register_buffer('num_batches_tracked', tensor(0, dtype=int32))
+            self.register_buffer('running_mean', zeros(num_features, device=device, dtype=dtype))
+            self.register_buffer('running_var', ones(num_features, device=device, dtype=dtype))
+            self.register_buffer('num_batches_tracked', tensor(0, dtype=int32, device=device))
         else:
             self.register_parameter('running_mean', None)
             self.register_parameter('running_var', None)
@@ -3111,6 +3155,8 @@ class BatchNorm2d(Module):
         momentum (float, optional): 运行时均值和方差的动量。默认值: 0.1
         affine (bool, optional): 是否使用可学习的仿射参数γ和β。默认值: True
         track_running_stats (bool, optional): 是否跟踪运行时均值和方差。默认值: True
+        device (optional): 参数和缓冲区的设备，默认为None
+        dtype (optional): 参数和缓冲区的数据类型，默认为None
     
     Shape:
         - Input: (N, C, H, W) 批次大小N，通道数C，高度H，宽度W
@@ -3148,7 +3194,7 @@ class BatchNorm2d(Module):
     """
     
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True, 
-                 track_running_stats=True):
+                 track_running_stats=True, device=None, dtype=None):
         super().__init__()
         self.num_features = num_features
         self.eps = eps
@@ -3158,17 +3204,17 @@ class BatchNorm2d(Module):
         
         # 创建可学习参数
         if self.affine:
-            self.weight = Parameter(ones(num_features))
-            self.bias = Parameter(zeros(num_features))
+            self.weight = Parameter(ones(num_features, device=device, dtype=dtype))
+            self.bias = Parameter(zeros(num_features, device=device, dtype=dtype))
         else:
             self.register_parameter('weight', None)
             self.register_parameter('bias', None)
         
         # 创建运行时统计量缓冲区
         if self.track_running_stats:
-            self.register_buffer('running_mean', zeros(num_features))
-            self.register_buffer('running_var', ones(num_features))
-            self.register_buffer('num_batches_tracked', tensor(0, dtype=int32))
+            self.register_buffer('running_mean', zeros(num_features, device=device, dtype=dtype))
+            self.register_buffer('running_var', ones(num_features, device=device, dtype=dtype))
+            self.register_buffer('num_batches_tracked', tensor(0, dtype=int32, device=device))
         else:
             self.register_parameter('running_mean', None)
             self.register_parameter('running_var', None)
@@ -3244,6 +3290,8 @@ class BatchNorm3d(Module):
         momentum (float, optional): 运行时均值和方差的动量。默认值: 0.1
         affine (bool, optional): 是否使用可学习的仿射参数γ和β。默认值: True
         track_running_stats (bool, optional): 是否跟踪运行时均值和方差。默认值: True
+        device (optional): 参数和缓冲区的设备，默认为None
+        dtype (optional): 参数和缓冲区的数据类型，默认为None
     
     Shape:
         - Input: (N, C, D, H, W) 批次大小N，通道数C，深度D，高度H，宽度W
@@ -3281,7 +3329,7 @@ class BatchNorm3d(Module):
     """
     
     def __init__(self, num_features, eps=1e-5, momentum=0.1, affine=True, 
-                 track_running_stats=True):
+                 track_running_stats=True, device=None, dtype=None):
         super().__init__()
         self.num_features = num_features
         self.eps = eps
@@ -3291,17 +3339,17 @@ class BatchNorm3d(Module):
         
         # 创建可学习参数
         if self.affine:
-            self.weight = Parameter(ones(num_features))
-            self.bias = Parameter(zeros(num_features))
+            self.weight = Parameter(ones(num_features, device=device, dtype=dtype))
+            self.bias = Parameter(zeros(num_features, device=device, dtype=dtype))
         else:
             self.register_parameter('weight', None)
             self.register_parameter('bias', None)
         
         # 创建运行时统计量缓冲区
         if self.track_running_stats:
-            self.register_buffer('running_mean', zeros(num_features))
-            self.register_buffer('running_var', ones(num_features))
-            self.register_buffer('num_batches_tracked', tensor(0, dtype=int32))
+            self.register_buffer('running_mean', zeros(num_features, device=device, dtype=dtype))
+            self.register_buffer('running_var', ones(num_features, device=device, dtype=dtype))
+            self.register_buffer('num_batches_tracked', tensor(0, dtype=int32, device=device))
         else:
             self.register_parameter('running_mean', None)
             self.register_parameter('running_var', None)
@@ -3356,9 +3404,11 @@ class LayerNorm(Module):
         normalized_shape: 一个整数或元组，指定需要归一化的维度
         eps: 一个很小的常数，添加到方差中以避免除零错误
         affine: 如果为 True，将使用可学习的参数(gamma 和 beta)进行仿射变换
+        device: 参数和缓冲区的设备，默认为 None
+        dtype: 参数和缓冲区的数据类型，默认为 None
     """
     
-    def __init__(self, normalized_shape, eps=1e-05, affine=True):
+    def __init__(self, normalized_shape, eps=1e-05, affine=True, device=None, dtype=None):
         super().__init__()
         self.normalized_shape = normalized_shape if isinstance(normalized_shape, (tuple, list)) else (normalized_shape,)
         self.eps = eps
@@ -3366,8 +3416,8 @@ class LayerNorm(Module):
         
         # 如果启用仿射变换，创建可学习参数
         if self.affine:
-            self.weight = Parameter(ones(self.normalized_shape))
-            self.bias = Parameter(zeros(self.normalized_shape))
+            self.weight = Parameter(ones(self.normalized_shape, device=device, dtype=dtype))
+            self.bias = Parameter(zeros(self.normalized_shape, device=device, dtype=dtype))
         else:
             self.register_parameter('weight', None)
             self.register_parameter('bias', None)
@@ -3407,6 +3457,8 @@ class Embedding(Module):
         scale_grad_by_freq (bool, optional): 如果为True，梯度将按mini-batch中每个词的频率进行缩放。
                                              默认为False
         sparse (bool, optional): 如果为True，权重的梯度将是稀疏张量。默认为False
+        dtype (np.dtype, optional): 嵌入权重的数据类型。默认为None（使用默认类型）
+        device (str|int|Device, optional): 嵌入权重的设备。默认为None（使用当前设备）
     
     形状:
         - 输入: (*) 包含整数索引的任意维度张量
@@ -3437,7 +3489,7 @@ class Embedding(Module):
     
     def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: Optional[int] = None, 
                  max_norm: Optional[float] = None, norm_type: float = 2.0, scale_grad_by_freq: bool = False, 
-                 sparse: bool = False):
+                 sparse: bool = False, device=None,dtype: np.dtype|None = None):
         """
         初始化嵌入层
         
@@ -3449,6 +3501,8 @@ class Embedding(Module):
             norm_type (float, optional): 计算范数的p值
             scale_grad_by_freq (bool, optional): 是否按频率缩放梯度
             sparse (bool, optional): 是否使用稀疏梯度
+            dtype (np.dtype, optional): 嵌入权重的数据类型
+            device (str|int|Device, optional): 嵌入权重的设备
         """
         super().__init__()
         
@@ -3460,8 +3514,11 @@ class Embedding(Module):
         self.scale_grad_by_freq = scale_grad_by_freq
         self.sparse = sparse
         
+        # 设置数据类型和设备
+        dt = get_default_dtype() if dtype is None else dtype
+        
         # 创建嵌入权重，形状为(num_embeddings, embedding_dim)
-        self.weight = Parameter(randn(num_embeddings, embedding_dim))
+        self.weight = Parameter(randn(num_embeddings, embedding_dim, dtype=dt, device=device))
         
         # 如果指定了padding_idx，将其嵌入向量设为0
         if padding_idx is not None:

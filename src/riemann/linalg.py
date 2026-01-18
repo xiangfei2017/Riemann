@@ -153,6 +153,8 @@ def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtyp
     if A.dtype.kind not in ['f', 'c']:
         raise RuntimeError(f"linalg.norm: Expected a floating point or complex tensor as input. Got {A.dtype.name}")
     
+    dev = A.device
+
     # 处理dtype参数
     if dtype is not None:
         A = A.type(dtype)
@@ -191,11 +193,11 @@ def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtyp
                 raise ValueError(f"Norm type '{ord}' is not applicable to vectors")
             if ord == 0:
                 # L0范数: 非零元素的个数
-                epsilon = tensor(np.finfo(float).eps, requires_grad=False)
+                epsilon = tensor(np.finfo(float).eps, device=dev, requires_grad=False)
                 abs_A = abs(A)
                 mask = abs_A > epsilon
-                ones = tensor(1.0, requires_grad=False)
-                zeros = tensor(0.0, requires_grad=False)
+                ones = tensor(1.0, device=dev, requires_grad=False)
+                zeros = tensor(0.0, device=dev, requires_grad=False)
                 mask_float = where(mask, ones, zeros)
                 ret = sum(mask_float, dim=dim, keepdim=keepdim)
             else:
@@ -253,21 +255,24 @@ def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtyp
 
 def _vector_norm(A, p):
     """计算1D向量的范数（内部函数）"""
+    arrlib = A._get_array_lib()
+    dev = A.device
+
     # 检查是否是全零向量
-    is_all_zero = all(abs(A) < tensor(np.finfo(float).eps, requires_grad=False))
+    is_all_zero = all(abs(A) < tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False))
     if is_all_zero:
         # 对于全零向量，负阶范数返回0，与PyTorch行为一致
         if p in [-1, -2]:
-            return tensor(0.0, requires_grad=False)
+            return tensor(0.0, device=dev, requires_grad=False)
         # 其他范数正常处理
     
     if p == 0:
-        # L0范数: 非零元素的个数
-        epsilon = tensor(np.finfo(float).eps, requires_grad=False)
+        # L0范数: 非零元素的个数        
+        epsilon = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False)
         abs_A = abs(A)
         mask = abs_A > epsilon
-        ones = tensor(1.0, requires_grad=False)
-        zeros = tensor(0.0, requires_grad=False)
+        ones = tensor(1.0, device=dev, requires_grad=False)
+        zeros = tensor(0.0, device=dev, requires_grad=False)
         mask_float = where(mask, ones, zeros)
         return sum(mask_float)
     elif p == 1:
@@ -292,16 +297,16 @@ def _vector_norm(A, p):
     elif p == -1:
         abs_A = abs(A)
         # 避免除以零
-        epsilon = tensor(np.finfo(float).eps, requires_grad=False)
-        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
+        epsilon = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False)
+        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), device=dev, requires_grad=False))
         # L-1范数: (sum(|x_i|^(-1)))^(-1)
         value = 1.0 / safe_abs_A  # p=-1, 相当于1/|x_i|
         return 1.0 / sum(value)   # 1/p=-1
     elif p == -2:
         abs_A = abs(A)
         # 避免除以零
-        epsilon = tensor(np.finfo(float).eps, requires_grad=False)
-        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
+        epsilon = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False)
+        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), device=dev, requires_grad=False))
         # L-2范数: (sum(|x_i|^(-2)))^(-1/2)
         value = safe_abs_A ** (-2.0)  # p=-2, 相当于1/(|x_i|^2)
         return sum(value) ** (-0.5)  # 1/p=-1/2
@@ -311,6 +316,10 @@ def _vector_norm(A, p):
 
 def _matrix_norm(A, p):
     """计算2D矩阵的范数（内部函数）"""
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
+    # 计算矩阵范数
     if p == 'fro' or (p is None):
         abs_A = abs(A)
         squared_A = abs_A * abs_A
@@ -344,12 +353,12 @@ def _matrix_norm(A, p):
         return max_result.values if hasattr(max_result, 'values') else max_result
     elif p == -2:
         _, S, _ = svd(A, full_matrices=False)
-        epsilon = tensor(np.finfo(float).eps * S.max().data, requires_grad=False)
-        S_non_zero = where(S > epsilon, S, tensor(float('inf'), requires_grad=False))
+        epsilon = tensor(arrlib.finfo(float).eps * S.max().data, device=dev, requires_grad=False)
+        S_non_zero = where(S > epsilon, S, tensor(float('inf'), device=dev, requires_grad=False))
         min_result = min(S_non_zero)
         ret = min_result.values if hasattr(min_result, 'values') else min_result
         if (ret.data == float('inf')).any():
-            ret = tensor(np.finfo(float).eps, requires_grad=A.requires_grad)
+            ret = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=A.requires_grad)
         return ret
     else:
         raise ValueError(f"Matrix norm does not support p value: {p}")
@@ -357,20 +366,23 @@ def _matrix_norm(A, p):
 
 def _compute_axis_norm(A, p, dim, keepdim):
     """计算指定单轴的范数（内部函数）"""
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 对于负阶范数，检查是否在指定维度上全为零
     if p in [-1, -2]:
         # 计算指定维度上的最大绝对值
         max_abs = max(abs(A), dim=dim, keepdim=True)
         max_abs_value = max_abs.values if hasattr(max_abs, 'values') else max_abs
         # 如果所有元素都接近零，返回0
-        epsilon = tensor(np.finfo(float).eps, requires_grad=False)
+        epsilon = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False)
         all_zero_mask = max_abs_value < epsilon
         # 创建与结果形状匹配的零张量
         result_shape = list(A.shape)
         result_shape[dim] = 1
         if not keepdim:
             result_shape.pop(dim)
-        zero_result = zeros(result_shape, requires_grad=A.requires_grad)
+        zero_result = zeros(result_shape, dtype=A.dtype, device=dev, requires_grad=A.requires_grad)
         # 如果是全零，返回0；否则执行正常计算
         if all_zero_mask.all():
             return zero_result
@@ -398,16 +410,16 @@ def _compute_axis_norm(A, p, dim, keepdim):
     elif p == -1:
         abs_A = abs(A)
         # 避免除以零
-        epsilon = tensor(np.finfo(float).eps, requires_grad=False)
-        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
+        epsilon = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False)
+        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), device=dev, requires_grad=False))
         # L-1范数: (sum(|x_i|^(-1)))^(-1)
         value = -1.0 / safe_abs_A  # p=-1, 相当于1/|x_i|
         return -1.0 / sum(value, dim=dim, keepdim=keepdim)  # 1/p=-1
     elif p == -2:
         abs_A = abs(A)
         # 避免除以零
-        epsilon = tensor(np.finfo(float).eps, requires_grad=False)
-        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
+        epsilon = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False)
+        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), device=dev, requires_grad=False))
         # L-2范数: (sum(|x_i|^(-2)))^(-1/2)
         value = safe_abs_A ** (-2.0)  # p=-2, 相当于1/(|x_i|^2)
         return sum(value, dim=dim, keepdim=keepdim) ** (-0.5)  # 1/p=-1/2
@@ -418,6 +430,9 @@ def _compute_axis_norm(A, p, dim, keepdim):
 # 修复_compute_matrix_norm函数，确保正确处理高维张量
 def _compute_matrix_norm(A, p, dim, keepdim):
     """计算指定维度的矩阵范数（内部函数）"""
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 验证维度索引是否有效
     for d in dim:
         if d < 0:
@@ -479,12 +494,12 @@ def _compute_matrix_norm(A, p, dim, keepdim):
     elif p == -2 and A.ndim == 2:
         # 矩阵-2范数: 最小奇异值
         _, S, _ = svd(A, full_matrices=False)
-        epsilon = tensor(np.finfo(float).eps * S.max().data, requires_grad=False)
-        S_non_zero = where(S > epsilon, S, tensor(float('inf'), requires_grad=False))
+        epsilon = tensor(arrlib.finfo(float).eps * S.max().data, device=dev, requires_grad=False)
+        S_non_zero = where(S > epsilon, S, tensor(float('inf'), device=dev, requires_grad=False))
         min_result = min(S_non_zero)
         ret = min_result.values if hasattr(min_result, 'values') else min_result
         if (ret.data == float('inf')).any():
-            ret = tensor(np.finfo(float).eps, requires_grad=A.requires_grad)
+            ret = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=A.requires_grad)
         if keepdim:
             ret = ret.unsqueeze(0).unsqueeze(0)
         return ret
@@ -506,6 +521,9 @@ def _compute_max_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
     # 输入验证 
     if not isinstance(A, TN): 
         raise TypeError(f"Input must be TN type, got {type(A)}") 
+    
+    arrlib = A._get_array_lib()
+    dev = A.device
     
     if not isinstance(dim, tuple) or len(dim) != 2: 
         raise ValueError(f"dim must be a tuple of length 2, got {dim}") 
@@ -540,14 +558,14 @@ def _compute_max_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
     A_permuted = A.permute(new_per)
     
     # 检查是否全为零矩阵
-    is_all_zero = (abs(A_permuted) < tensor(np.finfo(float).eps, requires_grad=False)).all()
+    is_all_zero = (abs(A_permuted) < tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False)).all()
     if is_all_zero:
         # 确定结果形状
         output_shape = list(A.shape)
         for d in pos_dim:
             output_shape[d] = 1
         # 创建与结果形状匹配的零张量
-        zero_result = zeros(tuple(output_shape), requires_grad=A.requires_grad)
+        zero_result = zeros(tuple(output_shape), dtype=A.dtype, device=dev, requires_grad=A.requires_grad)
         if not keepdim:
             # 如果不需要保持维度，移除计算的两个维度
             for d in sorted(pos_dim, reverse=True):
@@ -609,6 +627,9 @@ def _compute_min_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
     if not isinstance(dim, tuple) or len(dim) != 2: 
         raise ValueError(f"dim must be a tuple of length 2, got {dim}") 
     
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 验证维度索引是否有效并转换为正数索引
     pos_dim = []
     for d in dim:
@@ -641,15 +662,15 @@ def _compute_min_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
     min_dim = S.ndim - 1
     
     # 计算最小非零奇异值
-    epsilon = tensor(np.finfo(float).eps * S.max().data, requires_grad=False)
-    S_non_zero = where(S > epsilon, S, tensor(float('inf'), requires_grad=False))
+    epsilon = tensor(arrlib.finfo(float).eps * S.max().data, device=dev, requires_grad=False)
+    S_non_zero = where(S > epsilon, S, tensor(float('inf'), device=dev, requires_grad=False))
     min_result = min(S_non_zero, dim=min_dim, keepdim=True)
     min_singular = min_result.values if hasattr(min_result, 'values') else min_result
     
     # 处理无穷大情况（当所有奇异值都接近零时）
     if (min_singular.data == float('inf')).any():
         # 对于全零矩阵，返回0而不是eps，与PyTorch行为一致
-        min_singular = tensor(0.0, requires_grad=A.requires_grad)
+        min_singular = tensor(0.0, device=dev, requires_grad=A.requires_grad)
     
     # 处理keepdim参数
     if keepdim:
@@ -670,6 +691,21 @@ def _compute_min_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
 
 # 计算多维数组在指定两个轴上的范数
 def _compute_multi_axis_norm(A: TN, p: int | float | str | None, dim: tuple, keepdim: bool = False) -> TN:
+    """
+    计算多维数组在指定两个轴上的范数（内部函数）
+    参数:
+        A: 输入张量，形状为任意维度
+        p: 范数的阶数，或None表示Frobenius范数
+        dim: 元组，指定两个轴，沿着这些轴计算范数
+        keepdim: 布尔值，是否在结果中保持计算维度
+        
+    返回:
+        TN: 计算得到的范数，形状为A.shape但移除了指定的两个维度（除非keepdim=True）
+    """
+    
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 对于负阶范数，检查是否在指定维度上全为零
     if p == -1:
         # 计算指定维度上的最大绝对值
@@ -682,7 +718,7 @@ def _compute_multi_axis_norm(A: TN, p: int | float | str | None, dim: tuple, kee
         max_abs_value = max_abs_result.values if hasattr(max_abs_result, 'values') else max_abs_result
         
         # 如果所有元素都接近零，返回0
-        epsilon = tensor(np.finfo(float).eps, requires_grad=False)
+        epsilon = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False)
         all_zero_mask = max_abs_value < epsilon
         
         # 创建与结果形状匹配的零张量
@@ -742,8 +778,8 @@ def _compute_multi_axis_norm(A: TN, p: int | float | str | None, dim: tuple, kee
         # 多轴-1范数：(sum(|x_ij|^(-1)))^(-1)
         abs_A = abs(A)
         # 避免除以零
-        epsilon = tensor(np.finfo(float).eps, requires_grad=False)
-        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), requires_grad=False))
+        epsilon = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=False)
+        safe_abs_A = where(abs_A > epsilon, abs_A, tensor(float('inf'), device=dev, requires_grad=False))
         # 计算每个元素的-1次方
         value = 1. / safe_abs_A  # p=-1
         # 对两个维度求和
@@ -884,6 +920,9 @@ def cond(A: TN, p=None, *, out=None) -> TN:
     if A.dtype.kind not in ['f', 'c']:
         raise TypeError(f"Expected a floating point or complex tensor as input. Got {A.dtype.name}")
     
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 处理默认参数
     if p is None:
         p = 2
@@ -906,7 +945,7 @@ def cond(A: TN, p=None, *, out=None) -> TN:
         min_S = min_S.values if hasattr(min_S, 'values') else min_S
         
         # 定义一个小的阈值，用于判断奇异值是否接近0（考虑数值计算误差）
-        eps = np.finfo(float).eps
+        eps = arrlib.finfo(float).eps
         
         # 对于p=2，条件数是最大奇异值除以最小奇异值
         if p == 2:
@@ -937,7 +976,7 @@ def cond(A: TN, p=None, *, out=None) -> TN:
         min_S = min_S.values if hasattr(min_S, 'values') else min_S
         
         # 定义一个小的阈值，用于判断奇异值是否接近0（考虑数值计算误差）
-        eps = np.finfo(float).eps
+        eps = arrlib.finfo(float).eps
         
         # 检查矩阵是否奇异（最小奇异值接近0）
         is_singular = (min_S < eps).any()
@@ -945,7 +984,7 @@ def cond(A: TN, p=None, *, out=None) -> TN:
         if is_singular:
             # 对于奇异矩阵，创建与max_S相同形状的无穷大张量
             # 使用full_like保持与输入张量相同的形状和类型
-            cond_value = full_like(max_S, float('inf'))
+            cond_value = full_like(max_S, float('inf'), device=dev)
         else:
             try:
                 # 对于可逆矩阵，根据条件数的数学定义：矩阵范数与逆矩阵范数的乘积
@@ -960,7 +999,7 @@ def cond(A: TN, p=None, *, out=None) -> TN:
             except RuntimeError as e:
                 # 如果在计算过程中发现矩阵不可逆，返回无穷大
                 if "not invertible" in str(e).lower():
-                    cond_value = full_like(max_S, float('inf'))
+                    cond_value = full_like(max_S, float('inf'), device=dev)
                 else:
                     # 其他运行时错误重新抛出
                     raise
@@ -1032,10 +1071,13 @@ def det(A:TN):
     if A.shape[-1] != A.shape[-2]:
         raise ValueError(f"Input must be a square matrix, got shape {A.shape}")
     
-    # 计算行列式
-    detvalue = np.linalg.det(A.data)
+    arrlib = A._get_array_lib()
+    dev = A.device
     
-    ret = tensor(detvalue, requires_grad=(is_grad_enabled() and A.requires_grad))
+    # 计算行列式
+    detvalue = arrlib.linalg.det(A.data)
+    
+    ret = tensor(detvalue, device=dev, requires_grad=(is_grad_enabled() and A.requires_grad))
     ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
@@ -1086,14 +1128,17 @@ def inv(A:TN):
     if A.shape[-1] != A.shape[-2]:
         raise ValueError(f"Input must be a square matrix, got shape {A.shape}")
     
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 计算逆矩阵并处理异常
     try:
-        invarr = np.linalg.inv(A.data)
+        invarr = arrlib.linalg.inv(A.data)
         
-    except np.linalg.LinAlgError as e:
+    except arrlib.linalg.LinAlgError as e:
         raise RuntimeError(f"linalg.inv: Matrix is not invertible: {str(e)}")
     
-    ret = tensor(invarr, requires_grad=(is_grad_enabled() and A.requires_grad))
+    ret = tensor(invarr, device=dev, requires_grad=(is_grad_enabled() and A.requires_grad))
     ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
@@ -1165,6 +1210,9 @@ def svd(A, full_matrices=True, driver=None, out=None):
     if not isinstance(A, TN): 
         raise TypeError(f"Input must be TN type, got {type(A)}") 
     
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 验证输入维度至少为2 
     if A.ndim < 2: 
         raise ValueError(f"Input matrix must be at least 2-dimensional, got dimension {A.ndim}") 
@@ -1185,15 +1233,15 @@ def svd(A, full_matrices=True, driver=None, out=None):
 
     # 使用numpy.linalg.svd计算SVD，正确传递full_matrices参数 
     try: 
-        U_data, S_data, Vh_data = np.linalg.svd(A.data, full_matrices=full_matrices) 
-    except np.linalg.LinAlgError as e: 
+        U_data, S_data, Vh_data = arrlib.linalg.svd(A.data, full_matrices=full_matrices) 
+    except arrlib.linalg.LinAlgError as e: 
         raise RuntimeError(f"SVD computation failed: {str(e)}")
     
     # 创建结果张量
     requires_grad = is_grad_enabled() and A.requires_grad
-    U = tensor(U_data, requires_grad=requires_grad)
-    S = tensor(S_data, requires_grad=requires_grad)
-    Vh = tensor(Vh_data, requires_grad=requires_grad)
+    U = tensor(U_data, device=dev, requires_grad=requires_grad)
+    S = tensor(S_data, device=dev, requires_grad=requires_grad)
+    Vh = tensor(Vh_data, device=dev, requires_grad=requires_grad)
     
     # 设置叶子节点状态
     U.is_leaf = not U.requires_grad
@@ -1273,7 +1321,7 @@ def _svd_backward_u(result_tensor: TN, i: int) -> TN:
     # 数值稳定性处理，避免除零错误
     # 将denominator对角线置1.0
     # 当denominator为0时，使用epsilon而不是0作为替代值
-    denominator = denominator + eye(r, dtype=denominator.dtype)
+    denominator = denominator + eye(r, dtype=A.dtype, device=A.device)
     safe_denominator = where(denominator.abs() < epsilon, 
                             where(denominator >= 0, epsilon, -epsilon), 
                             denominator)
@@ -1284,7 +1332,7 @@ def _svd_backward_u(result_tensor: TN, i: int) -> TN:
     term1 = U @ FS @ S_diag @ Vh  # 形状 (m, n)
 
     if m > n:
-        I_m = eye(m)
+        I_m = eye(m, dtype=A.dtype, device=A.device)
         proj = I_m - U @ U.mH  # 形状 (m, m)
     
         # 计算第2项
@@ -1340,7 +1388,7 @@ def _svd_backward_vh(result_tensor: TN, i: int) -> TN:
     # 数值稳定性处理，避免除零错误
     # 将denominator对角线置1.0
     # 当denominator为0时，使用epsilon而不是0作为替代值
-    denominator = denominator + eye(r, dtype=denominator.dtype)
+    denominator = denominator + eye(r, dtype=A.dtype, device=A.device)
     safe_denominator = where(denominator.abs() < epsilon, 
                             where(denominator >= 0, epsilon, -epsilon), 
                             denominator)
@@ -1354,7 +1402,7 @@ def _svd_backward_vh(result_tensor: TN, i: int) -> TN:
     term1 = U @ S_diag @ FS @ Vh  # 形状 (m, n)
 
     if m < n:
-        I_n = eye(n)
+        I_n = eye(n, dtype=A.dtype, device=A.device)
         # 对于复数矩阵，投影矩阵计算需要考虑共轭
         proj = I_n - V @ Vh  # 形状 (n, n)
         
@@ -1506,6 +1554,9 @@ def eig(A, *, out=None):
     if A.ndim < 2: 
         raise ValueError(f"Input matrix must be at least 2-dimensional, got dimension {A.ndim}") 
     
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 验证输入是方阵
     m, n = A.shape[-2], A.shape[-1]
     if m != n:
@@ -1524,15 +1575,15 @@ def eig(A, *, out=None):
     # 使用numpy.linalg.eig计算特征值分解 - 支持批量计算
     try: 
         # numpy.linalg.eig 原生支持批处理维度
-        w_data, V_data = np.linalg.eig(A.data)
-    except np.linalg.LinAlgError as e: 
+        w_data, V_data = arrlib.linalg.eig(A.data)
+    except arrlib.linalg.LinAlgError as e: 
         raise RuntimeError(f"Eig computation failed: {str(e)}")
         
     # 创建结果张量
     requires_grad = is_grad_enabled() and A.requires_grad
     # data_type = get_default_complex()
-    w = tensor(w_data, requires_grad = requires_grad)
-    V = tensor(V_data, requires_grad = requires_grad)
+    w = tensor(w_data, device=dev, requires_grad = requires_grad)
+    V = tensor(V_data, device=dev, requires_grad = requires_grad)
         
     # 设置叶子节点状态
     w.is_leaf = not w.requires_grad
@@ -1601,7 +1652,7 @@ def _eig_backward_V(result_tensor: TN, i: int) -> TN:
     
     # 处理特征值相等的情况
     epsilon = 1e-12
-    eye_mask = eye(n, dtype=bool_)
+    eye_mask = eye(n, dtype=bool_, device=A.device)
     w_diff = where(eye_mask, 1.0, w_diff)  # 对角线设为1避免除零
     w_diff_safe = where(w_diff.abs() < epsilon,
                         where(w_diff>=0.0, epsilon, -epsilon), 
@@ -1642,7 +1693,11 @@ def lstsq(A, B, *, rcond=None, out=None):
         raise TypeError(f"Input A must be TN type, got {type(A)}")
     if not isinstance(B, TN):
         raise TypeError(f"Input B must be TN type, got {type(B)}")
+    if A.device != B.device:
+        raise ValueError(f"Input A and B must have the same device, got {A.device} and {B.device}")
     
+    arrlib = A._get_array_lib()
+        
     # 验证输入维度至少为2
     if A.ndim < 2:
         raise ValueError(f"Input matrix A must be at least 2-dimensional, got dimension {A.ndim}")
@@ -1682,7 +1737,7 @@ def lstsq(A, B, *, rcond=None, out=None):
     if rcond is None:
         # 使用PyTorch默认的rcond值
         m, n = A_data_shape
-        rcond = builtins.max(m, n) * np.finfo(S.dtype).eps
+        rcond = builtins.max(m, n) * arrlib.finfo(S.dtype).eps
     
     # 确定哪些奇异值被认为是非零的
     if S.ndim > 1:
@@ -1804,18 +1859,21 @@ def eigh(A, *, UPLO='L', out=None):
                 raise TypeError(f"out[{i}] must be TN type")  
         if out.requires_grad or A.requires_grad:
             raise RuntimeError(f"eigh(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-
+        
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 使用numpy.linalg.eigh计算特征值分解 - 支持批量计算
     try: 
         # numpy.linalg.eig 原生支持批处理维度
-        w_data, V_data = np.linalg.eigh(A.data,UPLO)
-    except np.linalg.LinAlgError as e: 
+        w_data, V_data = arrlib.linalg.eigh(A.data,UPLO)
+    except arrlib.linalg.LinAlgError as e: 
         raise RuntimeError(f"Eigh computation failed: {str(e)}")
     
     # 创建结果张量
     requires_grad = is_grad_enabled() and A.requires_grad
-    w = tensor(w_data, requires_grad=requires_grad)
-    V = tensor(V_data, requires_grad=requires_grad)
+    w = tensor(w_data, device=dev, requires_grad = requires_grad)
+    V = tensor(V_data, device=dev, requires_grad=requires_grad)
     
     # 设置叶子节点状态
     w.is_leaf = not w.requires_grad
@@ -1884,7 +1942,7 @@ def _eigh_backward_V(result_tensor: TN, i: int) -> TN:
     
     # w_diff对角线置为1，非对角线接近0元素置为epsilon，避免除零错误
     epsilon = 1e-12
-    eye_mask = eye(n, dtype=bool_)
+    eye_mask = eye(n, dtype=bool_, device=A.device)
     w_diff = where(eye_mask, 1.0, w_diff)
     w_diff_safe = where(w_diff.abs() < epsilon,
                         where(w_diff>=0.0,epsilon,-epsilon), 
@@ -1934,6 +1992,8 @@ def _squared_mat_lu(A, *, pivot=True):
     if not isinstance(A, TN): 
         raise TypeError(f"Input must be TN type, got {type(A)}") 
     
+    dev = A.device
+    
     # 验证输入维度至少为2 
     if A.ndim < 2: 
         raise ValueError(f"Input matrix must be at least 2-dimensional, got dimension {A.ndim}") 
@@ -1956,9 +2016,9 @@ def _squared_mat_lu(A, *, pivot=True):
     # 创建结果张量
     requires_grad = is_grad_enabled() and A.requires_grad
     # 当pivot=False时，P_data为None，此时P也设为None
-    P = tensor(P_data)  # 置换矩阵不需要梯度
-    L = tensor(L_data, requires_grad=requires_grad)
-    U = tensor(U_data, requires_grad=requires_grad)
+    P = tensor(P_data, device=dev)  # 置换矩阵不需要梯度
+    L = tensor(L_data, device=dev, requires_grad=requires_grad)
+    U = tensor(U_data, device=dev, requires_grad=requires_grad)
     
     # 设置叶子节点状态
     L.is_leaf = not L.requires_grad
@@ -2065,7 +2125,7 @@ def lu(A, *, pivot=True, out=None):
         # 对高廋形状矩阵，右侧补0列，转为方阵后再计算LU分解
         # 创建具有正确批量维度的padding矩阵
         batch_dims = A.shape[:-2]
-        padding = zeros(batch_dims + (m, m - n), dtype=A.dtype)
+        padding = zeros(batch_dims + (m, m - n), dtype=A.dtype, device=A.device)
 
         # 按列批量合并A和padding，得到A_p
         A_p = concatenate((A, padding), dim=-1)
@@ -2078,7 +2138,7 @@ def lu(A, *, pivot=True, out=None):
         # 对宽廋形状矩阵，下侧补斜对角为1的行，转为方阵后再计算LU分解
         # 创建具有正确批量维度的padding矩阵
         batch_dims = A.shape[:-2]
-        padding = zeros(batch_dims + (n - m, n), dtype=A.dtype)        
+        padding = zeros(batch_dims + (n - m, n), dtype=A.dtype, device=A.device)        
         # 在对角线位置设置1
         padding[..., range(n - m), range(m,n)] = 1.0
         
@@ -2137,8 +2197,9 @@ def solve(A, B, *, left=True, out=None):
         raise TypeError(f"A must be TN type, got {type(A)}")
     if not isinstance(B, TN):
         raise TypeError(f"B must be TN type, got {type(B)}")
+    if A.device != B.device:
+        raise ValueError(f"A and B must have the same device, got {A.device} and {B.device}")
     
-    # 检查数据类型 - 只支持浮点和复数类型
     if A.dtype.kind not in ['f', 'c']:
         raise RuntimeError(f"linalg.solve: A must be floating point or complex tensor, got {A.dtype.name}")
     if B.dtype.kind not in ['f', 'c']:
@@ -2270,6 +2331,9 @@ def qr(A, mode='reduced', *, out=None):
     if not isinstance(A, TN):
         raise TypeError(f"Input must be TN type, got {type(A)}")
     
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 验证输入维度至少为2
     if A.ndim < 2:
         raise ValueError(f"Input matrix must be at least 2-dimensional, got dimension {A.ndim}")
@@ -2303,23 +2367,23 @@ def qr(A, mode='reduced', *, out=None):
     try:
         if mode == 'r':
             # mode='r'时，只计算R矩阵
-            R_data = np.linalg.qr(A.data, mode='r')
-            Q_data = np.empty((0,), dtype=A.dtype)
+            R_data = arrlib.linalg.qr(A.data, mode='r')
+            Q_data = arrlib.empty((0,), dtype=A.dtype)
         else:
             # mode='reduced'或'complete'时，计算完整的QR分解
-            Q_data, R_data = np.linalg.qr(A.data, mode=mode)
-    except np.linalg.LinAlgError as e:
+            Q_data, R_data = arrlib.linalg.qr(A.data, mode=mode)
+    except arrlib.linalg.LinAlgError as e:
         raise RuntimeError(f"QR decomposition failed: {str(e)}")
     
     # 创建结果张量
     requires_grad = is_grad_enabled() and A.requires_grad and mode != 'r'
     
     if mode == 'r':
-        Q = tensor(Q_data, requires_grad=False)  # mode='r'的Q始终不需要梯度
-        R = tensor(R_data, requires_grad=False)  # mode='r'的R始终不需要梯度
+        Q = tensor(Q_data, device=dev, requires_grad=False)  # mode='r'的Q始终不需要梯度
+        R = tensor(R_data, device=dev, requires_grad=False)  # mode='r'的R始终不需要梯度
     else:
-        Q = tensor(Q_data, requires_grad=requires_grad)
-        R = tensor(R_data, requires_grad=requires_grad)
+        Q = tensor(Q_data, device=dev, requires_grad=requires_grad)
+        R = tensor(R_data, device=dev, requires_grad=requires_grad)
     
     # 设置叶子节点状态
     Q.is_leaf = not Q.requires_grad
@@ -2385,16 +2449,19 @@ def _qr_backward_q(result_tensor: TN, i: int) -> TN:
     else:
         pass
     
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 计算 R^{-T}
     try:
         R_inv_T = inv(R_squared.mH)
     except RuntimeError:
-        return full_like(A, np.nan, dtype=A.dtype)
+        return full_like(A, arrlib.nan, device=dev, dtype=A.dtype)
     
     # R^{-T}右侧补0，恢复形状为(*, m, n)
     if m < n:
         shape = R.shape[:-2] + (m, n-m)
-        padding = zeros(shape, dtype=R.dtype)
+        padding = zeros(shape, dtype=R.dtype, device=dev)
         R_inv_T = concatenate((R_inv_T, padding), dim=-1)  # (*, m, n)
 
     # 根据数学公式计算梯度
@@ -2413,7 +2480,7 @@ def _qr_backward_q(result_tensor: TN, i: int) -> TN:
     if m > n:
         # 计算第二项: (I - Q Q^T) * G * R^{-T}
         G_R_inv_T = G @ R_inv_T
-        I = eye(m, dtype=A.dtype)
+        I = eye(m, dtype=A.dtype, device=dev)
         proj = I - Q @ Q.mH    
         term2 = proj @ G_R_inv_T    
         grad_A = term1 + term2
@@ -2454,16 +2521,19 @@ def _qr_backward_r(result_tensor: TN, i: int) -> TN:
     else:
         pass
     
+    arrlib = A._get_array_lib()
+    dev = A.device
+    
     # 计算 R^{-T}
     try:
         R_inv_T = inv(R_squared.mH)
     except RuntimeError:
-        return full_like(A, np.nan, dtype=A.dtype)
-
+        return full_like(A, arrlib.nan, device=dev, dtype=A.dtype)
+    
     # R^{-T}右侧补0，恢复形状为(*, m, n)
     if m < n:
         shape = R.shape[:-2] + (m, n-m)
-        padding = zeros(shape, dtype=R.dtype)
+        padding = zeros(shape, dtype=R.dtype, device=dev)
         R_inv_T = concatenate((R_inv_T, padding), dim=-1)  # (*, m, n)
     
     # 计算梯度: Q @ (H + (R @ H^T- H @ R^T).tril() @ R^(-T))
