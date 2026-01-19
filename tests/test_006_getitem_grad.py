@@ -10,9 +10,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 try:
     from riemann.autograd.functional import hessian as rm_hessian  # 添加hessian函数导入
     from riemann import tensor as rm_tensor
-    TENSOR_AVAILABLE = True
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    import riemann as rm
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -175,7 +179,7 @@ stats = StatisticsCollector()
 IS_RUNNING_AS_SCRIPT = False
 
 # 比较值的函数
-def compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5):
+def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     """比较Riemann和PyTorch的值是否接近"""
     # 处理None值的情况
     if not TORCH_AVAILABLE:
@@ -187,9 +191,37 @@ def compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5):
     if rm_result is None or torch_result is None:
         return False
     
+    # 处理嵌套元组/列表的情况
+    if isinstance(rm_result, (list, tuple)) and isinstance(torch_result, (list, tuple)):
+        if len(rm_result) != len(torch_result):
+            return False
+        
+        all_passed = True
+        for i, (r, t) in enumerate(zip(rm_result, torch_result)):
+            if not compare_values(r, t, atol, rtol):
+                all_passed = False
+                break
+        
+        return all_passed
+    
     # 转换为numpy数组
-    rm_data = rm_result.detach().numpy()
-    torch_data = torch_result.detach().numpy()
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
     
     # 处理形状不匹配的情况
     try:
@@ -218,12 +250,15 @@ class TestGetitemGradFunctions(unittest.TestCase):
             stats.end_function()
             print(f"{Colors.OKBLUE}测试完成: {self.current_test_name}{Colors.ENDC}")
     
-    def _test_getitem_grad(self, case_name, input_np, index):
+    def _test_getitem_grad(self, case_name, input_np, index, device="cpu"):
         """测试索引操作的梯度计算"""
         start_time = time.time()
         try:
             # 测试Riemann
-            x_riemann = rm_tensor(input_np, requires_grad=True)
+            if device == "cpu":
+                x_riemann = rm_tensor(input_np, requires_grad=True)
+            else:  # cuda
+                x_riemann = rm_tensor(input_np, requires_grad=True, device=device)
             indexed_riemann = x_riemann[index]
             
             # 确保只对标量调用backward()
@@ -238,7 +273,10 @@ class TestGetitemGradFunctions(unittest.TestCase):
             
             # 测试PyTorch
             if TORCH_AVAILABLE:
-                x_torch = torch.tensor(input_np, requires_grad=True, dtype=torch.float32)
+                if device == "cpu":
+                    x_torch = torch.tensor(input_np, requires_grad=True, dtype=torch.float32)
+                else:  # cuda
+                    x_torch = torch.tensor(input_np, requires_grad=True, dtype=torch.float32, device=device)
                 indexed_torch = x_torch[index]
                 
                 # 与Riemann相同的处理方式
@@ -274,7 +312,7 @@ class TestGetitemGradFunctions(unittest.TestCase):
             raise
     
     # 然后修改_test_getitem_second_grad方法
-    def _test_getitem_second_grad(self, case_name, input_np):
+    def _test_getitem_second_grad(self, case_name, input_np, device="cpu"):
         """测试索引操作的二阶导数计算"""
         start_time = time.time()
         try:
@@ -289,12 +327,18 @@ class TestGetitemGradFunctions(unittest.TestCase):
                 return y
             
             # 测试Riemann - 使用hessian函数直接计算Hessian矩阵，与PyTorch处理方式一致
-            x_riemann = rm_tensor(input_np, requires_grad=True)
+            if device == "cpu":
+                x_riemann = rm_tensor(input_np, requires_grad=True)
+            else:  # cuda
+                x_riemann = rm_tensor(input_np, requires_grad=True, device=device)
             hessian_riemann = rm_hessian(f_riemann, x_riemann)
             
             # 测试PyTorch - 使用torch.autograd.functional.hessian
             if TORCH_AVAILABLE:
-                x_torch = torch.tensor(input_np, requires_grad=True, dtype=torch.float32)
+                if device == "cpu":
+                    x_torch = torch.tensor(input_np, requires_grad=True, dtype=torch.float32)
+                else:  # cuda
+                    x_torch = torch.tensor(input_np, requires_grad=True, dtype=torch.float32, device=device)
                 hessian_torch = torch.autograd.functional.hessian(f_torch, x_torch)
             else:
                 hessian_torch = None
@@ -324,79 +368,144 @@ class TestGetitemGradFunctions(unittest.TestCase):
         """测试场景1: 标量索引"""
         input_np = np.random.randn(5).astype(np.float32)
         index = 2
-        self._test_getitem_grad("标量索引", input_np, index)
+        
+        # CPU场景测试
+        self._test_getitem_grad("标量索引 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("标量索引 CUDA", input_np, index, device="cuda")
     
     def test_slice_indexing(self):
         """测试场景2: 切片索引"""
         input_np = np.random.randn(5).astype(np.float32)
         index = slice(1, 4)
-        self._test_getitem_grad("切片索引", input_np, index)
+        
+        # CPU场景测试
+        self._test_getitem_grad("切片索引 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("切片索引 CUDA", input_np, index, device="cuda")
     
     def test_array_indexing(self):
         """测试场景3: 整数数组索引"""
         input_np = np.random.randn(5).astype(np.float32)
         index = [0, 2, 4]
-        self._test_getitem_grad("整数数组索引", input_np, index)
+        
+        # CPU场景测试
+        self._test_getitem_grad("整数数组索引 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("整数数组索引 CUDA", input_np, index, device="cuda")
     
     def test_boolean_indexing(self):
         """测试场景4: 布尔索引"""
         input_np = np.random.randn(5).astype(np.float32)
-        index = input_np > 0
-        self._test_getitem_grad("布尔索引", input_np, index)
+        index = input_np > 0  # 创建布尔掩码
+        
+        # CPU场景测试
+        self._test_getitem_grad("布尔索引 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("布尔索引 CUDA", input_np, index, device="cuda")
     
     def test_2d_single_indexing(self):
         """测试场景5: 二维数组的单索引"""
         input_np = np.random.randn(3, 4).astype(np.float32)
-        index = 1
-        self._test_getitem_grad("二维数组的单索引", input_np, index)
+        index = 1  # 选择第二行
+        
+        # CPU场景测试
+        self._test_getitem_grad("二维单索引 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("二维单索引 CUDA", input_np, index, device="cuda")
     
     def test_2d_tuple_indexing(self):
         """测试场景6: 二维数组的元组索引"""
         input_np = np.random.randn(3, 4).astype(np.float32)
-        index = (1, 2)
-        self._test_getitem_grad("二维数组的元组索引", input_np, index)
+        index = (1, 2)  # 选择第2行第3列
+        
+        # CPU场景测试
+        self._test_getitem_grad("二维元组索引 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("二维元组索引 CUDA", input_np, index, device="cuda")
     
     def test_2d_mixed_indexing(self):
         """测试场景7: 二维数组的混合索引（整数+切片）"""
         input_np = np.random.randn(3, 4).astype(np.float32)
-        index = (1, slice(0, 2))
-        self._test_getitem_grad("二维数组的混合索引", input_np, index)
+        index = (1, slice(0, 3))  # 第2行，前3列
+        
+        # CPU场景测试
+        self._test_getitem_grad("二维混合索引 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("二维混合索引 CUDA", input_np, index, device="cuda")
     
     def test_3d_multi_dim_indexing(self):
         """测试场景8: 三维数组的多维度索引"""
         input_np = np.random.randn(2, 3, 4).astype(np.float32)
         index = (0, 1, 2)
-        self._test_getitem_grad("三维数组的多维度索引", input_np, index)
+        
+        # CPU场景测试
+        self._test_getitem_grad("三维数组的多维度索引 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("三维数组的多维度索引 CUDA", input_np, index, device="cuda")
     
     def test_repeated_indexing(self):
         """测试场景9: 重复索引位置（检查梯度累加）"""
         input_np = np.random.randn(5).astype(np.float32)
         index = [0, 0, 2, 2]
-        self._test_getitem_grad("重复索引位置", input_np, index)
+        
+        # CPU场景测试
+        self._test_getitem_grad("重复索引位置 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("重复索引位置 CUDA", input_np, index, device="cuda")
     
     def test_negative_slice_indexing(self):
         """测试场景10: 负切片索引"""
         input_np = np.random.randn(10).astype(np.float32)
-        index = slice(-5, -2)
-        self._test_getitem_grad("负切片索引", input_np, index)
+        index = slice(-5, -1)
+        
+        # CPU场景测试
+        self._test_getitem_grad("负切片索引 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("负切片索引 CUDA", input_np, index, device="cuda")
     
     def test_dots_indexing(self):
         """测试场景11: dots索引测试"""
         # 测试三维数组的dots索引
         input_np = np.random.randn(2, 3, 4).astype(np.float32)
         index = (..., 2)  # 相当于 :, :, 2
-        self._test_getitem_grad("dots索引测试", input_np, index)
+        
+        # CPU场景测试
+        self._test_getitem_grad("dots索引测试 CPU", input_np, index, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_grad("dots索引测试 CUDA", input_np, index, device="cuda")
     
-    def test_3level_view_indexing(self):
-        """测试场景12: 3级视图上的索引测试"""
-        # 这个测试需要自定义实现，因为它涉及到多级视图
+    def _test_3level_view_indexing_device(self, case_name, input_np, device="cpu"):
+        """测试特定设备上的3级视图索引"""
         start_time = time.time()
         try:
-            # 创建输入数据
-            input_np = np.random.randn(5, 5, 5).astype(np.float32)
-            
             # 测试Riemann
-            x_riemann = rm_tensor(input_np, requires_grad=True)
+            if device == "cpu":
+                x_riemann = rm_tensor(input_np, requires_grad=True)
+            else:  # cuda
+                x_riemann = rm_tensor(input_np, requires_grad=True, device=device)
             
             # 创建3级视图
             view1 = x_riemann[:, 1:4, :]  # 第1级视图
@@ -410,7 +519,10 @@ class TestGetitemGradFunctions(unittest.TestCase):
             
             # 测试PyTorch
             if TORCH_AVAILABLE:
-                x_torch = torch.tensor(input_np, requires_grad=True)
+                if device == "cpu":
+                    x_torch = torch.tensor(input_np, requires_grad=True)
+                else:  # cuda
+                    x_torch = torch.tensor(input_np, requires_grad=True, device=device)
                 
                 # 创建3级视图
                 torch_view1 = x_torch[:, 1:4, :]
@@ -429,26 +541,44 @@ class TestGetitemGradFunctions(unittest.TestCase):
             time_taken = time.time() - start_time
             
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result("3级视图索引测试", passed)
+                stats.add_result(case_name, passed)
                 status = "通过" if passed else "失败"
-                print(f"测试用例: 3级视图索引测试 - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
                 if not passed:
                     print(f"  值比较: 失败")
             
             # 断言确保测试通过
-            self.assertTrue(passed, "3级视图索引操作梯度计算结果不匹配")
+            self.assertTrue(passed, f"3级视图索引操作梯度计算结果不匹配: {case_name}")
             
         except Exception as e:
             time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result("3级视图索引测试", False, [str(e)])
-                print(f"测试用例: 3级视图索引测试 - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                stats.add_result(case_name, False, [str(e)])
+                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
+    
+    def test_3level_view_indexing(self):
+        """测试场景12: 3级视图上的索引测试"""
+        # 创建输入数据
+        input_np = np.random.randn(5, 5, 5).astype(np.float32)
+        
+        # CPU场景测试
+        self._test_3level_view_indexing_device("3级视图索引测试 CPU", input_np, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_3level_view_indexing_device("3级视图索引测试 CUDA", input_np, device="cuda")
     
     def test_second_derivative_indexing(self):
         """测试场景13: 索引操作的二阶导数计算 (Hessian矩阵)"""
         input_np = np.array([1.0, 2.0], dtype=np.float32)
-        self._test_getitem_second_grad("索引操作的二阶导数计算", input_np)
+        
+        # CPU场景测试
+        self._test_getitem_second_grad("索引操作的二阶导数计算 CPU", input_np, device="cpu")
+        
+        # CUDA场景测试（如果可用）
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            self._test_getitem_second_grad("索引操作的二阶导数计算 CUDA", input_np, device="cuda")
 
 if __name__ == '__main__':
     # 设置为独立脚本运行模式

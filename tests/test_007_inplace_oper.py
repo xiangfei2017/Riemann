@@ -9,6 +9,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 # 导入riemann模块
 try:
     import riemann as rm
+    # 尝试从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+    
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)
@@ -22,13 +26,17 @@ try:
     print("预热PyTorch系统...")
     warmup_start = time.time()
     
-    # 执行简单的PyTorch操作以触发初始化
-    warmup_input = torch.tensor([[0.0]], requires_grad=True)
-    warmup_output = warmup_input.sum()
-    warmup_output.backward()
+    # 执行简单的PyTorch CPU操作以触发初始化
+    warmup_input_cpu = torch.tensor([[0.0]], requires_grad=True)
+    warmup_output_cpu = warmup_input_cpu.sum()
+    warmup_output_cpu.backward()
     
-    # 清理资源
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    # 如果CUDA可用，执行CUDA操作以初始化CUDA上下文
+    if torch.cuda.is_available():
+        warmup_input_cuda = torch.tensor([[0.0]], requires_grad=True, device='cuda')
+        warmup_output_cuda = warmup_input_cuda.sum()
+        warmup_output_cuda.backward()
+        torch.cuda.empty_cache()
     
     print(f"PyTorch预热完成，耗时: {time.time() - warmup_start:.4f}秒")
     
@@ -203,13 +211,29 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     if rm_result is None or torch_result is None:
         return False
     
-    # 转换为numpy数组
-    try:
-        rm_data = rm_result.data if hasattr(rm_result, 'data') else rm_result.numpy()
+    # 处理嵌套元组/列表的情况
+    if isinstance(rm_result, (list, tuple)) and isinstance(torch_result, (list, tuple)):
+        if len(rm_result) != len(torch_result):
+            return False
+        
+        all_passed = True
+        for i, (r, t) in enumerate(zip(rm_result, torch_result)):
+            if not compare_values(r, t, atol, rtol):
+                all_passed = False
+                break
+        
+        return all_passed
+    
+    # 处理Riemann结果
+    if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+        rm_data = rm_result.detach().cpu().numpy()
+    else:
+        rm_data = rm_result.detach().numpy()
+    # 处理PyTorch结果
+    if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+        torch_data = torch_result.detach().cpu().numpy()
+    else:
         torch_data = torch_result.detach().numpy()
-    except Exception as e:
-        print(f"比较值转换错误: {e}")
-        return False
     
     # 处理形状不匹配的情况
     try:
@@ -256,8 +280,23 @@ INDEX_CASES = [
     # 复杂的混合索引
     {"name": "复杂的混合索引", "index": (1, slice(0, 3))},  # 第2行，前3列
     # 链式索引（这里用元组表示，实际测试中会分两步执行）
-    {"name": "链式索引", "index": ((1,), (slice(0, 3),))}  # 先取第2行，再取前3列
+    {"name": "链式索引", "index": ((1,), (slice(0, 3),))},  # 先取第2行，再取前3列
+    # NumPy数组索引模拟CuPy数组索引
+    {"name": "NumPy整数数组索引", "index": (np.array([0, 2]),)},  # 使用NumPy数组模拟CuPy数组索引
+    # NumPy布尔数组索引模拟CuPy布尔数组索引
+    {"name": "NumPy布尔数组索引", "index": (np.array([True, False, True, False, True]),)}  # 使用NumPy数组模拟CuPy布尔数组索引
 ]
+
+# 定义CUDA环境专用的索引类型（直接使用CuPy数组）
+CUDA_INDEX_CASES = []
+if CUDA_AVAILABLE:
+    import cupy as cp
+    CUDA_INDEX_CASES = [
+        # 直接使用CuPy整数数组索引
+        {"name": "CuPy整数数组索引", "index": (cp.array([0, 2]),)},  # 直接使用CuPy数组作为索引
+        # 直接使用CuPy布尔数组索引
+        {"name": "CuPy布尔数组索引", "index": (cp.array([True, False, True, False, True]),)}  # 直接使用CuPy布尔数组作为索引
+    ]
 
 # 定义原地操作的测试用例
 INPLACE_OPS = [
@@ -403,6 +442,31 @@ INDEX_MERGE_CASES = [
         "current_index": (1, [0, 2]),
         "expected": (2, [1, 3]),
         "description": "x[[0,2],1:][1,[0,2]] -> (2, [1, 3]) (complex mixed indexing)"
+    },
+    # 添加CuPy索引场景测试用例
+    {
+        "name": "CuPy整数数组索引",
+        "base_index": (slice(1, 4),),
+        "current_index": (np.array([0, 2]),),
+        "expected": (np.array([1, 3]),),
+        "description": "x[1:4][np.array([0,2])] -> np.array([1, 3]) (CuPy integer array indexing)",
+        "explanation": "从切片[1:4]的结果中选择第1和第3个元素，对应基张量的索引1和3"
+    },
+    {
+        "name": "CuPy布尔数组索引",
+        "base_index": (slice(0, 5),),
+        "current_index": (np.array([True, False, True, False, True]),),
+        "expected": (np.array([0, 2, 4]),),
+        "description": "x[:5][np.array([True, False, True, False, True])] -> np.array([0, 2, 4]) (CuPy boolean array indexing)",
+        "explanation": "从完整切片[:5]中选择True位置的元素，对应基张量的索引0, 2, 4"
+    },
+    {
+        "name": "切片到CuPy整数数组",
+        "base_index": (slice(1, 5, 2),),
+        "current_index": (np.array([1]),),
+        "expected": (3,),
+        "description": "x[1:5:2][np.array([1])] -> (3,) (slice to CuPy integer array indexing)",
+        "explanation": "从步长为2的切片[1:5:2]（元素1, 3）中选择第2个元素（索引1），对应基张量的索引3"
     },
     {
         "name": "整数索引导致维度消失",
@@ -646,92 +710,98 @@ class TestInplaceOperations(unittest.TestCase):
     
     def _test_inplace_operation(self, base_tensor, base_tensor_name, index_case, op_case):
         """通用的原地操作测试函数"""
-        case_name = f"{op_case['name']} - {index_case['name']}"
-        start_time = time.time()
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        try:
-            # 处理链式索引的情况
-            is_chain_index = isinstance(index_case["index"], tuple) and all(isinstance(sub_idx, tuple) for sub_idx in index_case["index"])
+        for device in devices:
+            case_name = f"{op_case['name']} - {index_case['name']} - {device}"
+            start_time = time.time()
             
-            # 创建Riemann张量
-            rm_x_leaf = rm.tensor(base_tensor, requires_grad=True)
-            rm_x = rm_x_leaf.clone()  # 创建非叶子节点副本
-            rm_x.retain_grad()  # 保留中间节点的梯度
-            rm_y_shape = (3,) if is_chain_index else (1,)
-            rm_y = rm.tensor(np.ones(rm_y_shape) * 5, requires_grad=True)
-            rm_y.retain_grad()  # 保留y的梯度
-            
-            # 创建PyTorch张量
-            torch_x_leaf = torch.tensor(base_tensor, requires_grad=True) if TORCH_AVAILABLE else None
-            torch_x = torch_x_leaf.clone()  # 创建非叶子节点副本
-            if TORCH_AVAILABLE:
-                torch_x.retain_grad()  # 保留中间节点的梯度
-            torch_y = torch.tensor(np.ones(rm_y_shape) * 5, requires_grad=True) if TORCH_AVAILABLE else None
-            if TORCH_AVAILABLE:
-                torch_y.retain_grad()  # 保留y的梯度
-            
-            # 执行Riemann原地操作
-            if is_chain_index:
-                # 链式索引：x[idx1][idx2] op= y
-                rm_view = rm_x[index_case["index"][0]]
-                rm_view.retain_grad()  # 保留视图的梯度
-                self._execute_inplace_operation(rm_view, index_case["index"][1], rm_y, op_case)
-            else:
-                self._execute_inplace_operation(rm_x, index_case["index"], rm_y, op_case)
-            
-            # 执行PyTorch原地操作
-            if TORCH_AVAILABLE:
+            try:
+                # 处理链式索引的情况
+                is_chain_index = isinstance(index_case["index"], tuple) and all(isinstance(sub_idx, tuple) for sub_idx in index_case["index"])
+                
+                # 创建Riemann张量
+                rm_x_leaf = rm.tensor(base_tensor, requires_grad=True, device=device)
+                rm_x = rm_x_leaf.clone()  # 创建非叶子节点副本
+                rm_x.retain_grad()  # 保留中间节点的梯度
+                rm_y_shape = (3,) if is_chain_index else (1,)
+                rm_y = rm.tensor(np.ones(rm_y_shape) * 5, requires_grad=True, device=device)
+                rm_y.retain_grad()  # 保留y的梯度
+                
+                # 创建PyTorch张量
+                torch_x_leaf = torch.tensor(base_tensor, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                torch_x = torch_x_leaf.clone()  # 创建非叶子节点副本
+                if TORCH_AVAILABLE:
+                    torch_x.retain_grad()  # 保留中间节点的梯度
+                torch_y = torch.tensor(np.ones(rm_y_shape) * 5, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                if TORCH_AVAILABLE:
+                    torch_y.retain_grad()  # 保留y的梯度
+                
+                # 执行Riemann原地操作
                 if is_chain_index:
                     # 链式索引：x[idx1][idx2] op= y
-                    torch_view = torch_x[index_case["index"][0]]
-                    torch_view.retain_grad()  # 保留视图的梯度
-                    if op_case["op"] == "=":
-                        torch_view[index_case["index"][1]] = torch_y
-                    else:
-                        op_case["torch_func"](torch_view, index_case["index"][1], torch_y)
+                    rm_view = rm_x[index_case["index"][0]]
+                    rm_view.retain_grad()  # 保留视图的梯度
+                    self._execute_inplace_operation(rm_view, index_case["index"][1], rm_y, op_case)
                 else:
-                    if op_case["op"] == "=":
-                        torch_x[index_case["index"]] = torch_y
+                    self._execute_inplace_operation(rm_x, index_case["index"], rm_y, op_case)
+                
+                # 执行PyTorch原地操作
+                if TORCH_AVAILABLE:
+                    if is_chain_index:
+                        # 链式索引：x[idx1][idx2] op= y
+                        torch_view = torch_x[index_case["index"][0]]
+                        torch_view.retain_grad()  # 保留视图的梯度
+                        if op_case["op"] == "=":
+                            torch_view[index_case["index"][1]] = torch_y
+                        else:
+                            op_case["torch_func"](torch_view, index_case["index"][1], torch_y)
                     else:
-                        op_case["torch_func"](torch_x, index_case["index"], torch_y)
-            
-            # 计算Riemann损失和反向传播
-            rm_loss = rm_x.sum()
-            rm_loss.backward()
-            
-            # 计算PyTorch损失和反向传播
-            torch_loss = None
-            if TORCH_AVAILABLE:
-                torch_loss = torch_x.sum()
-                torch_loss.backward()
-            
-            # 比较结果
-            forward_passed = compare_values(rm_x, torch_x)
-            grad_x_passed = compare_grads(rm_x, torch_x)
-            grad_y_passed = compare_grads(rm_y, torch_y) if not is_chain_index else True  # 链式索引时不比较y的梯度
-            
-            passed = forward_passed and grad_x_passed and grad_y_passed
-            
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed and TORCH_AVAILABLE:
-                    print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                    print(f"  X梯度比较: {'通过' if grad_x_passed else '失败'}")
-                    print(f"  Y梯度比较: {'通过' if grad_y_passed else '失败'}")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"原地操作测试失败: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+                        if op_case["op"] == "=":
+                            torch_x[index_case["index"]] = torch_y
+                        else:
+                            op_case["torch_func"](torch_x, index_case["index"], torch_y)
+                
+                # 计算Riemann损失和反向传播
+                rm_loss = rm_x.sum()
+                rm_loss.backward()
+                
+                # 计算PyTorch损失和反向传播
+                torch_loss = None
+                if TORCH_AVAILABLE:
+                    torch_loss = torch_x.sum()
+                    torch_loss.backward()
+                
+                # 比较结果
+                forward_passed = compare_values(rm_x, torch_x)
+                grad_x_passed = compare_grads(rm_x, torch_x)
+                grad_y_passed = compare_grads(rm_y, torch_y) if not is_chain_index else True  # 链式索引时不比较y的梯度
+                
+                passed = forward_passed and grad_x_passed and grad_y_passed
+                
+                time_taken = time.time() - start_time
+                
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    status = "通过" if passed else "失败"
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    if not passed and TORCH_AVAILABLE:
+                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                        print(f"  X梯度比较: {'通过' if grad_x_passed else '失败'}")
+                        print(f"  Y梯度比较: {'通过' if grad_y_passed else '失败'}")
+                
+                # 断言确保测试通过
+                self.assertTrue(passed, f"原地操作测试失败: {case_name}")
+                
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
     
     def test_original_tensor_inplace(self):
         """测试对原始张量的原地操作"""
@@ -742,211 +812,164 @@ class TestInplaceOperations(unittest.TestCase):
             for index_case in INDEX_CASES:
                 self._test_inplace_operation(base_tensor, "原始张量", index_case, op_case)
     
+    def test_cuda_index_cases(self):
+        """测试CUDA环境下的专用索引用例"""
+        if not CUDA_AVAILABLE:
+            print("CUDA not available, skipping CUDA index tests")
+            return
+        
+        # 创建一个基础张量
+        base_tensor = np.random.randn(5, 4)
+        
+        import cupy as cp
+        
+        # 直接测试_merge_indices函数在CUDA环境下的行为
+        device = "cuda"
+        for op_case in INPLACE_OPS:
+            # 创建Riemann CUDA张量
+            rm_x_leaf = rm.tensor(base_tensor, requires_grad=True, device=device)
+            rm_x = rm_x_leaf.clone()  # 创建非叶子节点副本
+            rm_x.retain_grad()  # 保留中间节点的梯度
+            
+            # 直接使用CuPy数组作为索引测试
+            print("Testing direct CuPy array indexing...")
+            
+            # 定义测试场景
+            test_scenarios = [
+                {
+                    "name": "CuPy整数数组索引",
+                    "base_index": (slice(1, 4),),
+                    "current_index": (cp.array([0, 2]),),
+                },
+                {
+                    "name": "CuPy布尔数组索引",
+                    "base_index": (slice(0, 5),),
+                    "current_index": (cp.array([True, False, True, False, True]),),
+                },
+            ]
+            
+            for scenario in test_scenarios:
+                case_name = f"{op_case['name']} - {scenario['name']} - {device}"
+                start_time = time.time()
+                print(f"Test case: {case_name}")
+                
+                try:
+                    # 测试索引合并
+                    merged_index = rm_x._merge_indices(scenario['base_index'], scenario['current_index'])
+                    print(f"Merged index: {merged_index}")
+                    
+                    # 创建视图并执行操作
+                    view1 = rm_x[scenario['base_index']]
+                    
+                    # 创建适配大小的y张量
+                    temp_np = np.zeros(view1.shape)
+                    
+                    # 将CuPy索引转换为NumPy索引，用于计算目标形状
+                    numpy_index = tuple()
+                    for idx in scenario['current_index']:
+                        if isinstance(idx, cp.ndarray):
+                            numpy_index += (idx.get(),)
+                        else:
+                            numpy_index += (idx,)
+                    
+                    target_shape = temp_np[numpy_index].shape
+                    rm_y = rm.tensor(np.ones(target_shape) * 5, requires_grad=True, device=device)
+                    
+                    # 执行原地操作
+                    view1[scenario['current_index']] = rm_y
+                    
+                    # 计算损失和反向传播
+                    loss = rm_x.sum()
+                    loss.backward()
+                    
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, True)
+                    print(f"✓ Test passed! ({time_taken:.4f}秒)")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"✗ Test failed with error: {e} ({time_taken:.4f}秒)")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+    
     def test_view_tensor_inplace(self):
         """测试对视图对象的原地操作"""
         # 创建一个基础张量
         base_tensor = np.random.randn(5, 4)
         
-        for op_case in INPLACE_OPS:
-            for index_case in INDEX_CASES:
-                # 跳过链式索引，因为它本身就是多级索引
-                if index_case["name"] == "链式索引":
-                    continue
-                    
-                case_name = f"{op_case['name']} - {index_case['name']}（视图）"
-                start_time = time.time()
-                
-                try:
-                    # 创建Riemann张量和视图
-                    rm_x_leaf = rm.tensor(base_tensor, requires_grad=True)
-                    rm_x = rm_x_leaf.clone()  # 创建非叶子节点副本
-                    rm_x.retain_grad()  # 保留中间节点的梯度
-                    rm_view = rm_x[1:4, :]  # 创建一个视图（第2-4行）
-                    rm_view.retain_grad()  # 保留视图的梯度
-                    
-                    # 创建PyTorch张量和视图
-                    torch_x_leaf = torch.tensor(base_tensor, requires_grad=True) if TORCH_AVAILABLE else None
-                    torch_x = torch_x_leaf.clone()  # 创建非叶子节点副本
-                    if TORCH_AVAILABLE:
-                        torch_x.retain_grad()  # 保留中间节点的梯度
-                    torch_view = torch_x[1:4, :] if TORCH_AVAILABLE else None
-                    if TORCH_AVAILABLE:
-                        torch_view.retain_grad()  # 保留视图的梯度
-                    
-                    # 特殊处理布尔索引：根据视图大小调整布尔索引数组长度
-                    adjusted_index = index_case["index"]
-                    # 首先检查是否是布尔索引，如果是且维度不匹配，则调整
-                    is_boolean_index = index_case["name"] == "布尔索引"
-                    if is_boolean_index:
-                        # 获取当前布尔索引
-                        boolean_array = adjusted_index[0]
-                        # 检查布尔索引长度是否与视图第一维度大小匹配
-                        if boolean_array.shape[0] != rm_view.shape[0]:
-                            # 为视图创建合适长度的布尔索引
-                            adjusted_boolean = np.array([True, False, True])  # 适应3行的视图
-                            adjusted_index = (adjusted_boolean,)
-                    
-                    # 计算索引操作后的目标大小
-                    temp_np = np.zeros(rm_view.shape)
-                    target_shape = temp_np[adjusted_index].shape
-                    target_size = temp_np[adjusted_index].size
-                    
-                    # 创建y张量，确保其大小与目标大小匹配
-                    rm_y = rm.tensor(np.ones(target_shape) * 5, requires_grad=True)
-                    rm_y.retain_grad()  # 保留y的梯度
-                    
-                    # 创建PyTorch y张量，确保其大小与目标大小匹配
-                    torch_y = torch.tensor(np.ones(target_shape) * 5, requires_grad=True) if TORCH_AVAILABLE else None
-                    if TORCH_AVAILABLE:
-                        torch_y.retain_grad()  # 保留y的梯度
-                    
-                    # 执行Riemann原地操作
-                    self._execute_inplace_operation(rm_view, adjusted_index, rm_y, op_case)
-                    
-                    # 执行PyTorch原地操作
-                    if TORCH_AVAILABLE:
-                        if op_case["op"] == "=":
-                            torch_view[adjusted_index] = torch_y
-                        else:
-                            op_case["torch_func"](torch_view, adjusted_index, torch_y)
-                    
-                    # 验证视图一致性（视图修改是否反映到原始张量）
-                    rm_view_consistent = compare_values(rm_view, rm_x[1:4, :])
-                    
-                    # 计算Riemann损失和反向传播
-                    rm_loss = rm_x.sum()
-                    rm_loss.backward()
-                    
-                    # 计算PyTorch损失和反向传播
-                    torch_loss = None
-                    if TORCH_AVAILABLE:
-                        torch_loss = torch_x.sum()
-                        torch_loss.backward()
-                        # 验证PyTorch视图一致性
-                        torch_view_consistent = compare_values(torch_view, torch_x[1:4, :])
-                    else:
-                        torch_view_consistent = True
-                    
-                    # 比较结果
-                    forward_passed = compare_values(rm_x, torch_x)
-                    grad_x_passed = compare_grads(rm_x, torch_x)
-                    grad_y_passed = compare_grads(rm_y, torch_y)
-                    view_consistent = rm_view_consistent and torch_view_consistent
-                    
-                    passed = forward_passed and grad_x_passed and grad_y_passed and view_consistent
-                    
-                    time_taken = time.time() - start_time
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, passed)
-                        status = "通过" if passed else "失败"
-                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                        if not passed and TORCH_AVAILABLE:
-                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                            print(f"  X梯度比较: {'通过' if grad_x_passed else '失败'}")
-                            print(f"  Y梯度比较: {'通过' if grad_y_passed else '失败'}")
-                            print(f"  视图一致性: {'通过' if view_consistent else '失败'}")
-                    
-                    # 断言确保测试通过
-                    self.assertTrue(passed, f"视图对象原地操作测试失败: {case_name}")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
-        stats.end_function()
-    
-    def test_multi_level_view_inplace(self):
-        """测试对多层视图对象的原地操作"""
-        # 创建一个基础张量
-        base_tensor = np.random.randn(5, 4, 3)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        for op_case in INPLACE_OPS:
-            # 为多层视图测试创建专门的索引用例，确保索引维度与视图大小匹配
-                multi_level_index_cases = []
+        for device in devices:
+            for op_case in INPLACE_OPS:
                 for index_case in INDEX_CASES:
-                    # 只测试适合三维张量的索引方式
-                    if index_case["name"] in ["多维数组索引", "复杂的混合索引", "链式索引"]:
+                    # 跳过链式索引，因为它本身就是多级索引
+                    if index_case["name"] == "链式索引":
                         continue
-                    # 为布尔索引创建适合多层视图大小的用例
-                    elif index_case["name"] == "布尔索引":
-                        adjusted_case = index_case.copy()
-                        adjusted_case["index"] = (np.array([True, False, True]),)  # 适应3行的视图
-                        multi_level_index_cases.append(adjusted_case)
-                    else:
-                        multi_level_index_cases.append(index_case)
-                
-                for index_case in multi_level_index_cases:
                     
-                    case_name = f"{op_case['name']} - {index_case['name']}（多层视图）"
+                    case_name = f"{op_case['name']} - {index_case['name']}（视图） - {device}"
                     start_time = time.time()
                     
                     try:
-                        # 创建Riemann张量和多层视图
-                        rm_x_leaf = rm.tensor(base_tensor, requires_grad=True)
+                        # 创建Riemann张量和视图
+                        rm_x_leaf = rm.tensor(base_tensor, requires_grad=True, device=device)
                         rm_x = rm_x_leaf.clone()  # 创建非叶子节点副本
                         rm_x.retain_grad()  # 保留中间节点的梯度
-                        rm_view1 = rm_x[:, 1:3, :]  # 第1-2列（不包括第3列）
-                        rm_view1.retain_grad()  # 保留视图1的梯度
-                        rm_view2 = rm_view1[1:4, :, 0:2]  # 第2-4行，前2个通道
-                        rm_view2.retain_grad()  # 保留视图2的梯度
-                        rm_view3 = rm_view2[:, :, 1]  # 最后一个维度的第2个通道
-                        rm_view3.retain_grad()  # 保留视图3的梯度
-                        rm_y = rm.tensor(np.ones((1,)) * 5, requires_grad=True)
-                        rm_y.retain_grad()  # 保留y的梯度
+                        rm_view = rm_x[1:4, :]  # 创建一个视图（第2-4行）
+                        rm_view.retain_grad()  # 保留视图的梯度
                         
-                        # 创建PyTorch张量和多层视图
-                        torch_x_leaf = torch.tensor(base_tensor, requires_grad=True) if TORCH_AVAILABLE else None
+                        # 创建PyTorch张量和视图
+                        torch_x_leaf = torch.tensor(base_tensor, requires_grad=True, device=device) if TORCH_AVAILABLE else None
                         torch_x = torch_x_leaf.clone()  # 创建非叶子节点副本
                         if TORCH_AVAILABLE:
                             torch_x.retain_grad()  # 保留中间节点的梯度
-                        torch_view1 = torch_x[:, 1:3, :] if TORCH_AVAILABLE else None
+                        torch_view = torch_x[1:4, :] if TORCH_AVAILABLE else None
                         if TORCH_AVAILABLE:
-                            torch_view1.retain_grad()  # 保留视图1的梯度
-                        torch_view2 = torch_view1[1:4, :, 0:2] if TORCH_AVAILABLE else None
-                        if TORCH_AVAILABLE:
-                            torch_view2.retain_grad()  # 保留视图2的梯度
-                        torch_view3 = torch_view2[:, :, 1] if TORCH_AVAILABLE else None
-                        if TORCH_AVAILABLE:
-                            torch_view3.retain_grad()  # 保留视图3的梯度
-                        torch_y = torch.tensor(np.ones((1,)) * 5, requires_grad=True) if TORCH_AVAILABLE else None
-                        if TORCH_AVAILABLE:
-                            torch_y.retain_grad()  # 保留y的梯度
+                            torch_view.retain_grad()  # 保留视图的梯度
                         
                         # 特殊处理布尔索引：根据视图大小调整布尔索引数组长度
                         adjusted_index = index_case["index"]
-                        if index_case["name"] == "布尔索引" and adjusted_index[0].shape[0] != rm_view3.shape[0]:
-                            # 为视图创建合适长度的布尔索引
-                            adjusted_boolean = np.array([True, False, True])  # 适应3行的视图
-                            adjusted_index = (adjusted_boolean,)
+                        # 首先检查是否是布尔索引或NumPy布尔数组索引，如果是且维度不匹配，则调整
+                        is_boolean_index = index_case["name"] in ["布尔索引", "NumPy布尔数组索引"]
+                        if is_boolean_index:
+                            # 获取当前布尔索引
+                            boolean_array = adjusted_index[0]
+                            # 检查布尔索引长度是否与视图第一维度大小匹配
+                            if boolean_array.shape[0] != rm_view.shape[0]:
+                                # 为视图创建合适长度的布尔索引
+                                adjusted_boolean = np.array([True, False, True])  # 适应3行的视图
+                                adjusted_index = (adjusted_boolean,)
                         
-                        # 计算索引操作后的目标大小 - 基于视图的索引结果
-                        # print(f"DEBUG: rm_view3.shape={rm_view3.shape}, adjusted_index={adjusted_index}")
-                        
-                        # 为Riemann和PyTorch计算目标形状 - 都基于视图进行索引
-                        temp_np = np.zeros(rm_view3.shape)
+                        # 计算索引操作后的目标大小
+                        temp_np = np.zeros(rm_view.shape)
                         target_shape = temp_np[adjusted_index].shape
                         target_size = temp_np[adjusted_index].size
-                        # print(f"DEBUG: target_shape={target_shape}, target_size={target_size}")
                         
-                        # 创建适配大小的y张量
-                        rm_y = rm.tensor(np.ones(target_shape) * 5, requires_grad=True)
-                        rm_y.retain_grad()
-                        torch_y = torch.tensor(np.ones(target_shape) * 5, requires_grad=True) if TORCH_AVAILABLE else None
+                        # 创建y张量，确保其大小与目标大小匹配
+                        rm_y = rm.tensor(np.ones(target_shape) * 5, requires_grad=True, device=device)
+                        rm_y.retain_grad()  # 保留y的梯度
+                        
+                        # 创建PyTorch y张量，确保其大小与目标大小匹配
+                        torch_y = torch.tensor(np.ones(target_shape) * 5, requires_grad=True, device=device) if TORCH_AVAILABLE else None
                         if TORCH_AVAILABLE:
-                            torch_y.retain_grad()
+                            torch_y.retain_grad()  # 保留y的梯度
                         
                         # 执行Riemann原地操作
-                        self._execute_inplace_operation(rm_view3, adjusted_index, rm_y, op_case)
+                        self._execute_inplace_operation(rm_view, adjusted_index, rm_y, op_case)
                         
                         # 执行PyTorch原地操作
                         if TORCH_AVAILABLE:
                             if op_case["op"] == "=":
-                                torch_view3[adjusted_index] = torch_y
+                                torch_view[adjusted_index] = torch_y
                             else:
-                                op_case["torch_func"](torch_view3, adjusted_index, torch_y)
+                                op_case["torch_func"](torch_view, adjusted_index, torch_y)
+                        
+                        # 验证视图一致性（视图修改是否反映到原始张量）
+                        rm_view_consistent = compare_values(rm_view, rm_x[1:4, :])
                         
                         # 计算Riemann损失和反向传播
                         rm_loss = rm_x.sum()
@@ -957,25 +980,16 @@ class TestInplaceOperations(unittest.TestCase):
                         if TORCH_AVAILABLE:
                             torch_loss = torch_x.sum()
                             torch_loss.backward()
-                        
-                        # 验证所有Riemann视图和原始张量的值是否一致
-                        rm_view1_consistent = compare_values(rm_view1, rm_x[:, 1:3, :])
-                        rm_view2_consistent = compare_values(rm_view2, rm_x[:, 1:3, :][1:4, :, 0:2])
-                        rm_view3_consistent = compare_values(rm_view3, rm_x[:, 1:3, :][1:4, :, 0:2][:, :, 1])
-                        
-                        # 验证所有PyTorch视图和原始张量的值是否一致
-                        torch_view_consistent = True
-                        if TORCH_AVAILABLE:
-                            torch_view1_consistent = compare_values(torch_view1, torch_x[:, 1:3, :])
-                            torch_view2_consistent = compare_values(torch_view2, torch_x[:, 1:3, :][1:4, :, 0:2])
-                            torch_view3_consistent = compare_values(torch_view3, torch_x[:, 1:3, :][1:4, :, 0:2][:, :, 1])
-                            torch_view_consistent = torch_view1_consistent and torch_view2_consistent and torch_view3_consistent
+                            # 验证PyTorch视图一致性
+                            torch_view_consistent = compare_values(torch_view, torch_x[1:4, :])
+                        else:
+                            torch_view_consistent = True
                         
                         # 比较结果
                         forward_passed = compare_values(rm_x, torch_x)
                         grad_x_passed = compare_grads(rm_x, torch_x)
                         grad_y_passed = compare_grads(rm_y, torch_y)
-                        view_consistent = rm_view1_consistent and rm_view2_consistent and rm_view3_consistent and torch_view_consistent
+                        view_consistent = rm_view_consistent and torch_view_consistent
                         
                         passed = forward_passed and grad_x_passed and grad_y_passed and view_consistent
                         
@@ -992,7 +1006,7 @@ class TestInplaceOperations(unittest.TestCase):
                                 print(f"  视图一致性: {'通过' if view_consistent else '失败'}")
                         
                         # 断言确保测试通过
-                        self.assertTrue(passed, f"多层视图原地操作测试失败: {case_name}")
+                        self.assertTrue(passed, f"视图对象原地操作测试失败: {case_name}")
                         
                     except Exception as e:
                         time_taken = time.time() - start_time
@@ -1000,6 +1014,156 @@ class TestInplaceOperations(unittest.TestCase):
                             stats.add_result(case_name, False, [str(e)])
                             print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                         raise
+        stats.end_function()
+    
+    def test_multi_level_view_inplace(self):
+        """测试对多层视图对象的原地操作"""
+        # 创建一个基础张量
+        base_tensor = np.random.randn(5, 4, 3)
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for op_case in INPLACE_OPS:
+                # 为多层视图测试创建专门的索引用例，确保索引维度与视图大小匹配
+                    multi_level_index_cases = []
+                    for index_case in INDEX_CASES:
+                        # 只测试适合三维张量的索引方式
+                        if index_case["name"] in ["多维数组索引", "复杂的混合索引", "链式索引"]:
+                            continue
+                        # 为布尔索引和NumPy布尔数组索引创建适合多层视图大小的用例
+                        elif index_case["name"] in ["布尔索引", "NumPy布尔数组索引"]:
+                            adjusted_case = index_case.copy()
+                            adjusted_case["index"] = (np.array([True, False, True]),)  # 适应3行的视图
+                            multi_level_index_cases.append(adjusted_case)
+                        else:
+                            multi_level_index_cases.append(index_case)
+                    
+                    for index_case in multi_level_index_cases:
+                        
+                        case_name = f"{op_case['name']} - {index_case['name']}（多层视图） - {device}"
+                        start_time = time.time()
+                        
+                        try:
+                            # 创建Riemann张量和多层视图
+                            rm_x_leaf = rm.tensor(base_tensor, requires_grad=True, device=device)
+                            rm_x = rm_x_leaf.clone()  # 创建非叶子节点副本
+                            rm_x.retain_grad()  # 保留中间节点的梯度
+                            rm_view1 = rm_x[:, 1:3, :]  # 第1-2列（不包括第3列）
+                            rm_view1.retain_grad()  # 保留视图1的梯度
+                            rm_view2 = rm_view1[1:4, :, 0:2]  # 第2-4行，前2个通道
+                            rm_view2.retain_grad()  # 保留视图2的梯度
+                            rm_view3 = rm_view2[:, :, 1]  # 最后一个维度的第2个通道
+                            rm_view3.retain_grad()  # 保留视图3的梯度
+                            rm_y = rm.tensor(np.ones((1,)) * 5, requires_grad=True, device=device)
+                            rm_y.retain_grad()  # 保留y的梯度
+                            
+                            # 创建PyTorch张量和多层视图
+                            torch_x_leaf = torch.tensor(base_tensor, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                            torch_x = torch_x_leaf.clone()  # 创建非叶子节点副本
+                            if TORCH_AVAILABLE:
+                                torch_x.retain_grad()  # 保留中间节点的梯度
+                            torch_view1 = torch_x[:, 1:3, :] if TORCH_AVAILABLE else None
+                            if TORCH_AVAILABLE:
+                                torch_view1.retain_grad()  # 保留视图1的梯度
+                            torch_view2 = torch_view1[1:4, :, 0:2] if TORCH_AVAILABLE else None
+                            if TORCH_AVAILABLE:
+                                torch_view2.retain_grad()  # 保留视图2的梯度
+                            torch_view3 = torch_view2[:, :, 1] if TORCH_AVAILABLE else None
+                            if TORCH_AVAILABLE:
+                                torch_view3.retain_grad()  # 保留视图3的梯度
+                            torch_y = torch.tensor(np.ones((1,)) * 5, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                            if TORCH_AVAILABLE:
+                                torch_y.retain_grad()  # 保留y的梯度
+                            
+                            # 特殊处理布尔索引：根据视图大小调整布尔索引数组长度
+                            adjusted_index = index_case["index"]
+                            if index_case["name"] == "布尔索引" and adjusted_index[0].shape[0] != rm_view3.shape[0]:
+                                # 为视图创建合适长度的布尔索引
+                                adjusted_boolean = np.array([True, False, True])  # 适应3行的视图
+                                adjusted_index = (adjusted_boolean,)
+                            
+                            # 计算索引操作后的目标大小 - 基于视图的索引结果
+                            # print(f"DEBUG: rm_view3.shape={rm_view3.shape}, adjusted_index={adjusted_index}")
+                            
+                            # 为Riemann和PyTorch计算目标形状 - 都基于视图进行索引
+                            temp_np = np.zeros(rm_view3.shape)
+                            target_shape = temp_np[adjusted_index].shape
+                            target_size = temp_np[adjusted_index].size
+                            # print(f"DEBUG: target_shape={target_shape}, target_size={target_size}")
+                            
+                            # 创建适配大小的y张量
+                            rm_y = rm.tensor(np.ones(target_shape) * 5, requires_grad=True, device=device)
+                            rm_y.retain_grad()
+                            torch_y = torch.tensor(np.ones(target_shape) * 5, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                            if TORCH_AVAILABLE:
+                                torch_y.retain_grad()
+                            
+                            # 执行Riemann原地操作
+                            self._execute_inplace_operation(rm_view3, adjusted_index, rm_y, op_case)
+                            
+                            # 执行PyTorch原地操作
+                            if TORCH_AVAILABLE:
+                                if op_case["op"] == "=":
+                                    torch_view3[adjusted_index] = torch_y
+                                else:
+                                    op_case["torch_func"](torch_view3, adjusted_index, torch_y)
+                            
+                            # 计算Riemann损失和反向传播
+                            rm_loss = rm_x.sum()
+                            rm_loss.backward()
+                            
+                            # 计算PyTorch损失和反向传播
+                            torch_loss = None
+                            if TORCH_AVAILABLE:
+                                torch_loss = torch_x.sum()
+                                torch_loss.backward()
+                            
+                            # 验证所有Riemann视图和原始张量的值是否一致
+                            rm_view1_consistent = compare_values(rm_view1, rm_x[:, 1:3, :])
+                            rm_view2_consistent = compare_values(rm_view2, rm_x[:, 1:3, :][1:4, :, 0:2])
+                            rm_view3_consistent = compare_values(rm_view3, rm_x[:, 1:3, :][1:4, :, 0:2][:, :, 1])
+                            
+                            # 验证所有PyTorch视图和原始张量的值是否一致
+                            torch_view_consistent = True
+                            if TORCH_AVAILABLE:
+                                torch_view1_consistent = compare_values(torch_view1, torch_x[:, 1:3, :])
+                                torch_view2_consistent = compare_values(torch_view2, torch_x[:, 1:3, :][1:4, :, 0:2])
+                                torch_view3_consistent = compare_values(torch_view3, torch_x[:, 1:3, :][1:4, :, 0:2][:, :, 1])
+                                torch_view_consistent = torch_view1_consistent and torch_view2_consistent and torch_view3_consistent
+                            
+                            # 比较结果
+                            forward_passed = compare_values(rm_x, torch_x)
+                            grad_x_passed = compare_grads(rm_x, torch_x)
+                            grad_y_passed = compare_grads(rm_y, torch_y)
+                            view_consistent = rm_view1_consistent and rm_view2_consistent and rm_view3_consistent and torch_view_consistent
+                            
+                            passed = forward_passed and grad_x_passed and grad_y_passed and view_consistent
+                            
+                            time_taken = time.time() - start_time
+                            
+                            if IS_RUNNING_AS_SCRIPT:
+                                stats.add_result(case_name, passed)
+                                status = "通过" if passed else "失败"
+                                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                                if not passed and TORCH_AVAILABLE:
+                                    print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                                    print(f"  X梯度比较: {'通过' if grad_x_passed else '失败'}")
+                                    print(f"  Y梯度比较: {'通过' if grad_y_passed else '失败'}")
+                                    print(f"  视图一致性: {'通过' if view_consistent else '失败'}")
+                            
+                            # 断言确保测试通过
+                            self.assertTrue(passed, f"多层视图原地操作测试失败: {case_name}")
+                            
+                        except Exception as e:
+                            time_taken = time.time() - start_time
+                            if IS_RUNNING_AS_SCRIPT:
+                                stats.add_result(case_name, False, [str(e)])
+                                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                            raise
 
     def test_copy_function(self):
         """测试 copy_ 特殊原地操作函数"""
@@ -1015,81 +1179,87 @@ class TestInplaceOperations(unittest.TestCase):
         if copy_op:
             stats.start_function("test_copy_function")
             
-            for test_case in copy_op['test_cases']:
-                case_name = f"copy_ - {test_case['name']}"
-                start_time = time.time()
-                
-                try:
-                    # 创建Riemann张量和PyTorch张量
-                    rm_tensor = rm.tensor(base_tensor, requires_grad=True)
-                    rm_tensor = rm_tensor.clone()  # 创建非叶子节点
-                    rm_tensor.retain_grad()
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
+            for device in devices:
+                for test_case in copy_op['test_cases']:
+                    case_name = f"copy_ - {test_case['name']} - {device}"
+                    start_time = time.time()
                     
-                    torch_tensor = None
-                    if TORCH_AVAILABLE:
-                        torch_tensor = torch.tensor(base_tensor, requires_grad=True)
-                        torch_tensor = torch_tensor.clone()  # 创建非叶子节点
-                        torch_tensor.retain_grad()
-                    
-                    # 准备不同类型的源值 - 设置为可跟踪梯度
-                    if test_case['src'] is None:
-                        if test_case['name'] == "0维张量源值":
-                            rm_src = rm.tensor(42.0, requires_grad=True)
-                            torch_src = torch.tensor(42.0, requires_grad=True) if TORCH_AVAILABLE else None
-                        elif test_case['name'] == "相同形状张量源值":
-                            src_data = np.random.randn(*base_tensor.shape)
-                            rm_src = rm.tensor(src_data, requires_grad=True)
-                            torch_src = torch.tensor(src_data, requires_grad=True) if TORCH_AVAILABLE else None
-                        elif test_case['name'] == "不同形状可广播源值":
-                            src_data = np.random.randn(base_tensor.shape[0], 1)
-                            rm_src = rm.tensor(src_data, requires_grad=True)
-                            torch_src = torch.tensor(src_data, requires_grad=True) if TORCH_AVAILABLE else None
-                    else:
-                        # 如果是标量，转换为可跟踪梯度的张量
-                        if isinstance(test_case['src'], (int, float)):
-                            rm_src = rm.tensor(test_case['src'], requires_grad=True)
-                            torch_src = torch.tensor(test_case['src'], requires_grad=True) if TORCH_AVAILABLE else None
-                        else:
-                            rm_src = test_case['src']
-                            torch_src = test_case['src'] if TORCH_AVAILABLE else None
-                    
-                    # 执行操作
-                    rm_result = copy_op['rm_func'](rm_tensor, rm_src)
-                    torch_result = copy_op['torch_func'](torch_tensor, torch_src) if TORCH_AVAILABLE else None
-                    
-                    # 前向传播和损失计算
-                    rm_loss = rm_tensor.sum()
-                    rm_loss.backward()
-                    
-                    torch_loss = None
-                    if TORCH_AVAILABLE:
-                        torch_loss = torch_tensor.sum()
-                        torch_loss.backward()
-                    
-                    # 比较结果
-                    values_match = compare_values(rm_tensor, torch_tensor)
-                    grads_self_match = compare_grads(rm_tensor, torch_tensor)
-                    grads_right_match = compare_grads(rm_src, torch_src) if TORCH_AVAILABLE else True
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, values_match and grads_self_match and grads_right_match)
+                    try:
+                        # 创建Riemann张量和PyTorch张量
+                        rm_tensor = rm.tensor(base_tensor, requires_grad=True, device=device)
+                        rm_tensor = rm_tensor.clone()  # 创建非叶子节点
+                        rm_tensor.retain_grad()
                         
-                        if values_match and grads_self_match and grads_right_match:
-                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        torch_tensor = None
+                        if TORCH_AVAILABLE:
+                            torch_tensor = torch.tensor(base_tensor, requires_grad=True, device=device)
+                            torch_tensor = torch_tensor.clone()  # 创建非叶子节点
+                            torch_tensor.retain_grad()
+                        
+                        # 准备不同类型的源值 - 设置为可跟踪梯度
+                        if test_case['src'] is None:
+                            if test_case['name'] == "0维张量源值":
+                                rm_src = rm.tensor(42.0, requires_grad=True, device=device)
+                                torch_src = torch.tensor(42.0, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                            elif test_case['name'] == "相同形状张量源值":
+                                src_data = np.random.randn(*base_tensor.shape)
+                                rm_src = rm.tensor(src_data, requires_grad=True, device=device)
+                                torch_src = torch.tensor(src_data, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                            elif test_case['name'] == "不同形状可广播源值":
+                                src_data = np.random.randn(base_tensor.shape[0], 1)
+                                rm_src = rm.tensor(src_data, requires_grad=True, device=device)
+                                torch_src = torch.tensor(src_data, requires_grad=True, device=device) if TORCH_AVAILABLE else None
                         else:
-                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
-                    
-                    # 单元测试断言
-                    self.assertTrue(values_match, f"{case_name} 函数值不匹配")
-                    self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
-                    self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
+                            # 如果是标量，转换为可跟踪梯度的张量
+                            if isinstance(test_case['src'], (int, float)):
+                                rm_src = rm.tensor(test_case['src'], requires_grad=True, device=device)
+                                torch_src = torch.tensor(test_case['src'], requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                            else:
+                                rm_src = test_case['src']
+                                torch_src = test_case['src'] if TORCH_AVAILABLE else None
+                        
+                        # 执行操作
+                        rm_result = copy_op['rm_func'](rm_tensor, rm_src)
+                        torch_result = copy_op['torch_func'](torch_tensor, torch_src) if TORCH_AVAILABLE else None
+                        
+                        # 前向传播和损失计算
+                        rm_loss = rm_tensor.sum()
+                        rm_loss.backward()
+                        
+                        torch_loss = None
+                        if TORCH_AVAILABLE:
+                            torch_loss = torch_tensor.sum()
+                            torch_loss.backward()
+                        
+                        # 比较结果
+                        values_match = compare_values(rm_tensor, torch_tensor)
+                        grads_self_match = compare_grads(rm_tensor, torch_tensor)
+                        grads_right_match = compare_grads(rm_src, torch_src) if TORCH_AVAILABLE else True
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, values_match and grads_self_match and grads_right_match)
+                            
+                            if values_match and grads_self_match and grads_right_match:
+                                print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            else:
+                                print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        
+                        # 单元测试断言
+                        self.assertTrue(values_match, f"{case_name} 函数值不匹配")
+                        self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
+                        self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
+                        
+                    except Exception as e:
+                        time_taken = time.time() - start_time
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                        raise
             stats.end_function()
 
     def test_fill_function(self):
@@ -1106,73 +1276,79 @@ class TestInplaceOperations(unittest.TestCase):
         if fill_op:
             stats.start_function("test_fill_function")
             
-            for test_case in fill_op['test_cases']:
-                case_name = f"fill_ - {test_case['name']}"
-                start_time = time.time()
-                
-                try:
-                    # 创建Riemann张量和PyTorch张量
-                    rm_tensor = rm.tensor(base_tensor, requires_grad=True)
-                    rm_tensor = rm_tensor.clone()  # 创建非叶子节点
-                    rm_tensor.retain_grad()
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
+            for device in devices:
+                for test_case in fill_op['test_cases']:
+                    case_name = f"fill_ - {test_case['name']} - {device}"
+                    start_time = time.time()
                     
-                    torch_tensor = None
-                    if TORCH_AVAILABLE:
-                        torch_tensor = torch.tensor(base_tensor, requires_grad=True)
-                        torch_tensor = torch_tensor.clone()  # 创建非叶子节点
-                        torch_tensor.retain_grad()
-                    
-                    # 准备不同类型的填充值 - 设置为可跟踪梯度
-                    if test_case['value'] is None:
-                        fill_value = 42.0
-                        rm_value = rm.tensor(fill_value, requires_grad=True)
-                        torch_value = torch.tensor(fill_value, requires_grad=True) if TORCH_AVAILABLE else None
-                    else:
-                        # 如果是标量，转换为可跟踪梯度的张量
-                        if isinstance(test_case['value'], (int, float)):
-                            rm_value = rm.tensor(test_case['value'], requires_grad=True)
-                            torch_value = torch.tensor(test_case['value'], requires_grad=True) if TORCH_AVAILABLE else None
-                        else:
-                            rm_value = test_case['value']
-                            torch_value = test_case['value'] if TORCH_AVAILABLE else None
-                    
-                    # 执行操作
-                    rm_result = fill_op['rm_func'](rm_tensor, rm_value)
-                    torch_result = fill_op['torch_func'](torch_tensor, torch_value) if TORCH_AVAILABLE else None
-                    
-                    # 前向传播和损失计算
-                    rm_loss = rm_tensor.sum()
-                    rm_loss.backward()
-                    
-                    torch_loss = None
-                    if TORCH_AVAILABLE:
-                        torch_loss = torch_tensor.sum()
-                        torch_loss.backward()
-                    
-                    # 比较结果
-                    values_match = compare_values(rm_tensor, torch_tensor)
-                    grads_self_match = compare_grads(rm_tensor, torch_tensor)
-                    grads_right_match = compare_grads(rm_value, torch_value) if TORCH_AVAILABLE else True
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, values_match and grads_self_match and grads_right_match)
+                    try:
+                        # 创建Riemann张量和PyTorch张量
+                        rm_tensor = rm.tensor(base_tensor, requires_grad=True, device=device)
+                        rm_tensor = rm_tensor.clone()  # 创建非叶子节点
+                        rm_tensor.retain_grad()
                         
-                        if values_match and grads_self_match and grads_right_match:
-                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        torch_tensor = None
+                        if TORCH_AVAILABLE:
+                            torch_tensor = torch.tensor(base_tensor, requires_grad=True, device=device)
+                            torch_tensor = torch_tensor.clone()  # 创建非叶子节点
+                            torch_tensor.retain_grad()
+                        
+                        # 准备不同类型的填充值 - 设置为可跟踪梯度
+                        if test_case['value'] is None:
+                            fill_value = 42.0
+                            rm_value = rm.tensor(fill_value, requires_grad=True, device=device)
+                            torch_value = torch.tensor(fill_value, requires_grad=True, device=device) if TORCH_AVAILABLE else None
                         else:
-                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
-                    
-                    # 单元测试断言
-                    self.assertTrue(values_match, f"{case_name} 函数值不匹配")
-                    self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
-                    self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
+                            # 如果是标量，转换为可跟踪梯度的张量
+                            if isinstance(test_case['value'], (int, float)):
+                                rm_value = rm.tensor(test_case['value'], requires_grad=True, device=device)
+                                torch_value = torch.tensor(test_case['value'], requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                            else:
+                                rm_value = test_case['value']
+                                torch_value = test_case['value'] if TORCH_AVAILABLE else None
+                        
+                        # 执行操作
+                        rm_result = fill_op['rm_func'](rm_tensor, rm_value)
+                        torch_result = fill_op['torch_func'](torch_tensor, torch_value) if TORCH_AVAILABLE else None
+                        
+                        # 前向传播和损失计算
+                        rm_loss = rm_tensor.sum()
+                        rm_loss.backward()
+                        
+                        torch_loss = None
+                        if TORCH_AVAILABLE:
+                            torch_loss = torch_tensor.sum()
+                            torch_loss.backward()
+                        
+                        # 比较结果
+                        values_match = compare_values(rm_tensor, torch_tensor)
+                        grads_self_match = compare_grads(rm_tensor, torch_tensor)
+                        grads_right_match = compare_grads(rm_value, torch_value) if TORCH_AVAILABLE else True
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, values_match and grads_self_match and grads_right_match)
+                            
+                            if values_match and grads_self_match and grads_right_match:
+                                print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            else:
+                                print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        
+                        # 单元测试断言
+                        self.assertTrue(values_match, f"{case_name} 函数值不匹配")
+                        self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
+                        self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
+                        
+                    except Exception as e:
+                        time_taken = time.time() - start_time
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                        raise
             stats.end_function()
 
     def test_masked_fill_function(self):
@@ -1189,82 +1365,88 @@ class TestInplaceOperations(unittest.TestCase):
         if masked_fill_op:
             stats.start_function("test_masked_fill_function")
             
-            for test_case in masked_fill_op['test_cases']:
-                case_name = f"masked_fill_ - {test_case['name']}"
-                start_time = time.time()
-                
-                try:
-                    # 创建Riemann张量和PyTorch张量
-                    rm_tensor = rm.tensor(base_tensor, requires_grad=True)
-                    rm_tensor = rm_tensor.clone()  # 创建非叶子节点
-                    rm_tensor.retain_grad()
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
+            for device in devices:
+                for test_case in masked_fill_op['test_cases']:
+                    case_name = f"masked_fill_ - {test_case['name']} - {device}"
+                    start_time = time.time()
                     
-                    torch_tensor = None
-                    if TORCH_AVAILABLE:
-                        torch_tensor = torch.tensor(base_tensor, requires_grad=True)
-                        torch_tensor = torch_tensor.clone()  # 创建非叶子节点
-                        torch_tensor.retain_grad()
-                    
-                    # 准备掩码和填充值
-                    if test_case['mask_type'] == "full_bool":
-                        mask_data = np.random.choice([True, False], size=base_tensor.shape)
-                        rm_mask = rm.tensor(mask_data)
-                        torch_mask = torch.tensor(mask_data) if TORCH_AVAILABLE else None
-                    elif test_case['mask_type'] == "broadcast_bool":
-                        mask_data = np.random.choice([True, False], size=(base_tensor.shape[0], 1))
-                        rm_mask = rm.tensor(mask_data)
-                        torch_mask = torch.tensor(mask_data) if TORCH_AVAILABLE else None
-                    
-                    if test_case.get('value') is None:
-                        fill_value = 0.0
-                        rm_value = rm.tensor(fill_value, requires_grad=True)
-                        torch_value = torch.tensor(fill_value, requires_grad=True) if TORCH_AVAILABLE else None
-                    else:
-                        # 如果是标量，转换为可跟踪梯度的张量
-                        if isinstance(test_case['value'], (int, float)):
-                            rm_value = rm.tensor(test_case['value'], requires_grad=True)
-                            torch_value = torch.tensor(test_case['value'], requires_grad=True) if TORCH_AVAILABLE else None
-                        else:
-                            rm_value = test_case['value']
-                            torch_value = test_case['value'] if TORCH_AVAILABLE else None
-                    
-                    # 执行操作
-                    rm_result = masked_fill_op['rm_func'](rm_tensor, rm_mask, rm_value)
-                    torch_result = masked_fill_op['torch_func'](torch_tensor, torch_mask, torch_value) if TORCH_AVAILABLE else None
-                    
-                    # 前向传播和损失计算
-                    rm_loss = rm_tensor.sum()
-                    rm_loss.backward()
-                    
-                    torch_loss = None
-                    if TORCH_AVAILABLE:
-                        torch_loss = torch_tensor.sum()
-                        torch_loss.backward()
-                    
-                    # 比较结果
-                    values_match = compare_values(rm_tensor, torch_tensor)
-                    grads_self_match = compare_grads(rm_tensor, torch_tensor)
-                    grads_right_match = compare_grads(rm_value, torch_value) if TORCH_AVAILABLE else True
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, values_match and grads_self_match and grads_right_match)
+                    try:
+                        # 创建Riemann张量和PyTorch张量
+                        rm_tensor = rm.tensor(base_tensor, requires_grad=True, device=device)
+                        rm_tensor = rm_tensor.clone()  # 创建非叶子节点
+                        rm_tensor.retain_grad()
                         
-                        if values_match and grads_self_match and grads_right_match:
-                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        torch_tensor = None
+                        if TORCH_AVAILABLE:
+                            torch_tensor = torch.tensor(base_tensor, requires_grad=True, device=device)
+                            torch_tensor = torch_tensor.clone()  # 创建非叶子节点
+                            torch_tensor.retain_grad()
+                        
+                        # 准备掩码和填充值
+                        if test_case['mask_type'] == "full_bool":
+                            mask_data = np.random.choice([True, False], size=base_tensor.shape)
+                            rm_mask = rm.tensor(mask_data, device=device)
+                            torch_mask = torch.tensor(mask_data, device=device) if TORCH_AVAILABLE else None
+                        elif test_case['mask_type'] == "broadcast_bool":
+                            mask_data = np.random.choice([True, False], size=(base_tensor.shape[0], 1))
+                            rm_mask = rm.tensor(mask_data, device=device)
+                            torch_mask = torch.tensor(mask_data, device=device) if TORCH_AVAILABLE else None
+                        
+                        if test_case.get('value') is None:
+                            fill_value = 0.0
+                            rm_value = rm.tensor(fill_value, requires_grad=True, device=device)
+                            torch_value = torch.tensor(fill_value, requires_grad=True, device=device) if TORCH_AVAILABLE else None
                         else:
-                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
-                    
-                    # 单元测试断言
-                    self.assertTrue(values_match, f"{case_name} 函数值不匹配")
-                    self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
-                    self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
+                            # 如果是标量，转换为可跟踪梯度的张量
+                            if isinstance(test_case['value'], (int, float)):
+                                rm_value = rm.tensor(test_case['value'], requires_grad=True, device=device)
+                                torch_value = torch.tensor(test_case['value'], requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                            else:
+                                rm_value = test_case['value']
+                                torch_value = test_case['value'] if TORCH_AVAILABLE else None
+                        
+                        # 执行操作
+                        rm_result = masked_fill_op['rm_func'](rm_tensor, rm_mask, rm_value)
+                        torch_result = masked_fill_op['torch_func'](torch_tensor, torch_mask, torch_value) if TORCH_AVAILABLE else None
+                        
+                        # 前向传播和损失计算
+                        rm_loss = rm_tensor.sum()
+                        rm_loss.backward()
+                        
+                        torch_loss = None
+                        if TORCH_AVAILABLE:
+                            torch_loss = torch_tensor.sum()
+                            torch_loss.backward()
+                        
+                        # 比较结果
+                        values_match = compare_values(rm_tensor, torch_tensor)
+                        grads_self_match = compare_grads(rm_tensor, torch_tensor)
+                        grads_right_match = compare_grads(rm_value, torch_value) if TORCH_AVAILABLE else True
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, values_match and grads_self_match and grads_right_match)
+                            
+                            if values_match and grads_self_match and grads_right_match:
+                                print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                            else:
+                                print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        
+                        # 单元测试断言
+                        self.assertTrue(values_match, f"{case_name} 函数值不匹配")
+                        self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
+                        self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
+                        
+                    except Exception as e:
+                        time_taken = time.time() - start_time
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, False, [str(e)])
+                            print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                        raise
             stats.end_function()
 
     def test_index_merge_function(self):
@@ -1274,108 +1456,118 @@ class TestInplaceOperations(unittest.TestCase):
         
         stats.start_function("test_index_merge_function")
         
-        for i, scenario in enumerate(INDEX_MERGE_CASES):
-            case_name = f"索引合并 - {scenario['name']}"
-            start_time = time.time()
-            
-            try:
-                # 创建Riemann张量
-                rm_x = rm.tensor(base_tensor, requires_grad=True)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for i, scenario in enumerate(INDEX_MERGE_CASES):
+                case_name = f"索引合并 - {scenario['name']} - {device}"
+                start_time = time.time()
                 
-                # 测试索引合并
-                merged_index = rm_x._merge_indices(scenario['base_index'], scenario['current_index'])
-                
-                # 安全比较函数
-                def safe_compare(a, b):
-                    # 处理切片类型的比较
-                    if isinstance(a, slice) and isinstance(b, slice):
-                        return (a.start == b.start and 
-                                a.stop == b.stop and 
-                                a.step == b.step)
+                try:
+                    # 创建Riemann张量
+                    rm_x = rm.tensor(base_tensor, requires_grad=True, device=device)
                     
-                    # 处理元组类型的比较
-                    if isinstance(a, tuple) and isinstance(b, tuple):
-                        if len(a) != len(b):
-                            return False
-                        for ai, bi in zip(a, b):
-                            if not safe_compare(ai, bi):
+                    # 测试索引合并
+                    merged_index = rm_x._merge_indices(scenario['base_index'], scenario['current_index'])
+                    
+                    # 安全比较函数
+                    def safe_compare(a, b):
+                        # 处理切片类型的比较
+                        if isinstance(a, slice) and isinstance(b, slice):
+                            return (a.start == b.start and 
+                                    a.stop == b.stop and 
+                                    a.step == b.step)
+                        
+                        # 处理元组类型的比较
+                        if isinstance(a, tuple) and isinstance(b, tuple):
+                            if len(a) != len(b):
                                 return False
-                        return True
-                    
-                    # 处理numpy数组和列表的比较
-                    if isinstance(a, (np.ndarray, list)) and isinstance(b, (np.ndarray, list)):
+                            for ai, bi in zip(a, b):
+                                if not safe_compare(ai, bi):
+                                    return False
+                            return True
+                        
+                        # 处理numpy/cupy数组和列表的比较
+                        type_tuple = (np.ndarray, list, cp.ndarray) if cp else (np.ndarray, list)
+                        if (isinstance(a, type_tuple) and isinstance(b, type_tuple)):
+                            try:
+                                # 确保将CuPy数组转换为numpy数组
+                                a_arr = np.asarray(a.get()) if hasattr(a, 'get') else np.asarray(a)
+                                b_arr = np.asarray(b.get()) if hasattr(b, 'get') else np.asarray(b)
+                                return np.array_equal(a_arr, b_arr)
+                            except ValueError:
+                                return False
+                        
+                        # 处理numpy标量和Python标量的比较
+                        if (isinstance(a, np.generic) and not isinstance(a, np.ndarray)) or \
+                            (isinstance(b, np.generic) and not isinstance(b, np.ndarray)):
+                            return float(a) == float(b)
+                        
+                        # 常规比较
                         try:
-                            return np.array_equal(np.asarray(a), np.asarray(b))
+                            return a == b
                         except ValueError:
+                            # 避免数组比较歧义
                             return False
                     
-                    # 处理numpy标量和Python标量的比较
-                    if (isinstance(a, np.generic) and not isinstance(a, np.ndarray)) or \
-                        (isinstance(b, np.generic) and not isinstance(b, np.ndarray)):
-                        return float(a) == float(b)
-                    
-                    # 常规比较
-                    try:
-                        return a == b
-                    except ValueError:
-                        # 避免数组比较歧义
-                        return False
-                
-                # 验证索引合并结果
-                index_passed = safe_compare(merged_index, scenario['expected'])
-                
-                # 验证视图内容是否一致
-                view_passed = True
-                
-                # 检查是否需要跳过视图内容验证（如numpy广播行为导致的差异）
-                skip_view_validation = 'note' in scenario
-                
-                # 正确处理非元组索引的比较
-                current_idx_is_empty = (scenario['current_index'] == () if isinstance(scenario['current_index'], tuple) else False)
-                
-                if index_passed and not current_idx_is_empty and not skip_view_validation:
-                    # 创建视图
-                    view1 = rm_x[scenario['base_index']]
-                    view2 = view1[scenario['current_index']]
-                    
-                    # 直接执行合并索引
-                    direct = rm_x[merged_index]
+                    # 验证索引合并结果
+                    index_passed = safe_compare(merged_index, scenario['expected'])
                     
                     # 验证视图内容是否一致
-                    try:
-                        if view2.shape == () and direct.shape == ():
-                            # 标量比较
-                            view_passed = abs(float(view2) - float(direct)) < 1e-10
-                        else:
-                            # 使用allclose直接比较张量
-                            view_passed = np.allclose(view2.data, direct.data, rtol=1e-05, atol=1e-08)
-                    except Exception as e:
-                        view_passed = False
-                
-                passed = index_passed and view_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  索引合并比较: {'通过' if index_passed else '失败'}")
-                        print(f"  视图内容比较: {'通过' if view_passed else '失败'}")
-                        if not index_passed:
-                            print(f"  合并结果: {merged_index}")
-                            print(f"  预期结果: {scenario['expected']}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"索引合并测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    view_passed = True
+                    
+                    # 检查是否需要跳过视图内容验证（如numpy广播行为导致的差异）
+                    skip_view_validation = 'note' in scenario
+                    
+                    # 正确处理非元组索引的比较
+                    current_idx_is_empty = (scenario['current_index'] == () if isinstance(scenario['current_index'], tuple) else False)
+                    
+                    if index_passed and not current_idx_is_empty and not skip_view_validation:
+                        # 创建视图
+                        view1 = rm_x[scenario['base_index']]
+                        view2 = view1[scenario['current_index']]
+                        
+                        # 直接执行合并索引
+                        direct = rm_x[merged_index]
+                        
+                        # 验证视图内容是否一致
+                        try:
+                            if view2.shape == () and direct.shape == ():
+                                # 标量比较
+                                view_passed = abs(float(view2) - float(direct)) < 1e-10
+                            else:
+                                # 使用allclose直接比较张量
+                                view_passed = np.allclose(view2.data, direct.data, rtol=1e-05, atol=1e-08)
+                        except Exception as e:
+                            view_passed = False
+                    
+                    passed = index_passed and view_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  索引合并比较: {'通过' if index_passed else '失败'}")
+                            print(f"  视图内容比较: {'通过' if view_passed else '失败'}")
+                            if not index_passed:
+                                print(f"  合并结果: {merged_index}")
+                                print(f"  预期结果: {scenario['expected']}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"索引合并测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
 
 if __name__ == '__main__':
     # 设置为独立脚本运行模式

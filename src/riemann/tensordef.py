@@ -1071,7 +1071,7 @@ class TN:
                 if val._base is self and val._view_index == index_val:
                     return self
             else:
-                if val._base is self and val._view_index == index_val:
+                if self.device == Device('cpu') and val._base is self and val._view_index == index_val:
                     for i in range(len(val.gradfuncs)-1,-1,-1):
                         funcname = val.gradfuncs[i].__name__
                         if funcname == '_addat_inplace_backward':
@@ -1095,7 +1095,6 @@ class TN:
                                 return self.powat_(index_val,val.fromvars[i])
                     pass
         
-        # print('in __setitem__, call setat_')
         return self.setat_(index,val)
         
     def _merge_indices(self, base_index, current_index):
@@ -1112,11 +1111,9 @@ class TN:
         返回:
             combined_index: 合并后的索引（在基张量坐标系中的坐标）
         """
-        arrlib = self._get_array_lib()
-
         # 辅助函数：检查是否为布尔类型索引
         def _is_boolean_index(index):
-            return isinstance(index, arrlib.ndarray) and index.dtype == bool
+            return isinstance(index, np.ndarray) and index.dtype == bool
         
         def _normalize_neg_index(index, dim_size):
             """
@@ -1144,8 +1141,8 @@ class TN:
                     stop += dim_size
                 
                 return slice(start, stop, step)
-            elif isinstance(index, (arrlib.ndarray, list)) and arrlib.issubdtype(arrlib.array(index).dtype, arrlib.integer):
-                index_arr = arrlib.asarray(index)
+            elif isinstance(index, (np.ndarray, list)) and np.issubdtype(np.array(index).dtype, np.integer):
+                index_arr = np.asarray(index)
                 # 对负索引进行转换
                 index_arr[index_arr < 0] += dim_size
                 return index_arr
@@ -1163,7 +1160,11 @@ class TN:
             # 处理省略号 - 只有当 index 是元组且不包含数组时才检查
             if isinstance(index, tuple):
                 # 检查元组中是否包含数组或非基本类型
-                contains_array = any(isinstance(idx, (arrlib.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in index)
+                contains_array = any(isinstance(idx, (np.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in index)
+                # 检查是否包含CuPy数组
+                if CUPY_AVAILABLE:
+                    contains_array = contains_array or any(isinstance(idx, cp.ndarray) for idx in index)
+                # 只有不包含数组时才检查省略号
                 if not contains_array and Ellipsis in index:
                     ellipsis_idx = index.index(Ellipsis)
                     num_regular = len(index) - 1
@@ -1188,16 +1189,31 @@ class TN:
         # 辅助函数：处理基础索引为数组的情况
         def _process_base_array_index(base_idx, view_dim):
             dim_size = _get_base_dim_size(view_dim)
-            base_idx_arr = arrlib.asarray(base_idx)
             
-            if arrlib.issubdtype(base_idx_arr.dtype, arrlib.bool_):
+            # 根据索引类型选择合适的数组库
+            if CUPY_AVAILABLE and isinstance(base_idx, cp.ndarray):
+                base_idx_arr = base_idx
+                is_cupy = True
+            else:
+                base_idx_arr = np.asarray(base_idx)
+                is_cupy = False
+            
+            if np.issubdtype(base_idx_arr.dtype, np.bool_):
                 # 布尔数组 -> 整数数组
-                base_idx_arr = arrlib.where(base_idx_arr)[0]
+                if is_cupy:
+                    base_idx_arr = cp.where(base_idx_arr)[0]
+                else:
+                    base_idx_arr = np.where(base_idx_arr)[0]
             
             # 处理负索引
-            if arrlib.any(base_idx_arr < 0):
-                base_idx_arr = base_idx_arr.copy()
-                base_idx_arr[base_idx_arr < 0] += dim_size
+            if is_cupy:
+                if cp.any(base_idx_arr < 0):
+                    base_idx_arr = base_idx_arr.copy()
+                    base_idx_arr[base_idx_arr < 0] += dim_size
+            else:
+                if np.any(base_idx_arr < 0):
+                    base_idx_arr = base_idx_arr.copy()
+                    base_idx_arr[base_idx_arr < 0] += dim_size
             
             return base_idx_arr, len(base_idx_arr)
         
@@ -1263,7 +1279,7 @@ class TN:
         
         # 第五步：快速路径 - 当前操作是对整个视图进行的
         if isinstance(current_index, tuple):
-            contains_array = any(isinstance(idx, (arrlib.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in current_index)
+            contains_array = any(isinstance(idx, (np.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in current_index)
             if not contains_array:
                 all_full_slices = all(
                     isinstance(idx, slice) and 
@@ -1277,7 +1293,11 @@ class TN:
         
         # 第六步：处理布尔数组索引
         if _is_boolean_index(current_index):
-            bool_indices = arrlib.where(current_index)
+            # 根据索引类型选择合适的where函数
+            if CUPY_AVAILABLE and isinstance(current_index, cp.ndarray):
+                bool_indices = cp.where(current_index)
+            else:
+                bool_indices = np.where(current_index)
             if len(bool_indices) != len(view_dims):
                 raise ValueError(f"Boolean index dimension mismatch: {len(bool_indices)} vs {len(view_dims)}")
             
@@ -1291,7 +1311,7 @@ class TN:
                     norm_base = _normalize_neg_index(base_idx, _get_base_dim_size(view_dim))
                     start = norm_base.start if norm_base.start is not None else 0
                     combined_coords[view_dim] = start + bool_idx * step
-                elif isinstance(base_idx, (arrlib.ndarray, list)):
+                elif isinstance(base_idx, (np.ndarray, list)) or (CUPY_AVAILABLE and isinstance(base_idx, cp.ndarray)):
                     # 数组 -> 布尔索引：查表
                     base_arr, _ = _process_base_array_index(base_idx, view_dim)
                     combined_coords[view_dim] = base_arr[bool_idx]
@@ -1323,7 +1343,7 @@ class TN:
             # 根据基础索引类型选择处理方式
             if isinstance(base_idx, slice):
                 base_start, base_stop, base_step, step_val, view_dim_size = _process_base_slice_index(base_idx, view_dim)
-            elif isinstance(base_idx, (arrlib.ndarray, list)):
+            elif isinstance(base_idx, (np.ndarray, list)) or (CUPY_AVAILABLE and isinstance(base_idx, cp.ndarray)):
                 base_idx_arr, view_dim_size = _process_base_array_index(base_idx, view_dim)
             else:
                 raise NotImplementedError(f"Unsupported base index type: {type(base_idx)}")
@@ -1373,19 +1393,36 @@ class TN:
                     # 数组 -> 切片：直接索引映射数组
                     combined_coords[view_dim] = base_idx_arr[norm_curr_idx]
             
-            elif isinstance(norm_curr_idx, (arrlib.ndarray, list)):
-                curr_idx_arr = arrlib.asarray(norm_curr_idx)
+            elif isinstance(norm_curr_idx, (np.ndarray, list)) or (CUPY_AVAILABLE and isinstance(norm_curr_idx, cp.ndarray)):
+                # 根据索引类型选择合适的数组库
+                if CUPY_AVAILABLE and isinstance(norm_curr_idx, cp.ndarray):
+                    curr_idx_arr = norm_curr_idx
+                else:
+                    curr_idx_arr = np.asarray(norm_curr_idx)
                 
-                if arrlib.issubdtype(curr_idx_arr.dtype, arrlib.bool_):
+                if np.issubdtype(curr_idx_arr.dtype, np.bool_):
                     # 布尔数组 -> 整数数组
-                    bool_indices = arrlib.where(curr_idx_arr)[0]
+                    # 根据数组类型选择合适的where函数
+                    if CUPY_AVAILABLE and isinstance(curr_idx_arr, cp.ndarray):
+                        bool_indices = cp.where(curr_idx_arr)[0]
+                    else:
+                        bool_indices = np.where(curr_idx_arr)[0]
                     if len(bool_indices) == 0:
-                        combined_coords[view_dim] = arrlib.array([], dtype=int)
+                        # 根据数组类型选择合适的空数组创建方式
+                        if CUPY_AVAILABLE and isinstance(curr_idx_arr, cp.ndarray):
+                            combined_coords[view_dim] = cp.array([], dtype=int)
+                        else:
+                            combined_coords[view_dim] = np.array([], dtype=int)
                         continue
                     curr_idx_arr = bool_indices
                 
                 # 确保索引在有效范围内
-                if arrlib.any(curr_idx_arr >= view_dim_size):
+                # 根据数组类型选择合适的any函数
+                if CUPY_AVAILABLE and isinstance(curr_idx_arr, cp.ndarray):
+                    out_of_bounds = cp.any(curr_idx_arr >= view_dim_size)
+                else:
+                    out_of_bounds = np.any(curr_idx_arr >= view_dim_size)
+                if out_of_bounds:
                     raise IndexError(f"Array index out of bounds for view dimension size {view_dim_size}")
                 
                 if isinstance(base_idx, slice):
@@ -1399,6 +1436,7 @@ class TN:
                 raise NotImplementedError(f"Unsupported index type: {type(norm_curr_idx)}")
         
         return tuple(combined_coords)
+
     
     def _adjust_right_val(self, target_data, val):
         if not isinstance(val,TN):
@@ -1461,7 +1499,7 @@ class TN:
         # 2、向右值传播梯度时可能需要左值
         # 3、对self原地操作后，self index位置的数据已被修改，相当于左值消失
         # 所以，原地操作数据前，须备份target的独立且无依赖副本，用于梯度跟踪时使用
-        target_copy = tensor(target_data.copy(),dtype=self.dtype)
+        target_copy = tensor(target_data.copy(),dtype=self.dtype, device=self.device)
         oper_func(self.data, index_val, right_val.data)
 
         self.requires_grad = (is_grad_enabled() and (self.requires_grad or right_val.requires_grad))
@@ -1540,27 +1578,71 @@ class TN:
 
     def mulat_(self,index,val):
         arrlib = self._get_array_lib()
-        return self._inplace_oper_at_(index, val, arrlib.multiply.at, _mulat_inplace_backward)
+        if arrlib == cp:
+            def _mulat_numpy_item(numpy_arr, index, right_numpy_arr):
+                numpy_arr[index] *= right_numpy_arr
+                return numpy_arr
+            oper_func = _mulat_numpy_item
+        else:
+            oper_func = np.multiply.at
+            
+        return self._inplace_oper_at_(index, val, oper_func, _mulat_inplace_backward)
 
     def mulat(self,index,val):
         arrlib = self._get_array_lib()
-        return self._non_inplace_oper_at(index, val, arrlib.multiply.at, _mulat_backward_left, _mulat_backward_right)
+        if arrlib == cp:
+            def _mulat_numpy_item(numpy_arr, index, right_numpy_arr):
+                numpy_arr[index] *= right_numpy_arr
+                return numpy_arr
+            oper_func = _mulat_numpy_item
+        else:
+            oper_func = np.multiply.at
+        
+        return self._non_inplace_oper_at(index, val, oper_func, _mulat_backward_left, _mulat_backward_right)
 
     def divat_(self,index,val):
         arrlib = self._get_array_lib()
-        return self._inplace_oper_at_(index, val, arrlib.divide.at, _divat_inplace_backward)
+        if arrlib == cp:
+            def _divat_numpy_item(numpy_arr, index, right_numpy_arr):
+                numpy_arr[index] /= right_numpy_arr
+                return numpy_arr
+            oper_func = _divat_numpy_item
+        else:
+            oper_func = np.divide.at
+        return self._inplace_oper_at_(index, val, oper_func, _divat_inplace_backward)
 
     def divat(self,index,val):
         arrlib = self._get_array_lib()
-        return self._non_inplace_oper_at(index, val, arrlib.divide.at, _divat_backward_left, _divat_backward_right)
+        if arrlib == cp:
+            def _divat_numpy_item(numpy_arr, index, right_numpy_arr):
+                numpy_arr[index] /= right_numpy_arr
+                return numpy_arr
+            oper_func = _divat_numpy_item
+        else:
+            oper_func = np.divide.at
+        return self._non_inplace_oper_at(index, val, oper_func, _divat_backward_left, _divat_backward_right)
 
     def powat_(self,index,val):
         arrlib = self._get_array_lib()
-        return self._inplace_oper_at_(index, val, arrlib.power.at, _powat_inplace_backward)
+        if arrlib == cp:
+            def _powat_numpy_item(numpy_arr, index, right_numpy_arr):
+                numpy_arr[index] **= right_numpy_arr
+                return numpy_arr
+            oper_func = _powat_numpy_item
+        else:
+            oper_func = np.power.at
+        return self._inplace_oper_at_(index, val, oper_func, _powat_inplace_backward)
 
     def powat(self,index,val):
         arrlib = self._get_array_lib()
-        return self._non_inplace_oper_at(index, val, arrlib.power.at, _powat_backward_left, _powat_backward_right)
+        if arrlib == cp:
+            def _powat_numpy_item(numpy_arr, index, right_numpy_arr):
+                numpy_arr[index] **= right_numpy_arr
+                return numpy_arr
+            oper_func = _powat_numpy_item
+        else:
+            oper_func = np.power.at
+        return self._non_inplace_oper_at(index, val, oper_func, _powat_backward_right)
 
     def _compute_to_direct_indices(self:TN, dim:int, index_data:np.ndarray):
         """
@@ -4658,27 +4740,33 @@ def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
 
 def dot(x:TN,y:TN)->TN:
     """
-    计算两个张量的点积。
+    计算两个一维张量的点积（内积）。
     
-    对于一维数组，计算向量的内积；对于二维数组，计算矩阵乘法；
-    对于N维数组，是x和y的最后一个轴上的点积运算。
+    这个函数与PyTorch的torch.dot()行为一致，只接受1D张量，并计算它们的内积。
     
     Args:
-        x (TN): 第一个张量
-        y (TN): 第二个张量
+        x (TN): 第一个一维张量
+        y (TN): 第二个一维张量
         
     Returns:
-        TN: 两个张量的点积结果
+        TN: 点积结果，是一个标量张量
+        
+    Raises:
+        RuntimeError: 如果输入张量不是一维的
         
     Examples:
         >>> a = tensor([1, 2, 3])
         >>> b = tensor([4, 5, 6])
         >>> dot(a, b)  # 返回32 (1*4 + 2*5 + 3*6)
-        
-        >>> c = tensor([[1, 2], [3, 4]])
-        >>> d = tensor([[5, 6], [7, 8]])
-        >>> dot(c, d)  # 返回[[19, 22], [43, 50]]
     """
+    if x.data.ndim != 1:
+        raise RuntimeError(f"1D tensors expected, got {x.data.ndim}D tensor")
+    if y.data.ndim != 1:
+        raise RuntimeError(f"1D tensors expected, got {y.data.ndim}D tensor")
+    if x.device != y.device:
+        raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
+    
+    # 使用x@y进行计算，利用现有的__matmul__方法的梯度跟踪能力
     return x @ y
 
 def _convert_TNindex_to_numpy(index):
@@ -4696,7 +4784,6 @@ def _convert_TNindex_to_numpy(index):
             index_val = index
 
         return index_val
-
 def _squeeze_backward(result_tensor:TN, i: int) -> TN:
     dim = result_tensor.parms[i]
     grad = result_tensor.grad_value.unsqueeze(dim)
@@ -5785,7 +5872,7 @@ def _permute_backward(result_tensor:TN, i: int):
     # inv_permutation = [0] * n
     # for i, p in enumerate(permutation):
     #     inv_permutation[p] = i  # 关键：新索引p映射到原始索引i
-    inv_permutation = tuple(inv_permutation)
+    # inv_permutation = tuple(inv_permutation)
     
     # 直接使用permute方法重排梯度维度并返回
     # permute方法会自动处理梯度计算图的记录
