@@ -644,6 +644,62 @@ class TestSerialization(unittest.TestCase):
                 stats.add_result(case_name, False, [str(e)])
                 print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                 raise
+    
+    def test_tensor_device_serialization(self):
+        """测试张量device参数序列化功能"""
+        stats.start_function("张量Device参数序列化")
+        try:
+            start_time = time.time()
+            # 测试CPU设备
+            cpu_tensor = rm.tensor([1.0, 2.0, 3.0], requires_grad=True, device='cpu')
+            cpu_tensor.is_leaf = True
+            
+            # 保存到临时文件
+            with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
+                temp_path = f.name
+            
+            try:
+                rm.save(cpu_tensor, temp_path)
+                loaded_cpu_tensor = rm.load(temp_path)
+                
+                # 验证数据
+                np.testing.assert_allclose(loaded_cpu_tensor.data, cpu_tensor.data, rtol=1e-6)
+                
+                # 验证device参数
+                self.assertEqual(str(loaded_cpu_tensor.device), str(cpu_tensor.device))
+                self.assertEqual(str(loaded_cpu_tensor.device), 'cpu')
+                
+                time_taken = time.time() - start_time
+                stats.add_result("张量Device参数序列化 - CPU设备", True)
+                print(f"测试用例: 张量Device参数序列化 - CPU设备 - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                
+                # 测试参数的device序列化
+                cpu_param = rm.nn.Parameter(rm.tensor([4.0, 5.0, 6.0], device='cpu'))
+                rm.save(cpu_param, temp_path)
+                loaded_cpu_param = rm.load(temp_path)
+                
+                # 验证参数数据
+                np.testing.assert_allclose(loaded_cpu_param.data, cpu_param.data, rtol=1e-6)
+                
+                # 验证参数device
+                self.assertEqual(str(loaded_cpu_param.device), str(cpu_param.device))
+                self.assertEqual(str(loaded_cpu_param.device), 'cpu')
+                
+                time_taken = time.time() - start_time
+                stats.add_result("参数Device参数序列化 - CPU设备", True)
+                print(f"测试用例: 参数Device参数序列化 - CPU设备 - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                    
+        except Exception as e:
+            time_taken = time.time() - start_time
+            stats.add_result("张量Device参数序列化", False, [str(e)])
+            print(f"测试用例: 张量Device参数序列化 - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+            raise
+        finally:
+            stats.end_function()
         
 
 if __name__ == '__main__':
