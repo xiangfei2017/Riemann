@@ -71,7 +71,7 @@ import os
 from typing import Any, Union, Dict, List, Tuple, Optional
 from .tensordef import TN, tensor
 from .nn.module import Parameter, Module
-
+from .cuda import Device, cp
 
 def save(obj: Any, f: Union[str, os.PathLike, Any], 
          pickle_module: Any = None, 
@@ -195,8 +195,9 @@ def _prepare_for_serialization(obj: Any) -> Any:
             'data': obj.data.tolist(),
             'shape': obj.shape,
             'dtype': str(obj.dtype),
+            'device': str(obj.device),
             'requires_grad': obj.requires_grad,
-            'is_leaf': obj.is_leaf
+            'is_leaf': obj.is_leaf,
         }
     elif isinstance(obj, Parameter):
         # 将参数转换为可序列化的字典
@@ -205,6 +206,7 @@ def _prepare_for_serialization(obj: Any) -> Any:
             'data': obj.data.tolist(),
             'shape': obj.shape,
             'dtype': str(obj.dtype),
+            'device': str(obj.device),
             'requires_grad': obj.requires_grad,
             'is_leaf': obj.is_leaf
         }
@@ -247,34 +249,52 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
         
         if obj_type == 'tensor':
             # 使用tensor函数恢复张量
-            # 将字符串dtype转换回numpy dtype
-            dtype_str = obj.get('dtype')
-            dtype = np.dtype(dtype_str)
+            try:
+                # 将字符串dtype转换回numpy dtype
+                dtype_str = obj.get('dtype')            
+                dtype = np.dtype(dtype_str)
+                # 获取设备信息
+                device_str = obj.get('device', 'cpu')
+                device = Device(device_str)
+                arrlib = cp if device.type == 'cuda' else np
 
-            # 将列表转换回具有正确形状和dtype的numpy数组
-            data = np.array(obj['data'],dtype=dtype)
-            data = data.reshape(obj['shape'])
+                # 将列表转换回具有正确形状和dtype的numpy数组
+                data = arrlib.array(obj['data'],dtype=dtype)
+                data = data.reshape(obj['shape'])
 
-            tensor_obj = tensor(data, dtype=dtype, requires_grad=obj.get('requires_grad', False))
-            tensor_obj.is_leaf = obj.get('is_leaf', True)
+                tensor_obj = tensor(data, dtype=dtype,device=device, requires_grad=obj.get('requires_grad', False))
+                tensor_obj.is_leaf = obj.get('is_leaf', True)
+            except Exception as e:
+                # 恢复失败时，返回None作为占位符
+                tensor_obj = None
+                print(f"Error restoring tensor: {e}")
             return tensor_obj
             
         elif obj_type == 'parameter':
             # 恢复参数
-            # 将字符串dtype转换回numpy dtype
-            dtype_str = obj.get('dtype')
-            dtype = np.dtype(dtype_str)
+            try:
+                # 将字符串dtype转换回numpy dtype
+                dtype_str = obj.get('dtype')            
+                dtype = np.dtype(dtype_str)
+                # 获取设备信息
+                device_str = obj.get('device', 'cpu')
+                device = Device(device_str)
+                arrlib = cp if device.type == 'cuda' else np
 
-            # 将列表转换回具有正确形状和dtype的numpy数组
-            data = np.array(obj['data'],dtype=dtype)
-            data = data.reshape(obj['shape'])
+                # 将列表转换回具有正确形状和dtype的numpy数组
+                data = arrlib.array(obj['data'],dtype=dtype)
+                data = data.reshape(obj['shape'])
             
-            # 使用tensor函数创建参数以确保正确初始化
-            parameter_tensor = tensor(data, dtype=dtype, requires_grad=obj.get('requires_grad', True))
-            parameter = Parameter(parameter_tensor)
-            parameter.is_leaf = obj.get('is_leaf', True)
+                # 使用tensor函数创建参数以确保正确初始化
+                parameter_tensor = tensor(data, dtype=dtype,device=device, requires_grad=obj.get('requires_grad', True))
+                parameter = Parameter(parameter_tensor)
+                parameter.is_leaf = obj.get('is_leaf', True)
+            except Exception as e:
+                # 恢复失败时，返回None作为占位符
+                parameter = None
+                print(f"Error restoring parameter: {e}")
             return parameter
-            
+        
         elif obj_type == 'module':
             # 恢复模块（这更复杂，可能需要类注册）
             # 目前只返回状态字典
