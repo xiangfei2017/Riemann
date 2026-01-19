@@ -10,8 +10,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 try:
     import riemann as rm
     from riemann.autograd.functional import hessian as rm_hessian
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -200,9 +204,24 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all_passed
     
     # 转换为numpy数组
-    rm_data = rm_result.detach().numpy()
-    torch_data = torch_result.detach().numpy()
-
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
+    
     # 处理形状不匹配的情况
     try:
         # 增加容差参数
@@ -260,186 +279,211 @@ class TestHessianFunctions(unittest.TestCase):
     
     def test_single_scalar_input_scalar_output(self):
         """测试场景1: func函数，单张量输入(标量)，返回标量张量"""
-        case_name = "单张量输入(标量)，返回标量张量"
+        test_cases = [
+            {"name": "单张量输入(标量)，返回标量张量"}
+        ]
         
-        def test_func():
-            # 定义测试函数: f(x) = x^2
-            def func(x):
-                return x ** 2.
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x):
-                return x ** 2.
-            
-            # 创建输入
-            rm_x = rm.tensor(2.0, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(2.0, requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算Hessian矩阵
-            rm_hess = rm_hessian(func, rm_x)
-            if TORCH_AVAILABLE:
-                torch_hess = torch_hessian(torch_func, torch_x)
-            else:
-                torch_hess = None
-            
-            # 比较结果
-            return compare_values(rm_hess, torch_hess)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        self._run_test_case(case_name, test_func)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x) = x^2
+                    def func(x):
+                        return x ** 2.
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x):
+                        return x ** 2.
+                    
+                    # 创建输入数据
+                    input_data = 2.0
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(input_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(input_data, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    # 计算Hessian矩阵
+                    rm_hess = rm_hessian(func, rm_x)
+                    if TORCH_AVAILABLE:
+                        torch_hess = torch_hessian(torch_func, torch_x)
+                    else:
+                        torch_hess = None
+                    
+                    # 比较结果
+                    return compare_values(rm_hess, torch_hess)
+                
+                self._run_test_case(case_name, test_func)
     
     def test_single_tensor_input_scalar_output(self):
         """测试场景2: func函数，单张量输入(两元素)，返回标量张量"""
-        case_name = "单张量输入(两元素)，返回标量张量"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x) = x[0]^2 + x[1]^2 + x[0]*x[1]
-            def func(x):
-                return x[0]**2. + x[1]**2. + x[0]*x[1]
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x):
-                return x[0]**2. + x[1]**2. + x[0]*x[1]
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0], requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算Hessian矩阵
-            rm_hess = rm_hessian(func, rm_x)
-            if TORCH_AVAILABLE:
-                torch_hess = torch_hessian(torch_func, torch_x)
-            else:
-                torch_hess = None
-            
-            # 比较结果
-            passed = compare_values(rm_hess, torch_hess)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Hessian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "单张量输入(两元素)，返回标量张量"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x) = x[0]^2 + x[1]^2 + x[0]*x[1]
+                    def func(x):
+                        return x[0]**2. + x[1]**2. + x[0]*x[1]
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x):
+                        return x[0]**2. + x[1]**2. + x[0]*x[1]
+                    
+                    # 创建输入数据
+                    input_data = [1.0, 2.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(input_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(input_data, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    # 计算Hessian矩阵
+                    rm_hess = rm_hessian(func, rm_x)
+                    if TORCH_AVAILABLE:
+                        torch_hess = torch_hessian(torch_func, torch_x)
+                    else:
+                        torch_hess = None
+                    
+                    # 比较结果
+                    return compare_values(rm_hess, torch_hess)
+                
+                self._run_test_case(case_name, test_func)
     
     def test_multi_input_scalar_output(self):
         """测试场景3: 两张量输入，返回标量张量"""
-        case_name = "两张量输入，返回标量张量"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x, y) = x^2 * y + y^3
-            def func(x, y):
-                return x ** 2. * y + y ** 3.
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x, y):
-                return x ** 2. * y + y ** 3.
-            
-            # 创建输入
-            rm_x = rm.tensor(2.0, requires_grad=True)
-            rm_y = rm.tensor(3.0, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(2.0, requires_grad=True)
-                torch_y = torch.tensor(3.0, requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            # 计算Hessian矩阵
-            rm_hess = rm_hessian(func, (rm_x, rm_y))
-            if TORCH_AVAILABLE:
-                torch_hess = torch_hessian(torch_func, (torch_x, torch_y))
-            else:
-                torch_hess = None
-            
-            # 比较结果
-            passed = compare_values(rm_hess, torch_hess)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Hessian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "两张量输入，返回标量张量"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x, y) = x^2 * y + y^3
+                    def func(x, y):
+                        return x ** 2. * y + y ** 3.
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x, y):
+                        return x ** 2. * y + y ** 3.
+                    
+                    # 创建输入数据
+                    x_data = 2.0
+                    y_data = 3.0
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    rm_y = rm.tensor(y_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+                        torch_y = torch.tensor(y_data, requires_grad=True, device=device)
+                    else:
+                        torch_x, torch_y = None, None
+                    
+                    # 计算Hessian矩阵
+                    rm_hess = rm_hessian(func, (rm_x, rm_y))
+                    if TORCH_AVAILABLE:
+                        torch_hess = torch_hessian(torch_func, (torch_x, torch_y))
+                    else:
+                        torch_hess = None
+                    
+                    # 比较结果
+                    return compare_values(rm_hess, torch_hess)
+                
+                self._run_test_case(case_name, test_func)
     
     def test_error_non_scalar_output(self):
         """测试场景4: 错误场景，func函数返回非标量张量"""
-        case_name = "错误场景，func函数返回非标量张量"
+        test_cases = [
+            {"name": "错误场景，func函数返回非标量张量"}
+        ]
         
-        def test_func():
-            # 定义测试函数: f(x) = x^2 (返回张量而非标量)
-            def func(x):
-                return x ** 2.
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0], requires_grad=True)
-            
-            # 尝试计算Hessian矩阵，预期会抛出异常
-            try:
-                rm_hess = rm_hessian(func, rm_x)
-                passed = False
-                self.error_msg = "预期抛出异常但未抛出"
-            except RuntimeError as e:
-                if "scalar-valued" in str(e):
-                    passed = True
-                    self.error_msg = None
-                else:
-                    passed = False
-                    self.error_msg = f"抛出了非预期的异常: {str(e)}"
-            except Exception as e:
-                passed = False
-                self.error_msg = f"抛出了非预期的异常类型: {type(e).__name__}: {str(e)}"
-            
-            return passed
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        # 运行测试并使用自定义的断言消息
-        start_time = time.time()
-        try:
-            passed = test_func()
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  错误: {self.error_msg}")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"异常处理测试失败: {getattr(self, 'error_msg', '')}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x) = x^2 (返回张量而非标量)
+                    def func(x):
+                        return x ** 2.
+                    
+                    # 创建输入数据
+                    input_data = [1.0, 2.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(input_data, requires_grad=True, device=device)
+                    
+                    # 尝试计算Hessian矩阵，预期会抛出异常
+                    try:
+                        rm_hess = rm_hessian(func, rm_x)
+                        passed = False
+                        self.error_msg = "预期抛出异常但未抛出"
+                    except RuntimeError as e:
+                        if "scalar-valued" in str(e):
+                            passed = True
+                            self.error_msg = None
+                        else:
+                            passed = False
+                            self.error_msg = f"抛出了非预期的异常: {str(e)}"
+                    except Exception as e:
+                        passed = False
+                        self.error_msg = f"抛出了非预期的异常类型: {type(e).__name__}: {str(e)}"
+                    
+                    return passed
+                
+                # 运行测试并使用自定义的断言消息
+                start_time = time.time()
+                try:
+                    passed = test_func()
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: {self.error_msg}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"异常处理测试失败: {getattr(self, 'error_msg', '')}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_error_non_tensor_input(self):
         """测试场景5: 错误场景，输入不是张量或张量列表"""
@@ -493,6 +537,11 @@ class TestHessianFunctions(unittest.TestCase):
             {"name": "strict=True与所有输入都相关的情况", "strict": True, "should_pass": True}
         ]
         
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
         # 测试函数定义
         def simple_func(x):
             return x ** 2.
@@ -503,109 +552,126 @@ class TestHessianFunctions(unittest.TestCase):
         def func_full_dep(x, y):
             return x ** 2. + y ** 3. + x * y
         
-        for case in test_cases:
-            def test_func():
-                if case["name"] == "strict=False的基本功能":
-                    # 创建输入
-                    rm_x = rm.tensor(2.0, requires_grad=True)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    if case["name"] == "strict=False的基本功能":
+                        # 创建输入
+                        rm_x = rm.tensor(2.0, requires_grad=True, device=device)
+                        
+                        # 测试strict=False时的行为
+                        try:
+                            rm_hess_non_strict = rm_hessian(simple_func, rm_x, strict=False)
+                            return True
+                        except Exception as e:
+                            return False
                     
-                    # 测试strict=False时的行为
-                    try:
-                        rm_hess_non_strict = rm_hessian(simple_func, rm_x, strict=False)
-                        return True
-                    except Exception as e:
-                        return False
-                
-                elif case["name"] == "strict=True时函数忽略部分输入":
-                    # 创建输入
-                    rm_x = rm.tensor(2.0, requires_grad=True)
-                    rm_y = rm.tensor(3.0, requires_grad=True)
+                    elif case["name"] == "strict=True时函数忽略部分输入":
+                        # 创建输入
+                        rm_x = rm.tensor(2.0, requires_grad=True, device=device)
+                        rm_y = rm.tensor(3.0, requires_grad=True, device=device)
+                        
+                        try:
+                            rm_hess_strict = rm_hessian(func_partial_dep, (rm_x, rm_y), strict=True)
+                            return False  # 应该抛出异常
+                        except Exception as e:
+                            # 检查异常消息是否包含"independent"或类似内容
+                            return "independent" in str(e).lower()
                     
-                    try:
-                        rm_hess_strict = rm_hessian(func_partial_dep, (rm_x, rm_y), strict=True)
-                        return False  # 应该抛出异常
-                    except Exception as e:
-                        # 检查异常消息是否包含"independent"或类似内容
-                        return "independent" in str(e).lower()
+                    elif case["name"] == "strict=True与所有输入都相关的情况":
+                        # 创建新的输入
+                        rm_x2 = rm.tensor(2.0, requires_grad=True, device=device)
+                        rm_y2 = rm.tensor(3.0, requires_grad=True, device=device)
+                        
+                        try:
+                            # 计算Hessian
+                            rm_hess_strict_full = rm_hessian(func_full_dep, (rm_x2, rm_y2), strict=True)
+                            return True
+                        except Exception as e:
+                            return False
                 
-                elif case["name"] == "strict=True与所有输入都相关的情况":
-                    # 创建新的输入
-                    rm_x2 = rm.tensor(2.0, requires_grad=True)
-                    rm_y2 = rm.tensor(3.0, requires_grad=True)
+                # 运行测试
+                start_time = time.time()
+                try:
+                    actual_result = test_func()
+                    expected_result = case["should_pass"]
+                    final_passed = (expected_result == actual_result)
                     
-                    try:
-                        # 计算Hessian
-                        rm_hess_strict_full = rm_hessian(func_full_dep, (rm_x2, rm_y2), strict=True)
-                        return True
-                    except Exception as e:
-                        return False
-            
-            # 运行测试
-            start_time = time.time()
-            try:
-                actual_result = test_func()
-                expected_result = case["should_pass"]
-                final_passed = (expected_result == actual_result)
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case["name"], final_passed)
-                    status = "通过" if final_passed else "失败"
-                    print(f"测试用例: {case['name']} - {Colors.OKGREEN if final_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not final_passed:
-                        print(f"  结果: 期望{'通过' if expected_result else '失败'}，实际{'通过' if actual_result else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(final_passed, f"strict参数测试失败: {case['name']}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case["name"], False, [str(e)])
-                    print(f"测试用例: {case['name']} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, final_passed)
+                        status = "通过" if final_passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if final_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not final_passed:
+                            print(f"  结果: 期望{'通过' if expected_result else '失败'}，实际{'通过' if actual_result else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(final_passed, f"strict参数测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_create_graph_enabled(self):
         """测试场景7: 测试create_graph=True的情况"""
-        case_name = "测试create_graph=True的情况"
+        test_cases = [
+            {"name": "测试create_graph=True的情况"}
+        ]
         
-        def test_func():
-            # 定义测试函数: f(x) = x^3
-            def func(x):
-                return x ** 3.
-            
-            # 创建输入
-            rm_x = rm.tensor(2.0, requires_grad=True)
-            
-            # 计算Hessian矩阵，启用计算图
-            rm_hess = rm_hessian(func, rm_x, create_graph=True)
-            
-            # 验证结果是否可求导（requires_grad为True）
-            return rm_hess.requires_grad
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        # 创建自定义的运行方法以处理特殊的错误信息
-        start_time = time.time()
-        try:
-            passed = test_func()
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  错误: Hessian结果的requires_grad不为True")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"create_graph=True测试失败: Hessian结果不可求导")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x) = x^3
+                    def func(x):
+                        return x ** 3.
+                    
+                    # 创建输入数据
+                    input_data = 2.0
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(input_data, requires_grad=True, device=device)
+                    
+                    # 计算Hessian矩阵，启用计算图
+                    rm_hess = rm_hessian(func, rm_x, create_graph=True)
+                    
+                    # 验证结果是否可求导（requires_grad为True）
+                    return rm_hess.requires_grad
+                
+                # 创建自定义的运行方法以处理特殊的错误信息
+                start_time = time.time()
+                try:
+                    passed = test_func()
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: Hessian结果的requires_grad不为True")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"create_graph=True测试失败: Hessian结果不可求导")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
 
 # 如果作为独立脚本运行
 if __name__ == '__main__':

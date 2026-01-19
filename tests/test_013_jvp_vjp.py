@@ -10,8 +10,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 try:
     import riemann as rm
     from riemann.autograd.functional import jvp, vjp
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -19,6 +23,25 @@ try:
     import torch
     from torch.autograd.functional import jvp as torch_jvp, vjp as torch_vjp
     TORCH_AVAILABLE = True
+
+    # 在模块级别进行PyTorch预热，避免在测试计时中包含初始化开销
+    print("预热PyTorch系统...")
+    warmup_start = time.time()
+    
+    # 执行简单的PyTorch CPU操作以触发初始化
+    warmup_input_cpu = torch.tensor([[0.0]], requires_grad=True)
+    warmup_output_cpu = warmup_input_cpu.sum()
+    warmup_output_cpu.backward()
+    
+    # 如果CUDA可用，执行CUDA操作以初始化CUDA上下文
+    if torch.cuda.is_available():
+        warmup_input_cuda = torch.tensor([[0.0]], requires_grad=True, device='cuda')
+        warmup_output_cuda = warmup_input_cuda.sum()
+        warmup_output_cuda.backward()
+        torch.cuda.empty_cache()
+    
+    print(f"PyTorch预热完成，耗时: {time.time() - warmup_start:.4f}秒")
+    
 except ImportError:
     print("警告: 无法导入PyTorch，将只测试riemann的jvp和vjp函数")
     TORCH_AVAILABLE = False
@@ -200,15 +223,23 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all_passed
     
     # 转换为numpy数组
-    if hasattr(rm_result, 'data'):
-        rm_data = rm_result.data
-    else:
-        rm_data = rm_result
-    
-    if hasattr(torch_result, 'detach'):
-        torch_data = torch_result.detach().cpu().numpy()
-    else:
-        torch_data = torch_result
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
     
     # 处理形状不匹配的情况
     try:
@@ -264,347 +295,397 @@ class TestJvpVjpFunctions(unittest.TestCase):
     
     def test_single_input_single_output(self):
         """测试场景1: 单输入单输出函数"""
-        case_name = "单输入单输出函数 JVP/VJP"
+        test_cases = [
+            {"name": "单输入单输出函数 JVP/VJP"}
+        ]
         
-        def test_func():
-            # 定义测试函数
-            def f(x):
-                return x ** 2
-            
-            def pt_f(x):
-                return x ** 2
-            
-            # 创建测试数据
-            np_x = np.random.randn(3, 4)
-            rm_x = rm.tensor(np_x, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(np_x, requires_grad=True)
-            else:
-                torch_x = None
-            
-            np_v = np.random.randn(3, 4)
-            rm_v = rm.tensor(np_v)
-            if TORCH_AVAILABLE:
-                torch_v = torch.tensor(np_v)
-            else:
-                torch_v = None
-            
-            # 初始化变量以避免UnboundLocalError
-            torch_jvp_result = None
-            
-            # 计算Riemann的JVP
-            rm_outputs, rm_jvp = jvp(f, rm_x, rm_v)
-            
-            # 计算PyTorch的JVP
-            if TORCH_AVAILABLE:
-                torch_outputs, torch_jvp_result = torch_jvp(pt_f, torch_x, torch_v)
-            
-            # 比较结果
-            passed = compare_values(rm_jvp, torch_jvp_result)
-            
-            # 计算VJP部分 - 修复v参数形状与输出匹配
-            np_v_output = np.ones_like(np_x)  # 形状与输出x**2匹配
-            rm_v_output = rm.tensor(np_v_output)
-            if TORCH_AVAILABLE:
-                torch_v_output = torch.tensor(np_v_output)
-            else:
-                torch_v_output = None
-            
-            # 初始化变量以避免UnboundLocalError
-            torch_vjp_result = None
-            
-            # 计算Riemann的VJP
-            rm_outputs_vjp, rm_vjp = vjp(f, rm_x, rm_v_output)
-            
-            # 计算PyTorch的VJP
-            if TORCH_AVAILABLE:
-                torch_outputs_vjp, torch_vjp_result = torch_vjp(pt_f, torch_x, torch_v_output)
-            
-            # 比较VJP结果
-            vjp_passed = compare_values(rm_vjp, torch_vjp_result)
-            final_passed = passed and vjp_passed
-            
-            # 详细错误信息
-            if IS_RUNNING_AS_SCRIPT and not final_passed:
-                jvp_status = "通过" if compare_values(rm_jvp, torch_jvp_result) else "失败"
-                vjp_status = "通过" if vjp_passed else "失败"
-                print(f"  JVP比较: {jvp_status}")
-                print(f"  VJP比较: {vjp_status}")
-            
-            return final_passed
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        self._run_test_case(case_name, test_func, error_message=f"JVP/VJP计算结果不匹配: {case_name}")
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数
+                    def f(x):
+                        return x ** 2
+                    
+                    def pt_f(x):
+                        return x ** 2
+                    
+                    # 创建测试数据
+                    np_x = np.random.randn(3, 4)
+                    rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    np_v = np.random.randn(3, 4)
+                    rm_v = rm.tensor(np_v, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_v = torch.tensor(np_v, device=device)
+                    else:
+                        torch_v = None
+                    
+                    # 初始化变量以避免UnboundLocalError
+                    torch_jvp_result = None
+                    
+                    # 计算Riemann的JVP
+                    rm_outputs, rm_jvp = jvp(f, rm_x, rm_v)
+                    
+                    # 计算PyTorch的JVP
+                    if TORCH_AVAILABLE:
+                        torch_outputs, torch_jvp_result = torch_jvp(pt_f, torch_x, torch_v)
+                    
+                    # 比较结果
+                    passed = compare_values(rm_jvp, torch_jvp_result)
+                    
+                    # 计算VJP部分 - 修复v参数形状与输出匹配
+                    np_v_output = np.ones_like(np_x)  # 形状与输出x**2匹配
+                    rm_v_output = rm.tensor(np_v_output, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_v_output = torch.tensor(np_v_output, device=device)
+                    else:
+                        torch_v_output = None
+                    
+                    # 初始化变量以避免UnboundLocalError
+                    torch_vjp_result = None
+                    
+                    # 计算Riemann的VJP
+                    rm_outputs_vjp, rm_vjp = vjp(f, rm_x, rm_v_output)
+                    
+                    # 计算PyTorch的VJP
+                    if TORCH_AVAILABLE:
+                        torch_outputs_vjp, torch_vjp_result = torch_vjp(pt_f, torch_x, torch_v_output)
+                    
+                    # 比较VJP结果
+                    vjp_passed = compare_values(rm_vjp, torch_vjp_result)
+                    final_passed = passed and vjp_passed
+                    
+                    # 详细错误信息
+                    if IS_RUNNING_AS_SCRIPT and not final_passed:
+                        jvp_status = "通过" if compare_values(rm_jvp, torch_jvp_result) else "失败"
+                        vjp_status = "通过" if vjp_passed else "失败"
+                        print(f"  JVP比较: {jvp_status}")
+                        print(f"  VJP比较: {vjp_status}")
+                    
+                    return final_passed
+                
+                self._run_test_case(case_name, test_func, error_message=f"JVP/VJP计算结果不匹配: {case_name}")
     
     def test_single_input_multiple_outputs(self):
         """测试场景2: 单输入多输出函数"""
-        case_name = "单输入多输出函数 JVP/VJP"
+        test_cases = [
+            {"name": "单输入多输出函数 JVP/VJP"}
+        ]
         
-        def test_func():
-            # 定义测试函数
-            def f(x):
-                return x ** 2, x.sum()
-            
-            def pt_f(x):
-                return x ** 2, x.sum()
-            
-            # 创建测试数据
-            np_x = np.random.randn(3, 4)
-            rm_x = rm.tensor(np_x, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(np_x, requires_grad=True)
-            else:
-                torch_x = None
-            
-            np_v = np.random.randn(3, 4)
-            rm_v = rm.tensor(np_v)
-            if TORCH_AVAILABLE:
-                torch_v = torch.tensor(np_v)
-            else:
-                torch_v = None
-            
-            # 初始化变量以避免UnboundLocalError
-            torch_jvp_result = None
-            
-            # 计算Riemann的JVP
-            rm_outputs, rm_jvp = jvp(f, rm_x, rm_v)
-            
-            # 计算PyTorch的JVP
-            if TORCH_AVAILABLE:
-                torch_outputs, torch_jvp_result = torch_jvp(pt_f, torch_x, torch_v)
-            
-            # 比较结果 - 分别比较每个输出的JVP
-            passed = True
-            if TORCH_AVAILABLE and torch_jvp_result is not None:
-                for i in range(len(rm_jvp)):
-                    if not compare_values(rm_jvp[i], torch_jvp_result[i]):
-                        passed = False
-                        break
-            
-            # 计算VJP部分 - 精确匹配v参数形状与函数输出形状
-            # 先计算函数实际输出，以确定准确的形状
-            np_output1, np_output2 = f(np_x)
-            np_v1 = np.ones_like(np_output1)  # 与第一个输出形状精确匹配
-            np_v2 = np.ones_like(np_output2)  # 与第二个输出形状精确匹配
-            rm_v1 = rm.tensor(np_v1)
-            rm_v2 = rm.tensor(np_v2)
-            if TORCH_AVAILABLE:
-                torch_v1 = torch.tensor(np_v1)
-                torch_v2 = torch.tensor(np_v2)
-            else:
-                torch_v1, torch_v2 = None, None
-            
-            # 初始化变量以避免UnboundLocalError
-            torch_vjp_result = None
-            
-            # 计算Riemann的VJP
-            rm_outputs_vjp, rm_vjp = vjp(f, rm_x, (rm_v1, rm_v2))
-            
-            # 计算PyTorch的VJP
-            if TORCH_AVAILABLE:
-                torch_outputs_vjp, torch_vjp_result = torch_vjp(pt_f, torch_x, (torch_v1, torch_v2))
-            
-            # 比较VJP结果 - 分别比较每个输入的VJP
-            vjp_passed = True
-            if TORCH_AVAILABLE and torch_vjp_result is not None:
-                for i in range(len(rm_vjp)):
-                    if not compare_values(rm_vjp[i], torch_vjp_result[i]):
-                        vjp_passed = False
-                        break
-            
-            final_passed = passed and vjp_passed
-            
-            # 详细错误信息
-            if IS_RUNNING_AS_SCRIPT and not final_passed:
-                jvp_status = "通过" if (not TORCH_AVAILABLE or torch_jvp_result is None or all(compare_values(rm_jvp[i], torch_jvp_result[i]) for i in range(len(rm_jvp)))) else "失败"
-                vjp_status = "通过" if (not TORCH_AVAILABLE or torch_vjp_result is None or all(compare_values(rm_vjp[i], torch_vjp_result[i]) for i in range(len(rm_vjp)))) else "失败"
-                print(f"  JVP比较: {jvp_status}")
-                print(f"  VJP比较: {vjp_status}")
-            
-            return final_passed
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        self._run_test_case(case_name, test_func, error_message=f"JVP/VJP计算结果不匹配: {case_name}")
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数
+                    def f(x):
+                        return x ** 2, x.sum()
+                    
+                    def pt_f(x):
+                        return x ** 2, x.sum()
+                    
+                    # 创建测试数据
+                    np_x = np.random.randn(3, 4)
+                    rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    np_v = np.random.randn(3, 4)
+                    rm_v = rm.tensor(np_v, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_v = torch.tensor(np_v, device=device)
+                    else:
+                        torch_v = None
+                    
+                    # 初始化变量以避免UnboundLocalError
+                    torch_jvp_result = None
+                    
+                    # 计算Riemann的JVP
+                    rm_outputs, rm_jvp = jvp(f, rm_x, rm_v)
+                    
+                    # 计算PyTorch的JVP
+                    if TORCH_AVAILABLE:
+                        torch_outputs, torch_jvp_result = torch_jvp(pt_f, torch_x, torch_v)
+                    
+                    # 比较结果 - 分别比较每个输出的JVP
+                    passed = True
+                    if TORCH_AVAILABLE and torch_jvp_result is not None:
+                        for i in range(len(rm_jvp)):
+                            if not compare_values(rm_jvp[i], torch_jvp_result[i]):
+                                passed = False
+                                break
+                    
+                    # 计算VJP部分 - 精确匹配v参数形状与函数输出形状
+                    # 先计算函数实际输出，以确定准确的形状
+                    np_output1, np_output2 = f(np_x)
+                    np_v1 = np.ones_like(np_output1)  # 与第一个输出形状精确匹配
+                    np_v2 = np.ones_like(np_output2)  # 与第二个输出形状精确匹配
+                    rm_v1 = rm.tensor(np_v1, device=device)
+                    rm_v2 = rm.tensor(np_v2, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_v1 = torch.tensor(np_v1, device=device)
+                        torch_v2 = torch.tensor(np_v2, device=device)
+                    else:
+                        torch_v1, torch_v2 = None, None
+                    
+                    # 初始化变量以避免UnboundLocalError
+                    torch_vjp_result = None
+                    
+                    # 计算Riemann的VJP
+                    rm_outputs_vjp, rm_vjp = vjp(f, rm_x, (rm_v1, rm_v2))
+                    
+                    # 计算PyTorch的VJP
+                    if TORCH_AVAILABLE:
+                        torch_outputs_vjp, torch_vjp_result = torch_vjp(pt_f, torch_x, (torch_v1, torch_v2))
+                    
+                    # 比较VJP结果 - 分别比较每个输入的VJP
+                    vjp_passed = True
+                    if TORCH_AVAILABLE and torch_vjp_result is not None:
+                        for i in range(len(rm_vjp)):
+                            if not compare_values(rm_vjp[i], torch_vjp_result[i]):
+                                vjp_passed = False
+                                break
+                    
+                    final_passed = passed and vjp_passed
+                    
+                    # 详细错误信息
+                    if IS_RUNNING_AS_SCRIPT and not final_passed:
+                        jvp_status = "通过" if (not TORCH_AVAILABLE or torch_jvp_result is None or all(compare_values(rm_jvp[i], torch_jvp_result[i]) for i in range(len(rm_jvp)))) else "失败"
+                        vjp_status = "通过" if (not TORCH_AVAILABLE or torch_vjp_result is None or all(compare_values(rm_vjp[i], torch_vjp_result[i]) for i in range(len(rm_vjp)))) else "失败"
+                        print(f"  JVP比较: {jvp_status}")
+                        print(f"  VJP比较: {vjp_status}")
+                    
+                    return final_passed
+                
+                self._run_test_case(case_name, test_func, error_message=f"JVP/VJP计算结果不匹配: {case_name}")
     
     def test_multiple_inputs_single_output(self):
         """测试场景3: 多输入单输出函数"""
-        case_name = "多输入单输出函数 JVP/VJP"
+        test_cases = [
+            {"name": "多输入单输出函数 JVP/VJP"}
+        ]
         
-        def test_func():
-            # 定义测试函数
-            def f(x, y):
-                return x @ y + x.sum() + y.sum()
-            
-            def pt_f(x, y):
-                return x @ y + x.sum() + y.sum()
-            
-            # 创建测试数据
-            np_x = np.random.randn(2, 3)
-            np_y = np.random.randn(3, 4)
-            rm_x = rm.tensor(np_x, requires_grad=True)
-            rm_y = rm.tensor(np_y, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(np_x, requires_grad=True)
-                torch_y = torch.tensor(np_y, requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            np_vx = np.random.randn(2, 3)
-            np_vy = np.random.randn(3, 4)
-            rm_vx = rm.tensor(np_vx)
-            rm_vy = rm.tensor(np_vy)
-            if TORCH_AVAILABLE:
-                torch_vx = torch.tensor(np_vx)
-                torch_vy = torch.tensor(np_vy)
-            else:
-                torch_vx, torch_vy = None, None
-            
-            # 初始化变量以避免UnboundLocalError
-            torch_jvp_result = None
-            
-            # 计算Riemann的JVP
-            rm_output, rm_jvp = jvp(f, (rm_x, rm_y), (rm_vx, rm_vy))
-            
-            # 计算PyTorch的JVP
-            if TORCH_AVAILABLE:
-                torch_output, torch_jvp_result = torch_jvp(pt_f, (torch_x, torch_y), (torch_vx, torch_vy))
-            
-            # 比较结果
-            passed = compare_values(rm_jvp, torch_jvp_result)
-            
-            # 计算VJP部分 - 精确匹配v参数形状与函数输出形状
-            # 函数输出是(2,4)，因为x @ y的形状是(2,4)，标量加法会广播到整个矩阵
-            np_v_output = np.ones((2, 4))  # 与函数输出形状(2,4)精确匹配
-            rm_v_output = rm.tensor(np_v_output)
-            if TORCH_AVAILABLE:
-                torch_v_output = torch.tensor(np_v_output)
-            else:
-                torch_v_output = None
-            
-            # 初始化变量以避免UnboundLocalError
-            torch_vjp_result = None
-            
-            # 计算Riemann的VJP
-            rm_output_vjp, rm_vjp = vjp(f, (rm_x, rm_y), rm_v_output)
-            
-            # 计算PyTorch的VJP
-            if TORCH_AVAILABLE:
-                torch_output_vjp, torch_vjp_result = torch_vjp(pt_f, (torch_x, torch_y), torch_v_output)
-            
-            # 比较VJP结果 - 分别比较每个输入的VJP
-            vjp_passed = True
-            if TORCH_AVAILABLE and torch_vjp_result is not None:
-                for i in range(len(rm_vjp)):
-                    if not compare_values(rm_vjp[i], torch_vjp_result[i]):
-                        vjp_passed = False
-                        break
-            
-            final_passed = passed and vjp_passed
-            
-            # 详细错误信息
-            if IS_RUNNING_AS_SCRIPT and not final_passed:
-                jvp_status = "通过" if compare_values(rm_jvp, torch_jvp_result) else "失败"
-                vjp_status = "通过" if (not TORCH_AVAILABLE or torch_vjp_result is None or all(compare_values(rm_vjp[i], torch_vjp_result[i]) for i in range(len(rm_vjp)))) else "失败"
-                print(f"  JVP比较: {jvp_status}")
-                print(f"  VJP比较: {vjp_status}")
-            
-            return final_passed
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        self._run_test_case(case_name, test_func, error_message=f"JVP/VJP计算结果不匹配: {case_name}")
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数
+                    def f(x, y):
+                        return x @ y + x.sum() + y.sum()
+                    
+                    def pt_f(x, y):
+                        return x @ y + x.sum() + y.sum()
+                    
+                    # 创建测试数据
+                    np_x = np.random.randn(2, 3)
+                    np_y = np.random.randn(3, 4)
+                    rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                    rm_y = rm.tensor(np_y, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        torch_y = torch.tensor(np_y, requires_grad=True, device=device)
+                    else:
+                        torch_x, torch_y = None, None
+                    
+                    np_vx = np.random.randn(2, 3)
+                    np_vy = np.random.randn(3, 4)
+                    rm_vx = rm.tensor(np_vx, device=device)
+                    rm_vy = rm.tensor(np_vy, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_vx = torch.tensor(np_vx, device=device)
+                        torch_vy = torch.tensor(np_vy, device=device)
+                    else:
+                        torch_vx, torch_vy = None, None
+                    
+                    # 初始化变量以避免UnboundLocalError
+                    torch_jvp_result = None
+                    
+                    # 计算Riemann的JVP
+                    rm_output, rm_jvp = jvp(f, (rm_x, rm_y), (rm_vx, rm_vy))
+                    
+                    # 计算PyTorch的JVP
+                    if TORCH_AVAILABLE:
+                        torch_output, torch_jvp_result = torch_jvp(pt_f, (torch_x, torch_y), (torch_vx, torch_vy))
+                    
+                    # 比较结果
+                    passed = compare_values(rm_jvp, torch_jvp_result)
+                    
+                    # 计算VJP部分 - 精确匹配v参数形状与函数输出形状
+                    # 函数输出是(2,4)，因为x @ y的形状是(2,4)，标量加法会广播到整个矩阵
+                    np_v_output = np.ones((2, 4))  # 与函数输出形状(2,4)精确匹配
+                    rm_v_output = rm.tensor(np_v_output, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_v_output = torch.tensor(np_v_output, device=device)
+                    else:
+                        torch_v_output = None
+                    
+                    # 初始化变量以避免UnboundLocalError
+                    torch_vjp_result = None
+                    
+                    # 计算Riemann的VJP
+                    rm_output_vjp, rm_vjp = vjp(f, (rm_x, rm_y), rm_v_output)
+                    
+                    # 计算PyTorch的VJP
+                    if TORCH_AVAILABLE:
+                        torch_output_vjp, torch_vjp_result = torch_vjp(pt_f, (torch_x, torch_y), torch_v_output)
+                    
+                    # 比较VJP结果 - 分别比较每个输入的VJP
+                    vjp_passed = True
+                    if TORCH_AVAILABLE and torch_vjp_result is not None:
+                        for i in range(len(rm_vjp)):
+                            if not compare_values(rm_vjp[i], torch_vjp_result[i]):
+                                vjp_passed = False
+                                break
+                    
+                    final_passed = passed and vjp_passed
+                    
+                    # 详细错误信息
+                    if IS_RUNNING_AS_SCRIPT and not final_passed:
+                        jvp_status = "通过" if compare_values(rm_jvp, torch_jvp_result) else "失败"
+                        vjp_status = "通过" if (not TORCH_AVAILABLE or torch_vjp_result is None or all(compare_values(rm_vjp[i], torch_vjp_result[i]) for i in range(len(rm_vjp)))) else "失败"
+                        print(f"  JVP比较: {jvp_status}")
+                        print(f"  VJP比较: {vjp_status}")
+                    
+                    return final_passed
+                
+                self._run_test_case(case_name, test_func, error_message=f"JVP/VJP计算结果不匹配: {case_name}")
     
     def test_multiple_inputs_multiple_outputs(self):
         """测试场景4: 多输入多输出函数"""
-        case_name = "多输入多输出函数 JVP/VJP"
+        test_cases = [
+            {"name": "多输入多输出函数 JVP/VJP"}
+        ]
         
-        def test_func():
-            # 定义测试函数
-            def f(x, y):
-                return x @ y, x.sum() + y.sum()
-            
-            def pt_f(x, y):
-                return x @ y, x.sum() + y.sum()
-            
-            # 创建测试数据
-            np_x = np.random.randn(2, 3)
-            np_y = np.random.randn(3, 4)
-            rm_x = rm.tensor(np_x, requires_grad=True)
-            rm_y = rm.tensor(np_y, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(np_x, requires_grad=True)
-                torch_y = torch.tensor(np_y, requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            np_vx = np.random.randn(2, 3)
-            np_vy = np.random.randn(3, 4)
-            rm_vx = rm.tensor(np_vx)
-            rm_vy = rm.tensor(np_vy)
-            if TORCH_AVAILABLE:
-                torch_vx = torch.tensor(np_vx)
-                torch_vy = torch.tensor(np_vy)
-            else:
-                torch_vx, torch_vy = None, None
-            
-            # 初始化变量以避免UnboundLocalError
-            torch_jvp_result = None
-            
-            # 计算Riemann的JVP
-            rm_outputs, rm_jvp = jvp(f, (rm_x, rm_y), (rm_vx, rm_vy))
-            
-            # 计算PyTorch的JVP
-            if TORCH_AVAILABLE:
-                torch_outputs, torch_jvp_result = torch_jvp(pt_f, (torch_x, torch_y), (torch_vx, torch_vy))
-            
-            # 比较JVP结果 - 分别比较每个输出的JVP
-            jvp_passed = True
-            if TORCH_AVAILABLE and torch_jvp_result is not None:
-                for i in range(len(rm_jvp)):
-                    if not compare_values(rm_jvp[i], torch_jvp_result[i]):
-                        jvp_passed = False
-                        break
-            
-            # 计算VJP部分 - 精确匹配v参数形状与输出匹配
-            np_v1 = np.ones((2, 4))  # 与x@y的输出形状匹配
-            np_v2 = np.array(1.0)[()]  # 标量，与sum输出匹配
-            rm_v1 = rm.tensor(np_v1)
-            rm_v2 = rm.tensor(np_v2)
-            if TORCH_AVAILABLE:
-                torch_v1 = torch.tensor(np_v1)
-                torch_v2 = torch.tensor(np_v2)
-            else:
-                torch_v1, torch_v2 = None, None
-            
-            # 初始化变量以避免UnboundLocalError
-            torch_vjp_result = None
-            
-            # 计算Riemann的VJP
-            rm_outputs_vjp, rm_vjp = vjp(f, (rm_x.copy(), rm_y.copy()), (rm_v1, rm_v2))
-            
-            # 计算PyTorch的VJP
-            if TORCH_AVAILABLE:
-                torch_outputs_vjp, torch_vjp_result = torch_vjp(pt_f, (torch_x, torch_y), (torch_v1, torch_v2))
-            
-            # 比较VJP结果 - 分别比较每个输入的VJP
-            vjp_passed = True
-            if TORCH_AVAILABLE and torch_vjp_result is not None:
-                for i in range(len(rm_vjp)):
-                    if not compare_values(rm_vjp[i], torch_vjp_result[i]):
-                        vjp_passed = False
-                        # 添加详细的调试输出
-                        print(f"\nVJP比较失败 - 输入索引 {i}:")
-                        print(f"Riemann VJP结果: {rm_vjp[i].numpy()}")
-                        print(f"PyTorch VJP结果: {torch_vjp_result[i].detach().numpy()}")
-            
-            final_passed = jvp_passed and vjp_passed
-            
-            # 详细错误信息
-            if IS_RUNNING_AS_SCRIPT and not final_passed:
-                jvp_status = "通过" if (not TORCH_AVAILABLE or torch_jvp_result is None or all(compare_values(rm_jvp[i], torch_jvp_result[i]) for i in range(len(rm_jvp)))) else "失败"
-                vjp_status = "通过" if (not TORCH_AVAILABLE or torch_vjp_result is None or all(compare_values(rm_vjp[i], torch_vjp_result[i]) for i in range(len(rm_vjp)))) else "失败"
-                print(f"  JVP比较: {jvp_status}")
-                print(f"  VJP比较: {vjp_status}")
-            
-            return final_passed
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        self._run_test_case(case_name, test_func, error_message=f"JVP/VJP计算结果不匹配: {case_name}")
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数
+                    def f(x, y):
+                        return x @ y, x.sum() + y.sum()
+                    
+                    def pt_f(x, y):
+                        return x @ y, x.sum() + y.sum()
+                    
+                    # 创建测试数据
+                    np_x = np.random.randn(2, 3)
+                    np_y = np.random.randn(3, 4)
+                    rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                    rm_y = rm.tensor(np_y, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        torch_y = torch.tensor(np_y, requires_grad=True, device=device)
+                    else:
+                        torch_x, torch_y = None, None
+                    
+                    np_vx = np.random.randn(2, 3)
+                    np_vy = np.random.randn(3, 4)
+                    rm_vx = rm.tensor(np_vx, device=device)
+                    rm_vy = rm.tensor(np_vy, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_vx = torch.tensor(np_vx, device=device)
+                        torch_vy = torch.tensor(np_vy, device=device)
+                    else:
+                        torch_vx, torch_vy = None, None
+                    
+                    # 初始化变量以避免UnboundLocalError
+                    torch_jvp_result = None
+                    
+                    # 计算Riemann的JVP
+                    rm_outputs, rm_jvp = jvp(f, (rm_x, rm_y), (rm_vx, rm_vy))
+                    
+                    # 计算PyTorch的JVP
+                    if TORCH_AVAILABLE:
+                        torch_outputs, torch_jvp_result = torch_jvp(pt_f, (torch_x, torch_y), (torch_vx, torch_vy))
+                    
+                    # 比较JVP结果 - 分别比较每个输出的JVP
+                    jvp_passed = True
+                    if TORCH_AVAILABLE and torch_jvp_result is not None:
+                        for i in range(len(rm_jvp)):
+                            if not compare_values(rm_jvp[i], torch_jvp_result[i]):
+                                jvp_passed = False
+                                break
+                    
+                    # 计算VJP部分 - 精确匹配v参数形状与输出匹配
+                    np_v1 = np.ones((2, 4))  # 与x@y的输出形状匹配
+                    np_v2 = np.array(1.0)[()]  # 标量，与sum输出匹配
+                    rm_v1 = rm.tensor(np_v1, device=device)
+                    rm_v2 = rm.tensor(np_v2, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_v1 = torch.tensor(np_v1, device=device)
+                        torch_v2 = torch.tensor(np_v2, device=device)
+                    else:
+                        torch_v1, torch_v2 = None, None
+                    
+                    # 初始化变量以避免UnboundLocalError
+                    torch_vjp_result = None
+                    
+                    # 计算Riemann的VJP
+                    # 创建新的输入张量而不是使用copy()，确保在正确设备上
+                    rm_x_copy = rm.tensor(np_x, requires_grad=True, device=device)
+                    rm_y_copy = rm.tensor(np_y, requires_grad=True, device=device)
+                    rm_outputs_vjp, rm_vjp = vjp(f, (rm_x_copy, rm_y_copy), (rm_v1, rm_v2))
+                    
+                    # 计算PyTorch的VJP
+                    if TORCH_AVAILABLE:
+                        torch_outputs_vjp, torch_vjp_result = torch_vjp(pt_f, (torch_x, torch_y), (torch_v1, torch_v2))
+                    
+                    # 比较VJP结果 - 分别比较每个输入的VJP
+                    vjp_passed = True
+                    if TORCH_AVAILABLE and torch_vjp_result is not None:
+                        for i in range(len(rm_vjp)):
+                            if not compare_values(rm_vjp[i], torch_vjp_result[i]):
+                                vjp_passed = False
+                                # 添加详细的调试输出
+                                print(f"\nVJP比较失败 - 输入索引 {i}:")
+                                # 处理CUDA张量的打印
+                                rm_data = rm_vjp[i].detach().cpu().numpy() if hasattr(rm_vjp[i], 'is_cuda') and rm_vjp[i].is_cuda else rm_vjp[i].detach().numpy()
+                                torch_data = torch_vjp_result[i].detach().cpu().numpy() if hasattr(torch_vjp_result[i], 'is_cuda') and torch_vjp_result[i].is_cuda else torch_vjp_result[i].detach().numpy()
+                                print(f"Riemann VJP结果: {rm_data}")
+                                print(f"PyTorch VJP结果: {torch_data}")
+                    
+                    final_passed = jvp_passed and vjp_passed
+                    
+                    # 详细错误信息
+                    if IS_RUNNING_AS_SCRIPT and not final_passed:
+                        jvp_status = "通过" if (not TORCH_AVAILABLE or torch_jvp_result is None or all(compare_values(rm_jvp[i], torch_jvp_result[i]) for i in range(len(rm_jvp)))) else "失败"
+                        vjp_status = "通过" if (not TORCH_AVAILABLE or torch_vjp_result is None or all(compare_values(rm_vjp[i], torch_vjp_result[i]) for i in range(len(rm_vjp)))) else "失败"
+                        print(f"  JVP比较: {jvp_status}")
+                        print(f"  VJP比较: {vjp_status}")
+                    
+                    return final_passed
+                
+                self._run_test_case(case_name, test_func, error_message=f"JVP/VJP计算结果不匹配: {case_name}")
     
     def test_create_graph_and_strict(self):
         """测试场景6: create_graph和strict参数"""
@@ -617,127 +698,146 @@ class TestJvpVjpFunctions(unittest.TestCase):
             {"name": "VJP strict=True（忽略部分输入）", "type": "vjp", "param": "strict", "value": True, "should_pass": False}  # 修复：根据实际行为设为False
         ]
 
-        for case in test_cases:
-            def test_func():
-                if case["param"] == "create_graph" and case["type"] == "jvp":
-                    # 定义测试函数
-                    def f(x):
-                        return x ** 2.
-                    
-                    # 创建输入
-                    rm_x = rm.tensor([[2.0, 3.0]], requires_grad=True)
-                    rm_v = rm.tensor([[1.0, 1.0]])
-                    
-                    # 计算JVP
-                    rm_outputs, rm_jvp = jvp(f, rm_x, rm_v, create_graph=True)
-                    
-                    # 验证requires_grad
-                    passed = hasattr(rm_jvp, 'requires_grad') and rm_jvp.requires_grad
-                    return case["should_pass"] == passed
-                    
-                elif case["param"] == "create_graph" and case["type"] == "vjp":
-                    # 定义测试函数
-                    def f(x):
-                        return x ** 2.
-                    
-                    # 创建输入
-                    rm_x = rm.tensor([[2.0, 3.0]], requires_grad=True)
-                    rm_v = rm.tensor([[1.0, 1.0]])
-                    
-                    # 计算VJP
-                    rm_outputs, rm_vjp = vjp(f, rm_x, rm_v, create_graph=True)
-                    
-                    # 验证requires_grad
-                    passed = hasattr(rm_vjp, 'requires_grad') and rm_vjp.requires_grad
-                    return case["should_pass"] == passed
-                    
-                elif case["param"] == "strict" and case["type"] == "jvp":
-                    # 定义忽略部分输入的函数
-                    def f_independent(x, y):
-                        return x ** 2.
-                    
-                    # 创建输入
-                    rm_x = rm.tensor(2.0, requires_grad=True)
-                    rm_y = rm.tensor(3.0, requires_grad=True)
-                    rm_vx = rm.tensor(1.0)
-                    rm_vy = rm.tensor(1.0)
-                    
-                    try:
-                        # 尝试计算JVP
-                        rm_outputs_indep, rm_jvp_indep = jvp(f_independent, (rm_x, rm_y), (rm_vx, rm_vy), strict=case["value"])
-                        # 如果成功执行，设置passed为True
-                        passed = True
-                    except Exception as e:
-                        # 如果抛出异常，设置passed为False
-                        passed = False
-                    
-                    return case["should_pass"] == passed
-                    
-                elif case["param"] == "strict" and case["type"] == "vjp":
-                    # 定义忽略部分输入的函数
-                    def f_independent(x, y):
-                        return x ** 2.
-                    
-                    # 创建输入
-                    rm_x = rm.tensor(2.0, requires_grad=True)
-                    rm_y = rm.tensor(3.0, requires_grad=True)
-                    rm_v = rm.tensor(1.0)
-                    
-                    try:
-                        # 尝试计算VJP
-                        rm_outputs_indep, rm_vjp_indep = vjp(f_independent, (rm_x, rm_y), rm_v, strict=case["value"])
-                        # 如果成功执行，设置passed为True
-                        passed = True
-                    except Exception as e:
-                        # 如果抛出异常，设置passed为False
-                        passed = False
-                    
-                    return case["should_pass"] == passed
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
                 
-                return False  # 默认返回失败，除非上面的条件分支执行
-            
-            self._run_test_case(case["name"], test_func, error_message=f"测试用例失败: {case['name']}")
+                def test_func():
+                    if case["param"] == "create_graph" and case["type"] == "jvp":
+                        # 定义测试函数
+                        def f(x):
+                            return x ** 2.
+                        
+                        # 创建输入
+                        rm_x = rm.tensor([[2.0, 3.0]], requires_grad=True, device=device)
+                        rm_v = rm.tensor([[1.0, 1.0]], device=device)
+                        
+                        # 计算JVP
+                        rm_outputs, rm_jvp = jvp(f, rm_x, rm_v, create_graph=True)
+                        
+                        # 验证requires_grad
+                        passed = hasattr(rm_jvp, 'requires_grad') and rm_jvp.requires_grad
+                        return case["should_pass"] == passed
+                        
+                    elif case["param"] == "create_graph" and case["type"] == "vjp":
+                        # 定义测试函数
+                        def f(x):
+                            return x ** 2.
+                        
+                        # 创建输入
+                        rm_x = rm.tensor([[2.0, 3.0]], requires_grad=True, device=device)
+                        rm_v = rm.tensor([[1.0, 1.0]], device=device)
+                        
+                        # 计算VJP
+                        rm_outputs, rm_vjp = vjp(f, rm_x, rm_v, create_graph=True)
+                        
+                        # 验证requires_grad
+                        passed = hasattr(rm_vjp, 'requires_grad') and rm_vjp.requires_grad
+                        return case["should_pass"] == passed
+                        
+                    elif case["param"] == "strict" and case["type"] == "jvp":
+                        # 定义忽略部分输入的函数
+                        def f_independent(x, y):
+                            return x ** 2.
+                        
+                        # 创建输入
+                        rm_x = rm.tensor(2.0, requires_grad=True, device=device)
+                        rm_y = rm.tensor(3.0, requires_grad=True, device=device)
+                        rm_vx = rm.tensor(1.0, device=device)
+                        rm_vy = rm.tensor(1.0, device=device)
+                        
+                        try:
+                            # 尝试计算JVP
+                            rm_outputs_indep, rm_jvp_indep = jvp(f_independent, (rm_x, rm_y), (rm_vx, rm_vy), strict=case["value"])
+                            # 如果成功执行，设置passed为True
+                            passed = True
+                        except Exception as e:
+                            # 如果抛出异常，设置passed为False
+                            passed = False
+                        
+                        return case["should_pass"] == passed
+                        
+                    elif case["param"] == "strict" and case["type"] == "vjp":
+                        # 定义忽略部分输入的函数
+                        def f_independent(x, y):
+                            return x ** 2.
+                        
+                        # 创建输入
+                        rm_x = rm.tensor(2.0, requires_grad=True, device=device)
+                        rm_y = rm.tensor(3.0, requires_grad=True, device=device)
+                        rm_v = rm.tensor(1.0, device=device)
+                        
+                        try:
+                            # 尝试计算VJP
+                            rm_outputs_indep, rm_vjp_indep = vjp(f_independent, (rm_x, rm_y), rm_v, strict=case["value"])
+                            # 如果成功执行，设置passed为True
+                            passed = True
+                        except Exception as e:
+                            # 如果抛出异常，设置passed为False
+                            passed = False
+                        
+                        return case["should_pass"] == passed
+                    
+                    return False  # 默认返回失败，除非上面的条件分支执行
+                
+                self._run_test_case(case_name, test_func, error_message=f"测试用例失败: {case_name}")
     
     def test_scalar_output_vjp_optional_v(self):
         """测试场景7: 标量输出时VJP的可选v参数"""
-        case_name = "标量输出时VJP的可选v参数"
+        test_cases = [
+            {"name": "标量输出时VJP的可选v参数"}
+        ]
         
-        def test_func():
-            # 定义测试函数
-            def f(x):
-                return x.sum()
-            
-            def pt_f(x):
-                return x.sum()
-            
-            # 创建测试数据
-            np_x = np.random.randn(3, 4)
-            rm_x = rm.tensor(np_x, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(np_x, requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 初始化变量以避免UnboundLocalError
-            torch_vjp_result = None
-            
-            # 计算Riemann的VJP（不指定v参数）
-            rm_output, rm_vjp = vjp(f, rm_x)
-            
-            # 计算PyTorch的VJP（同样不指定v参数）
-            if TORCH_AVAILABLE:
-                torch_output, torch_vjp_result = torch_vjp(pt_f, torch_x)
-            
-            # 比较结果
-            final_passed = compare_values(rm_vjp, torch_vjp_result)
-            
-            # 详细错误信息
-            if IS_RUNNING_AS_SCRIPT and not final_passed:
-                print(f"  VJP比较: {'通过' if final_passed else '失败'}")
-            
-            return final_passed
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        self._run_test_case(case_name, test_func, error_message=f"标量输出时VJP的可选v参数测试失败: {case_name}")
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数
+                    def f(x):
+                        return x.sum()
+                    
+                    def pt_f(x):
+                        return x.sum()
+                    
+                    # 创建测试数据
+                    np_x = np.random.randn(3, 4)
+                    rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    # 初始化变量以避免UnboundLocalError
+                    torch_vjp_result = None
+                    
+                    # 计算Riemann的VJP（不指定v参数）
+                    rm_output, rm_vjp = vjp(f, rm_x)
+                    
+                    # 计算PyTorch的VJP（同样不指定v参数）
+                    if TORCH_AVAILABLE:
+                        torch_output, torch_vjp_result = torch_vjp(pt_f, torch_x)
+                    
+                    # 比较结果
+                    final_passed = compare_values(rm_vjp, torch_vjp_result)
+                    
+                    # 详细错误信息
+                    if IS_RUNNING_AS_SCRIPT and not final_passed:
+                        print(f"  VJP比较: {'通过' if final_passed else '失败'}")
+                    
+                    return final_passed
+                
+                self._run_test_case(case_name, test_func, error_message=f"标量输出时VJP的可选v参数测试失败: {case_name}")
 
 # 主函数
 if __name__ == "__main__":
