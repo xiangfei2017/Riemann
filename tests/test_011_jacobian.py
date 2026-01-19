@@ -4,14 +4,18 @@ import time
 import sys, os
 
 # 添加项目根目录到sys.path
-# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))
 
 # 导入riemann模块
 try:
     import riemann as rm
     from riemann.autograd.functional import jacobian as rm_jacobian
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -175,7 +179,7 @@ IS_RUNNING_AS_SCRIPT = False
 
 # 比较值的函数
 def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
-    """比较Riemann和PyTorch的jacobian结果是否接近"""
+    """比较Riemann和PyTorch的值是否接近"""
     # 处理None值的情况
     if not TORCH_AVAILABLE:
         # 如果没有PyTorch，只检查riemann结果是否存在
@@ -200,15 +204,23 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all_passed
     
     # 转换为numpy数组
-    if hasattr(rm_result, 'data'):
-        rm_data = rm_result.data
-    else:
-        rm_data = rm_result
-    
-    if hasattr(torch_result, 'detach'):
-        torch_data = torch_result.detach().cpu().numpy()
-    else:
-        torch_data = torch_result
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
     
     # 处理形状不匹配的情况
     try:
@@ -267,191 +279,201 @@ class TestJacobianFunctions(unittest.TestCase):
     
     def test_single_input_single_output(self):
         """测试场景1: 单张量输入，单张量输出"""
-        case_name = "单张量输入，单张量输出"
+        test_cases = [
+            {"name": "单张量输入，单张量输出"}
+        ]
         
-        def test_func():
-            # 定义测试函数: f(x) = x^2
-            def func(x):
-                return x ** 2.
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x):
-                return x ** 2.
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, rm_x)
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, torch_x)
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            return compare_values(rm_jac, torch_jac)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        self._run_test_case(case_name, test_func)
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x) = x^2
+                    def func(x):
+                        return x ** 2.
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x):
+                        return x ** 2.
+                    
+                    # 创建输入数据
+                    input_data = [1.0, 2.0, 3.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(input_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(input_data, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, rm_x)
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, torch_x)
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
     
     def test_multi_input_single_output(self):
         """测试场景2: 多张量输入，单张量输出"""
-        case_name = "多张量输入，单张量输出"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x, y) = x * y + y ** 2
-            def func(x, y):
-                return x * y + y ** 2.
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x, y):
-                return x * y + y ** 2.
-            
-            # 创建输入
-            rm_x = rm.tensor(2.0, requires_grad=True)
-            rm_y = rm.tensor(3.0, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(2.0, requires_grad=True)
-                torch_y = torch.tensor(3.0, requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, (rm_x, rm_y))
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            passed = compare_values(rm_jac, torch_jac)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Jacobian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "多张量输入，单张量输出"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x, y) = x * y + y ** 2
+                    def func(x, y):
+                        return x * y + y ** 2.
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x, y):
+                        return x * y + y ** 2.
+                    
+                    # 创建输入数据
+                    x_data = 2.0
+                    y_data = 3.0
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    rm_y = rm.tensor(y_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+                        torch_y = torch.tensor(y_data, requires_grad=True, device=device)
+                    else:
+                        torch_x, torch_y = None, None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, (rm_x, rm_y))
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
     
     def test_single_input_multi_output(self):
         """测试场景3: 单张量输入，多张量输出"""
-        case_name = "单张量输入，多张量输出"
-        start_time = time.time()
-        try:
-            # 定义测试函数: 返回两个输出
-            def func(x):
-                output1 = x ** 2.  # 第一个输出
-                output2 = rm.sin(x)  # 第二个输出
-                return output1, output2  # 以元组形式返回多个输出
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x):
-                output1 = x ** 2.
-                output2 = torch.sin(x)
-                return output1, output2
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0], requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, rm_x)
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, torch_x)
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            passed = compare_values(rm_jac, torch_jac)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Jacobian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "单张量输入，多张量输出"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: 返回两个输出
+                    def func(x):
+                        output1 = x ** 2.  # 第一个输出
+                        output2 = rm.sin(x)  # 第二个输出
+                        return output1, output2  # 以元组形式返回多个输出
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x):
+                        output1 = x ** 2.
+                        output2 = torch.sin(x)
+                        return output1, output2
+                    
+                    # 创建输入数据
+                    input_data = [1.0, 2.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(input_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(input_data, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, rm_x)
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, torch_x)
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
     
     def test_multi_input_multi_output(self):
         """测试场景4: 多张量输入，多张量输出"""
-        case_name = "多张量输入，多张量输出"
-        start_time = time.time()
-        try:
-            # 定义测试函数: 接受两个输入张量，返回两个输出张量
-            def func(x, y):
-                out1 = x ** 2. + y ** 3.  # 第一个输出
-                out2 = x * y             # 第二个输出
-                return out1, out2        # 返回一个包含两个输出张量的元组
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x, y):
-                out1 = x ** 2. + y ** 3.
-                out2 = x * y
-                return out1, out2
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0], requires_grad=True)
-            rm_y = rm.tensor([3.0, 4.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0], requires_grad=True)
-                torch_y = torch.tensor([3.0, 4.0], requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, (rm_x, rm_y))
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            passed = compare_values(rm_jac, torch_jac)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Jacobian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "多张量输入，多张量输出"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: 接受两个输入张量，返回两个输出张量
+                    def func(x, y):
+                        out1 = x ** 2. + y ** 3.  # 第一个输出
+                        out2 = x * y             # 第二个输出
+                        return out1, out2        # 返回一个包含两个输出张量的元组
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x, y):
+                        out1 = x ** 2. + y ** 3.
+                        out2 = x * y
+                        return out1, out2
+                    
+                    # 创建输入数据
+                    x_data = [1.0, 2.0]
+                    y_data = [3.0, 4.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    rm_y = rm.tensor(y_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+                        torch_y = torch.tensor(y_data, requires_grad=True, device=device)
+                    else:
+                        torch_x, torch_y = None, None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, (rm_x, rm_y))
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
     
     def test_error_non_tensor_input(self):
         """测试场景5: 错误场景，输入不是张量或张量列表"""
@@ -505,518 +527,502 @@ class TestJacobianFunctions(unittest.TestCase):
             {"name": "strict=True与所有输入都相关的情况", "strict": True, "should_pass": True}
         ]
         
-        for case in test_cases:
-            start_time = time.time()
-            try:
-                if case["name"] == "strict=False的基本功能":
-                    # 定义简单的单输入测试函数
-                    def simple_func(x):
-                        return x ** 2.
-                    
-                    # 创建输入
-                    rm_x = rm.tensor(2.0, requires_grad=True)
-                    
-                    # 测试strict=False时的行为
-                    try:
-                        rm_jac_non_strict = rm_jacobian(simple_func, rm_x, strict=False)
-                        passed = True
-                    except Exception as e:
-                        passed = False
-                
-                elif case["name"] == "strict=True时函数忽略部分输入":
-                    # 定义多输入测试函数: f(x, y) = x^2（忽略y参数）
-                    def func_partial_dep(x, y):
-                        return x ** 2.
-                    
-                    rm_x = rm.tensor(2.0, requires_grad=True)
-                    rm_y = rm.tensor(3.0, requires_grad=True)
-                    
-                    try:
-                        rm_jac_strict = rm_jacobian(func_partial_dep, (rm_x, rm_y), strict=True)
-                        passed = False  # 应该抛出异常
-                    except Exception as e:
-                        # 检查异常消息是否包含"independent"或类似内容
-                        if "independent" in str(e).lower():
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    if case["name"] == "strict=False的基本功能":
+                        # 定义简单的单输入测试函数
+                        def simple_func(x):
+                            return x ** 2.
+                        
+                        # 创建输入
+                        rm_x = rm.tensor(2.0, requires_grad=True, device=device)
+                        
+                        # 测试strict=False时的行为
+                        try:
+                            rm_jac_non_strict = rm_jacobian(simple_func, rm_x, strict=False)
                             passed = True
-                        else:
+                        except Exception as e:
                             passed = False
-                
-                elif case["name"] == "strict=True与所有输入都相关的情况":
-                    # 定义测试函数: f(x, y) = x^2 + y^3 + x*y（依赖所有输入）
-                    def func_full_dep(x, y):
-                        return x ** 2. + y ** 3. + x * y
                     
-                    # 创建新的输入
-                    rm_x2 = rm.tensor(2.0, requires_grad=True)
-                    rm_y2 = rm.tensor(3.0, requires_grad=True)
+                    elif case["name"] == "strict=True时函数忽略部分输入":
+                        # 定义多输入测试函数: f(x, y) = x^2（忽略y参数）
+                        def func_partial_dep(x, y):
+                            return x ** 2.
+                        
+                        rm_x = rm.tensor(2.0, requires_grad=True, device=device)
+                        rm_y = rm.tensor(3.0, requires_grad=True, device=device)
+                        
+                        try:
+                            rm_jac_strict = rm_jacobian(func_partial_dep, (rm_x, rm_y), strict=True)
+                            passed = False  # 应该抛出异常
+                        except Exception as e:
+                            # 检查异常消息是否包含"independent"或类似内容
+                            if "independent" in str(e).lower():
+                                passed = True
+                            else:
+                                passed = False
                     
-                    try:
-                        # 计算Jacobian
-                        rm_jac_strict_full = rm_jacobian(func_full_dep, (rm_x2, rm_y2), strict=True)
-                        passed = True
-                    except Exception as e:
-                        passed = False
-                
-                # 检查结果是否符合预期
-                expected_result = case["should_pass"]
-                actual_result = passed
-                final_passed = (expected_result == actual_result)
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case["name"], final_passed)
-                    status = "通过" if final_passed else "失败"
-                    print(f"测试用例: {case['name']} - {Colors.OKGREEN if final_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not final_passed:
-                        print(f"  结果: 期望{'通过' if expected_result else '失败'}，实际{'通过' if actual_result else '失败'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(final_passed, f"strict参数测试失败: {case['name']}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case["name"], False, [str(e)])
-                    print(f"测试用例: {case['name']} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    elif case["name"] == "strict=True与所有输入都相关的情况":
+                        # 定义测试函数: f(x, y) = x^2 + y^3 + x*y（依赖所有输入）
+                        def func_full_dep(x, y):
+                            return x ** 2. + y ** 3. + x * y
+                        
+                        # 创建新的输入
+                        rm_x2 = rm.tensor(2.0, requires_grad=True, device=device)
+                        rm_y2 = rm.tensor(3.0, requires_grad=True, device=device)
+                        
+                        try:
+                            # 计算Jacobian
+                            rm_jac_strict_full = rm_jacobian(func_full_dep, (rm_x2, rm_y2), strict=True)
+                            passed = True
+                        except Exception as e:
+                            passed = False
+                    
+                    # 检查结果是否符合预期
+                    expected_result = case["should_pass"]
+                    actual_result = passed
+                    final_passed = (expected_result == actual_result)
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, final_passed)
+                        status = "通过" if final_passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if final_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not final_passed:
+                            print(f"  结果: 期望{'通过' if expected_result else '失败'}，实际{'通过' if actual_result else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(final_passed, f"strict参数测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_create_graph_enabled(self):
         """测试场景7: 测试create_graph=True的情况"""
-        case_name = "测试create_graph=True的情况"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x) = x^3
-            def func(x):
-                return x ** 3.
-            
-            # 创建输入
-            rm_x = rm.tensor(2.0, requires_grad=True)
-            
-            # 计算Jacobian矩阵，启用计算图
-            rm_jac = rm_jacobian(func, rm_x, create_graph=True)
-            
-            # 验证结果是否可求导（requires_grad为True）
-            passed = rm_jac.requires_grad
-            
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  错误: Jacobian结果的requires_grad不为True")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"create_graph=True测试失败: Jacobian结果不可求导")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "测试create_graph=True的情况"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 定义测试函数: f(x) = x^3
+                    def func(x):
+                        return x ** 3.
+                    
+                    # 创建输入
+                    rm_x = rm.tensor(2.0, requires_grad=True, device=device)
+                    
+                    # 计算Jacobian矩阵，启用计算图
+                    rm_jac = rm_jacobian(func, rm_x, create_graph=True)
+                    
+                    # 验证结果是否可求导（requires_grad为True）
+                    passed = rm_jac.requires_grad
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  错误: Jacobian结果的requires_grad不为True")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"create_graph=True测试失败: Jacobian结果不可求导")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
             
     def test_single_input_single_scalar(self):
         """测试场景8: 单张量输入，单标量输出"""
-        case_name = "单张量输入，单标量输出"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x) = sum(x^2)
-            def func(x):
-                return rm.sum(x ** 2.)
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x):
-                return torch.sum(x ** 2.)
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, rm_x)
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, torch_x)
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            passed = compare_values(rm_jac, torch_jac)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Jacobian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "单张量输入，单标量输出"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x) = sum(x^2)
+                    def func(x):
+                        return rm.sum(x ** 2.)
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x):
+                        return torch.sum(x ** 2.)
+                    
+                    # 创建输入数据
+                    input_data = [1.0, 2.0, 3.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(input_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(input_data, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, rm_x)
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, torch_x)
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
             
     def test_multi_input_single_scalar(self):
         """测试场景9: 多张量输入，单标量输出"""
-        case_name = "多张量输入，单标量输出"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x, y) = sum(x * y)
-            def func(x, y):
-                return rm.sum(x * y)
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x, y):
-                return torch.sum(x * y)
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0], requires_grad=True)
-            rm_y = rm.tensor([3.0, 4.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0], requires_grad=True)
-                torch_y = torch.tensor([3.0, 4.0], requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, (rm_x, rm_y))
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            passed = compare_values(rm_jac, torch_jac)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Jacobian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "多张量输入，单标量输出"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x, y) = sum(x * y)
+                    def func(x, y):
+                        return rm.sum(x * y)
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x, y):
+                        return torch.sum(x * y)
+                    
+                    # 创建输入数据
+                    x_data = [1.0, 2.0]
+                    y_data = [3.0, 4.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    rm_y = rm.tensor(y_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+                        torch_y = torch.tensor(y_data, requires_grad=True, device=device)
+                    else:
+                        torch_x, torch_y = None, None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, (rm_x, rm_y))
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
             
     def test_single_input_multi_scalar(self):
         """测试场景10: 单张量输入，多标量输出"""
-        case_name = "单张量输入，多标量输出"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x) = (sum(x), sum(x^2))
-            def func(x):
-                return rm.sum(x), rm.sum(x ** 2.)
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x):
-                return torch.sum(x), torch.sum(x ** 2.)
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0], requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, rm_x)
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, torch_x)
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            passed = compare_values(rm_jac, torch_jac)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Jacobian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "单张量输入，多标量输出"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x) = (sum(x), sum(x^2))
+                    def func(x):
+                        return rm.sum(x), rm.sum(x ** 2.)
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x):
+                        return torch.sum(x), torch.sum(x ** 2.)
+                    
+                    # 创建输入数据
+                    input_data = [1.0, 2.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(input_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(input_data, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, rm_x)
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, torch_x)
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
             
     def test_multi_input_multi_scalar(self):
         """测试场景11: 多张量输入，多标量输出"""
-        case_name = "多张量输入，多标量输出"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x, y) = (sum(x * y), sum(x + y))
-            def func(x, y):
-                return rm.sum(x * y), rm.sum(x + y)
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x, y):
-                return torch.sum(x * y), torch.sum(x + y)
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0], requires_grad=True)
-            rm_y = rm.tensor([3.0, 4.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0], requires_grad=True)
-                torch_y = torch.tensor([3.0, 4.0], requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, (rm_x, rm_y))
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            passed = compare_values(rm_jac, torch_jac)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Jacobian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "多张量输入，多标量输出"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x, y) = (sum(x * y), sum(x + y))
+                    def func(x, y):
+                        return rm.sum(x * y), rm.sum(x + y)
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x, y):
+                        return torch.sum(x * y), torch.sum(x + y)
+                    
+                    # 创建输入数据
+                    x_data = [1.0, 2.0]
+                    y_data = [3.0, 4.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    rm_y = rm.tensor(y_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+                        torch_y = torch.tensor(y_data, requires_grad=True, device=device)
+                    else:
+                        torch_x, torch_y = None, None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, (rm_x, rm_y))
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
             
     def test_single_input_tensor_and_scalar(self):
         """测试场景12: 单张量输入，张量和标量混合输出"""
-        case_name = "单张量输入，张量和标量混合输出"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x) = (x^2, sum(x))
-            def func(x):
-                return x ** 2., rm.sum(x)
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x):
-                return x ** 2., torch.sum(x)
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, rm_x)
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, torch_x)
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            passed = compare_values(rm_jac, torch_jac)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Jacobian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "单张量输入，张量和标量混合输出"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x) = (x^2, sum(x))
+                    def func(x):
+                        return x ** 2., rm.sum(x)
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x):
+                        return x ** 2., torch.sum(x)
+                    
+                    # 创建输入数据
+                    input_data = [1.0, 2.0, 3.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(input_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(input_data, requires_grad=True, device=device)
+                    else:
+                        torch_x = None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, rm_x)
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, torch_x)
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
             
     def test_multi_input_tensor_and_scalar(self):
         """测试场景13: 多张量输入，张量和标量混合输出"""
-        case_name = "多张量输入，张量和标量混合输出"
-        start_time = time.time()
-        try:
-            # 定义测试函数: f(x, y) = (x * y, sum(x + y))
-            def func(x, y):
-                return x * y, rm.sum(x + y)
-            
-            # 定义对应的PyTorch函数
-            def torch_func(x, y):
-                return x * y, torch.sum(x + y)
-            
-            # 创建输入
-            rm_x = rm.tensor([1.0, 2.0], requires_grad=True)
-            rm_y = rm.tensor([3.0, 4.0], requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor([1.0, 2.0], requires_grad=True)
-                torch_y = torch.tensor([3.0, 4.0], requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            # 计算Jacobian矩阵
-            rm_jac = rm_jacobian(func, (rm_x, rm_y))
-            if TORCH_AVAILABLE:
-                torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
-            else:
-                torch_jac = None
-            
-            # 比较结果
-            passed = compare_values(rm_jac, torch_jac)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"Jacobian计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "多张量输入，张量和标量混合输出"}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x, y) = (x * y, sum(x + y))
+                    def func(x, y):
+                        return x * y, rm.sum(x + y)
+                    
+                    # 定义对应的PyTorch函数
+                    def torch_func(x, y):
+                        return x * y, torch.sum(x + y)
+                    
+                    # 创建输入数据
+                    x_data = [1.0, 2.0]
+                    y_data = [3.0, 4.0]
+                    
+                    # 根据设备创建张量
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    rm_y = rm.tensor(y_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+                        torch_y = torch.tensor(y_data, requires_grad=True, device=device)
+                    else:
+                        torch_x, torch_y = None, None
+                    
+                    # 计算Jacobian矩阵
+                    rm_jac = rm_jacobian(func, (rm_x, rm_y))
+                    if TORCH_AVAILABLE:
+                        torch_jac = torch_jacobian(torch_func, (torch_x, torch_y))
+                    else:
+                        torch_jac = None
+                    
+                    # 比较结果
+                    return compare_values(rm_jac, torch_jac)
+                
+                self._run_test_case(case_name, test_func)
             
     def test_higher_order_derivatives(self):
         """测试场景14: 测试高阶导数计算"""
-        case_name = "测试高阶导数计算"
+        test_cases = [
+            {"name": "测试高阶导数计算"}
+        ]
         
-        def test_func():
-            # 定义测试函数: f(x) = x^3
-            def func(x):
-                return x ** 3.
-            
-            # 创建输入
-            rm_x = rm.tensor([2.0], requires_grad=True)
-            
-            # 计算一阶导数（雅可比矩阵）
-            rm_jac1 = rm_jacobian(func, rm_x, create_graph=True)
-            
-            # 验证一阶导数是否正确 (d/dx x^3 = 3x^2)
-            expected_jac1 = 3. * rm_x ** 2.
-            jac1_correct = np.allclose(rm_jac1.data, expected_jac1.data)
-            
-            # 尝试计算二阶导数
-            # 定义一个函数，该函数计算一阶导数
-            def first_derivative(x):
-                # 注意：这里要返回雅可比矩阵的值而不是整个结构
-                return rm_jacobian(func, x, create_graph=True)
-            
-            # 计算二阶导数
-            rm_jac2 = rm_jacobian(first_derivative, rm_x)
-            
-            # 验证二阶导数是否正确 (d²/dx² x^3 = 6x)
-            expected_jac2 = 6. * rm_x
-            jac2_correct = np.allclose(rm_jac2.data, expected_jac2.data)
-            
-            # 组合测试结果
-            passed = jac1_correct and jac2_correct
-            
-            # 如果有PyTorch，也进行比较
-            if TORCH_AVAILABLE:
-                try:
-                    # PyTorch实现
-                    torch_x = torch.tensor([2.0], requires_grad=True)
-                    torch_func = lambda x: x ** 3.
-                    
-                    # 一阶导数
-                    torch_jac1 = torch_jacobian(torch_func, torch_x, create_graph=True)
-                    torch_first_derivative = lambda x: torch_jacobian(torch_func, x, create_graph=True)
-                    
-                    # 二阶导数
-                    torch_jac2 = torch_jacobian(torch_first_derivative, torch_x)
-                    
-                    # 比较结果
-                    rm_result = (rm_jac1, rm_jac2)
-                    torch_result = (torch_jac1, torch_jac2)
-                    
-                    # 先进行数值比较
-                    value_match = compare_values(rm_result, torch_result)
-                    
-                    # 综合结果
-                    passed = passed and value_match
-                except Exception as e:
-                    # PyTorch比较出错不影响主要测试结果，但记录错误
-                    print(f"PyTorch高阶导数比较出错: {str(e)}")
-            
-            # 保存到实例变量以便在断言中使用
-            self._jac1_correct = jac1_correct
-            self._jac2_correct = jac2_correct
-            
-            # 高阶导数测试的特殊错误信息
-            if not passed and IS_RUNNING_AS_SCRIPT:
-                print(f"  一阶导数正确={jac1_correct}, 二阶导数正确={jac2_correct}")
-            
-            return passed
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
         
-        start_time = time.time()
-        try:
-            passed = test_func()
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 自定义断言错误信息
-            # 重新获取正确的值进行断言
-            rm_x = rm.tensor([2.0], requires_grad=True)
-            func = lambda x: x ** 3.
-            rm_jac1 = rm_jacobian(func, rm_x, create_graph=True)
-            expected_jac1 = 3. * rm_x ** 2.
-            jac1_correct = np.allclose(rm_jac1.data, expected_jac1.data)
-            
-            def first_derivative(x):
-                return rm_jacobian(func, x, create_graph=True)
-            
-            rm_jac2 = rm_jacobian(first_derivative, rm_x)
-            expected_jac2 = 6. * rm_x
-            jac2_correct = np.allclose(rm_jac2.data, expected_jac2.data)
-            
-            self.assertTrue(passed, f"高阶导数测试失败: 一阶导数正确={jac1_correct}, 二阶导数正确={jac2_correct}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                
+                def test_func():
+                    # 定义测试函数: f(x) = x^3
+                    def func(x):
+                        return x ** 3.
+                    
+                    # 创建输入
+                    rm_x = rm.tensor([2.0], requires_grad=True, device=device)
+                    
+                    # 计算一阶导数（雅可比矩阵）
+                    rm_jac1 = rm_jacobian(func, rm_x, create_graph=True)
+                    
+                    # 验证一阶导数是否正确 (d/dx x^3 = 3x^2)
+                    expected_jac1 = 3. * rm_x ** 2.
+                    jac1_correct = np.allclose(rm_jac1.data, expected_jac1.data)
+                    
+                    # 尝试计算二阶导数
+                    # 定义一个函数，该函数计算一阶导数
+                    def first_derivative(x):
+                        # 注意：这里要返回雅可比矩阵的值而不是整个结构
+                        return rm_jacobian(func, x, create_graph=True)
+                    
+                    # 计算二阶导数
+                    rm_jac2 = rm_jacobian(first_derivative, rm_x)
+                    
+                    # 验证二阶导数是否正确 (d²/dx² x^3 = 6x)
+                    expected_jac2 = 6. * rm_x
+                    jac2_correct = np.allclose(rm_jac2.data, expected_jac2.data)
+                    
+                    # 组合测试结果
+                    passed = jac1_correct and jac2_correct
+                    
+                    # 如果有PyTorch，也进行比较
+                    if TORCH_AVAILABLE:
+                        try:
+                            # PyTorch实现
+                            torch_x = torch.tensor([2.0], requires_grad=True, device=device)
+                            torch_func = lambda x: x ** 3.
+                            
+                            # 一阶导数
+                            torch_jac1 = torch_jacobian(torch_func, torch_x, create_graph=True)
+                            torch_first_derivative = lambda x: torch_jacobian(torch_func, x, create_graph=True)
+                            
+                            # 二阶导数
+                            torch_jac2 = torch_jacobian(torch_first_derivative, torch_x)
+                            
+                            # 比较结果
+                            rm_result = (rm_jac1, rm_jac2)
+                            torch_result = (torch_jac1, torch_jac2)
+                            
+                            # 先进行数值比较
+                            value_match = compare_values(rm_result, torch_result)
+                            
+                            # 综合结果
+                            passed = passed and value_match
+                        except Exception as e:
+                            # PyTorch比较出错不影响主要测试结果，但记录错误
+                            print(f"PyTorch高阶导数比较出错: {str(e)}")
+                    
+                    # 高阶导数测试的特殊错误信息
+                    if not passed and IS_RUNNING_AS_SCRIPT:
+                        print(f"  一阶导数正确={jac1_correct}, 二阶导数正确={jac2_correct}")
+                    
+                    return passed
+                
+                self._run_test_case(case_name, test_func)
 
 # 如果作为独立脚本运行
 if __name__ == '__main__':

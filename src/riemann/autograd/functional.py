@@ -127,20 +127,20 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         num_outputs = int(np.prod(out.shape))
         
         # 统一使用TN张量操作方式实现，不再区分create_graph分支
-        # 创建零张量作为雅可比矩阵的初始值
+        # 创建零张量作为雅可比矩阵的初始值 - 确保与out在同一设备上
         jac_shape = output_shapes[i] + (total_input_elements,)
-        jac_tensor = zeros(*jac_shape, dtype=out.dtype)
+        jac_tensor = zeros(*jac_shape, dtype=out.dtype, device=out.device)
         jac_tensor.requires_grad = create_graph
         
         # 对每个输出元素计算梯度
         for j in range(num_outputs):
             # 创建one-hot向量作为grad_outputs - 使用tensor操作
             grad_output = zeros_like(out)
-            # 将1.0放在第j个位置（使用unravel_index将线性索引转换为多维索引）
+            # 直接使用numpy的unravel_index，因为它只是一个索引计算函数，不涉及数据操作
             idx = np.unravel_index(j, out.shape)
 
             # 使用setat设置值
-            grad_output = grad_output.setat(idx, tensor(1.0))
+            grad_output = grad_output.setat(idx, 1.0)
             
             # 计算梯度 - 正确传递create_graph参数
             grads = grad(out, inputs, grad_outputs=grad_output, create_graph=create_graph, allow_unused = not strict)
@@ -320,7 +320,7 @@ def hessian(func: Callable[..., TN],
             raise RuntimeError("Hessian only supports scalar-valued functions")
         # 计算梯度
         grads = grad(output, args, create_graph=True, allow_unused = not strict)  # type: ignore
-        return tuple(g if g is not None else tensor(0.0) for g in grads)
+        return tuple(g if g is not None else tensor(0.0,device=output.device) for g in grads)
     
     # 计算Hessian矩阵，即梯度的雅可比矩阵 - 传递strict参数
     hessian_results = jacobian(gradient_fn, inputs, create_graph=create_graph, strict=strict)
@@ -367,7 +367,7 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         inputs = [inputs]  # type: ignore
         # 如果v为None且只有单个输入，设置v为包含1的张量
         if v is None:
-            v = [tensor(1.0, dtype=inputs[0].dtype, requires_grad=create_graph)]
+            v = [tensor(1.0, dtype=inputs[0].dtype, device=inputs[0].device, requires_grad=create_graph)]
         else:
             v = [v]  # type: ignore
     else:
@@ -412,7 +412,7 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         # 对于标量输出，使用点积计算JVP
         if out.ndim == 0:  # type: ignore
             # 优化：直接使用向量点积公式，避免中间变量累积误差
-            total_jvp: TN = tensor(0.0, dtype=out.dtype, requires_grad=create_graph)  # type: ignore
+            total_jvp: TN = tensor(0.0, dtype=out.dtype, device=out.device, requires_grad=create_graph)  # type: ignore
             for i, (inp, vec) in enumerate(zip(inputs, v)):
                 # 计算标量输出相对于输入的梯度
                 grads = grad(out, inp, create_graph=create_graph, allow_unused=True)[0]  # type: ignore
@@ -422,35 +422,34 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                 
                 if grads is not None:
                     # 对于标量输出，正确的JVP计算是梯度与v向量的点积
-                    # 使用更精确的方式计算点积，避免中间张量创建
-                    dot_product = tensor(np.sum(grads.data * vec.data), dtype=out.dtype, requires_grad=create_graph)  # type: ignore
                     if create_graph:
                         # 如果需要创建计算图，使用PyTorch风格的点积计算
                         dot_product = (grads * vec).sum()
+                    else:
+                        # 使用更精确的方式计算点积，避免中间张量创建
+                        dot_product = (grads.data * vec.data).sum()
+                    
                     total_jvp = total_jvp + dot_product
             jvp_val = total_jvp
         else:
             # 对于非标量输出，采用更精确的方法计算JVP
             # 对于每个输入，计算其对输出的贡献并累加
-            jvp_val = tensor(0.0, dtype=out.dtype, requires_grad=create_graph)  # type: ignore
-            jvp_val = jvp_val.expand(out.shape).clone()  # type: ignore
-            
+            jvp_val = zeros_like(out, requires_grad=create_graph)
+
             # 对每个输入分别计算其对输出的贡献
             for i, (inp, vec) in enumerate(zip(inputs, v)):
                 # 为每个输入计算JVP贡献
                 # 使用更精确的方式：直接计算雅可比矩阵与向量的乘积
                 if create_graph:
                     # 创建一个与输出形状相同的零张量用于累加贡献
-                    input_contribution = tensor(0.0, dtype=out.dtype, requires_grad=True)  # type: ignore
-                    input_contribution = input_contribution.expand(out.shape).clone()  # type: ignore
-                    
+                    input_contribution = zeros_like(out, requires_grad=True)
+
                     # 对于每个输出元素，计算该输入对其的贡献
                     for j in range(out.data.size):  # type: ignore
                         # 创建one-hot向量作为grad_outputs
-                        grad_output_data = np.zeros_like(out.data)  # type: ignore
+                        grad_output = zeros_like(out)
                         flat_idx = np.unravel_index(j, out.shape)  # type: ignore
-                        grad_output_data[flat_idx] = 1.0
-                        grad_output = tensor(grad_output_data, dtype=out.dtype)  # type: ignore
+                        grad_output[flat_idx] = 1.0
                         
                         # 计算梯度
                         grads = grad(out, inp, grad_outputs=grad_output, create_graph=create_graph, allow_unused=True)[0]  # type: ignore
@@ -464,7 +463,7 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                             
                             # 创建掩码并更新贡献张量
                             mask = zeros_like(out)  # type: ignore
-                            mask.data[flat_idx] = 1.0
+                            mask[flat_idx] = 1.0
                             input_contribution = input_contribution * (1.0 - mask) + contribution * mask
                 else:
                     # 不创建计算图时的优化版本
@@ -473,10 +472,9 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                     # 对于每个输出元素，计算该输入对其的贡献
                     for j in range(out.data.size):  # type: ignore
                         # 创建one-hot向量作为grad_outputs
-                        grad_output_data = np.zeros_like(out.data)  # type: ignore
+                        grad_output = zeros_like(out)  # type: ignore
                         flat_idx = np.unravel_index(j, out.shape)  # type: ignore
-                        grad_output_data[flat_idx] = 1.0
-                        grad_output = tensor(grad_output_data, dtype=out.dtype)  # type: ignore
+                        grad_output[flat_idx] = 1.0
                         
                         # 计算梯度
                         grads = grad(out, inp, grad_outputs=grad_output, create_graph=False, allow_unused=True)[0]  # type: ignore
@@ -486,7 +484,7 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                         
                         if grads is not None:
                             # 直接计算贡献并设置到对应位置
-                            contribution = np.sum(grads.data * vec.data)
+                            contribution = (grads.data * vec.data).sum()
                             input_contribution.data[flat_idx] = contribution
                 
                 # 累加到总JVP结果中
@@ -691,7 +689,7 @@ def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | List[T
                 raise RuntimeError(f"Output is independent of input {i}")
     
     # 计算内积
-    dot_product: TN = tensor(0.0, dtype=func_output.dtype, requires_grad=True)
+    dot_product: TN = tensor(0.0, dtype=func_output.dtype, device=func_output.device, requires_grad=True)
     for grad_out, vec in zip(grads, v):
         if grad_out is not None:
             dot_product = dot_product + (grad_out * vec).sum()
