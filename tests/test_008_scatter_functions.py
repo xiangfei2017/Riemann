@@ -11,9 +11,13 @@ try:
     import riemann as rm
     from riemann.tensordef import tensor
     from riemann.autograd.grad import grad
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
     IMPORT_SUCCESS = True
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     IMPORT_SUCCESS = False
 
 # 尝试导入PyTorch进行比较
@@ -201,8 +205,23 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all_passed
     
     # 转换为numpy数组
-    rm_data = rm_result.data if hasattr(rm_result, 'data') else rm_result
-    torch_data = torch_result.cpu().detach().numpy() if hasattr(torch_result, 'cpu') else torch_result
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
     
     # 处理形状不匹配的情况
     try:
@@ -242,68 +261,76 @@ class TestScatterFunctions(unittest.TestCase):
         case_name = "scatter函数测试（src参数）"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
             # 测试不同维度的scatter
             dimensions = [(3, 4), (2, 3, 4), (1, 5, 3)]  # 1D, 2D, 3D
             scatter_dims = [0, 1, 0]  # 不同维度的索引
             
             all_passed = True
-            for i, (shape, dim) in enumerate(zip(dimensions, scatter_dims)):
-                # 创建测试数据
-                np_tensor = np.random.randn(*shape)
-                np_index = np.random.randint(0, shape[dim], size=shape)
-                np_src = np.random.randn(*shape)
+            for device in devices:
+                device_case_name = f"{case_name} - {device}"
                 
-                # Riemann实现
-                rm_tensor = tensor(np_tensor, requires_grad=True)
-                rm_index = tensor(np_index)
-                rm_src = tensor(np_src, requires_grad=True)
-                rm_result = rm_tensor.scatter(dim, rm_index, rm_src)
-                
-                # PyTorch实现
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_tensor = torch.tensor(np_tensor, requires_grad=True)
-                    torch_index = torch.tensor(np_index)
-                    torch_src = torch.tensor(np_src, requires_grad=True)
-                    torch_result = torch_tensor.scatter(dim, torch_index, torch_src)
-                
-                # 比较函数值
-                value_passed = compare_values(rm_result, torch_result)
-                
-                # 测试梯度
-                grad_passed = True
-                if TORCH_AVAILABLE:
-                    # Riemann梯度
-                    rm_loss = rm_result.sum()
-                    rm_loss.backward()
-                    rm_tensor_grad = rm_tensor.grad
-                    rm_src_grad = rm_src.grad
+                for i, (shape, dim) in enumerate(zip(dimensions, scatter_dims)):
+                    # 创建测试数据
+                    np_tensor = np.random.randn(*shape)
+                    np_index = np.random.randint(0, shape[dim], size=shape)
+                    np_src = np.random.randn(*shape)
                     
-                    # PyTorch梯度
-                    torch_loss = torch_result.sum()
-                    torch_loss.backward()
-                    torch_tensor_grad = torch_tensor.grad
-                    torch_src_grad = torch_src.grad
+                    # Riemann实现
+                    rm_tensor = tensor(np_tensor, requires_grad=True, device=device)
+                    rm_index = tensor(np_index, device=device)
+                    rm_src = tensor(np_src, requires_grad=True, device=device)
+                    rm_result = rm_tensor.scatter(dim, rm_index, rm_src)
                     
-                    # 比较梯度
-                    tensor_grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
-                    src_grad_passed = compare_values(rm_src_grad, torch_src_grad)
-                    grad_passed = tensor_grad_passed and src_grad_passed
-                
-                subcase_name = f"子用例 {i+1}: 维度={dim}, 形状={shape}"
-                subcase_passed = value_passed and grad_passed
-                all_passed = all_passed and subcase_passed
-                
-                # 为每个子用例单独添加统计
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(subcase_name, subcase_passed)
-                    status = "通过" if subcase_passed else "失败"
-                    status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                    print(f"  子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
-                    if not value_passed:
-                        print(f"    - 函数值比较失败")
-                    if TORCH_AVAILABLE and not grad_passed:
-                        print(f"    - 梯度比较失败")
+                    # PyTorch实现
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(np_tensor, requires_grad=True, device=device)
+                        torch_index = torch.tensor(np_index, device=device)
+                        torch_src = torch.tensor(np_src, requires_grad=True, device=device)
+                        torch_result = torch_tensor.scatter(dim, torch_index, torch_src)
+                    
+                    # 比较函数值
+                    value_passed = compare_values(rm_result, torch_result)
+                    
+                    # 测试梯度
+                    grad_passed = True
+                    if TORCH_AVAILABLE:
+                        # Riemann梯度
+                        rm_loss = rm_result.sum()
+                        rm_loss.backward()
+                        rm_tensor_grad = rm_tensor.grad
+                        rm_src_grad = rm_src.grad
+                        
+                        # PyTorch梯度
+                        torch_loss = torch_result.sum()
+                        torch_loss.backward()
+                        torch_tensor_grad = torch_tensor.grad
+                        torch_src_grad = torch_src.grad
+                        
+                        # 比较梯度
+                        tensor_grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
+                        src_grad_passed = compare_values(rm_src_grad, torch_src_grad)
+                        grad_passed = tensor_grad_passed and src_grad_passed
+                    
+                    subcase_name = f"{device_case_name} - 子用例 {i+1}: 维度={dim}, 形状={shape}"
+                    subcase_passed = value_passed and grad_passed
+                    all_passed = all_passed and subcase_passed
+                    
+                    # 为每个子用例单独添加统计
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(subcase_name, subcase_passed)
+                        status = "通过" if subcase_passed else "失败"
+                        status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                        print(f"  {device} - 子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
+                        if not value_passed:
+                            print(f"    - 函数值比较失败")
+                        if TORCH_AVAILABLE and not grad_passed:
+                            print(f"    - 梯度比较失败")
             
             time_taken = time.time() - start_time
             
@@ -327,62 +354,70 @@ class TestScatterFunctions(unittest.TestCase):
         case_name = "scatter函数测试（value参数）"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
             # 测试不同维度的scatter
             dimensions = [(3, 4), (2, 3, 4)]
             scatter_dims = [1, 2]
             values = [2.0, -3.5]  # 不同的标量值
             
             all_passed = True
-            for i, (shape, dim, value) in enumerate(zip(dimensions, scatter_dims, values)):
-                # 创建测试数据 - 统一使用float32类型
-                np_tensor = np.random.randn(*shape).astype(np.float32)
-                np_index = np.random.randint(0, shape[dim], size=shape)
+            for device in devices:
+                device_case_name = f"{case_name} - {device}"
                 
-                # Riemann实现
-                rm_tensor = tensor(np_tensor, requires_grad=True)
-                rm_index = tensor(np_index)
-                rm_result = rm_tensor.scatter(dim, rm_index, value=value)
-                
-                # PyTorch实现
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_tensor = torch.tensor(np_tensor, requires_grad=True, dtype=torch.float32)
-                    torch_index = torch.tensor(np_index)
-                    torch_result = torch_tensor.scatter(dim, torch_index, value=value)
-                
-                # 比较函数值
-                value_passed = compare_values(rm_result, torch_result)
-                
-                # 测试梯度 - 统一使用backward方法
-                grad_passed = True
-                if TORCH_AVAILABLE:
-                    # Riemann梯度 - 使用backward方法
-                    rm_loss = rm_result.sum()
-                    rm_loss.backward()
-                    rm_tensor_grad = rm_tensor.grad
+                for i, (shape, dim, value) in enumerate(zip(dimensions, scatter_dims, values)):
+                    # 创建测试数据 - 统一使用float32类型
+                    np_tensor = np.random.randn(*shape).astype(np.float32)
+                    np_index = np.random.randint(0, shape[dim], size=shape)
                     
-                    # PyTorch梯度
-                    torch_loss = torch_result.sum()
-                    torch_loss.backward()
-                    torch_tensor_grad = torch_tensor.grad
+                    # Riemann实现
+                    rm_tensor = tensor(np_tensor, requires_grad=True, device=device)
+                    rm_index = tensor(np_index, device=device)
+                    rm_result = rm_tensor.scatter(dim, rm_index, value=value)
                     
-                    # 比较梯度
-                    grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
-                
-                subcase_name = f"子用例 {i+1}: 维度={dim}, 形状={shape}, 值={value}"
-                subcase_passed = value_passed and grad_passed
-                all_passed = all_passed and subcase_passed
-                
-                # 为每个子用例单独添加统计
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(subcase_name, subcase_passed)
-                    status = "通过" if subcase_passed else "失败"
-                    status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                    print(f"  子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
-                    if not value_passed:
-                        print(f"    - 函数值比较失败")
-                    if TORCH_AVAILABLE and not grad_passed:
-                        print(f"    - 梯度比较失败")
+                    # PyTorch实现
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(np_tensor, requires_grad=True, dtype=torch.float32, device=device)
+                        torch_index = torch.tensor(np_index, device=device)
+                        torch_result = torch_tensor.scatter(dim, torch_index, value=value)
+                    
+                    # 比较函数值
+                    value_passed = compare_values(rm_result, torch_result)
+                    
+                    # 测试梯度 - 统一使用backward方法
+                    grad_passed = True
+                    if TORCH_AVAILABLE:
+                        # Riemann梯度 - 使用backward方法
+                        rm_loss = rm_result.sum()
+                        rm_loss.backward()
+                        rm_tensor_grad = rm_tensor.grad
+                        
+                        # PyTorch梯度
+                        torch_loss = torch_result.sum()
+                        torch_loss.backward()
+                        torch_tensor_grad = torch_tensor.grad
+                        
+                        # 比较梯度
+                        grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
+                    
+                    subcase_name = f"{device_case_name} - 子用例 {i+1}: 维度={dim}, 形状={shape}, 值={value}"
+                    subcase_passed = value_passed and grad_passed
+                    all_passed = all_passed and subcase_passed
+                    
+                    # 为每个子用例单独添加统计
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(subcase_name, subcase_passed)
+                        status = "通过" if subcase_passed else "失败"
+                        status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                        print(f"  {device} - 子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
+                        if not value_passed:
+                            print(f"    - 函数值比较失败")
+                        if TORCH_AVAILABLE and not grad_passed:
+                            print(f"    - 梯度比较失败")
             
             time_taken = time.time() - start_time
             
@@ -406,63 +441,71 @@ class TestScatterFunctions(unittest.TestCase):
         case_name = "scatter_函数测试（原地操作）"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
             # 测试不同维度的scatter_
             dimensions = [(4, 5), (2, 4, 3)]
             scatter_dims = [0, 2]
             
             all_passed = True
-            for i, (shape, dim) in enumerate(zip(dimensions, scatter_dims)):
-                # 创建测试数据 - 统一使用float32类型
-                np_tensor = np.random.randn(*shape).astype(np.float32)
-                np_index = np.random.randint(0, shape[dim], size=shape)
-                np_src = np.random.randn(*shape).astype(np.float32)
+            for device in devices:
+                device_case_name = f"{case_name} - {device}"
                 
-                # Riemann实现
-                rm_tensor = tensor(np_tensor, requires_grad=False)
-                rm_index = tensor(np_index)
-                rm_src = tensor(np_src, requires_grad=True)
-                rm_result = rm_tensor.clone().scatter_(dim, rm_index, rm_src)
-                
-                # PyTorch实现
-                if TORCH_AVAILABLE:
-                    torch_tensor = torch.tensor(np_tensor, requires_grad=False, dtype=torch.float32)
-                    torch_index = torch.tensor(np_index)
-                    torch_src = torch.tensor(np_src, requires_grad=True, dtype=torch.float32)
-                    torch_result = torch_tensor.clone().scatter_(dim, torch_index, torch_src)
-                
-                # 比较函数值
-                value_passed = compare_values(rm_result, torch_result)
-                
-                # 测试src的梯度 - 统一使用backward方法
-                grad_passed = True
-                if TORCH_AVAILABLE:
-                    # Riemann梯度 - 使用backward方法
-                    rm_loss = rm_result.sum()
-                    rm_loss.backward()
-                    rm_src_grad = rm_src.grad
+                for i, (shape, dim) in enumerate(zip(dimensions, scatter_dims)):
+                    # 创建测试数据 - 统一使用float32类型
+                    np_tensor = np.random.randn(*shape).astype(np.float32)
+                    np_index = np.random.randint(0, shape[dim], size=shape)
+                    np_src = np.random.randn(*shape).astype(np.float32)
                     
-                    # PyTorch梯度
-                    torch_loss = torch_result.sum()
-                    torch_loss.backward()
-                    torch_src_grad = torch_src.grad
+                    # Riemann实现
+                    rm_tensor = tensor(np_tensor, requires_grad=False, device=device)
+                    rm_index = tensor(np_index, device=device)
+                    rm_src = tensor(np_src, requires_grad=True, device=device)
+                    rm_result = rm_tensor.clone().scatter_(dim, rm_index, rm_src)
                     
-                    # 比较梯度
-                    grad_passed = compare_values(rm_src_grad, torch_src_grad)
-                
-                subcase_name = f"子用例 {i+1}: 维度={dim}, 形状={shape}"
-                subcase_passed = value_passed and grad_passed
-                all_passed = all_passed and subcase_passed
-                
-                # 为每个子用例单独添加统计
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(subcase_name, subcase_passed)
-                    status = "通过" if subcase_passed else "失败"
-                    status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                    print(f"  子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
-                    if not value_passed:
-                        print(f"    - 函数值比较失败")
-                    if TORCH_AVAILABLE and not grad_passed:
-                        print(f"    - 梯度比较失败")
+                    # PyTorch实现
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(np_tensor, requires_grad=False, dtype=torch.float32, device=device)
+                        torch_index = torch.tensor(np_index, device=device)
+                        torch_src = torch.tensor(np_src, requires_grad=True, dtype=torch.float32, device=device)
+                        torch_result = torch_tensor.clone().scatter_(dim, torch_index, torch_src)
+                    
+                    # 比较函数值
+                    value_passed = compare_values(rm_result, torch_result)
+                    
+                    # 测试src的梯度 - 统一使用backward方法
+                    grad_passed = True
+                    if TORCH_AVAILABLE:
+                        # Riemann梯度 - 使用backward方法
+                        rm_loss = rm_result.sum()
+                        rm_loss.backward()
+                        rm_src_grad = rm_src.grad
+                        
+                        # PyTorch梯度
+                        torch_loss = torch_result.sum()
+                        torch_loss.backward()
+                        torch_src_grad = torch_src.grad
+                        
+                        # 比较梯度
+                        grad_passed = compare_values(rm_src_grad, torch_src_grad)
+                    
+                    subcase_name = f"{device_case_name} - 子用例 {i+1}: 维度={dim}, 形状={shape}"
+                    subcase_passed = value_passed and grad_passed
+                    all_passed = all_passed and subcase_passed
+                    
+                    # 为每个子用例单独添加统计
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(subcase_name, subcase_passed)
+                        status = "通过" if subcase_passed else "失败"
+                        status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                        print(f"  {device} - 子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
+                        if not value_passed:
+                            print(f"    - 函数值比较失败")
+                        if TORCH_AVAILABLE and not grad_passed:
+                            print(f"    - 梯度比较失败")
             
             time_taken = time.time() - start_time
             
@@ -485,67 +528,75 @@ class TestScatterFunctions(unittest.TestCase):
         case_name = "scatter_add_函数测试（原地累加）"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
             # 测试不同维度的scatter_add_
             dimensions = [(3, 4), (2, 3, 4), (1, 5, 3)]
             scatter_dims = [1, 0, 2]
             
             all_passed = True
-            for i, (shape, dim) in enumerate(zip(dimensions, scatter_dims)):
-                # 创建测试数据 - 统一使用float32类型
-                np_tensor = np.random.randn(*shape).astype(np.float32)
-                np_index = np.random.randint(0, shape[dim], size=shape)
-                np_src = np.random.randn(*shape).astype(np.float32)
+            for device in devices:
+                device_case_name = f"{case_name} - {device}"
                 
-                # Riemann实现 - 设置self张量requires_grad=True以测试其梯度
-                rm_tensor = tensor(np_tensor, requires_grad=True)
-                rm_index = tensor(np_index)
-                rm_src = tensor(np_src, requires_grad=True)
-                rm_result = rm_tensor.clone().scatter_add_(dim, rm_index, rm_src)
-                
-                # PyTorch实现 - 设置self张量requires_grad=True以测试其梯度
-                if TORCH_AVAILABLE:
-                    torch_tensor = torch.tensor(np_tensor, requires_grad=True, dtype=torch.float32)
-                    torch_index = torch.tensor(np_index)
-                    torch_src = torch.tensor(np_src, requires_grad=True, dtype=torch.float32)
-                    torch_result = torch_tensor.clone().scatter_add_(dim, torch_index, torch_src)
-                
-                # 比较函数值
-                value_passed = compare_values(rm_result, torch_result)
-                
-                # 测试self和src的梯度 - 统一使用backward方法
-                grad_passed = True
-                if TORCH_AVAILABLE:
-                    # Riemann梯度 - 使用backward方法
-                    rm_loss = rm_result.sum()
-                    rm_loss.backward()
-                    rm_tensor_grad = rm_tensor.grad
-                    rm_src_grad = rm_src.grad
+                for i, (shape, dim) in enumerate(zip(dimensions, scatter_dims)):
+                    # 创建测试数据 - 统一使用float32类型
+                    np_tensor = np.random.randn(*shape).astype(np.float32)
+                    np_index = np.random.randint(0, shape[dim], size=shape)
+                    np_src = np.random.randn(*shape).astype(np.float32)
                     
-                    # PyTorch梯度
-                    torch_loss = torch_result.sum()
-                    torch_loss.backward()
-                    torch_tensor_grad = torch_tensor.grad
-                    torch_src_grad = torch_src.grad
+                    # Riemann实现 - 设置self张量requires_grad=True以测试其梯度
+                    rm_tensor = tensor(np_tensor, requires_grad=True, device=device)
+                    rm_index = tensor(np_index, device=device)
+                    rm_src = tensor(np_src, requires_grad=True, device=device)
+                    rm_result = rm_tensor.clone().scatter_add_(dim, rm_index, rm_src)
                     
-                    # 比较梯度 - 同时比较self和src的梯度
-                    tensor_grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
-                    src_grad_passed = compare_values(rm_src_grad, torch_src_grad)
-                    grad_passed = tensor_grad_passed and src_grad_passed
-                
-                # 为每个子用例单独添加统计
-                subcase_name = f"子用例 {i+1}: 维度={dim}, 形状={shape}"
-                subcase_passed = value_passed and grad_passed
-                all_passed = all_passed and subcase_passed
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(subcase_name, subcase_passed)
-                    status = "通过" if subcase_passed else "失败"
-                    status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                    print(f"  子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
-                    if not value_passed:
-                        print(f"    - 函数值比较失败")
-                    if TORCH_AVAILABLE and not grad_passed:
-                        print(f"    - 梯度比较失败")
+                    # PyTorch实现 - 设置self张量requires_grad=True以测试其梯度
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(np_tensor, requires_grad=True, dtype=torch.float32, device=device)
+                        torch_index = torch.tensor(np_index, device=device)
+                        torch_src = torch.tensor(np_src, requires_grad=True, dtype=torch.float32, device=device)
+                        torch_result = torch_tensor.clone().scatter_add_(dim, torch_index, torch_src)
+                    
+                    # 比较函数值
+                    value_passed = compare_values(rm_result, torch_result)
+                    
+                    # 测试self和src的梯度 - 统一使用backward方法
+                    grad_passed = True
+                    if TORCH_AVAILABLE:
+                        # Riemann梯度 - 使用backward方法
+                        rm_loss = rm_result.sum()
+                        rm_loss.backward()
+                        rm_tensor_grad = rm_tensor.grad
+                        rm_src_grad = rm_src.grad
+                        
+                        # PyTorch梯度
+                        torch_loss = torch_result.sum()
+                        torch_loss.backward()
+                        torch_tensor_grad = torch_tensor.grad
+                        torch_src_grad = torch_src.grad
+                        
+                        # 比较梯度 - 同时比较self和src的梯度
+                        tensor_grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
+                        src_grad_passed = compare_values(rm_src_grad, torch_src_grad)
+                        grad_passed = tensor_grad_passed and src_grad_passed
+                    
+                    # 为每个子用例单独添加统计
+                    subcase_name = f"{device_case_name} - 子用例 {i+1}: 维度={dim}, 形状={shape}"
+                    subcase_passed = value_passed and grad_passed
+                    all_passed = all_passed and subcase_passed
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(subcase_name, subcase_passed)
+                        status = "通过" if subcase_passed else "失败"
+                        status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                        print(f"  {device} - 子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
+                        if not value_passed:
+                            print(f"    - 函数值比较失败")
+                        if TORCH_AVAILABLE and not grad_passed:
+                            print(f"    - 梯度比较失败")
             
             time_taken = time.time() - start_time
             
@@ -568,76 +619,84 @@ class TestScatterFunctions(unittest.TestCase):
         case_name = "scatter_add函数测试（非原地累加操作）"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
             # 测试不同维度的scatter_add
             dimensions = [(3, 4), (2, 3, 4), (1, 5, 3)]
             scatter_dims = [1, 0, 2]
             
             all_passed = True
-            for i, (shape, dim) in enumerate(zip(dimensions, scatter_dims)):
-                # 创建测试数据 - 统一使用float32类型
-                np_tensor = np.random.randn(*shape).astype(np.float32)
-                np_index = np.random.randint(0, shape[dim], size=shape)
-                np_src = np.random.randn(*shape).astype(np.float32)
+            for device in devices:
+                device_case_name = f"{case_name} - {device}"
                 
-                # Riemann实现 - 设置self张量requires_grad=True以测试其梯度
-                rm_tensor = tensor(np_tensor, requires_grad=True)
-                rm_index = tensor(np_index)
-                rm_src = tensor(np_src, requires_grad=True)
-                # 保存原始张量的副本，用于验证非原地操作
-                rm_tensor_original = rm_tensor.clone()
-                # 调用scatter_add函数（非原地操作）
-                rm_result = rm_tensor.scatter_add(dim, rm_index, rm_src)
-                
-                # 验证非原地操作 - 原始张量应该保持不变
-                is_non_inplace = compare_values(rm_tensor, rm_tensor_original)
-                
-                # PyTorch实现 - 由于PyTorch没有直接的非原地scatter_add，我们可以使用clone和scatter_add_
-                if TORCH_AVAILABLE:
-                    torch_tensor = torch.tensor(np_tensor, requires_grad=True, dtype=torch.float32)
-                    torch_index = torch.tensor(np_index)
-                    torch_src = torch.tensor(np_src, requires_grad=True, dtype=torch.float32)
-                    # 模拟非原地操作
-                    torch_result = torch_tensor.clone().scatter_add_(dim, torch_index, torch_src)
-                
-                # 比较函数值
-                value_passed = compare_values(rm_result, torch_result)
-                
-                # 测试self和src的梯度 - 统一使用backward方法
-                grad_passed = True
-                if TORCH_AVAILABLE:
-                    # Riemann梯度 - 使用backward方法
-                    rm_loss = rm_result.sum()
-                    rm_loss.backward()
-                    rm_tensor_grad = rm_tensor.grad
-                    rm_src_grad = rm_src.grad
+                for i, (shape, dim) in enumerate(zip(dimensions, scatter_dims)):
+                    # 创建测试数据 - 统一使用float32类型
+                    np_tensor = np.random.randn(*shape).astype(np.float32)
+                    np_index = np.random.randint(0, shape[dim], size=shape)
+                    np_src = np.random.randn(*shape).astype(np.float32)
                     
-                    # PyTorch梯度
-                    torch_loss = torch_result.sum()
-                    torch_loss.backward()
-                    torch_tensor_grad = torch_tensor.grad
-                    torch_src_grad = torch_src.grad
+                    # Riemann实现 - 设置self张量requires_grad=True以测试其梯度
+                    rm_tensor = tensor(np_tensor, requires_grad=True, device=device)
+                    rm_index = tensor(np_index, device=device)
+                    rm_src = tensor(np_src, requires_grad=True, device=device)
+                    # 保存原始张量的副本，用于验证非原地操作
+                    rm_tensor_original = rm_tensor.clone()
+                    # 调用scatter_add函数（非原地操作）
+                    rm_result = rm_tensor.scatter_add(dim, rm_index, rm_src)
                     
-                    # 比较梯度 - 同时比较self和src的梯度
-                    tensor_grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
-                    src_grad_passed = compare_values(rm_src_grad, torch_src_grad)
-                    grad_passed = tensor_grad_passed and src_grad_passed
-                
-                subcase_name = f"子用例 {i+1}: 维度={dim}, 形状={shape}"
-                subcase_passed = value_passed and grad_passed and is_non_inplace
-                all_passed = all_passed and subcase_passed
-                
-                # 为每个子用例单独添加统计
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(subcase_name, subcase_passed)
-                    status = "通过" if subcase_passed else "失败"
-                    status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                    print(f"  子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
-                    if not value_passed:
-                        print(f"    - 函数值比较失败")
-                    if not is_non_inplace:
-                        print(f"    - 非原地操作验证失败")
-                    if TORCH_AVAILABLE and not grad_passed:
-                        print(f"    - 梯度比较失败")
+                    # 验证非原地操作 - 原始张量应该保持不变
+                    is_non_inplace = compare_values(rm_tensor, rm_tensor_original)
+                    
+                    # PyTorch实现 - 由于PyTorch没有直接的非原地scatter_add，我们可以使用clone和scatter_add_
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(np_tensor, requires_grad=True, dtype=torch.float32, device=device)
+                        torch_index = torch.tensor(np_index, device=device)
+                        torch_src = torch.tensor(np_src, requires_grad=True, dtype=torch.float32, device=device)
+                        # 模拟非原地操作
+                        torch_result = torch_tensor.clone().scatter_add_(dim, torch_index, torch_src)
+                    
+                    # 比较函数值
+                    value_passed = compare_values(rm_result, torch_result)
+                    
+                    # 测试self和src的梯度 - 统一使用backward方法
+                    grad_passed = True
+                    if TORCH_AVAILABLE:
+                        # Riemann梯度 - 使用backward方法
+                        rm_loss = rm_result.sum()
+                        rm_loss.backward()
+                        rm_tensor_grad = rm_tensor.grad
+                        rm_src_grad = rm_src.grad
+                        
+                        # PyTorch梯度
+                        torch_loss = torch_result.sum()
+                        torch_loss.backward()
+                        torch_tensor_grad = torch_tensor.grad
+                        torch_src_grad = torch_src.grad
+                        
+                        # 比较梯度 - 同时比较self和src的梯度
+                        tensor_grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
+                        src_grad_passed = compare_values(rm_src_grad, torch_src_grad)
+                        grad_passed = tensor_grad_passed and src_grad_passed
+                    
+                    # 为每个子用例单独添加统计
+                    subcase_name = f"{device_case_name} - 子用例 {i+1}: 维度={dim}, 形状={shape}"
+                    subcase_passed = value_passed and grad_passed and is_non_inplace
+                    all_passed = all_passed and subcase_passed
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(subcase_name, subcase_passed)
+                        status = "通过" if subcase_passed else "失败"
+                        status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                        print(f"  {device} - 子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
+                        if not value_passed:
+                            print(f"    - 函数值比较失败")
+                        if not is_non_inplace:
+                            print(f"    - 非原地操作验证失败")
+                        if TORCH_AVAILABLE and not grad_passed:
+                            print(f"    - 梯度比较失败")
             
             time_taken = time.time() - start_time
             
@@ -660,71 +719,79 @@ class TestScatterFunctions(unittest.TestCase):
         case_name = "scatter_add函数测试（基于标量值创建匹配形状的张量src）"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
             # 测试不同维度的scatter_add
             dimensions = [(3, 4), (2, 3)]
             scatter_dims = [0, 1]
             scalar_values = [1.5, -2.0]
             
             all_passed = True
-            for i, (shape, dim, scalar) in enumerate(zip(dimensions, scatter_dims, scalar_values)):
-                # 创建测试数据 - 统一使用float32类型
-                np_tensor = np.random.randn(*shape).astype(np.float32)
-                np_index = np.random.randint(0, shape[dim], size=shape)
+            for device in devices:
+                device_case_name = f"{case_name} - {device}"
                 
-                # Riemann实现 - 设置self张量requires_grad=True以测试其梯度
-                rm_tensor = tensor(np_tensor, requires_grad=True)
-                rm_index = tensor(np_index)
-                # 保存原始张量的副本，用于验证非原地操作
-                rm_tensor_original = rm_tensor.clone()
-                # riemann scatter_add支持src参数是标量，会自动创建匹配形状的张量
-                rm_result = rm_tensor.scatter_add(dim, rm_index, scalar)
-                
-                # 验证非原地操作 - 原始张量应该保持不变
-                is_non_inplace = compare_values(rm_tensor, rm_tensor_original)
-                
-                # PyTorch实现 - 由于PyTorch没有直接的非原地scatter_add，我们可以使用clone和scatter_add_
-                if TORCH_AVAILABLE:
-                    torch_tensor = torch.tensor(np_tensor, requires_grad=True, dtype=torch.float32)
-                    torch_index = torch.tensor(np_index)
-                    # 关键修复：手动将标量转换为与index形状相同的张量，torch scatter_add_不支持src参数为标量
-                    torch_src = torch.tensor(np.full(shape, scalar, dtype=np.float32), requires_grad=False)
-                    torch_result = torch_tensor.clone().scatter_add_(dim, torch_index, torch_src)
-                
-                # 比较函数值
-                value_passed = compare_values(rm_result, torch_result)
-                
-                # 测试self的梯度 - 统一使用backward方法
-                grad_passed = True
-                if TORCH_AVAILABLE:
-                    # Riemann梯度 - 使用backward方法
-                    rm_loss = rm_result.sum()
-                    rm_loss.backward()
-                    rm_tensor_grad = rm_tensor.grad
+                for i, (shape, dim, scalar) in enumerate(zip(dimensions, scatter_dims, scalar_values)):
+                    # 创建测试数据 - 统一使用float32类型
+                    np_tensor = np.random.randn(*shape).astype(np.float32)
+                    np_index = np.random.randint(0, shape[dim], size=shape)
                     
-                    # PyTorch梯度
-                    torch_loss = torch_result.sum()
-                    torch_loss.backward()
-                    torch_tensor_grad = torch_tensor.grad
+                    # Riemann实现 - 设置self张量requires_grad=True以测试其梯度
+                    rm_tensor = tensor(np_tensor, requires_grad=True, device=device)
+                    rm_index = tensor(np_index, device=device)
+                    # 保存原始张量的副本，用于验证非原地操作
+                    rm_tensor_original = rm_tensor.clone()
+                    # riemann scatter_add支持src参数是标量，会自动创建匹配形状的张量
+                    rm_result = rm_tensor.scatter_add(dim, rm_index, scalar)
                     
-                    # 比较梯度
-                    grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
-                
-                subcase_name = f"子用例 {i+1}: 维度={dim}, 形状={shape}, 标量值={scalar}"
-                subcase_passed = value_passed and grad_passed and is_non_inplace
-                all_passed = all_passed and subcase_passed
-                
-                # 为每个子用例单独添加统计
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(subcase_name, subcase_passed)
-                    status = "通过" if subcase_passed else "失败"
-                    status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                    print(f"  子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
-                    if not value_passed:
-                        print(f"    - 函数值比较失败")
-                    if not is_non_inplace:
-                        print(f"    - 非原地操作验证失败")
-                    if TORCH_AVAILABLE and not grad_passed:
-                        print(f"    - 梯度比较失败")
+                    # 验证非原地操作 - 原始张量应该保持不变
+                    is_non_inplace = compare_values(rm_tensor, rm_tensor_original)
+                    
+                    # PyTorch实现 - 由于PyTorch没有直接的非原地scatter_add，我们可以使用clone和scatter_add_
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(np_tensor, requires_grad=True, dtype=torch.float32, device=device)
+                        torch_index = torch.tensor(np_index, device=device)
+                        # 关键修复：手动将标量转换为与index形状相同的张量，torch scatter_add_不支持src参数为标量
+                        torch_src = torch.tensor(np.full(shape, scalar, dtype=np.float32), requires_grad=False, device=device)
+                        torch_result = torch_tensor.clone().scatter_add_(dim, torch_index, torch_src)
+                    
+                    # 比较函数值
+                    value_passed = compare_values(rm_result, torch_result)
+                    
+                    # 测试self的梯度 - 统一使用backward方法
+                    grad_passed = True
+                    if TORCH_AVAILABLE:
+                        # Riemann梯度 - 使用backward方法
+                        rm_loss = rm_result.sum()
+                        rm_loss.backward()
+                        rm_tensor_grad = rm_tensor.grad
+                        
+                        # PyTorch梯度
+                        torch_loss = torch_result.sum()
+                        torch_loss.backward()
+                        torch_tensor_grad = torch_tensor.grad
+                        
+                        # 比较梯度
+                        grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
+                    
+                    # 为每个子用例单独添加统计
+                    subcase_name = f"{device_case_name} - 子用例 {i+1}: 维度={dim}, 形状={shape}, 标量值={scalar}"
+                    subcase_passed = value_passed and grad_passed and is_non_inplace
+                    all_passed = all_passed and subcase_passed
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(subcase_name, subcase_passed)
+                        status = "通过" if subcase_passed else "失败"
+                        status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                        print(f"  {device} - 子用例 {i+1}: {subcase_name.split(':')[1]} - {status_color}{status}{Colors.ENDC}")
+                        if not value_passed:
+                            print(f"    - 函数值比较失败")
+                        if not is_non_inplace:
+                            print(f"    - 非原地操作验证失败")
+                        if TORCH_AVAILABLE and not grad_passed:
+                            print(f"    - 梯度比较失败")
             
             time_taken = time.time() - start_time
             
@@ -747,6 +814,11 @@ class TestScatterFunctions(unittest.TestCase):
         case_name = "scatter函数_compute_direct_indices_v2测试"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
             # 测试场景1: 标准情况 - 确保维度数相同，但测试_compute_direct_indices_v2的内部实现
             test_cases = [
                 # (target_shape, dim, test_desc)
@@ -759,78 +831,84 @@ class TestScatterFunctions(unittest.TestCase):
             
             all_passed = True
             
-            for i, (shape, dim, desc) in enumerate(test_cases, 1):
+            for device in devices:
+                device_case_name = f"{case_name} - {device}"
+                
+                for i, (shape, dim, desc) in enumerate(test_cases, 1):
+                    try:
+                        # 创建测试数据
+                        np_tensor = np.random.randn(*shape).astype(np.float32)
+                        # 创建维度数相同的index数组，但可能在其他维度上有不同的大小
+                        np_index = np.random.randint(0, shape[dim] if dim >= 0 else shape[dim + len(shape)], size=shape)
+                        np_src = np.random.randn(*shape).astype(np.float32)  # src形状与index相同
+                        
+                        # Riemann实现
+                        rm_tensor = tensor(np_tensor, requires_grad=True, device=device)
+                        rm_index = tensor(np_index, device=device)
+                        rm_src = tensor(np_src, requires_grad=True, device=device)
+                        
+                        # 使用scatter函数 - 如果_compute_direct_indices_v2正确，这里应该能正常工作
+                        rm_result = rm_tensor.scatter(dim, rm_index, rm_src)
+                        
+                        # 验证结果形状是否正确
+                        self.assertEqual(rm_result.shape, shape, f"形状不匹配: 期望{shape}, 得到{rm_result.shape}")
+                        
+                        # 测试梯度
+                        if rm_tensor.requires_grad:
+                            rm_result.sum().backward()
+                            # 验证梯度是否存在
+                            self.assertIsNotNone(rm_tensor.grad, "梯度计算失败")
+                            self.assertIsNotNone(rm_src.grad, "梯度计算失败")
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            subcase_name = f"{device_case_name} - 测试场景: {desc}"
+                            stats.add_result(subcase_name, True)
+                            print(f"  {device} - 测试场景: {desc} - {Colors.OKGREEN}通过{Colors.ENDC}")
+                    except Exception as e:
+                        all_passed = False
+                        if IS_RUNNING_AS_SCRIPT:
+                            subcase_name = f"{device_case_name} - 测试场景: {desc}"
+                            stats.add_result(subcase_name, False, [str(e)])
+                            print(f"  {device} - 测试场景: {desc} - {Colors.FAIL}失败{Colors.ENDC} - {str(e)}")
+            
+            # 测试场景2: 验证使用_compute_direct_indices_v2可以避免原始实现中的错误
+            for device in devices:
+                device_case_name = f"{case_name} - {device}"
                 try:
-                    # 创建测试数据
-                    np_tensor = np.random.randn(*shape).astype(np.float32)
-                    # 创建维度数相同的index数组，但可能在其他维度上有不同的大小
-                    np_index = np.random.randint(0, shape[dim] if dim >= 0 else shape[dim + len(shape)], size=shape)
-                    np_src = np.random.randn(*shape).astype(np.float32)  # src形状与index相同
+                    # 创建特殊测试用例，这可能会暴露原始_compute_direct_indices的问题
+                    shape = (2, 2)
+                    dim = 0
+                    np_tensor = np.zeros(shape).astype(np.float32)
+                    np_index = np.array([[0, 1], [1, 0]])
+                    np_src = np.ones(shape).astype(np.float32)
                     
-                    # Riemann实现
-                    rm_tensor = tensor(np_tensor, requires_grad=True)
-                    rm_index = tensor(np_index)
-                    rm_src = tensor(np_src, requires_grad=True)
+                    rm_tensor = tensor(np_tensor, requires_grad=True, device=device)
+                    rm_index = tensor(np_index, device=device)
+                    rm_src = tensor(np_src, requires_grad=True, device=device)
                     
-                    # 使用scatter函数 - 如果_compute_direct_indices_v2正确，这里应该能正常工作
+                    # 这应该能正常工作，因为我们使用的是_compute_direct_indices_v2
                     rm_result = rm_tensor.scatter(dim, rm_index, rm_src)
                     
-                    # 验证结果形状是否正确
-                    self.assertEqual(rm_result.shape, shape, f"形状不匹配: 期望{shape}, 得到{rm_result.shape}")
-                    
-                    # 测试梯度
-                    if rm_tensor.requires_grad:
-                        rm_result.sum().backward()
-                        # 验证梯度是否存在
-                        self.assertIsNotNone(rm_tensor.grad, "梯度计算失败")
-                        self.assertIsNotNone(rm_src.grad, "梯度计算失败")
+                    # 验证结果
+                    expected_result = np.array([[1, 1], [1, 1]]).astype(np.float32)
+                    # 对于CUDA张量，我们需要先将其移动到CPU
+                    rm_result_data = rm_result.detach().cpu().numpy() if rm_result.is_cuda else rm_result.detach().numpy()
+                    self.assertTrue(np.allclose(rm_result_data, expected_result), "结果验证失败")
                     
                     if IS_RUNNING_AS_SCRIPT:
-                        subcase_name = f"测试场景: {desc}"
+                        subcase_name = f"{device_case_name} - 测试场景: 特殊索引模式测试"
                         stats.add_result(subcase_name, True)
-                        print(f"  测试场景: {desc} - {Colors.OKGREEN}通过{Colors.ENDC}")
+                        print(f"  {device} - 测试场景: 特殊索引模式测试 - {Colors.OKGREEN}通过{Colors.ENDC}")
                 except Exception as e:
                     all_passed = False
                     if IS_RUNNING_AS_SCRIPT:
-                        subcase_name = f"测试场景: {desc}"
+                        subcase_name = f"{device_case_name} - 测试场景: 特殊索引模式测试"
                         stats.add_result(subcase_name, False, [str(e)])
-                        print(f"  测试场景: {desc} - {Colors.FAIL}失败{Colors.ENDC} - {str(e)}")
-            
-            # 测试场景2: 验证使用_compute_direct_indices_v2可以避免原始实现中的错误
-            try:
-                # 创建特殊测试用例，这可能会暴露原始_compute_direct_indices的问题
-                shape = (2, 2)
-                dim = 0
-                np_tensor = np.zeros(shape).astype(np.float32)
-                np_index = np.array([[0, 1], [1, 0]])
-                np_src = np.ones(shape).astype(np.float32)
-                
-                rm_tensor = tensor(np_tensor, requires_grad=True)
-                rm_index = tensor(np_index)
-                rm_src = tensor(np_src, requires_grad=True)
-                
-                # 这应该能正常工作，因为我们使用的是_compute_direct_indices_v2
-                rm_result = rm_tensor.scatter(dim, rm_index, rm_src)
-                
-                # 验证结果
-                expected_result = np.array([[1, 1], [1, 1]]).astype(np.float32)
-                self.assertTrue(np.allclose(rm_result.data, expected_result), "结果验证失败")
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    subcase_name = f"测试场景: 特殊索引模式测试"
-                    stats.add_result(subcase_name, True)
-                    print(f"  测试场景: 特殊索引模式测试 - {Colors.OKGREEN}通过{Colors.ENDC}")
-            except Exception as e:
-                all_passed = False
-                if IS_RUNNING_AS_SCRIPT:
-                    subcase_name = f"测试场景: 特殊索引模式测试"
-                    stats.add_result(subcase_name, False, [str(e)])
-                    print(f"  测试场景: 特殊索引模式测试 - {Colors.FAIL}失败{Colors.ENDC} - {str(e)}")
+                        print(f"  {device} - 测试场景: 特殊索引模式测试 - {Colors.FAIL}失败{Colors.ENDC} - {str(e)}")
             
             time_taken = time.time() - start_time
             
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, all_passed)
                 status = "通过" if all_passed else "失败"
                 print(f"测试用例: {case_name} - {Colors.OKGREEN if all_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
             
@@ -849,92 +927,99 @@ class TestScatterFunctions(unittest.TestCase):
         case_name = "scatter函数边界情况测试"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
             boundary_cases = [
                 # 测试空张量
                 {"shape": (0, 0), "dim": 0, "desc": "空张量"},
-                # # 测试维度边界
-                # {"shape": (3, 4), "dim": -1, "desc": "负维度索引"},
-                # # 测试相同索引值
-                # {"shape": (2, 3), "dim": 0, "same_indices": True, "desc": "相同索引值"},
+                # 测试维度边界
+                {"shape": (3, 4), "dim": -1, "desc": "负维度索引"},
+                # 测试相同索引值
+                {"shape": (2, 3), "dim": 0, "same_indices": True, "desc": "相同索引值"},
             ]
             
             all_passed = True
-            for i, case in enumerate(boundary_cases):
-                shape = case["shape"]
-                dim = case["dim"]
-                desc = case["desc"]
+            for device in devices:
+                device_case_name = f"{case_name} - {device}"
                 
-                # 创建测试数据
-                np_tensor = np.random.randn(*shape)
-                if case.get("same_indices", False):
-                    # 使用相同的索引值
-                    np_index = np.full(shape, 0)
-                else:
-                    np_index = np.random.randint(0, shape[dim] if dim >= 0 else shape[dim + len(shape)], size=shape)
-                np_src = np.random.randn(*shape)
-                
-                try:
-                    # Riemann实现
-                    rm_tensor = tensor(np_tensor, requires_grad=True)
-                    rm_index = tensor(np_index)
-                    rm_src = tensor(np_src, requires_grad=True)
-                    rm_result = rm_tensor.scatter(dim, rm_index, rm_src)
+                for i, case in enumerate(boundary_cases):
+                    shape = case["shape"]
+                    dim = case["dim"]
+                    desc = case["desc"]
+                    
+                    # 创建测试数据
+                    np_tensor = np.random.randn(*shape)
+                    if case.get("same_indices", False):
+                        # 使用相同的索引值
+                        np_index = np.full(shape, 0)
+                    else:
+                        np_index = np.random.randint(0, shape[dim] if dim >= 0 else shape[dim + len(shape)], size=shape)
+                    np_src = np.random.randn(*shape)
+                    
+                    try:
+                        # Riemann实现
+                        rm_tensor = tensor(np_tensor, requires_grad=True, device=device)
+                        rm_index = tensor(np_index, device=device)
+                        rm_src = tensor(np_src, requires_grad=True, device=device)
+                        rm_result = rm_tensor.scatter(dim, rm_index, rm_src)
                                         
-                    # PyTorch实现
-                    torch_result = None
-                    if TORCH_AVAILABLE:
-                        torch_tensor = torch.tensor(np_tensor, requires_grad=True)
-                        torch_index = torch.tensor(np_index)
-                        torch_src = torch.tensor(np_src, requires_grad=True)
-                        torch_result = torch_tensor.scatter(dim, torch_index, torch_src)
-                    
-                    # 比较函数值
-                    value_passed = compare_values(rm_result, torch_result)
-                    
-                    # 测试梯度
-                    grad_passed = True
-                    if TORCH_AVAILABLE:
-                        # Riemann梯度
-                        rm_loss = rm_result.sum()
-                        rm_tensor_grad, rm_src_grad = grad(rm_loss, [rm_tensor, rm_src])
+                        # PyTorch实现
+                        torch_result = None
+                        if TORCH_AVAILABLE:
+                            torch_tensor = torch.tensor(np_tensor, requires_grad=True, device=device)
+                            torch_index = torch.tensor(np_index, device=device)
+                            torch_src = torch.tensor(np_src, requires_grad=True, device=device)
+                            torch_result = torch_tensor.scatter(dim, torch_index, torch_src)
                         
-                        # PyTorch梯度
-                        torch_loss = torch_result.sum()
-                        torch_loss.backward()
-                        torch_tensor_grad = torch_tensor.grad
-                        torch_src_grad = torch_src.grad
+                        # 比较函数值
+                        value_passed = compare_values(rm_result, torch_result)
                         
-                        # 比较梯度
-                        tensor_grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
-                        src_grad_passed = compare_values(rm_src_grad, torch_src_grad)
-                        grad_passed = tensor_grad_passed and src_grad_passed
-                    
-                    subcase_passed = value_passed and grad_passed
-                    all_passed = all_passed and subcase_passed
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        subcase_name = f"边界用例 {i+1}: {desc}"
-                        stats.add_result(subcase_name, subcase_passed)
-                        status = "通过" if subcase_passed else "失败"
-                        status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                        print(f"  边界用例 {i+1}: {desc} - {status_color}{status}{Colors.ENDC}")
-                        if not value_passed:
-                            print(f"    - 函数值比较失败")
-                        if TORCH_AVAILABLE and not grad_passed:
-                            print(f"    - 梯度比较失败")
-                    
-                except Exception as e:
-                    # 检查是否是预期的异常
-                    subcase_passed = False
-                    all_passed = False
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        print(f"  边界用例 {i+1}: {desc} - {Colors.FAIL}异常{Colors.ENDC} - {str(e)}")
+                        # 测试梯度
+                        grad_passed = True
+                        if TORCH_AVAILABLE:
+                            # Riemann梯度
+                            rm_loss = rm_result.sum()
+                            rm_tensor_grad, rm_src_grad = grad(rm_loss, [rm_tensor, rm_src])
+                            
+                            # PyTorch梯度
+                            torch_loss = torch_result.sum()
+                            torch_loss.backward()
+                            torch_tensor_grad = torch_tensor.grad
+                            torch_src_grad = torch_src.grad
+                            
+                            # 比较梯度
+                            tensor_grad_passed = compare_values(rm_tensor_grad, torch_tensor_grad)
+                            src_grad_passed = compare_values(rm_src_grad, torch_src_grad)
+                            grad_passed = tensor_grad_passed and src_grad_passed
+                        
+                        subcase_passed = value_passed and grad_passed
+                        all_passed = all_passed and subcase_passed
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            subcase_name = f"{device_case_name} - 边界用例 {i+1}: {desc}"
+                            stats.add_result(subcase_name, subcase_passed)
+                            status = "通过" if subcase_passed else "失败"
+                            status_color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                            print(f"  {device} - 边界用例 {i+1}: {desc} - {status_color}{status}{Colors.ENDC}")
+                            if not value_passed:
+                                print(f"    - 函数值比较失败")
+                            if TORCH_AVAILABLE and not grad_passed:
+                                print(f"    - 梯度比较失败")
+                        
+                    except Exception as e:
+                        # 检查是否是预期的异常
+                        subcase_passed = False
+                        all_passed = False
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            print(f"  {device} - 边界用例 {i+1}: {desc} - {Colors.FAIL}异常{Colors.ENDC} - {str(e)}")
             
             time_taken = time.time() - start_time
             
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, all_passed)
                 status = "通过" if all_passed else "失败"
                 print(f"测试用例: {case_name} - {Colors.OKGREEN if all_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
             

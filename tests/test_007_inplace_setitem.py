@@ -3,6 +3,8 @@ import numpy as np
 import time
 import sys, os
 
+from torch import set_default_device
+
 # 添加项目根目录到sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))
 
@@ -10,6 +12,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 try:
     import riemann as rm
     from riemann import tensor as rm_tensor
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
     TENSOR_AVAILABLE = True
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
@@ -200,17 +205,23 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all_passed
     
     # 转换为numpy数组
-    if isinstance(rm_result, rm.TN):
-        rm_data = rm_result.detach().data if hasattr(rm_result, 'detach') else rm_result.data
-    elif hasattr(rm_result, 'data'):
-        rm_data = rm_result.data
-    else:
-        rm_data = rm_result
-    
-    if hasattr(torch_result, 'detach'):
-        torch_data = torch_result.detach().cpu().numpy()
-    else:
-        torch_data = torch_result
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
     
     # 处理形状不匹配的情况
     try:
@@ -233,90 +244,97 @@ class TestInplaceSetitemFunctions(unittest.TestCase):
     
     def _test_inplace_setitem(self, case_name, input_nps, indices_ops):
         """通用的原地索引赋值测试方法"""
-        start_time = time.time()
-        try:
-            # 正确调用start_function，只传递函数名
-            if IS_RUNNING_AS_SCRIPT:
-                stats.start_function(case_name)
-            
-            # 测试Riemann - 创建输入张量
-            riemann_tensors = []
-            for input_np in input_nps:
-                riemann_tensors.append(rm_tensor(input_np, requires_grad=True))
-            
-            # 创建结果张量
-            result_riemann = rm_tensor(np.zeros_like(riemann_tensors[0].data), requires_grad=True)
-            result_riemann = result_riemann.clone()  # 克隆以支持梯度计算
-            
-            # 执行原地索引赋值操作
-            for i, (idx, input_idx, slice_idx) in enumerate(indices_ops):
-                # 确保右侧的值与左侧索引形状匹配
-                value_tensor = riemann_tensors[input_idx]
-                if slice_idx is not None:
-                    value_tensor = value_tensor[slice_idx]
-                result_riemann[idx] = value_tensor
-                if i < len(indices_ops) - 1:  # 不是最后一次操作，需要克隆以支持梯度计算
-                    result_riemann = result_riemann.clone()
-            
-            # 计算损失
-            loss_riemann = result_riemann.sum()
-            loss_riemann.backward()
-            
-            # 获取梯度
-            riemann_grads = [tensor.grad for tensor in riemann_tensors]
-            
-            # 测试PyTorch
-            torch_grads = None
-            if TORCH_AVAILABLE:
-                torch_tensors = []
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            device_case_name = f"{case_name} - {device}"
+            start_time = time.time()
+            try:
+                # 正确调用start_function，只传递函数名
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.start_function(device_case_name)
+                
+                # 测试Riemann - 创建输入张量
+                riemann_tensors = []
                 for input_np in input_nps:
-                    torch_tensors.append(torch.tensor(input_np, requires_grad=True, dtype=torch.float32))
+                    riemann_tensors.append(rm_tensor(input_np, requires_grad=True, device=device))
                 
                 # 创建结果张量
-                result_torch = torch.zeros_like(torch_tensors[0], requires_grad=True)
-                result_torch = result_torch.clone()  # 克隆以支持梯度计算
+                result_riemann = rm_tensor(np.zeros_like(riemann_tensors[0].data), requires_grad=True, device=device)
+                result_riemann = result_riemann.clone()  # 克隆以支持梯度计算
                 
-                # 执行原地索引赋值操作 - 确保与Riemann语法一致
+                # 执行原地索引赋值操作
                 for i, (idx, input_idx, slice_idx) in enumerate(indices_ops):
                     # 确保右侧的值与左侧索引形状匹配
-                    value_tensor = torch_tensors[input_idx]
+                    value_tensor = riemann_tensors[input_idx]
                     if slice_idx is not None:
                         value_tensor = value_tensor[slice_idx]
-                    result_torch[idx] = value_tensor
+                    result_riemann[idx] = value_tensor
                     if i < len(indices_ops) - 1:  # 不是最后一次操作，需要克隆以支持梯度计算
-                        result_torch = result_torch.clone()
+                        result_riemann = result_riemann.clone()
                 
                 # 计算损失
-                loss_torch = result_torch.sum()
-                loss_torch.backward()
+                loss_riemann = result_riemann.sum()
+                loss_riemann.backward()
                 
                 # 获取梯度
-                torch_grads = [tensor.grad for tensor in torch_tensors]
-            
-            # 比较结果
-            passed = compare_values(riemann_grads, torch_grads)
-            time_taken = time.time() - start_time
-            
-            # 正确调用end_function，只传递self参数
-            if IS_RUNNING_AS_SCRIPT:
-                stats.end_function()
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"原地索引赋值梯度计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            # 在异常处理中也正确调用end_function
-            if IS_RUNNING_AS_SCRIPT:
-                stats.end_function()
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+                riemann_grads = [tensor.grad for tensor in riemann_tensors]
+                
+                # 测试PyTorch
+                torch_grads = None
+                if TORCH_AVAILABLE:
+                    torch_tensors = []
+                    for input_np in input_nps:
+                        torch_tensors.append(torch.tensor(input_np, requires_grad=True, dtype=torch.float32, device=device))
+                    
+                    # 创建结果张量
+                    result_torch = torch.zeros_like(torch_tensors[0], requires_grad=True, device=device)
+                    result_torch = result_torch.clone()  # 克隆以支持梯度计算
+                    
+                    # 执行原地索引赋值操作 - 确保与Riemann语法一致
+                    for i, (idx, input_idx, slice_idx) in enumerate(indices_ops):
+                        # 确保右侧的值与左侧索引形状匹配
+                        value_tensor = torch_tensors[input_idx]
+                        if slice_idx is not None:
+                            value_tensor = value_tensor[slice_idx]
+                        result_torch[idx] = value_tensor
+                        if i < len(indices_ops) - 1:  # 不是最后一次操作，需要克隆以支持梯度计算
+                            result_torch = result_torch.clone()
+                    
+                    # 计算损失
+                    loss_torch = result_torch.sum()
+                    loss_torch.backward()
+                    
+                    # 获取梯度
+                    torch_grads = [tensor.grad for tensor in torch_tensors]
+                
+                # 比较结果
+                passed = compare_values(riemann_grads, torch_grads)
+                time_taken = time.time() - start_time
+                
+                # 正确调用end_function，只传递self参数
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.end_function()
+                    stats.add_result(device_case_name, passed)
+                    status = "通过" if passed else "失败"
+                    print(f"测试用例: {device_case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    if not passed:
+                        print(f"  值比较: 失败")
+                
+                # 断言确保测试通过
+                self.assertTrue(passed, f"原地索引赋值梯度计算结果不匹配: {device_case_name}")
+                
+            except Exception as e:
+                time_taken = time.time() - start_time
+                # 在异常处理中也正确调用end_function
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.end_function()
+                    stats.add_result(device_case_name, False, [str(e)])
+                    print(f"测试用例: {device_case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
     
     def test_scalar_indexing(self):
         """测试场景1: 标量索引"""
