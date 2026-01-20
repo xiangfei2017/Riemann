@@ -1034,6 +1034,53 @@ class TN:
             # 检查indexed_data是否与原数据共享内存
             is_view = arrlib.shares_memory(self.data, indexed_data)
         
+        # 对于CUDA场景，根据索引类型决定是否返回视图
+        if self.device.type == 'cuda':
+            # 检查索引是否为整数数组索引或布尔索引
+            is_integer_array_index = False
+            is_boolean_index = False
+            
+            # 获取适合当前设备的数组库
+            arrlib = self._get_array_lib()
+            
+            # 处理元组索引
+            if isinstance(index_val, tuple):
+                for idx in index_val:
+                    # 检查是否为整数数组类型的索引
+                    if isinstance(idx, (list, np.ndarray, cp.ndarray)):
+                        # 根据设备类型选择合适的数组库来转换索引
+                        if isinstance(idx, cp.ndarray):
+                            idx_arr = idx
+                        else:
+                            idx_arr = arrlib.asarray(idx)
+                        
+                        # 使用numpy来检查数据类型，因为它可以处理numpy和cupy数组的dtype
+                        if np.issubdtype(idx_arr.dtype, np.integer):
+                            is_integer_array_index = True
+                            break
+                        elif np.issubdtype(idx_arr.dtype, np.bool_):
+                            is_boolean_index = True
+                            break
+            # 处理单一索引
+            elif isinstance(index_val, (list, np.ndarray, cp.ndarray)):
+                # 根据设备类型选择合适的数组库来转换索引
+                if isinstance(index_val, cp.ndarray):
+                    idx_arr = index_val
+                else:
+                    idx_arr = arrlib.asarray(index_val)
+                
+                # 使用numpy来检查数据类型，因为它可以处理numpy和cupy数组的dtype
+                if np.issubdtype(idx_arr.dtype, np.integer):
+                    is_integer_array_index = True
+                elif np.issubdtype(idx_arr.dtype, np.bool_):
+                    is_boolean_index = True
+            
+            # 对于整数数组索引，不强制返回视图（保持原有shares_memory判断）
+            # 对于布尔索引，也不强制返回视图（因为布尔索引通常返回副本）
+            # 对于其他索引类型（如切片索引），强制返回视图
+            if not is_integer_array_index and not is_boolean_index:
+                is_view = True
+        
         # 创建结果张量
         ret = tensor(indexed_data, device=self.device, requires_grad = (is_grad_enabled() and self.requires_grad))
         ret.is_leaf = not ret.requires_grad
@@ -1066,12 +1113,69 @@ class TN:
             # 转换索引格式以便比较
             index_val = _convert_TNindex_to_numpy(index)
                 
+            # 辅助函数：检查是否为布尔索引
+            def _is_boolean_index(idx):
+                """检查索引是否为布尔类型索引"""
+                try:
+                    if hasattr(idx, 'dtype') and idx.dtype == bool:
+                        return True
+                    elif isinstance(idx, np.ndarray) and idx.dtype == bool:
+                        return True
+                    elif isinstance(idx, tuple):
+                        return any(_is_boolean_index(i) for i in idx)
+                    return False
+                except Exception:
+                    return False
+            
+            # 辅助函数：比较两个索引是否相同
+            def _indexes_are_equal(idx1, idx2):
+                """比较两个索引是否相同，仅支持简单索引类型"""
+                try:
+                    # 跳过布尔索引比较
+                    if _is_boolean_index(idx1) or _is_boolean_index(idx2):
+                        return False
+                    
+                    if isinstance(idx1, tuple) and isinstance(idx2, tuple):
+                        # 元组索引比较
+                        if len(idx1) != len(idx2):
+                            return False
+                        for a, b in zip(idx1, idx2):
+                            try:
+                                # 对数组类型进行特殊处理
+                                if hasattr(a, 'shape') and hasattr(b, 'shape'):
+                                    return bool(np.array_equal(a, b))
+                                # 简单类型直接比较
+                                if a != b:
+                                    return False
+                            except Exception:
+                                return False
+                        return True
+                    elif isinstance(idx1, (int, slice, type(None))) and isinstance(idx2, (int, slice, type(None))):
+                        # 单一索引比较
+                        return idx1 == idx2
+                    else:
+                        # 其他类型尝试转换为数组比较
+                        try:
+                            return bool(np.array_equal(np.asarray(idx1), np.asarray(idx2)))
+                        except Exception:
+                            return False
+                except Exception:
+                    return False
+            
+            # 检查右值val是否是来自self的索引视图对象，原因如下:
+            # 原地操作时，比如a[index]+=b,会先除法a.__getitem__(index)生成临时对象temp，
+            # 然后执行原地操作temp+=b,如temp是视图（共享内存）,原地操作在_inplace_oper_at_()里被重定向到a上了
+            # 最后触发a.__setitem__(index,temp),
+            # 这时就要检查temp是否是来自a的索引视图，如果是，原地操作已在a上已操作过，所以直接返回
+            # 如果temp不是视图，将temp的计算图记录的原地操作应用到a上
             if val._is_view:
-                # 如果赋值的是视图对象，且视图的基础是self，索引也相同，则不需要执行操作
-                if val._base is self and val._view_index == index_val:
+                # 如果右值是视图对象，且视图的基础是self，索引也相同，则不需要执行操作
+                # 安全比较索引值，处理布尔数组等复杂索引类型
+                if val._base is self and _indexes_are_equal(val._view_index, index_val):
                     return self
             else:
-                if self.device == Device('cpu') and val._base is self and val._view_index == index_val:
+                # 非视图对象的赋值
+                if val._base is self and _indexes_are_equal(val._view_index, index_val):
                     for i in range(len(val.gradfuncs)-1,-1,-1):
                         funcname = val.gradfuncs[i].__name__
                         if funcname == '_addat_inplace_backward':
@@ -1093,10 +1197,11 @@ class TN:
                         if funcname == '_powat_inplace_backward':
                             if val.parms[i][1] == ():
                                 return self.powat_(index_val,val.fromvars[i])
-                    pass
-        
+                # end of if val._base is self and _indexes_are_equal(val._view_index, index_val)
+        # end of if hasattr(val, '_is_view')
+
         return self.setat_(index,val)
-        
+    
     def _merge_indices(self, base_index, current_index):
         """
         基于坐标转换的索引合并函数（重构版本）
@@ -4638,12 +4743,6 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
             # 调用前向函数
             ret_val = forward_func(*xs, **kwargs)
             
-            # 如果返回值不是TN类型，将其转换为TN类型
-            if not isinstance(ret_val, TN):
-                ret = tensor(ret_val)
-            else:
-                ret = ret_val
-            
             # 合并所有参数
             all_params = list(xs) + list(kwargs.values())
             
@@ -4654,6 +4753,17 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
                 if isinstance(param, TN):
                     tn_params.append(param)
                     tn_param_indices.append(i)
+            
+            if len(tn_params) == 0:
+                raise ValueError("forward_func must return a tensor with at least one TN parameter")
+
+            # 如果返回值不是TN类型，将其转换为TN类型
+            if not isinstance(ret_val, TN):
+                # 找到第一个TN类型的参数，获取其device属性
+                device = tn_params[0].device
+                ret = tensor(ret_val, device=device)
+            else:
+                ret = ret_val
             
             # 设置梯度跟踪标志
             ret.requires_grad = (is_grad_enabled() and any(x.requires_grad for x in tn_params))
