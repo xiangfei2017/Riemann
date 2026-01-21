@@ -571,7 +571,10 @@ def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         # 检查是否只有单个输出元素
         if is_single_output and outputs_processed[0].ndim == 0:  # type: ignore
             # 输出是标量，创建值为1的Tensor
-            v = [tensor(1.0, dtype=outputs_processed[0].dtype, requires_grad=create_graph)]  # type: ignore
+            v = [tensor(1.0, 
+                 dtype=outputs_processed[0].dtype, 
+                 device=outputs_processed[0].device, 
+                 requires_grad=create_graph)]  # type: ignore
         else:
             raise RuntimeError("v must be provided when the output of func does not contain a single element")
     else:

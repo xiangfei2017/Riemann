@@ -28,15 +28,35 @@ from typing import Tuple, Dict, Any
 # 添加Riemann库路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-import riemann as rm
-from riemann.nn import Module
-from riemann.nn import Conv1d, Conv2d, Conv3d, MaxPool1d, MaxPool2d, MaxPool3d, AvgPool1d, AvgPool2d, AvgPool3d
-from riemann.nn import ReLU
-from riemann.nn import Linear
-from riemann.nn import CrossEntropyLoss
+# 导入riemann模块
+try:
+    import riemann as rm
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+    from riemann.nn import (
+        Conv1d, Conv2d, Conv3d, 
+        MaxPool1d, MaxPool2d, MaxPool3d, 
+        AvgPool1d, AvgPool2d, AvgPool3d,
+        ReLU,Linear, CrossEntropyLoss
+    )
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
+    sys.exit(1)
 
-import torch
-import torch.nn as tnn
+# 尝试导入PyTorch进行比较
+try:
+    import torch
+    import torch.nn as tnn
+    TORCH_AVAILABLE = True
+    if torch.cuda.is_available():
+        print("PyTorch CUDA可用")
+    else:
+        print("PyTorch CUDA不可用")
+except ImportError:
+    print("警告: 无法导入PyTorch，将只测试riemann的形状操作函数")
+    TORCH_AVAILABLE = False
 
 
 class Colors:
@@ -415,31 +435,79 @@ class TorchCNN3D(tnn.Module):
 
 # ==================== 工具函数 ====================
 
-def copy_weights_torch_to_riemann(torch_layer, riemann_layer):
+def copy_weights_torch_to_riemann(torch_layer, riemann_layer, device="cpu"):
     """将PyTorch层的权重复制到Riemann层，使用深拷贝避免内存共享"""
     if hasattr(torch_layer, 'weight') and hasattr(riemann_layer, 'weight'):
         # 现在Linear层的权重格式与PyTorch一致，都是 [out_features, in_features]
         if isinstance(torch_layer, tnn.Linear) and isinstance(riemann_layer, Linear):
-            torch_weight = torch_layer.weight.detach().numpy()  # [out_features, in_features]
+            torch_weight = torch_layer.weight.detach().cpu().numpy()  # [out_features, in_features]
             # 使用深拷贝创建独立的numpy数组，避免内存共享
             torch_weight_copy = np.array(torch_weight, copy=True)
-            # 直接复制，不需要转置
-            riemann_layer.weight.data = torch_weight_copy
+            # 创建一个新的Riemann张量
+            if device == "cuda" and CUDA_AVAILABLE:
+                # 创建CPU张量，然后移动到CUDA设备
+                new_weight_tensor = rm.tensor(torch_weight_copy, requires_grad=True)
+                # 移动到CUDA设备，然后detach_()并设置is_leaf=True
+                new_weight_tensor = new_weight_tensor.to(device).detach_()
+                new_weight_tensor.requires_grad = True
+                new_weight_tensor.is_leaf = True
+                # 创建Parameter对象
+                new_weight = rm.nn.Parameter(new_weight_tensor, requires_grad=True)
+            else:
+                # 创建CPU张量
+                new_weight_tensor = rm.tensor(torch_weight_copy, requires_grad=True)
+                new_weight_tensor.is_leaf = True
+                # 创建Parameter对象
+                new_weight = rm.nn.Parameter(new_weight_tensor, requires_grad=True)
+            # 替换权重
+            riemann_layer.weight = new_weight
         else:
             # 对于卷积层，权重格式相同
-            torch_weight = torch_layer.weight.detach().numpy()
+            torch_weight = torch_layer.weight.detach().cpu().numpy()
             # 使用深拷贝创建独立的numpy数组，避免内存共享
             torch_weight_copy = np.array(torch_weight, copy=True)
-            # 直接赋值numpy数组，避免创建嵌套TN对象
-            riemann_layer.weight.data = torch_weight_copy
+            # 创建一个新的Riemann张量
+            if device == "cuda" and CUDA_AVAILABLE:
+                # 创建CPU张量，然后移动到CUDA设备
+                new_weight_tensor = rm.tensor(torch_weight_copy, requires_grad=True)
+                # 移动到CUDA设备，然后detach_()并设置is_leaf=True
+                new_weight_tensor = new_weight_tensor.to(device).detach_()
+                new_weight_tensor.requires_grad = True
+                new_weight_tensor.is_leaf = True
+                # 创建Parameter对象
+                new_weight = rm.nn.Parameter(new_weight_tensor, requires_grad=True)
+            else:
+                # 创建CPU张量
+                new_weight_tensor = rm.tensor(torch_weight_copy, requires_grad=True)
+                new_weight_tensor.is_leaf = True
+                # 创建Parameter对象
+                new_weight = rm.nn.Parameter(new_weight_tensor, requires_grad=True)
+            # 替换权重
+            riemann_layer.weight = new_weight
     
     if hasattr(torch_layer, 'bias') and hasattr(riemann_layer, 'bias'):
         if torch_layer.bias is not None:
-            torch_bias = torch_layer.bias.detach().numpy()
+            torch_bias = torch_layer.bias.detach().cpu().numpy()
             # 使用深拷贝创建独立的numpy数组，避免内存共享
             torch_bias_copy = np.array(torch_bias, copy=True)
-            # 直接赋值numpy数组，避免创建嵌套TN对象
-            riemann_layer.bias.data = torch_bias_copy
+            # 创建一个新的Riemann张量
+            if device == "cuda" and CUDA_AVAILABLE:
+                # 创建CPU张量，然后移动到CUDA设备
+                new_bias_tensor = rm.tensor(torch_bias_copy, requires_grad=True)
+                # 移动到CUDA设备，然后detach_()并设置is_leaf=True
+                new_bias_tensor = new_bias_tensor.to(device).detach_()
+                new_bias_tensor.requires_grad = True
+                new_bias_tensor.is_leaf = True
+                # 创建Parameter对象
+                new_bias = rm.nn.Parameter(new_bias_tensor, requires_grad=True)
+            else:
+                # 创建CPU张量
+                new_bias_tensor = rm.tensor(torch_bias_copy, requires_grad=True)
+                new_bias_tensor.is_leaf = True
+                # 创建Parameter对象
+                new_bias = rm.nn.Parameter(new_bias_tensor, requires_grad=True)
+            # 替换偏置
+            riemann_layer.bias = new_bias
         else:
             riemann_layer.register_parameter('bias', None)
 
@@ -451,116 +519,218 @@ def tensor_allclose(rm_tensor, torch_tensor, rtol=1e-4, atol=1e-6):
     return np.allclose(rm_data, torch_data, rtol=rtol, atol=atol)
 
 
+def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
+    """比较Riemann和PyTorch的值是否接近"""
+    # 处理None值的情况
+    if not TORCH_AVAILABLE:
+        # 如果没有PyTorch，只检查riemann结果是否存在
+        return rm_result is not None
+    
+    if rm_result is None and torch_result is None:
+        return True
+    if rm_result is None or torch_result is None:
+        return False
+    
+    # 处理嵌套元组/列表的情况
+    if isinstance(rm_result, (list, tuple)) and isinstance(torch_result, (list, tuple)):
+        if len(rm_result) != len(torch_result):
+            return False
+        
+        all_passed = True
+        for r, t in zip(rm_result, torch_result):
+            if not compare_values(r, t, atol, rtol):
+                all_passed = False
+                break
+        
+        return all_passed
+    
+    # 转换为numpy数组
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
+    
+    # 处理形状不匹配的情况
+    try:
+        np.testing.assert_allclose(rm_data, torch_data, rtol=rtol, atol=atol)
+        return True
+    except AssertionError:
+        return False
+
+
 def compare_gradients(torch_param, riemann_param, name="parameter"):
     """比较PyTorch和Riemann参数的梯度"""
     if torch_param.grad is None and riemann_param.grad is None:
         return True, "两个梯度都为None"
     
-    if torch_param.grad is None or riemann_param.grad is None:
-        return False, f"梯度状态不一致: torch={torch_param.grad is not None}, riemann={riemann_param.grad is not None}"
+    if torch_param.grad is None:
+        return False, f"PyTorch梯度为None"
     
-    torch_grad = torch_param.grad.detach().numpy()
-    riemann_grad = riemann_param.grad.data if hasattr(riemann_param.grad, 'data') else riemann_param.grad
+    # 对于Riemann，即使grad为None，也尝试从data.grad获取
+    if riemann_param.grad is None:
+        # 尝试从data.grad获取梯度
+        if hasattr(riemann_param, 'data') and hasattr(riemann_param.data, 'grad'):
+            riemann_grad = riemann_param.data.grad
+            if riemann_grad is None:
+                return False, f"Riemann梯度为None"
+        else:
+            return False, f"Riemann梯度为None"
+    else:
+        riemann_grad = riemann_param.grad
     
-    close_result = np.allclose(torch_grad, riemann_grad, rtol=1e-4, atol=1e-6)
-    diff = np.abs(torch_grad - riemann_grad).max()
+    # 处理CUDA张量
+    if hasattr(torch_param.grad, 'is_cuda') and torch_param.grad.is_cuda:
+        torch_grad = torch_param.grad.detach().cpu().numpy()
+    else:
+        torch_grad = torch_param.grad.detach().numpy()
+    
+    if hasattr(riemann_grad, 'is_cuda') and riemann_grad.is_cuda:
+        riemann_grad_data = riemann_grad.detach().cpu().numpy()
+    else:
+        riemann_grad_data = riemann_grad.data if hasattr(riemann_grad, 'data') else riemann_grad
+    
+    # 确保riemann_grad_data是numpy数组
+    if not isinstance(riemann_grad_data, np.ndarray):
+        try:
+            riemann_grad_data = np.array(riemann_grad_data)
+        except Exception as e:
+            return False, f"无法转换Riemann梯度为numpy数组: {e}"
+    
+    close_result = np.allclose(torch_grad, riemann_grad_data, rtol=1e-4, atol=1e-6)
+    diff = np.abs(torch_grad - riemann_grad_data).max()
     
     return close_result, f"梯度差异: {diff:.6f}"
 
 
-def compare_network(rm_net, torch_net, input_data, targets, pool_type, network_type, stats):
+def compare_network(rm_net, torch_net, input_data, targets, pool_type, network_type, stats, device="cpu"):
     """测试Riemann网络与PyTorch网络的比较"""
-    try:
-        # 复制权重，确保两个网络参数完全一致
-        copy_weights_torch_to_riemann(torch_net.conv1, rm_net.conv1)
-        copy_weights_torch_to_riemann(torch_net.fc1, rm_net.fc1)
-        copy_weights_torch_to_riemann(torch_net.fc2, rm_net.fc2)
-        
-        # 确保输入数据完全一致：使用深拷贝创建独立的numpy数组，避免内存共享
-        input_data_copy = np.array(input_data, copy=True)
-        rm_input = rm.tensor(input_data_copy, requires_grad=True)
-        torch_input = torch.tensor(input_data_copy, requires_grad=True)
-        
-        # 确保目标数据完全一致：使用深拷贝创建独立的numpy数组，避免内存共享
-        targets_copy = np.array(targets, copy=True)
-        rm_targets = rm.tensor(targets_copy)
-        torch_targets = torch.tensor(targets_copy, dtype=torch.long)
-        
-        # 验证输入张量形状一致
-        input_shape_match = rm_input.shape == torch_input.shape
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-输入形状", input_shape_match,
-                        f"Riemann: {rm_input.shape}, PyTorch: {torch_input.shape}")
-        
-        # 前向传播
-        rm_output = rm_net(rm_input)
-        torch_output = torch_net(torch_input)
-        
-        # 比较前向传播结果
-        forward_close = tensor_allclose(rm_output, torch_output, rtol=1e-4, atol=1e-6)
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-前向传播", forward_close, 
-                        f"输出形状: rm={rm_output.shape}, torch={torch_output.shape}")
-        
-        # 计算损失
-        rm_loss = rm_net.criterion(rm_output, rm_targets)
-        torch_loss = torch_net.criterion(torch_output, torch_targets)
-        
-        # 比较损失
-        loss_close = tensor_allclose(rm_loss, torch_loss, rtol=1e-4, atol=1e-6)
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-损失计算", loss_close,
-                        f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
-        
-        # 反向传播
-        rm_loss.backward()
-        torch_loss.backward()
-        
-        # 比较梯度
-        gradient_tests_passed = 0
-        gradient_tests_total = 0
-        
-        # 比较conv1梯度
-        gradient_tests_total += 2
-        conv1_weight_close, conv1_weight_msg = compare_gradients(torch_net.conv1.weight, rm_net.conv1.weight, "conv1.weight")
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-conv1.weight梯度", conv1_weight_close, conv1_weight_msg)
-        if conv1_weight_close:
+    # 确保网络在正确的设备上初始化
+    # 先创建新的网络实例，确保它们在正确的设备上
+    if network_type == "1D":
+        rm_net = RiemannCNN1D(pool_type=pool_type)
+        torch_net = TorchCNN1D(pool_type=pool_type)
+    elif network_type == "2D":
+        rm_net = RiemannCNN2D(pool_type=pool_type)
+        torch_net = TorchCNN2D(pool_type=pool_type)
+    elif network_type == "3D":
+        rm_net = RiemannCNN3D(pool_type=pool_type)
+        torch_net = TorchCNN3D(pool_type=pool_type)
+    
+    # 将网络移动到指定设备
+    if device == "cuda":
+        if CUDA_AVAILABLE:
+            # 先移动整个网络
+            rm_net.to(device)
+            # 再确保所有层都移动到CUDA设备
+            rm_net.conv1.to(device)
+            rm_net.fc1.to(device)
+            rm_net.fc2.to(device)
+            # 确保池化层也移动到CUDA设备
+            rm_net.pool.to(device)
+        if torch.cuda.is_available():
+            torch_net.to(device)
+    
+    # 复制权重，确保两个网络参数完全一致
+    copy_weights_torch_to_riemann(torch_net.conv1, rm_net.conv1, device=device)
+    copy_weights_torch_to_riemann(torch_net.fc1, rm_net.fc1, device=device)
+    copy_weights_torch_to_riemann(torch_net.fc2, rm_net.fc2, device=device)
+    
+    # 确保输入数据完全一致：使用深拷贝创建独立的numpy数组，避免内存共享
+    input_data_copy = np.array(input_data, copy=True)
+    rm_input = rm.tensor(input_data_copy, requires_grad=True, device=device)
+    torch_input = torch.tensor(input_data_copy, requires_grad=True, device=device if device == "cuda" and torch.cuda.is_available() else "cpu")
+    
+    # 确保目标数据完全一致：使用深拷贝创建独立的numpy数组，避免内存共享
+    targets_copy = np.array(targets, copy=True)
+    rm_targets = rm.tensor(targets_copy, device=device)
+    torch_targets = torch.tensor(targets_copy, dtype=torch.long, device=device if device == "cuda" and torch.cuda.is_available() else "cpu")
+    
+    # 验证输入张量形状一致
+    input_shape_match = rm_input.shape == torch_input.shape
+    stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-输入形状", input_shape_match,
+                    f"Riemann: {rm_input.shape}, PyTorch: {torch_input.shape}")
+    
+    # 前向传播
+    rm_output = rm_net(rm_input)
+    torch_output = torch_net(torch_input)
+    
+    # 比较前向传播结果
+    forward_close = compare_values(rm_output, torch_output)
+    stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-前向传播", forward_close, 
+                    f"输出形状: rm={rm_output.shape}, torch={torch_output.shape}")
+    
+    # 计算损失
+    rm_loss = rm_net.criterion(rm_output, rm_targets)
+    torch_loss = torch_net.criterion(torch_output, torch_targets)
+    
+    # 比较损失
+    loss_close = compare_values(rm_loss, torch_loss)
+    stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-损失计算", loss_close,
+                    f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
+    
+    # 执行完整的梯度测试，无论设备类型
+    # 反向传播
+    rm_loss.backward()
+    torch_loss.backward()
+    
+    # 比较梯度
+    gradient_tests_passed = 0
+    gradient_tests_total = 0
+    
+    # 比较conv1梯度
+    gradient_tests_total += 2
+    conv1_weight_close, conv1_weight_msg = compare_gradients(torch_net.conv1.weight, rm_net.conv1.weight, "conv1.weight")
+    stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-conv1.weight梯度", conv1_weight_close, conv1_weight_msg)
+    if conv1_weight_close:
+        gradient_tests_passed += 1
+    
+    if torch_net.conv1.bias is not None:
+        conv1_bias_close, conv1_bias_msg = compare_gradients(torch_net.conv1.bias, rm_net.conv1.bias, "conv1.bias")
+        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-conv1.bias梯度", conv1_bias_close, conv1_bias_msg)
+        if conv1_bias_close:
             gradient_tests_passed += 1
-        
-        if torch_net.conv1.bias is not None:
-            conv1_bias_close, conv1_bias_msg = compare_gradients(torch_net.conv1.bias, rm_net.conv1.bias, "conv1.bias")
-            stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-conv1.bias梯度", conv1_bias_close, conv1_bias_msg)
-            if conv1_bias_close:
-                gradient_tests_passed += 1
-        
-        # 比较fc1梯度
-        gradient_tests_total += 2
-        fc1_weight_close, fc1_weight_msg = compare_gradients(torch_net.fc1.weight, rm_net.fc1.weight, "fc1.weight")
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-fc1.weight梯度", fc1_weight_close, fc1_weight_msg)
-        if fc1_weight_close:
-            gradient_tests_passed += 1
-        
-        fc1_bias_close, fc1_bias_msg = compare_gradients(torch_net.fc1.bias, rm_net.fc1.bias, "fc1.bias")
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-fc1.bias梯度", fc1_bias_close, fc1_bias_msg)
-        if fc1_bias_close:
-            gradient_tests_passed += 1
-        
-        # 比较fc2梯度
-        gradient_tests_total += 2
-        fc2_weight_close, fc2_weight_msg = compare_gradients(torch_net.fc2.weight, rm_net.fc2.weight, "fc2.weight")
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-fc2.weight梯度", fc2_weight_close, fc2_weight_msg)
-        if fc2_weight_close:
-            gradient_tests_passed += 1
-        
-        fc2_bias_close, fc2_bias_msg = compare_gradients(torch_net.fc2.bias, rm_net.fc2.bias, "fc2.bias")
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-fc2.bias梯度", fc2_bias_close, fc2_bias_msg)
-        if fc2_bias_close:
-            gradient_tests_passed += 1
-        
-        # 梯度总体通过率
-        gradient_pass_rate = gradient_tests_passed / gradient_tests_total * 100
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-梯度总体", gradient_pass_rate >= 90,
-                        f"梯度通过率: {gradient_pass_rate:.1f}% ({gradient_tests_passed}/{gradient_tests_total})")
-        
-    except Exception as e:
-        stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化", False, f"测试异常: {str(e)}")
+    
+    # 比较fc1梯度
+    gradient_tests_total += 2
+    fc1_weight_close, fc1_weight_msg = compare_gradients(torch_net.fc1.weight, rm_net.fc1.weight, "fc1.weight")
+    stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-fc1.weight梯度", fc1_weight_close, fc1_weight_msg)
+    if fc1_weight_close:
+        gradient_tests_passed += 1
+    
+    fc1_bias_close, fc1_bias_msg = compare_gradients(torch_net.fc1.bias, rm_net.fc1.bias, "fc1.bias")
+    stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-fc1.bias梯度", fc1_bias_close, fc1_bias_msg)
+    if fc1_bias_close:
+        gradient_tests_passed += 1
+    
+    # 比较fc2梯度
+    gradient_tests_total += 2
+    fc2_weight_close, fc2_weight_msg = compare_gradients(torch_net.fc2.weight, rm_net.fc2.weight, "fc2.weight")
+    stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-fc2.weight梯度", fc2_weight_close, fc2_weight_msg)
+    if fc2_weight_close:
+        gradient_tests_passed += 1
+    
+    fc2_bias_close, fc2_bias_msg = compare_gradients(torch_net.fc2.bias, rm_net.fc2.bias, "fc2.bias")
+    stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-fc2.bias梯度", fc2_bias_close, fc2_bias_msg)
+    if fc2_bias_close:
+        gradient_tests_passed += 1
+    
+    # 梯度总体通过率
+    gradient_pass_rate = gradient_tests_passed / gradient_tests_total * 100
+    stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-梯度总体", gradient_pass_rate >= 90,
+                    f"梯度通过率: {gradient_pass_rate:.1f}% ({gradient_tests_passed}/{gradient_tests_total})")
 
 
 # ==================== 测试函数 ====================
@@ -573,34 +743,36 @@ def test_cnn_1d(stats=None):
     
     stats.start_function("1D卷积网络")
     
-    try:
-        # 设置随机种子确保可重现性
-        np.random.seed(42)
-        
-        # 测试数据（只生成一次）
-        batch_size = 4
-        input_length = 50
-        input_data = np.random.randn(batch_size, 1, input_length).astype(np.float32)
-        targets = np.random.randint(0, 10, batch_size)
-        
-        print(f"输入数据形状: {input_data.shape}")
-        print(f"目标: {targets}")
-        print(f"输入数据范围: [{input_data.min():.6f}, {input_data.max():.6f}]")
-        print()
-        
-        pool_types = ['max', 'avg']
-        
-        for pool_type in pool_types:
-            print(f"测试1D {pool_type.upper()}池化...")
+    # 设置随机种子确保可重现性
+    np.random.seed(42)
+    
+    # 测试数据（只生成一次）
+    batch_size = 4
+    input_length = 50
+    input_data = np.random.randn(batch_size, 1, input_length).astype(np.float32)
+    targets = np.random.randint(0, 10, batch_size)
+    
+    print(f"输入数据形状: {input_data.shape}")
+    print(f"目标: {targets}")
+    print(f"输入数据范围: [{input_data.min():.6f}, {input_data.max():.6f}]")
+    print()
+    
+    pool_types = ['max', 'avg']
+    devices = ["cpu"]
+    if CUDA_AVAILABLE and torch.cuda.is_available():
+        devices.append("cuda")
+    
+    for pool_type in pool_types:
+        for device in devices:
+            print(f"测试1D {pool_type.upper()}池化 - {device}...")
             
-            # 修复：直接进行网络比较，避免重复使用PyTorch网络
+            # 直接进行网络比较
             print(f"  直接比较Riemann网络与PyTorch网络...")
             rm_net = RiemannCNN1D(pool_type=pool_type)
             torch_net = TorchCNN1D(pool_type=pool_type)
-            compare_network(rm_net, torch_net, input_data, targets, pool_type, "1D", stats)
+            compare_network(rm_net, torch_net, input_data, targets, pool_type, "1D", stats, device=device)
             
-    finally:
-        stats.end_function()
+    stats.end_function()
 
 
 def test_cnn_2d(stats=None):
@@ -627,16 +799,20 @@ def test_cnn_2d(stats=None):
         print()
         
         pool_types = ['max', 'avg']
+        devices = ["cpu"]
+        if CUDA_AVAILABLE and torch.cuda.is_available():
+            devices.append("cuda")
         
         for pool_type in pool_types:
-            print(f"测试2D {pool_type.upper()}池化...")
-            
-            # 修复：直接进行网络比较，避免重复使用PyTorch网络
-            print(f"  直接比较Riemann网络与PyTorch网络...")
-            rm_net = RiemannCNN2D(pool_type=pool_type)
-            torch_net = TorchCNN2D(pool_type=pool_type)
-            compare_network(rm_net, torch_net, input_data, targets, pool_type, "2D", stats)
-            
+            for device in devices:
+                print(f"测试2D {pool_type.upper()}池化 - {device}...")
+                
+                # 修复：直接进行网络比较，避免重复使用PyTorch网络
+                print(f"  直接比较Riemann网络与PyTorch网络...")
+                rm_net = RiemannCNN2D(pool_type=pool_type)
+                torch_net = TorchCNN2D(pool_type=pool_type)
+                compare_network(rm_net, torch_net, input_data, targets, pool_type, "2D", stats, device=device)
+                
     finally:
         stats.end_function()
 
@@ -665,16 +841,20 @@ def test_cnn_3d(stats=None):
         print()
         
         pool_types = ['max', 'avg']
+        devices = ["cpu"]
+        if CUDA_AVAILABLE and torch.cuda.is_available():
+            devices.append("cuda")
         
         for pool_type in pool_types:
-            print(f"测试3D {pool_type.upper()}池化...")
-            
-            # 修复：直接进行网络比较，避免重复使用PyTorch网络
-            print(f"  直接比较Riemann网络与PyTorch网络...")
-            rm_net = RiemannCNN3D(pool_type=pool_type)
-            torch_net = TorchCNN3D(pool_type=pool_type)
-            compare_network(rm_net, torch_net, input_data, targets, pool_type, "3D", stats)
-            
+            for device in devices:
+                print(f"测试3D {pool_type.upper()}池化 - {device}...")
+                
+                # 修复：直接进行网络比较，避免重复使用PyTorch网络
+                print(f"  直接比较Riemann网络与PyTorch网络...")
+                rm_net = RiemannCNN3D(pool_type=pool_type)
+                torch_net = TorchCNN3D(pool_type=pool_type)
+                compare_network(rm_net, torch_net, input_data, targets, pool_type, "3D", stats, device=device)
+                
     finally:
         stats.end_function()
 
@@ -682,7 +862,7 @@ def test_cnn_3d(stats=None):
 def main():
     """主测试函数"""
     print(f"{Colors.HEADER}Riemann nn.conv 卷积和池化函数测试{Colors.ENDC}")
-    print(f"{Colors.OKCYAN}测试1D、2D、3D卷积网络的前向传播和反向传播{Colors.ENDC}")
+    print(f"{Colors.OKCYAN}测试1D、2D和3D卷积网络的前向传播和反向传播{Colors.ENDC}")
     
     # 创建测试统计对象
     stats = StatisticsCollector()

@@ -10,8 +10,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 try:
     import riemann as rm
     from riemann.autograd import grad as rm_grad
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -200,15 +204,23 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all_passed
     
     # 转换为numpy数组
-    if hasattr(rm_result, 'data'):
-        rm_data = rm_result.data
-    else:
-        rm_data = rm_result
-    
-    if hasattr(torch_result, 'detach'):
-        torch_data = torch_result.detach().cpu().numpy()
-    else:
-        torch_data = torch_result
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
     
     # 处理形状不匹配的情况
     try:
@@ -239,244 +251,355 @@ class TestGradFunctions(unittest.TestCase):
     
     def test_scalar_gradient(self):
         """测试场景1: 基本的标量函数梯度计算 (f(x) = x^2)"""
-        case_name = "基本的标量函数梯度计算"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = 2.0
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算梯度
-            y_riemann = rm_x ** 2.
-            grad_x_riemann = rm_grad(y_riemann, rm_x)[0]
-            
-            if TORCH_AVAILABLE:
-                y_torch = torch_x ** 2.
-                grad_x_torch = torch_autograd.grad(y_torch, torch_x)[0]
-            else:
-                grad_x_torch = None
-            
-            # 比较结果
-            passed = compare_values(grad_x_riemann, grad_x_torch)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "基本的标量函数梯度计算", "x_np": 2.0}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 计算梯度
+                    y_riemann = rm_x ** 2.
+                    grad_x_riemann = rm_grad(y_riemann, rm_x)[0]
+                    
+                    if TORCH_AVAILABLE:
+                        y_torch = torch_x ** 2.
+                        grad_x_torch = torch_autograd.grad(y_torch, torch_x)[0]
+                    else:
+                        grad_x_torch = None
+                    
+                    # 比较结果
+                    passed = compare_values(grad_x_riemann, grad_x_torch)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_multi_input_gradient(self):
         """测试场景2: 多输入的梯度计算 (f(x, y) = 2x + y^2)"""
-        case_name = "多输入的梯度计算"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = 3.0
-            y_np = 4.0
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            rm_y = rm.tensor(y_np, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-                torch_y = torch.tensor(y_np, requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            # 计算梯度
-            z_riemann = 2. * rm_x + rm_y ** 2.
-            grad_x_riemann, grad_y_riemann = rm_grad(z_riemann, [rm_x, rm_y])
-            
-            if TORCH_AVAILABLE:
-                z_torch = 2. * torch_x + torch_y ** 2.
-                grad_x_torch, grad_y_torch = torch_autograd.grad(z_torch, [torch_x, torch_y])
-            else:
-                grad_x_torch, grad_y_torch = None, None
-            
-            # 比较结果
-            rm_result = (grad_x_riemann, grad_y_riemann)
-            torch_result = (grad_x_torch, grad_y_torch)
-            passed = compare_values(rm_result, torch_result)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "多输入的梯度计算", "x_np": 3.0, "y_np": 4.0}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    y_np = case["y_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        rm_y = rm.tensor(y_np, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                            torch_y = torch.tensor(y_np, requires_grad=True)
+                        else:
+                            torch_x, torch_y = None, None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        rm_y = rm.tensor(y_np, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                            torch_y = torch.tensor(y_np, requires_grad=True, device=device)
+                        else:
+                            torch_x, torch_y = None, None
+                    
+                    # 计算梯度
+                    z_riemann = 2. * rm_x + rm_y ** 2.
+                    grad_x_riemann, grad_y_riemann = rm_grad(z_riemann, [rm_x, rm_y])
+                    
+                    if TORCH_AVAILABLE:
+                        z_torch = 2. * torch_x + torch_y ** 2.
+                        grad_x_torch, grad_y_torch = torch_autograd.grad(z_torch, [torch_x, torch_y])
+                    else:
+                        grad_x_torch, grad_y_torch = None, None
+                    
+                    # 比较结果
+                    rm_result = (grad_x_riemann, grad_y_riemann)
+                    torch_result = (grad_x_torch, grad_y_torch)
+                    passed = compare_values(rm_result, torch_result)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_unused_variable_gradient(self):
         """测试场景3: 包含未使用变量的梯度计算"""
-        case_name = "包含未使用变量的梯度计算"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = 3.0
-            y_np = 4.0
-            y1_np = 5.0
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            rm_y = rm.tensor(y_np, requires_grad=True)
-            rm_y1 = rm.tensor(y1_np, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-                torch_y = torch.tensor(y_np, requires_grad=True)
-                torch_y1 = torch.tensor(y1_np, requires_grad=True)
-            else:
-                torch_x, torch_y, torch_y1 = None, None, None
-            
-            # 计算梯度
-            z_riemann = 2. * rm_x + rm_y ** 2.
-            grad_x_riemann, grad_y_riemann, grad_y1_riemann = rm_grad(z_riemann, [rm_x, rm_y, rm_y1], allow_unused=True)
-            
-            if TORCH_AVAILABLE:
-                z_torch = 2. * torch_x + torch_y ** 2.
-                grad_x_torch, grad_y_torch, grad_y1_torch = torch_autograd.grad(z_torch, [torch_x, torch_y, torch_y1], allow_unused=True)
-            else:
-                grad_x_torch, grad_y_torch, grad_y1_torch = None, None, None
-            
-            # 比较结果
-            rm_result = (grad_x_riemann, grad_y_riemann, grad_y1_riemann)
-            torch_result = (grad_x_torch, grad_y_torch, grad_y1_torch)
-            passed = compare_values(rm_result, torch_result)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "包含未使用变量的梯度计算", "x_np": 3.0, "y_np": 4.0, "y1_np": 5.0}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    y_np = case["y_np"]
+                    y1_np = case["y1_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        rm_y = rm.tensor(y_np, requires_grad=True)
+                        rm_y1 = rm.tensor(y1_np, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                            torch_y = torch.tensor(y_np, requires_grad=True)
+                            torch_y1 = torch.tensor(y1_np, requires_grad=True)
+                        else:
+                            torch_x, torch_y, torch_y1 = None, None, None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        rm_y = rm.tensor(y_np, requires_grad=True, device=device)
+                        rm_y1 = rm.tensor(y1_np, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                            torch_y = torch.tensor(y_np, requires_grad=True, device=device)
+                            torch_y1 = torch.tensor(y1_np, requires_grad=True, device=device)
+                        else:
+                            torch_x, torch_y, torch_y1 = None, None, None
+                    
+                    # 计算梯度
+                    z_riemann = 2. * rm_x + rm_y ** 2.
+                    grad_x_riemann, grad_y_riemann, grad_y1_riemann = rm_grad(z_riemann, [rm_x, rm_y, rm_y1], allow_unused=True)
+                    
+                    if TORCH_AVAILABLE:
+                        z_torch = 2. * torch_x + torch_y ** 2.
+                        grad_x_torch, grad_y_torch, grad_y1_torch = torch_autograd.grad(z_torch, [torch_x, torch_y, torch_y1], allow_unused=True)
+                    else:
+                        grad_x_torch, grad_y_torch, grad_y1_torch = None, None, None
+                    
+                    # 比较结果
+                    rm_result = (grad_x_riemann, grad_y_riemann, grad_y1_riemann)
+                    torch_result = (grad_x_torch, grad_y_torch, grad_y1_torch)
+                    passed = compare_values(rm_result, torch_result)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_tensor_gradient(self):
         """测试场景4: 张量的梯度计算"""
-        case_name = "张量的梯度计算"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
-            grad_outputs_np = np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float64)
-            
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            grad_outputs_riemann = rm.tensor(grad_outputs_np)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-                grad_outputs_torch = torch.tensor(grad_outputs_np)
-            else:
-                torch_x, grad_outputs_torch = None, None
-            
-            # 计算梯度
-            y_riemann = rm_x ** 2.
-            grad_x_riemann = rm_grad(y_riemann, rm_x, grad_outputs=grad_outputs_riemann)[0]
-            
-            if TORCH_AVAILABLE:
-                y_torch = torch_x ** 2.
-                grad_x_torch = torch_autograd.grad(y_torch, torch_x, grad_outputs=grad_outputs_torch)[0]
-            else:
-                grad_x_torch = None
-            
-            # 比较结果
-            passed = compare_values(grad_x_riemann, grad_x_torch)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {
+                "name": "张量的梯度计算", 
+                "x_np": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64), 
+                "grad_outputs_np": np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float64)
+            }
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    grad_outputs_np = case["grad_outputs_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        grad_outputs_riemann = rm.tensor(grad_outputs_np)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                            grad_outputs_torch = torch.tensor(grad_outputs_np)
+                        else:
+                            torch_x, grad_outputs_torch = None, None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        grad_outputs_riemann = rm.tensor(grad_outputs_np, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                            grad_outputs_torch = torch.tensor(grad_outputs_np, device=device)
+                        else:
+                            torch_x, grad_outputs_torch = None, None
+                    
+                    # 计算梯度
+                    y_riemann = rm_x ** 2.
+                    grad_x_riemann = rm_grad(y_riemann, rm_x, grad_outputs=grad_outputs_riemann)[0]
+                    
+                    if TORCH_AVAILABLE:
+                        y_torch = torch_x ** 2.
+                        grad_x_torch = torch_autograd.grad(y_torch, torch_x, grad_outputs=grad_outputs_torch)[0]
+                    else:
+                        grad_x_torch = None
+                    
+                    # 比较结果
+                    passed = compare_values(grad_x_riemann, grad_x_torch)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_high_order_gradient(self):
         """测试场景5: 高阶导数计算 (使用create_graph参数)"""
-        case_name = "高阶导数计算"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = 2.0
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算一阶导数和二阶导数
-            y_riemann = rm_x ** 3.
-            dy_dx_riemann = rm_grad(y_riemann, rm_x, create_graph=True)[0]
-            d2y_dx2_riemann = rm_grad(dy_dx_riemann, rm_x)[0]
-            
-            if TORCH_AVAILABLE:
-                y_torch = torch_x ** 3.
-                dy_dx_torch = torch_autograd.grad(y_torch, torch_x, create_graph=True)[0]
-                d2y_dx2_torch = torch_autograd.grad(dy_dx_torch, torch_x)[0]
-            else:
-                dy_dx_torch, d2y_dx2_torch = None, None
-            
-            # 比较结果
-            rm_result = (dy_dx_riemann, d2y_dx2_riemann)
-            torch_result = (dy_dx_torch, d2y_dx2_torch)
-            passed = compare_values(rm_result, torch_result)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "高阶导数计算", "x_np": 2.0}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 计算一阶导数和二阶导数
+                    y_riemann = rm_x ** 3.
+                    dy_dx_riemann = rm_grad(y_riemann, rm_x, create_graph=True)[0]
+                    d2y_dx2_riemann = rm_grad(dy_dx_riemann, rm_x)[0]
+                    
+                    if TORCH_AVAILABLE:
+                        y_torch = torch_x ** 3.
+                        dy_dx_torch = torch_autograd.grad(y_torch, torch_x, create_graph=True)[0]
+                        d2y_dx2_torch = torch_autograd.grad(dy_dx_torch, torch_x)[0]
+                    else:
+                        dy_dx_torch, d2y_dx2_torch = None, None
+                    
+                    # 比较结果
+                    rm_result = (dy_dx_riemann, d2y_dx2_riemann)
+                    torch_result = (dy_dx_torch, d2y_dx2_torch)
+                    passed = compare_values(rm_result, torch_result)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"梯度计算结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_error_cases(self):
         """测试场景6: 错误情况处理"""

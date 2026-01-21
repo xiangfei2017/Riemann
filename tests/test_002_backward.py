@@ -8,9 +8,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 
 # 导入riemann模块
 try:
-    import riemann as rm    
-except ImportError:
-    print("无法导入riemann模块，请确保项目路径设置正确")
+    import riemann as rm
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
     sys.exit(1)
 
 # 尝试导入PyTorch进行比较
@@ -207,15 +211,23 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all_passed
     
     # 转换为numpy数组
-    if hasattr(rm_result, 'data'):
-        rm_data = rm_result.data
-    else:
-        rm_data = rm_result
-    
-    if hasattr(torch_result, 'detach'):
-        torch_data = torch_result.detach().cpu().numpy()
-    else:
-        torch_data = torch_result
+    try:
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
+    except Exception as e:
+        print(f"比较值转换错误: {e}")
+        return False
     
     # 处理形状不匹配的情况
     try:
@@ -246,197 +258,263 @@ class TestBackwardFunction(unittest.TestCase):
     
     def test_basic_backward_scalar(self):
         """测试场景1: 基本的标量反向传播"""
-        case_name = "基本的标量反向传播"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = 2.0
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算输出
-            rm_y = rm_x ** 2.
-            if TORCH_AVAILABLE:
-                torch_y = torch_x ** 2.
-            
-            # 执行反向传播
-            rm_y.backward()
-            if TORCH_AVAILABLE:
-                torch_y.backward()
-            
-            # 获取梯度
-            grad_x_riemann = rm_x.grad
-            if TORCH_AVAILABLE:
-                grad_x_torch = torch_x.grad
-            else:
-                grad_x_torch = None
-            
-            # 比较结果
-            passed = compare_values(grad_x_riemann, grad_x_torch)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"反向传播结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "基本的标量反向传播", "x_np": 2.0}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 计算输出
+                    rm_y = rm_x ** 2.
+                    if TORCH_AVAILABLE:
+                        torch_y = torch_x ** 2.
+                    
+                    # 执行反向传播
+                    rm_y.backward()
+                    if TORCH_AVAILABLE:
+                        torch_y.backward()
+                    
+                    # 获取梯度
+                    grad_x_riemann = rm_x.grad
+                    if TORCH_AVAILABLE:
+                        grad_x_torch = torch_x.grad
+                    else:
+                        grad_x_torch = None
+                    
+                    # 比较结果
+                    passed = compare_values(grad_x_riemann, grad_x_torch)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"反向传播结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_basic_backward_tensor(self):
         """测试场景2: 基本的张量反向传播"""
-        case_name = "基本的张量反向传播"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 创建梯度输出
-            grad_output_np = np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float64)
-            rm_grad_output = rm.tensor(grad_output_np)
-            if TORCH_AVAILABLE:
-                torch_grad_output = torch.tensor(grad_output_np)
-            else:
-                torch_grad_output = None
-            
-            # 计算输出
-            rm_y = rm_x ** 2.
-            if TORCH_AVAILABLE:
-                torch_y = torch_x ** 2.
-            
-            # 执行反向传播
-            rm_y.backward(gradient=rm_grad_output)
-            if TORCH_AVAILABLE:
-                torch_y.backward(gradient=torch_grad_output)
-            
-            # 获取梯度
-            grad_x_riemann = rm_x.grad
-            if TORCH_AVAILABLE:
-                grad_x_torch = torch_x.grad
-            else:
-                grad_x_torch = None
-            
-            # 比较结果
-            passed = compare_values(grad_x_riemann, grad_x_torch)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"反向传播结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {
+                "name": "基本的张量反向传播", 
+                "x_np": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64), 
+                "grad_output_np": np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float64)
+            }
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 创建梯度输出
+                    grad_output_np = case["grad_output_np"]
+                    if device == "cpu":
+                        rm_grad_output = rm.tensor(grad_output_np)
+                        if TORCH_AVAILABLE:
+                            torch_grad_output = torch.tensor(grad_output_np)
+                        else:
+                            torch_grad_output = None
+                    else:  # cuda
+                        rm_grad_output = rm.tensor(grad_output_np, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_grad_output = torch.tensor(grad_output_np, device=device)
+                        else:
+                            torch_grad_output = None
+                    
+                    # 计算输出
+                    rm_y = rm_x ** 2.
+                    if TORCH_AVAILABLE:
+                        torch_y = torch_x ** 2.
+                    
+                    # 执行反向传播
+                    rm_y.backward(gradient=rm_grad_output)
+                    if TORCH_AVAILABLE:
+                        torch_y.backward(gradient=torch_grad_output)
+                    
+                    # 获取梯度
+                    grad_x_riemann = rm_x.grad
+                    if TORCH_AVAILABLE:
+                        grad_x_torch = torch_x.grad
+                    else:
+                        grad_x_torch = None
+                    
+                    # 比较结果
+                    passed = compare_values(grad_x_riemann, grad_x_torch)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"反向传播结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_backward_create_graph_effect(self):
         """测试场景3.1: 验证create_graph=True对梯度计算图的影响"""
-        case_name = "验证create_graph=True对梯度计算图的影响"
-        start_time = time.time()
-        try:
-            # 创建输入 - 只需要一个用于create_graph=True测试的张量
-            x_np = 2.0
-            rm_x = rm.tensor(x_np, requires_grad=True)  # 用于create_graph=True测试
-            
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 测试create_graph=True时，梯度中包含计算图
-            # Riemann测试
-            rm_y = rm_x ** 3.
-            rm_y.backward(create_graph=True)
-            rm_grad = rm_x.grad
-            
-            # 检查使用create_graph=True的梯度是否能再次求导
-            rm_can_backward = False
-            try:
-                # 尝试对梯度再次求导
-                rm_grad.backward()
-                rm_can_backward = True  # 如果没有异常，则说明可以再次求导
-            except Exception:
-                rm_can_backward = False  # 捕获异常，说明不能再次求导
-            
-            # PyTorch部分测试
-            if TORCH_AVAILABLE:
-                # 使用torch.autograd.grad代替backward()以避免警告
-                torch_y = torch_x ** 3.
-                torch_grad = torch.autograd.grad(torch_y, torch_x, create_graph=True)[0]
-                
-                torch_can_backward = False
+        test_cases = [
+            {"name": "验证create_graph=True对梯度计算图的影响", "x_np": 2.0}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
                 try:
-                    # 尝试对梯度再次求导
-                    torch_grad.backward()
-                    torch_can_backward = True
-                except Exception:
-                    torch_can_backward = False
-                
-                # 验证PyTorch和Riemann行为一致
-                torch_passed = torch_can_backward
-                rm_passed = rm_can_backward
-                passed = rm_passed and (not TORCH_AVAILABLE or torch_passed)
-                
-                # 清理PyTorch梯度
-                torch_x.grad = None
-            else:
-                # 只有Riemann测试
-                passed = rm_can_backward
-            
-            # 清理Riemann梯度
-            rm_x.grad = None
-            
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  create_graph=True梯度可求导: {rm_can_backward} (预期: True)")
+                    # 创建输入 - 只需要一个用于create_graph=True测试的张量
+                    x_np = case["x_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)  # 用于create_graph=True测试
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)  # 用于create_graph=True测试
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 测试create_graph=True时，梯度中包含计算图
+                    # Riemann测试
+                    rm_y = rm_x ** 3.
+                    rm_y.backward(create_graph=True)
+                    rm_grad = rm_x.grad
+                    
+                    # 检查使用create_graph=True的梯度是否能再次求导
+                    rm_can_backward = False
+                    try:
+                        # 尝试对梯度再次求导
+                        rm_grad.backward()
+                        rm_can_backward = True  # 如果没有异常，则说明可以再次求导
+                    except Exception:
+                        rm_can_backward = False  # 捕获异常，说明不能再次求导
+                    
+                    # PyTorch部分测试
                     if TORCH_AVAILABLE:
-                        print(f"  PyTorch create_graph=True梯度可求导: {torch_can_backward} (预期: True)")
-            
-            # 断言确保测试通过
-            self.assertTrue(rm_can_backward, "create_graph=True时，梯度应该可以再次求导")
-            if TORCH_AVAILABLE:
-                self.assertTrue(torch_can_backward, "PyTorch create_graph=True时，梯度应该可以再次求导")
-                
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
-        finally:
-            # 最终清理
-            if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
-                torch_x.grad = None
+                        # 使用torch.autograd.grad代替backward()以避免警告
+                        torch_y = torch_x ** 3.
+                        torch_grad = torch.autograd.grad(torch_y, torch_x, create_graph=True)[0]
+                        
+                        torch_can_backward = False
+                        try:
+                            # 尝试对梯度再次求导
+                            torch_grad.backward()
+                            torch_can_backward = True
+                        except Exception:
+                            torch_can_backward = False
+                        
+                        # 验证PyTorch和Riemann行为一致
+                        torch_passed = torch_can_backward
+                        rm_passed = rm_can_backward
+                        passed = rm_passed and (not TORCH_AVAILABLE or torch_passed)
+                        
+                        # 清理PyTorch梯度
+                        torch_x.grad = None
+                    else:
+                        # 只有Riemann测试
+                        passed = rm_can_backward
+                    
+                    # 清理Riemann梯度
+                    rm_x.grad = None
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  create_graph=True梯度可求导: {rm_can_backward} (预期: True)")
+                            if TORCH_AVAILABLE:
+                                print(f"  PyTorch create_graph=True梯度可求导: {torch_can_backward} (预期: True)")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(rm_can_backward, "create_graph=True时，梯度应该可以再次求导")
+                    if TORCH_AVAILABLE:
+                        self.assertTrue(torch_can_backward, "PyTorch create_graph=True时，梯度应该可以再次求导")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
             if hasattr(rm_x, 'grad'):
                 rm_x.grad = None
 
@@ -601,275 +679,382 @@ class TestBackwardFunction(unittest.TestCase):
 
     def test_backward_gradient_accumulation(self):
         """测试场景4: 梯度累加功能"""
-        case_name = "梯度累加功能"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 第一次计算和反向传播
-            rm_y1 = rm_x ** 2
-            rm_y1_sum = rm_y1.sum()
-            rm_y1_sum.backward()
-            
-            if TORCH_AVAILABLE:
-                torch_y1 = torch_x ** 2
-                torch_y1_sum = torch_y1.sum()
-                torch_y1_sum.backward()
-            
-            # 第二次计算和反向传播
-            rm_y2 = rm_x * 3
-            rm_y2_sum = rm_y2.sum()
-            rm_y2_sum.backward()
-            
-            if TORCH_AVAILABLE:
-                torch_y2 = torch_x * 3
-                torch_y2_sum = torch_y2.sum()
-                torch_y2_sum.backward()
-            
-            # 获取累积梯度
-            grad_x_riemann = rm_x.grad
-            if TORCH_AVAILABLE:
-                grad_x_torch = torch_x.grad
-            else:
-                grad_x_torch = None
-            
-            # 比较结果
-            passed = compare_values(grad_x_riemann, grad_x_torch)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"梯度累加结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {
+                "name": "梯度累加功能", 
+                "x_np": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
+            }
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 第一次计算和反向传播
+                    rm_y1 = rm_x ** 2
+                    rm_y1_sum = rm_y1.sum()
+                    rm_y1_sum.backward()
+                    
+                    if TORCH_AVAILABLE:
+                        torch_y1 = torch_x ** 2
+                        torch_y1_sum = torch_y1.sum()
+                        torch_y1_sum.backward()
+                    
+                    # 第二次计算和反向传播
+                    rm_y2 = rm_x * 3
+                    rm_y2_sum = rm_y2.sum()
+                    rm_y2_sum.backward()
+                    
+                    if TORCH_AVAILABLE:
+                        torch_y2 = torch_x * 3
+                        torch_y2_sum = torch_y2.sum()
+                        torch_y2_sum.backward()
+                    
+                    # 获取累积梯度
+                    grad_x_riemann = rm_x.grad
+                    if TORCH_AVAILABLE:
+                        grad_x_torch = torch_x.grad
+                    else:
+                        grad_x_torch = None
+                    
+                    # 比较结果
+                    passed = compare_values(grad_x_riemann, grad_x_torch)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"梯度累加结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_backward_multi_path_accumulation(self):
         """测试场景5: 从两个张量沿着不同计算路径backward，同一个依赖变量的梯度会累加"""
-        case_name = "多路径梯度累加"
-        start_time = time.time()
-        try:
-            # 创建共享输入
-            x_np = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-            else:
-                torch_x = None
-            
-            # 计算路径1
-            rm_y1 = rm_x ** 2
-            rm_y1_sum = rm_y1.sum()
-            
-            # 计算路径2
-            rm_y2 = rm_x * 3
-            rm_y2_sum = rm_y2.sum()
-            
-            if TORCH_AVAILABLE:
-                torch_y1 = torch_x ** 2
-                torch_y1_sum = torch_y1.sum()
-                torch_y2 = torch_x * 3
-                torch_y2_sum = torch_y2.sum()
-            
-            # 分别执行反向传播
-            rm_y1_sum.backward()
-            rm_y2_sum.backward()
-            
-            if TORCH_AVAILABLE:
-                torch_y1_sum.backward()
-                torch_y2_sum.backward()
-            
-            # 获取累积梯度
-            grad_x_riemann = rm_x.grad
-            if TORCH_AVAILABLE:
-                grad_x_torch = torch_x.grad
-            else:
-                grad_x_torch = None
-            
-            # 比较结果
-            passed = compare_values(grad_x_riemann, grad_x_torch)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"多路径梯度累加结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {
+                "name": "多路径梯度累加", 
+                "x_np": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
+            }
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建共享输入
+                    x_np = case["x_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 计算路径1
+                    rm_y1 = rm_x ** 2
+                    rm_y1_sum = rm_y1.sum()
+                    
+                    # 计算路径2
+                    rm_y2 = rm_x * 3
+                    rm_y2_sum = rm_y2.sum()
+                    
+                    if TORCH_AVAILABLE:
+                        torch_y1 = torch_x ** 2
+                        torch_y1_sum = torch_y1.sum()
+                        torch_y2 = torch_x * 3
+                        torch_y2_sum = torch_y2.sum()
+                    
+                    # 分别执行反向传播
+                    rm_y1_sum.backward()
+                    rm_y2_sum.backward()
+                    
+                    if TORCH_AVAILABLE:
+                        torch_y1_sum.backward()
+                        torch_y2_sum.backward()
+                    
+                    # 获取累积梯度
+                    grad_x_riemann = rm_x.grad
+                    if TORCH_AVAILABLE:
+                        grad_x_torch = torch_x.grad
+                    else:
+                        grad_x_torch = None
+                    
+                    # 比较结果
+                    passed = compare_values(grad_x_riemann, grad_x_torch)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"多路径梯度累加结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_backward_complicated_graph(self):
         """测试场景6: 复杂计算图的反向传播"""
-        case_name = "复杂计算图的反向传播"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = np.array([1.0, 2.0, 3.0], dtype=np.float64)
-            y_np = np.array([0.5, 1.5, 2.5], dtype=np.float64)
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            rm_y = rm.tensor(y_np, requires_grad=True)
-            
-            if TORCH_AVAILABLE:
-                torch_x = torch.tensor(x_np, requires_grad=True)
-                torch_y = torch.tensor(y_np, requires_grad=True)
-            else:
-                torch_x, torch_y = None, None
-            
-            # 构建复杂计算图
-            rm_z1 = rm_x * rm_y
-            rm_z2 = rm_x ** 2
-            rm_z3 = rm_z1 + rm_z2
-            rm_z4 = rm_z3.mean()
-            
-            if TORCH_AVAILABLE:
-                torch_z1 = torch_x * torch_y
-                torch_z2 = torch_x ** 2
-                torch_z3 = torch_z1 + torch_z2
-                torch_z4 = torch_z3.mean()
-            
-            # 执行反向传播
-            rm_z4.backward()
-            if TORCH_AVAILABLE:
-                torch_z4.backward()
-            
-            # 获取梯度
-            grad_x_riemann = rm_x.grad
-            grad_y_riemann = rm_y.grad
-            
-            if TORCH_AVAILABLE:
-                grad_x_torch = torch_x.grad
-                grad_y_torch = torch_y.grad
-            else:
-                grad_x_torch, grad_y_torch = None, None
-            
-            # 比较结果
-            rm_result = (grad_x_riemann, grad_y_riemann)
-            torch_result = (grad_x_torch, grad_y_torch)
-            passed = compare_values(rm_result, torch_result)
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not passed:
-                    print(f"  值比较: 失败")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed, f"复杂计算图反向传播结果不匹配: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {
+                "name": "复杂计算图的反向传播", 
+                "x_np": np.array([1.0, 2.0, 3.0], dtype=np.float64),
+                "y_np": np.array([0.5, 1.5, 2.5], dtype=np.float64)
+            }
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    y_np = case["y_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                        rm_y = rm.tensor(y_np, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True)
+                            torch_y = torch.tensor(y_np, requires_grad=True)
+                        else:
+                            torch_x, torch_y = None, None
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                        rm_y = rm.tensor(y_np, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(x_np, requires_grad=True, device=device)
+                            torch_y = torch.tensor(y_np, requires_grad=True, device=device)
+                        else:
+                            torch_x, torch_y = None, None
+                    
+                    # 构建复杂计算图
+                    rm_z1 = rm_x * rm_y
+                    rm_z2 = rm_x ** 2
+                    rm_z3 = rm_z1 + rm_z2
+                    rm_z4 = rm_z3.mean()
+                    
+                    if TORCH_AVAILABLE:
+                        torch_z1 = torch_x * torch_y
+                        torch_z2 = torch_x ** 2
+                        torch_z3 = torch_z1 + torch_z2
+                        torch_z4 = torch_z3.mean()
+                    
+                    # 执行反向传播
+                    rm_z4.backward()
+                    if TORCH_AVAILABLE:
+                        torch_z4.backward()
+                    
+                    # 获取梯度
+                    grad_x_riemann = rm_x.grad
+                    grad_y_riemann = rm_y.grad
+                    
+                    if TORCH_AVAILABLE:
+                        grad_x_torch = torch_x.grad
+                        grad_y_torch = torch_y.grad
+                    else:
+                        grad_x_torch, grad_y_torch = None, None
+                    
+                    # 比较结果
+                    rm_result = (grad_x_riemann, grad_y_riemann)
+                    torch_result = (grad_x_torch, grad_y_torch)
+                    passed = compare_values(rm_result, torch_result)
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  值比较: 失败")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"复杂计算图反向传播结果不匹配: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_backward_with_retain_grad(self):
         """测试场景7: 测试retain_grad参数"""
-        case_name = "测试retain_grad参数"
-        start_time = time.time()
-        try:
-            # 创建输入
-            x_np = np.array([1.0, 2.0, 3.0], dtype=np.float64)
-            rm_x = rm.tensor(x_np, requires_grad=True)
-            
-            # 创建中间变量并设置retain_grad
-            rm_y = rm_x ** 2
-            rm_y.retain_grad()
-            rm_z = rm_y.sum()
-            
-            # 执行反向传播
-            rm_z.backward()
-            
-            # 验证中间变量梯度存在
-            has_middle_grad = rm_y.grad is not None
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, has_middle_grad)
-                status = "通过" if has_middle_grad else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if has_middle_grad else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if not has_middle_grad:
-                    print(f"  中间变量梯度不存在")
-            
-            # 断言确保测试通过
-            self.assertTrue(has_middle_grad, f"retain_grad功能不正常: {case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "测试retain_grad参数", "x_np": np.array([1.0, 2.0, 3.0], dtype=np.float64)}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建输入
+                    x_np = case["x_np"]
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=True)
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=True, device=device)
+                    
+                    # 创建中间变量并设置retain_grad
+                    rm_y = rm_x ** 2
+                    rm_y.retain_grad()
+                    rm_z = rm_y.sum()
+                    
+                    # 执行反向传播
+                    rm_z.backward()
+                    
+                    # 验证中间变量梯度存在
+                    has_middle_grad = rm_y.grad is not None
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, has_middle_grad)
+                        status = "通过" if has_middle_grad else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if has_middle_grad else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not has_middle_grad:
+                            print(f"  中间变量梯度不存在")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(has_middle_grad, f"retain_grad功能不正常: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_backward_invalid_cases(self):
         """测试场景8: 测试无效的反向传播情况"""
-        case_name = "测试无效的反向传播情况"
-        start_time = time.time()
-        try:
-            # 测试叶子节点调用backward
-            x_np = 2.0
-            rm_x = rm.tensor(x_np, requires_grad=False)
-            
-            # 应该抛出RuntimeError
-            with self.assertRaises(RuntimeError):
-                rm_x.backward()
-            
-            # 测试非标量且无gradient参数调用backward
-            y_np = np.array([1.0, 2.0], dtype=np.float64)
-            rm_y = rm.tensor(y_np, requires_grad=False)
-            rm_z = rm_y * 2  # 这仍然是叶子节点
-            
-            with self.assertRaises(RuntimeError):
-                rm_z.backward()
-            
-            # 测试不需要梯度的张量调用backward
-            a_np = 3.0
-            rm_a = rm.tensor(a_np, requires_grad=False)
-            rm_b = rm_a * 2  # 不需要梯度
-            
-            with self.assertRaises(RuntimeError):
-                rm_b.backward()
-            
-            passed = True
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed)
-                print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
+        test_cases = [
+            {"name": "测试无效的反向传播情况", "x_np": 2.0, "y_np": np.array([1.0, 2.0], dtype=np.float64), "a_np": 3.0}
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 测试叶子节点调用backward
+                    x_np = case["x_np"]
+                    if device == "cpu":
+                        rm_x = rm.tensor(x_np, requires_grad=False)
+                    else:  # cuda
+                        rm_x = rm.tensor(x_np, requires_grad=False, device=device)
+                    
+                    # 应该抛出RuntimeError
+                    with self.assertRaises(RuntimeError):
+                        rm_x.backward()
+                    
+                    # 测试非标量且无gradient参数调用backward
+                    y_np = case["y_np"]
+                    if device == "cpu":
+                        rm_y = rm.tensor(y_np, requires_grad=False)
+                    else:  # cuda
+                        rm_y = rm.tensor(y_np, requires_grad=False, device=device)
+                    rm_z = rm_y * 2  # 这仍然是叶子节点
+                    
+                    with self.assertRaises(RuntimeError):
+                        rm_z.backward()
+                    
+                    # 测试不需要梯度的张量调用backward
+                    a_np = case["a_np"]
+                    if device == "cpu":
+                        rm_a = rm.tensor(a_np, requires_grad=False)
+                    else:  # cuda
+                        rm_a = rm.tensor(a_np, requires_grad=False, device=device)
+                    rm_b = rm_a * 2  # 不需要梯度
+                    
+                    with self.assertRaises(RuntimeError):
+                        rm_b.backward()
+                    
+                    passed = True
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
 
 # 当作为独立脚本运行时的处理逻辑
 def run_tests():
