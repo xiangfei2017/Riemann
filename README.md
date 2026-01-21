@@ -1,14 +1,32 @@
 # Riemann
 
-Riemann是一个轻量级的自动求导库及神经网络编程框架，支持标量/向量/张量的自动梯度跟踪，提供搭建神经网络所需的常用组件，接口灵活易扩展、兼容PyTorch，专为神经网络相关的学习、教育和研究目的而设计。
+Riemann是一个轻量级的自动求导库及神经网络编程框架，支持标量/向量/张量的自动梯度跟踪，提供搭建神经网络所需的常用组件，接口兼容PyTorch，为神经网络相关的学习、教育和研究目的而设计。
 
 ## 主要功能
 
-- **自动求导**：支持实数和复数的标量、向量、张量的前向计算和反向自动求导
-- **梯度计算**：支持反向传播算法计算梯度，提供`grad`和`backward`函数用于高效梯度计算，支持标量、向量、矩阵、多维张量计算中的反向梯度跟踪，支持雅可比矩阵(Jacobian)和海森矩阵(Hessian)计算，支持通过`track_grad`修饰器或`Function`类自定义梯度跟踪函数
-- **张量操作**：提供丰富的张量操作功能，包括：加减乘除、初等函数、索引操作、形状操作、维度扩缩、堆叠/分割
+- **自动求导**：支持实数、复数张量计算和反向传播算法自动求导，提供`backward`和`grad`函数用于高效梯度计算，支持标量、向量、矩阵、多维张量计算中的反向梯度跟踪，支持通过`track_grad`装饰器或`Function`类自定义梯度跟踪函数
+- **张量操作**：提供丰富的张量操作功能，包括：加减乘除、数学函数、索引操作、形状操作、维度扩缩、堆叠/分割、张量序列化/反序列化
 - **神经网络组件**：包含基本的神经网络模块、激活函数、损失函数和优化器
 - **计算机视觉支持**：提供常用的数据集类和图像变换功能，支持MNIST和CIFAR10等数据集加载和预处理
+- **支持CUDA**：提供GPU加速，支持张量、模型在CPU和GPU之间迁移
+
+## 模块结构
+
+```
+riemann/                 # 主包
+├── autograd             # 自动微分模块
+│   └── functional       # 自动微分函数式接口
+├── linalg               # 线性代数模块
+├── nn                   # 神经网络模块
+│   └── functional       # 神经网络函数
+├── optim                # 优化器模块
+├── utils                # 工具函数模块
+│   └── data             # 数据处理工具
+├── vision               # 计算机视觉模块
+│   ├── datasets         # 数据集类
+│   └── transforms       # 图像变换操作
+└── cuda                 # CUDA/GPU支持
+```
 
 ## PyTorch接口兼容性
 
@@ -41,20 +59,20 @@ pip install -e .
 
 # 如果需要运行tests目录下的测试代码，还需安装测试依赖
 pip install -e .[tests]
+
+# 如果需要使用CUDA/GPU加速，还需安装CUDA依赖
+pip install -e .[cuda]
 ```
 
-### 示例代码依赖
+### 依赖说明
 
-运行examples目录中的示例代码需要安装以下额外依赖：
+Riemann库的核心依赖已包含：
+- **numpy>=1.20.0**: 核心数值计算库
+- **scipy>=1.7.0**: 线性代数算法库
+- **pillow>=8.0.0**: 用于计算机视觉中的图像处理功能（提供PIL模块）
+- **tqdm>=4.0.0**: 用于神经网络训练中的进度条显示
 
-```bash
-pip install tqdm pillow
-```
-
-- **tqdm**: 用于神经网络训练示例中的进度条显示
-- **pillow**: 用于计算机视觉示例中的图像处理功能（提供PIL模块）
-
-numpy已作为核心依赖包含在包安装中，无需额外安装。
+numpy、pillow和tqdm已作为核心依赖包含在包安装中，无需额外安装。
 
 各个示例文件中的依赖可能略有不同，具体依赖信息也会在每个示例文件的头部注释中说明。
 
@@ -90,9 +108,10 @@ print("y的梯度:", y.grad)  # 输出: y的梯度: [1. 2.]
 
 ### 1. 张量操作
 - 提供张量创建函数（tensor, zeros, ones, random等，支持复数张量）
-- 支持基本的数学运算（加减乘除幂运算，指数、对数、三角、双曲等初等函数）
+- 支持基本的数学运算（加减乘除幂运算，指数、对数、三角、双曲等初等函数，求和、均值、方差、标准差等统计函数）
 - 支持向量、矩阵运算（批量矩阵乘法、向量点积、矩阵行列式、矩阵逆、矩阵分解等）
 - 支持张量形状重塑、维度扩缩、索引和切片、元素收集/散射、拼接/分割等操作
+- 支持张量序列化/反序列化，方便模型训练和部署
 
 ### 2. 自动求导
 - **backward方法**：触发反向传播计算梯度
@@ -112,8 +131,8 @@ print("y的梯度:", y.grad)  # 输出: y的梯度: [1. 2.]
 - 支持线性方程组求解、最小二乘求解
 
 ### 5. 神经网络模块
-- 基本层（Linear, Flatten, Dropout, BatchNorm等）
-- 激活函数（ReLU, Sigmoid,Softmax等）
+- 基本层（Linear, Dropout, BatchNorm, LayerNorm, Embedding等）
+- 激活函数（ReLU, Sigmoid, Softmax等）
 - 卷积池化层（Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d等）
 - 损失函数（MSE, CrossEntropy等）
 - 优化器（SGD, Adam, Adagrad, LBFGS等）
@@ -484,22 +503,24 @@ python test_010_grad.py
 |---------|---------------------|--------------|-------------------------------------------|
 | NumPy   | >=1.20.0            | BSD 3-Clause | Core numerical computation library        |
 | SciPy   | >=1.7.0             | BSD 3-Clause | Linear algebra algorithms (LU, SVD, etc.) |
+| Pillow  | >=8.0.0             | BSD 3-Clause | Image processing library                  |
+| tqdm    | >=4.0.0             | MIT          | Progress bar for training and data loading|
 
 ### Testing Dependencies
 
-| Library  | Version Requirement | Purpose           | License Type  | Notes               |
-|----------|---------------------|-------------------|---------------|---------------------|
-| PyTorch  | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying  |
-|          |                     | validation        |               | calculation results |
-| pytest   | >=7.0.0             | Testing framework | MIT           | Used for organizing |
-|          |                     |                   |               | and running tests   |
+| Library  | Version Requirement | Purpose           | License Type  | Notes                                     |
+|----------|---------------------|-------------------|---------------|-------------------------------------------|
+| PyTorch  | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying calculation results    |
+| pytest   | >=7.0.0             | Testing framework | MIT           | Used for organizing and running tests     |
 
-### Vision Dependencies
+### Optional CUDA Dependencies
 
-| Library | Version Requirement | Purpose          | License Type | Notes               |
-|---------|---------------------|------------------|--------------|---------------------|
-| Pillow  | >=8.0.0             | Image processing | BSD 3-Clause | Used for image      |
-|         |                     |                  |              | loading/saving      |
+| Library      | Version Requirement | Purpose           | License Type | Notes                                     |
+|--------------|---------------------|-------------------|--------------|-------------------------------------------|
+| cupy-cuda12x | Latest              | GPU acceleration  | MIT          | For CUDA 12.x on Linux x86_64             |
+| cupy-cuda11x | Latest              | GPU acceleration  | MIT          | For CUDA 11.x on Linux x86_64             |
+| cupy-cuda10x | Latest              | GPU acceleration  | MIT          | For CUDA 10.x on Linux x86_64             |
+| cupy         | Latest              | GPU acceleration  | MIT          | For other platforms (including Windows)   |
 
 *Note: This project also utilizes Python's standard library components (like unittest) for testing, which don't require separate installation.*
 

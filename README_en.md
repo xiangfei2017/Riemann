@@ -1,14 +1,32 @@
 # Riemann
 
-Riemann is a lightweight automatic differentiation library and neural network programming framework that supports automatic gradient tracking for scalars, vectors, and tensors. It provides common components needed for building neural networks, with flexible and extensible interfaces, compatible with PyTorch, and specifically designed for learning, education, and research related to neural networks.
+Riemann is a lightweight automatic differentiation library and neural network programming framework that supports automatic gradient tracking for scalars, vectors, and tensors. It provides common components needed for building neural networks, compatible with PyTorch, and specifically designed for learning, education, and research related to neural networks.
 
 ## Key Features
 
-- Automatic Differentiation : Supports forward computation and backward automatic differentiation for real and complex scalars, vectors, and tensors
-- Gradient Calculation : Supports gradient computation using the backpropagation algorithm, provides grad and backward functions for efficient gradient calculation, supports backward gradient tracking in scalar, vector, matrix, and multi-dimensional tensor computations, supports Jacobian and Hessian matrix calculations, and enables custom gradient tracking functions via the `track_grad` decorator or `Function` class
-- **Tensor Operations**: Provides rich tensor operation functionality, including: addition, subtraction, multiplication, division, elementary functions, indexing operations, shape operations, dimension expansion/reduction, stacking/splitting
+- **Automatic Differentiation**: Supports real and complex tensor computation and backpropagation algorithm for automatic differentiation, provides `backward` and `grad` functions for efficient gradient calculation, supports backward gradient tracking in scalar, vector, matrix, and multi-dimensional tensor computations, and enables custom gradient tracking functions via the `track_grad` decorator or `Function` class
+- **Tensor Operations**: Provides rich tensor operation functionality, including: addition, subtraction, multiplication, division, mathematical functions, indexing operations, shape operations, dimension expansion/reduction, stacking/splitting, tensor serialization/deserialization
 - **Neural Network Components**: Contains basic neural network modules, activation functions, loss functions, and optimizers
 - **Computer Vision Support**: Provides commonly used dataset classes and image transformation functions, supporting loading and preprocessing of datasets such as MNIST and CIFAR10
+- **CUDA Support**: Provides GPU acceleration, Supports migration of tensors and models between CPU and GPU
+
+## Module Structure
+
+```
+riemann/                 # Main package
+├── autograd             # Automatic differentiation module
+│   └── functional       # Automatic differentiation functional interface
+├── linalg               # Linear algebra module
+├── nn                   # Neural network module
+│   └── functional       # Neural network functions
+├── optim                # Optimizer module
+├── utils                # Utility functions module
+│   └── data             # Data processing utilities
+├── vision               # Computer vision module
+│   ├── datasets         # Dataset classes
+│   └── transforms       # Image transformation operations
+└── cuda                 # CUDA/GPU support
+```
 
 ## PyTorch Interface Compatibility
 
@@ -41,20 +59,20 @@ pip install -e .
 
 # If you need to run test code in the tests directory, you also need to install testing dependencies
 pip install -e .[tests]
+
+# If you need to use CUDA/GPU acceleration, you also need to install CUDA dependencies
+pip install -e .[cuda]
 ```
 
-### Example Code Dependencies
+### Dependency Notes
 
-Running example code in the examples directory requires installing the following additional dependencies:
+Riemann library's core dependencies include:
+- **numpy>=1.20.0**: Core numerical computation library
+- **scipy>=1.7.0**: Linear algebra algorithms library
+- **pillow>=8.0.0**: Used for image processing functionality in computer vision (provides PIL module)
+- **tqdm>=4.0.0**: Used for progress bar display in neural network training
 
-```bash
-pip install tqdm pillow
-```
-
-- **tqdm**: Used for progress bar display in neural network training examples
-- **pillow**: Used for image processing functionality in computer vision examples (providing PIL module)
-
-numpy is already included as a core dependency in the package installation and does not need to be installed separately.
+numpy, pillow, and tqdm are already included as core dependencies in the package installation and do not need to be installed separately.
 
 Dependencies may vary slightly among different example files, and specific dependency information will be explained in the header comments of each example file.
 
@@ -90,9 +108,10 @@ print("Gradient of y:", y.grad)  # Output: Gradient of y: [1. 2.]
 
 ### 1. Tensor Operations
 - Provides tensor creation functions (tensor, zeros, ones, random, etc.) with support for complex tensors
-- Supports basic mathematical operations (addition, subtraction, multiplication, division, exponentiation, elementary functions like exponential, logarithmic, trigonometric, hyperbolic functions, etc.)
+- Supports basic mathematical operations (addition, subtraction, multiplication, division, exponentiation, elementary functions like exponential, logarithmic, trigonometric, hyperbolic functions, statistical functions like sum, mean, variance, standard deviation, etc.)
 - Supports vector and matrix operations (batch matrix multiplication, vector dot product, matrix determinant, matrix inverse, matrix factorization, etc.)
 - Supports tensor shape reshaping, dimension expansion/reduction, indexing and slicing, element gathering/scattering, concatenation/splitting, etc.
+- Supports tensor serialization/deserialization, facilitating model training and deployment
 
 ### 2. Automatic Differentiation
 - **backward method**: Triggers backpropagation to compute gradients
@@ -112,7 +131,7 @@ print("Gradient of y:", y.grad)  # Output: Gradient of y: [1. 2.]
 - Supports linear equation solving and least squares solving
 
 ### 5. Neural Network Modules
-- Basic layers (Linear, Flatten, Dropout, BatchNorm, etc.)
+- Basic layers (Linear, Dropout, BatchNorm, LayerNorm, Embedding, etc.)
 - Activation functions (ReLU, Sigmoid, Softmax, etc.)
 - Convolution and pooling layers (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, etc.)
 - Loss functions (MSE, CrossEntropy, etc.)
@@ -485,22 +504,24 @@ Issues and Pull Requests are welcome! Before contributing code, please ensure al
 |---------|---------------------|--------------|-------------------------------------------|
 | NumPy   | >=1.20.0            | BSD 3-Clause | Core numerical computation library        |
 | SciPy   | >=1.7.0             | BSD 3-Clause | Linear algebra algorithms (LU, SVD, etc.) |
+| Pillow  | >=8.0.0             | BSD 3-Clause | Image processing library                  |
+| tqdm    | >=4.0.0             | MIT          | Progress bar for training and data loading|
 
 ### Testing Dependencies
 
-| Library  | Version Requirement | Purpose           | License Type  | Notes               |
-|----------|---------------------|-------------------|---------------|---------------------|
-| PyTorch  | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying  |
-|          |                     | validation        |               | calculation results |
-| pytest   | >=7.0.0             | Testing framework | MIT           | Used for organizing |
-|          |                     |                   |               | and running tests   |
+| Library  | Version Requirement | Purpose           | License Type  | Notes                                     |
+|----------|---------------------|-------------------|---------------|-------------------------------------------|
+| PyTorch  | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying calculation results    |
+| pytest   | >=7.0.0             | Testing framework | MIT           | Used for organizing and running tests     |
 
-### Vision Dependencies
+### Optional CUDA Dependencies
 
-| Library | Version Requirement | Purpose          | License Type | Notes               |
-|---------|---------------------|------------------|--------------|---------------------|
-| Pillow  | >=8.0.0             | Image processing | BSD 3-Clause | Used for image      |
-|         |                     |                  |              | loading/saving      |
+| Library      | Version Requirement | Purpose           | License Type | Notes                                     |
+|--------------|---------------------|-------------------|--------------|-------------------------------------------|
+| cupy-cuda12x | Latest              | GPU acceleration  | MIT          | For CUDA 12.x on Linux x86_64             |
+| cupy-cuda11x | Latest              | GPU acceleration  | MIT          | For CUDA 11.x on Linux x86_64             |
+| cupy-cuda10x | Latest              | GPU acceleration  | MIT          | For CUDA 10.x on Linux x86_64             |
+| cupy         | Latest              | GPU acceleration  | MIT          | For other platforms (including Windows)   |
 
 *Note: This project also utilizes Python's standard library components (like unittest) for testing, which don't require separate installation.*
 
