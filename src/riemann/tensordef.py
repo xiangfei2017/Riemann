@@ -1026,76 +1026,18 @@ class TN:
             err_msg = f"Index operation failed: {str(e)} (Original index type: {type(index)}, shape: {self.shape})"
             raise type(e)(err_msg) from None
         
-        # 使用NumPy的视图检查机制来判断索引结果是否为视图
-        # NumPy会根据索引类型自动决定返回视图还是副本
-        is_view = False
-        if hasattr(indexed_data, 'base') and indexed_data.base is not None:
-            arrlib = self._get_array_lib()
-            # 检查indexed_data是否与原数据共享内存
-            is_view = arrlib.shares_memory(self.data, indexed_data)
-        
-        # 对于CUDA场景，根据索引类型决定是否返回视图
-        if self.device.type == 'cuda':
-            # 检查索引是否为整数数组索引或布尔索引
-            is_integer_array_index = False
-            is_boolean_index = False
-            
-            # 获取适合当前设备的数组库
-            arrlib = self._get_array_lib()
-            
-            # 处理元组索引
-            if isinstance(index_val, tuple):
-                for idx in index_val:
-                    # 检查是否为整数数组类型的索引
-                    if isinstance(idx, (list, np.ndarray, cp.ndarray)):
-                        # 根据设备类型选择合适的数组库来转换索引
-                        if isinstance(idx, cp.ndarray):
-                            idx_arr = idx
-                        else:
-                            idx_arr = arrlib.asarray(idx)
-                        
-                        # 使用numpy来检查数据类型，因为它可以处理numpy和cupy数组的dtype
-                        if np.issubdtype(idx_arr.dtype, np.integer):
-                            is_integer_array_index = True
-                            break
-                        elif np.issubdtype(idx_arr.dtype, np.bool_):
-                            is_boolean_index = True
-                            break
-            # 处理单一索引
-            elif isinstance(index_val, (list, np.ndarray, cp.ndarray)):
-                # 根据设备类型选择合适的数组库来转换索引
-                if isinstance(index_val, cp.ndarray):
-                    idx_arr = index_val
-                else:
-                    idx_arr = arrlib.asarray(index_val)
-                
-                # 使用numpy来检查数据类型，因为它可以处理numpy和cupy数组的dtype
-                if np.issubdtype(idx_arr.dtype, np.integer):
-                    is_integer_array_index = True
-                elif np.issubdtype(idx_arr.dtype, np.bool_):
-                    is_boolean_index = True
-            
-            # 对于整数数组索引，不强制返回视图（保持原有shares_memory判断）
-            # 对于布尔索引，也不强制返回视图（因为布尔索引通常返回副本）
-            # 对于其他索引类型（如切片索引），强制返回视图
-            if not is_integer_array_index and not is_boolean_index:
-                is_view = True
+        # 使用base是否为None来判断是否为视图，这样可以同时支持numpy和cupy
+        # 对于numpy和cupy，视图的base属性指向原始数组，而副本的base属性为None
+        is_view = indexed_data.base is not None
         
         # 创建结果张量
         ret = tensor(indexed_data, device=self.device, requires_grad = (is_grad_enabled() and self.requires_grad))
         ret.is_leaf = not ret.requires_grad
         
-        # 根据索引类型设置视图属性或创建副本
-        if is_view:
-            # 设置视图属性
-            ret._is_view = True
-            ret._base = self
-            ret._view_index = index_val
-        else:
-            # 创建副本，不设置视图属性
-            ret._is_view = False
-            ret._base = self
-            ret._view_index = index_val
+        # 设置视图属性
+        ret._is_view = is_view
+        ret._base = self
+        ret._view_index = index_val
         
         if ret.requires_grad:
             ret.fromvars = (self,)
