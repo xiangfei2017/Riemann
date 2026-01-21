@@ -475,10 +475,8 @@ def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
         if reduction == 'none':
             # 返回与输入形状匹配的零张量
             if input.ndim > 2:
-                # return tensor(np.zeros(original_target_shape, dtype=np.float32))
                 return zeros_like(target)
             else:
-                # return tensor(np.zeros(input.shape[0], dtype=np.float32))
                 return zeros(input.shape[0],input.dtype,device=input.device)
         elif reduction == 'sum':
             return tensor(0.0, dtype=input.dtype,device=input.device)
@@ -970,7 +968,7 @@ def unfold(input: TN, kernel_size, dilation=1, padding=0, stride=1) -> TN:
         # 计算填充后的形状
         padded_shape = (N, C, H + 2 * padding[0], W + 2 * padding[1])
         # 直接创建形状为padded_shape的零张量
-        padded_input = zeros(padded_shape, dtype=input.dtype)
+        padded_input = zeros(padded_shape, dtype=input.dtype, device=input.device)
 
         # 使用索引赋值将原始数据复制到填充后的张量中
         # padded_input[:, :, padding[0]:padding[0]+H, padding[1]:padding[1]+W] = input
@@ -1095,7 +1093,7 @@ def unfold2d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
         
         # 创建最终填充后的张量
         padded_shape = (N, C, final_padded_height, final_padded_width)
-        padded_input = full(padded_shape, fill_value=padvalue, dtype=input.dtype)
+        padded_input = full(padded_shape, fill_value=padvalue, dtype=input.dtype, device=input.device)
         
         # 将原始数据复制到填充后的张量中（考虑显式padding和额外填充）
         data_index = (slice(None), slice(None), slice(ph, ph + H_in), slice(pw, pw + W_in))
@@ -1906,8 +1904,8 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         # 将输入坐标转换为展平的索引 (H*W)        
         flattened_indices = input_y * W_in + input_x
         flattened_indices = flattened_indices.reshape(N, C, H_out, W_out)
-        flattened_indices = tensor(flattened_indices, device=input.device)
-        return output, flattened_indices
+        indices_output = tensor(flattened_indices, device=input.device)
+        return output, indices_output
     else:
         return output
 
@@ -2009,6 +2007,9 @@ def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         # 重塑为最终形状
         indices_output = input_indices.reshape(N, C, D_out, H_out, W_out)
         
+        # 将indices_output转换为TN张量
+        indices_output = tensor(indices_output, device=input.device)
+        
         return output, indices_output
     
     return output
@@ -2092,7 +2093,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     k_range = arrlib.arange(K) * dilation
     
     # 一次性生成所有需要的索引
-    all_indices = l_starts[:, np.newaxis] + k_range
+    all_indices = l_starts[:, arrlib.newaxis] + k_range
     
     # 确保索引在有效范围内
     all_indices = arrlib.clip(all_indices, 0, padded_input.shape[2] - 1)

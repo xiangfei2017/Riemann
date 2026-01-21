@@ -11,6 +11,10 @@ try:
     import riemann as rm
     from riemann.linalg import eig as rm_eig
     from riemann.linalg import eigh as rm_eigh
+    # 检查CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    if CUDA_AVAILABLE:
+        cp = rm.cuda.cp
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)
@@ -21,9 +25,12 @@ try:
     from torch.linalg import eig as torch_eig
     from torch.linalg import eigh as torch_eigh
     TORCH_AVAILABLE = True
+    # 检查PyTorch CUDA可用性
+    TORCH_CUDA_AVAILABLE = torch.cuda.is_available()
 except ImportError:
     print("警告: 无法导入PyTorch，将只测试riemann的eig和eigh函数")
     TORCH_AVAILABLE = False
+    TORCH_CUDA_AVAILABLE = False
 
 # 定义颜色类用于美化输出
 class Colors:
@@ -196,24 +203,35 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         all_passed = True
         for i, (r, t) in enumerate(zip(rm_result, torch_result)):
             try:
-                # 获取PyTorch张量的numpy数据，处理可能的复数格式
+                # 获取Riemann数据，处理CUDA情况
+                if hasattr(r.data, 'get'):
+                    # 如果是CUDA张量，先移动到CPU
+                    r_data = r.data.get()
+                else:
+                    r_data = r.data
+                
+                # 获取PyTorch张量的numpy数据，处理可能的复数格式和CUDA情况
                 if hasattr(t, 'detach'):
-                    t_numpy = t.detach().numpy()
+                    if hasattr(t, 'is_cuda') and t.is_cuda:
+                        # 如果是CUDA张量，先移动到CPU
+                        t_numpy = t.detach().cpu().numpy()
+                    else:
+                        t_numpy = t.detach().numpy()
                 else:
                     t_numpy = t
                 
                 # 调试信息
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"  比较元素 {i}: Riemann形状 {r.shape}, PyTorch形状 {t_numpy.shape}")
-                    print(f"    Riemann数据类型: {r.data.dtype}, PyTorch数据类型: {t_numpy.dtype}")
+                    print(f"    Riemann数据类型: {r_data.dtype}, PyTorch数据类型: {t_numpy.dtype}")
                 
                 # 检查是否是特征向量（二维方阵）
-                is_eigenvector = len(r.data.shape) >= 2 and r.data.shape[-2] == r.data.shape[-1]
+                is_eigenvector = len(r_data.shape) >= 2 and r_data.shape[-2] == r_data.shape[-1]
                 
                 # 对于复数结果，比较实部和虚部
-                if np.iscomplexobj(r.data) or np.iscomplexobj(t_numpy):
-                    r_real = r.data.real if np.iscomplexobj(r.data) else r.data
-                    r_imag = r.data.imag if np.iscomplexobj(r.data) else np.zeros_like(r.data)
+                if np.iscomplexobj(r_data) or np.iscomplexobj(t_numpy):
+                    r_real = r_data.real if np.iscomplexobj(r_data) else r_data
+                    r_imag = r_data.imag if np.iscomplexobj(r_data) else np.zeros_like(r_data)
                     t_real = t_numpy.real if np.iscomplexobj(t_numpy) else t_numpy
                     t_imag = t_numpy.imag if np.iscomplexobj(t_numpy) else np.zeros_like(t_numpy)
                     
@@ -229,14 +247,14 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
                     # 对于实数结果，如果是特征向量（二维数组），使用绝对值比较处理符号不确定性
                     if is_eigenvector:
                         # 特征向量矩阵，比较绝对值
-                        np.testing.assert_allclose(np.abs(r.data), np.abs(t_numpy), rtol=rtol, atol=atol)
+                        np.testing.assert_allclose(np.abs(r_data), np.abs(t_numpy), rtol=rtol, atol=atol)
                     else:
                         # 特征值或其他数据，直接比较
-                        np.testing.assert_allclose(r.data, t_numpy, rtol=rtol, atol=atol)
+                        np.testing.assert_allclose(r_data, t_numpy, rtol=rtol, atol=atol)
             except AssertionError as e:
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"  比较失败: {e}")
-                    print(f"    Riemann数据: {r.data}")
+                    print(f"    Riemann数据: {r_data}")
                     print(f"    PyTorch数据: {t_numpy}")
                 all_passed = False
                 break
@@ -249,11 +267,21 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
 def check_eigen_reconstruction(A, w, V, atol=1e-6):
     """检查使用特征分解结果重构原始矩阵的误差"""
     try:
+        # 获取数据，处理CUDA情况
+        if hasattr(A.data, 'get'):
+            A_data = A.data.get()
+            V_data = V.data.get()
+            w_data = w.data.get()
+        else:
+            A_data = A.data
+            V_data = V.data
+            w_data = w.data
+        
         # 计算 A @ V
-        AV = A.data @ V.data
+        AV = A_data @ V_data
         
         # 计算 V @ diag(w)
-        V_diag_w = V.data @ np.diag(w.data)
+        V_diag_w = V_data @ np.diag(w_data)
         
         # 计算重构误差
         error = np.linalg.norm(AV - V_diag_w)
@@ -265,31 +293,45 @@ def check_eigen_reconstruction(A, w, V, atol=1e-6):
 def check_eigh_reconstruction(A, w, V, atol=1e-6):
     """检查使用特征分解结果重构原始矩阵的误差（对于Hermitian矩阵）"""
     try:
+        # 获取数据，处理CUDA情况
+        if hasattr(A.data, 'get'):
+            A_data = A.data.get()
+            V_data = V.data.get()
+            w_data = w.data.get()
+            # 对于CUDA计算，使用更大的误差阈值
+            current_atol = 1e-4
+        else:
+            A_data = A.data
+            V_data = V.data
+            w_data = w.data
+            current_atol = atol
+        
         # 计算 A @ V
-        AV = A.data @ V.data
+        AV = A_data @ V_data
         
         # 计算 V @ diag(w)
-        V_diag_w = V.data @ np.diag(w.data)
+        V_diag_w = V_data @ np.diag(w_data)
         
         # 计算重构误差
         error = np.linalg.norm(AV - V_diag_w)
         
         # 检查正交性：V^H @ V = I
-        VhV = V.data.T.conj() @ V.data
+        VhV = V_data.T.conj() @ V_data
         identity = np.eye(V.shape[-1])
         orthogonality_error = np.linalg.norm(VhV - identity)
         
-        return error < atol and orthogonality_error < atol
+        return error < current_atol and orthogonality_error < current_atol
     except:
         return False
 
-def gradient_for_decomp(A, decomp_func_name, case_name):
+def gradient_for_decomp(A, decomp_func_name, case_name, device='cpu'):
     """统一的梯度测试函数，适用于eig和eigh分解
     
     参数:
         A: 输入矩阵
         decomp_func_name: 分解函数名称 ('eig' 或 'eigh')
         case_name: 测试用例名称
+        device: 设备名称 ('cpu' 或 'cuda')
     
     返回:
         (w_grad_close, v_grad_close, error_msg): 梯度比较结果和错误信息
@@ -334,28 +376,45 @@ def gradient_for_decomp(A, decomp_func_name, case_name):
             return tuple(gradients)
         
         # Riemann梯度计算
-        rm_A = rm.tensor(A.copy(), requires_grad=True)
+        rm_A = rm.tensor(A.copy(), requires_grad=True, device=device)
         rm_grad_w, rm_grad_V = compute_gradients(rm_A, rm_func)
         
         if not TORCH_AVAILABLE:
             return True, True, None
         
         # PyTorch梯度计算 - 使用统一的处理方式
-        torch_A = torch.tensor(A.copy(), requires_grad=True)
+        torch_device = device if TORCH_CUDA_AVAILABLE else 'cpu'
+        torch_A = torch.tensor(A.copy(), requires_grad=True, device=torch_device)
         torch_grad_w, torch_grad_V = compute_gradients(torch_A, torch_func)
         
-        # 比较梯度
-        w_grad_close = np.allclose(rm_grad_w.numpy(), torch_grad_w.numpy(), rtol=1e-3, atol=1e-3)
-        v_grad_close = np.allclose(rm_grad_V.numpy(), torch_grad_V.numpy(), rtol=1e-3, atol=1e-3)
+        # 比较梯度，处理CUDA情况
+        if hasattr(rm_grad_w, 'get'):
+            # 如果是CUDA张量，先移动到CPU
+            rm_grad_w_np = rm_grad_w.get()
+            rm_grad_V_np = rm_grad_V.get()
+        else:
+            rm_grad_w_np = rm_grad_w.numpy()
+            rm_grad_V_np = rm_grad_V.numpy()
+        
+        if hasattr(torch_grad_w, 'is_cuda') and torch_grad_w.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_grad_w_np = torch_grad_w.cpu().numpy()
+            torch_grad_V_np = torch_grad_V.cpu().numpy()
+        else:
+            torch_grad_w_np = torch_grad_w.numpy()
+            torch_grad_V_np = torch_grad_V.numpy()
+        
+        w_grad_close = np.allclose(rm_grad_w_np, torch_grad_w_np, rtol=1e-3, atol=1e-3)
+        v_grad_close = np.allclose(rm_grad_V_np, torch_grad_V_np, rtol=1e-3, atol=1e-3)
         
         error_msg = None
         if not w_grad_close or not v_grad_close:
-            error_msg = f"{decomp_func_name} {case_name}梯度比较失败"
+            error_msg = f"{decomp_func_name} {case_name}梯度比较失败 - {device}"
         
         return w_grad_close, v_grad_close, error_msg
         
     except Exception as e:
-        return False, False, f"{decomp_func_name} {case_name}梯度计算错误: {str(e)}"
+        return False, False, f"{decomp_func_name} {case_name}梯度计算错误 - {device}: {str(e)}"
 
 class TestLinalgEig(unittest.TestCase):
     def setUp(self):
@@ -376,15 +435,16 @@ class TestLinalgEig(unittest.TestCase):
             stats.end_function()
             print(f"{Colors.OKBLUE}测试完成: {self.current_test_name}{Colors.ENDC}")
     
-    def _test_eig_single_case(self, np_data, case_name, is_batch=False):
+    def _test_eig_single_case(self, np_data, case_name, is_batch=False, device='cpu'):
         """统一的eig测试用例处理函数"""
         try:
             # 转换为riemann张量
-            riemann_tensor = rm.tensor(np_data, requires_grad=True)
+            riemann_tensor = rm.tensor(np_data, requires_grad=True, device=device)
             
             # 转换为torch张量
             if TORCH_AVAILABLE:
-                torch_tensor = torch.tensor(np_data, requires_grad=True)
+                torch_device = device if TORCH_CUDA_AVAILABLE else 'cpu'
+                torch_tensor = torch.tensor(np_data, requires_grad=True, device=torch_device)
             else:
                 torch_tensor = None
             
@@ -410,7 +470,7 @@ class TestLinalgEig(unittest.TestCase):
             if is_batch:
                 # 批量测试只检查第一个批次
                 reconstruction_passed = check_eigen_reconstruction(
-                    rm.tensor(np_data[0]), rm_w[0], rm_V[0]
+                    rm.tensor(np_data[0], device=device), rm_w[0], rm_V[0]
                 )
             else:
                 reconstruction_passed = check_eigen_reconstruction(riemann_tensor, rm_w, rm_V)
@@ -418,12 +478,26 @@ class TestLinalgEig(unittest.TestCase):
             return passed, reconstruction_passed, None
             
         except Exception as e:
-            return False, False, f"{case_name}测试错误: {str(e)}"
+            return False, False, f"{case_name}测试错误 - {device}: {str(e)}"
 
     def test_eig_decomposition(self):
         """测试eig分解（合并基本、复数、批量测试）"""
         case_name = "eig分解综合测试"
         start_time = time.time()
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            # 检查CuPy是否支持eig函数
+            try:
+                import cupy as cp
+                if hasattr(cp.linalg, 'eig'):
+                    devices.append("cuda")
+                else:
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"\n{Colors.YELLOW}警告: CuPy不支持eig函数，跳过CUDA测试{Colors.ENDC}")
+            except:
+                pass
         
         # 定义测试用例列表
         test_cases = [
@@ -450,40 +524,45 @@ class TestLinalgEig(unittest.TestCase):
         subcase_results = []  # 存储子用例结果
         
         try:
-            for i, test_case in enumerate(test_cases):
-                subcase_name = test_case['name']
-                subcase_start_time = time.time()
+            for device in devices:
+                if IS_RUNNING_AS_SCRIPT:
+                    print(f"\n{Colors.BOLD}测试设备: {device}{Colors.ENDC}")
                 
-                # 使用统一的测试函数处理
-                passed, reconstruction_passed, error_msg = self._test_eig_single_case(
-                    test_case['matrix'], subcase_name, test_case['is_batch']
-                )
-                
-                subcase_time_taken = time.time() - subcase_start_time
-                subcase_passed = passed and reconstruction_passed
-                subcase_results.append({
-                    'name': subcase_name,
-                    'passed': subcase_passed,
-                    'time_taken': subcase_time_taken,
-                    'value_compare_passed': passed,
-                    'reconstruction_passed': reconstruction_passed
-                })
-                
-                if not subcase_passed:
-                    all_passed = False
-                    if error_msg:
-                        error_messages.append(error_msg)
-                
-                # 显示子用例结果
-                if IS_RUNNING_AS_SCRIPT and TORCH_AVAILABLE:
-                    status = "通过" if subcase_passed else "失败"
-                    color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                    print(f"  子用例: {subcase_name} - {color}{status}{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"    值比较: 失败")
-                    if not reconstruction_passed:
-                        print(f"    重构误差: 失败")
-                    print()  # 添加空行分隔
+                for i, test_case in enumerate(test_cases):
+                    subcase_name = test_case['name']
+                    device_subcase_name = f"{subcase_name} - {device}"
+                    subcase_start_time = time.time()
+                    
+                    # 使用统一的测试函数处理
+                    passed, reconstruction_passed, error_msg = self._test_eig_single_case(
+                        test_case['matrix'], subcase_name, test_case['is_batch'], device=device
+                    )
+                    
+                    subcase_time_taken = time.time() - subcase_start_time
+                    subcase_passed = passed and reconstruction_passed
+                    subcase_results.append({
+                        'name': device_subcase_name,
+                        'passed': subcase_passed,
+                        'time_taken': subcase_time_taken,
+                        'value_compare_passed': passed,
+                        'reconstruction_passed': reconstruction_passed
+                    })
+                    
+                    if not subcase_passed:
+                        all_passed = False
+                        if error_msg:
+                            error_messages.append(error_msg)
+                    
+                    # 显示子用例结果
+                    if IS_RUNNING_AS_SCRIPT and TORCH_AVAILABLE:
+                        status = "通过" if subcase_passed else "失败"
+                        color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                        print(f"  子用例: {device_subcase_name} - {color}{status}{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"    值比较: 失败")
+                        if not reconstruction_passed:
+                            print(f"    重构误差: 失败")
+                        print()  # 添加空行分隔
             
             time_taken = time.time() - start_time
             
@@ -513,16 +592,17 @@ class TestLinalgEig(unittest.TestCase):
     
 
     
-    def _test_eigh_single_case(self, np_data, case_name, is_batch=False, is_complex=False):
+    def _test_eigh_single_case(self, np_data, case_name, is_batch=False, is_complex=False, device='cpu'):
         """统一的eigh测试逻辑"""
         start_time = time.time()
         try:
             # 转换为riemann张量
-            riemann_tensor = rm.tensor(np_data, requires_grad=True)
+            riemann_tensor = rm.tensor(np_data, requires_grad=True, device=device)
             
             # 转换为torch张量
             if TORCH_AVAILABLE:
-                torch_tensor = torch.tensor(np_data, requires_grad=True)
+                torch_device = device if TORCH_CUDA_AVAILABLE else 'cpu'
+                torch_tensor = torch.tensor(np_data, requires_grad=True, device=torch_device)
             else:
                 torch_tensor = None
             
@@ -541,18 +621,19 @@ class TestLinalgEig(unittest.TestCase):
             if is_batch:
                 # 批量测试只检查第一个批次
                 reconstruction_passed = check_eigh_reconstruction(
-                    rm.tensor(np_data[0]), rm_w[0], rm_V[0]
+                    rm.tensor(np_data[0], device=device), rm_w[0], rm_V[0]
                 )
             else:
                 reconstruction_passed = check_eigh_reconstruction(riemann_tensor, rm_w, rm_V)
             
             time_taken = time.time() - start_time
             
+            device_case_name = f"{case_name} - {device}"
             if IS_RUNNING_AS_SCRIPT:
                 overall_passed = passed and reconstruction_passed
-                stats.add_result(case_name, overall_passed)
+                stats.add_result(device_case_name, overall_passed)
                 status = "通过" if overall_passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if overall_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                print(f"测试用例: {device_case_name} - {Colors.OKGREEN if overall_passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
                 if not passed:
                     print(f"  值比较: 失败")
                 if not reconstruction_passed:
@@ -560,18 +641,24 @@ class TestLinalgEig(unittest.TestCase):
                 print()  # 添加空行分隔
             
             # 断言确保测试通过
-            self.assertTrue(passed, f"eigh值比较失败: {case_name}")
-            self.assertTrue(reconstruction_passed, f"eigh重构误差检查失败: {case_name}")
+            self.assertTrue(passed, f"eigh值比较失败: {device_case_name}")
+            self.assertTrue(reconstruction_passed, f"eigh重构误差检查失败: {device_case_name}")
             
         except Exception as e:
             time_taken = time.time() - start_time
+            device_case_name = f"{case_name} - {device}"
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                stats.add_result(device_case_name, False, [str(e)])
+                print(f"测试用例: {device_case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
     
     def test_eigh_decomposition(self):
         """统一的eigh分解测试"""
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
         test_cases = [
             {
                 'name': '实对称矩阵eigh分解测试',
@@ -593,14 +680,19 @@ class TestLinalgEig(unittest.TestCase):
             }
         ]
         
-        for test_case in test_cases:
-            np_data = test_case['create_data']()
-            self._test_eigh_single_case(
-                np_data, 
-                test_case['name'],
-                is_batch=test_case['is_batch'],
-                is_complex=test_case['is_complex']
-            )
+        for device in devices:
+            if IS_RUNNING_AS_SCRIPT:
+                print(f"\n{Colors.BOLD}测试设备: {device}{Colors.ENDC}")
+            
+            for test_case in test_cases:
+                np_data = test_case['create_data']()
+                self._test_eigh_single_case(
+                    np_data, 
+                    test_case['name'],
+                    is_batch=test_case['is_batch'],
+                    is_complex=test_case['is_complex'],
+                    device=device
+                )
     
     def _create_batch_symmetric_matrix(self):
         """创建批量对称矩阵"""
@@ -632,6 +724,11 @@ class TestLinalgEig(unittest.TestCase):
         case_name = "eigh函数梯度测试"
         start_time = time.time()
         
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
         # 定义测试用例列表
         test_cases = [
             {
@@ -649,39 +746,44 @@ class TestLinalgEig(unittest.TestCase):
         subcase_results = []  # 存储子用例结果
         
         try:
-            for i, test_case in enumerate(test_cases):
-                subcase_name = test_case['name']
-                subcase_start_time = time.time()
+            for device in devices:
+                if IS_RUNNING_AS_SCRIPT:
+                    print(f"\n{Colors.BOLD}测试设备: {device}{Colors.ENDC}")
                 
-                # 使用统一的梯度测试函数
-                w_grad_close, v_grad_close, error_msg = gradient_for_decomp(
-                    test_case['matrix'], 'eigh', subcase_name
-                )
-                
-                subcase_time_taken = time.time() - subcase_start_time
-                subcase_passed = w_grad_close and v_grad_close
-                subcase_results.append({
-                    'name': subcase_name,
-                    'passed': subcase_passed,
-                    'time_taken': subcase_time_taken,
-                    'w_grad_close': w_grad_close,
-                    'v_grad_close': v_grad_close
-                })
-                
-                if not subcase_passed:
-                    all_passed = False
-                    if error_msg:
-                        error_messages.append(error_msg)
-                
-                # 显示子用例结果
-                if IS_RUNNING_AS_SCRIPT and TORCH_AVAILABLE:
-                    status = "通过" if subcase_passed else "失败"
-                    color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                    print(f"  子用例: {subcase_name} - {color}{status}{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
-                    if not w_grad_close:
-                        print(f"    w梯度比较: 失败")
-                    if not v_grad_close:
-                        print(f"    V梯度比较: 失败")
+                for i, test_case in enumerate(test_cases):
+                    subcase_name = test_case['name']
+                    device_subcase_name = f"{subcase_name} - {device}"
+                    subcase_start_time = time.time()
+                    
+                    # 使用统一的梯度测试函数
+                    w_grad_close, v_grad_close, error_msg = gradient_for_decomp(
+                        test_case['matrix'], 'eigh', subcase_name, device=device
+                    )
+                    
+                    subcase_time_taken = time.time() - subcase_start_time
+                    subcase_passed = w_grad_close and v_grad_close
+                    subcase_results.append({
+                        'name': device_subcase_name,
+                        'passed': subcase_passed,
+                        'time_taken': subcase_time_taken,
+                        'w_grad_close': w_grad_close,
+                        'v_grad_close': v_grad_close
+                    })
+                    
+                    if not subcase_passed:
+                        all_passed = False
+                        if error_msg:
+                            error_messages.append(error_msg)
+                    
+                    # 显示子用例结果
+                    if IS_RUNNING_AS_SCRIPT and TORCH_AVAILABLE:
+                        status = "通过" if subcase_passed else "失败"
+                        color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                        print(f"  子用例: {device_subcase_name} - {color}{status}{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
+                        if not w_grad_close:
+                            print(f"    w梯度比较: 失败")
+                        if not v_grad_close:
+                            print(f"    V梯度比较: 失败")
             
             # 使用统一的子用例结果处理
             all_passed, time_taken = self._process_subcase_results(case_name, subcase_results, start_time)
@@ -703,6 +805,20 @@ class TestLinalgEig(unittest.TestCase):
         case_name = "eig函数梯度测试"
         start_time = time.time()
         
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            # 检查CuPy是否支持eig函数
+            try:
+                import cupy as cp
+                if hasattr(cp.linalg, 'eig'):
+                    devices.append("cuda")
+                else:
+                    if IS_RUNNING_AS_SCRIPT:
+                        print(f"\n{Colors.YELLOW}警告: CuPy不支持eig函数，跳过CUDA测试{Colors.ENDC}")
+            except:
+                pass
+        
         # 定义测试用例列表
         test_cases = [
             {
@@ -721,39 +837,44 @@ class TestLinalgEig(unittest.TestCase):
         subcase_results = []  # 存储子用例结果
         
         try:
-            for i, test_case in enumerate(test_cases):
-                subcase_name = test_case['name']
-                subcase_start_time = time.time()
+            for device in devices:
+                if IS_RUNNING_AS_SCRIPT:
+                    print(f"\n{Colors.BOLD}测试设备: {device}{Colors.ENDC}")
                 
-                # 使用统一的梯度测试函数
-                w_grad_close, v_grad_close, error_msg = gradient_for_decomp(
-                    test_case['matrix'], 'eig', subcase_name
-                )
-                
-                subcase_time_taken = time.time() - subcase_start_time
-                subcase_passed = w_grad_close and v_grad_close
-                subcase_results.append({
-                    'name': subcase_name,
-                    'passed': subcase_passed,
-                    'time_taken': subcase_time_taken,
-                    'w_grad_close': w_grad_close,
-                    'v_grad_close': v_grad_close
-                })
-                
-                if not subcase_passed:
-                    all_passed = False
-                    if error_msg:
-                        error_messages.append(error_msg)
-                
-                # 显示子用例结果
-                if IS_RUNNING_AS_SCRIPT and TORCH_AVAILABLE:
-                    status = "通过" if subcase_passed else "失败"
-                    color = Colors.OKGREEN if subcase_passed else Colors.FAIL
-                    print(f"  子用例: {subcase_name} - {color}{status}{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
-                    if not w_grad_close:
-                        print(f"    w梯度比较: 失败")
-                    if not v_grad_close:
-                        print(f"    V梯度比较: 失败")
+                for i, test_case in enumerate(test_cases):
+                    subcase_name = test_case['name']
+                    device_subcase_name = f"{subcase_name} - {device}"
+                    subcase_start_time = time.time()
+                    
+                    # 使用统一的梯度测试函数
+                    w_grad_close, v_grad_close, error_msg = gradient_for_decomp(
+                        test_case['matrix'], 'eig', subcase_name, device=device
+                    )
+                    
+                    subcase_time_taken = time.time() - subcase_start_time
+                    subcase_passed = w_grad_close and v_grad_close
+                    subcase_results.append({
+                        'name': device_subcase_name,
+                        'passed': subcase_passed,
+                        'time_taken': subcase_time_taken,
+                        'w_grad_close': w_grad_close,
+                        'v_grad_close': v_grad_close
+                    })
+                    
+                    if not subcase_passed:
+                        all_passed = False
+                        if error_msg:
+                            error_messages.append(error_msg)
+                    
+                    # 显示子用例结果
+                    if IS_RUNNING_AS_SCRIPT and TORCH_AVAILABLE:
+                        status = "通过" if subcase_passed else "失败"
+                        color = Colors.OKGREEN if subcase_passed else Colors.FAIL
+                        print(f"  子用例: {device_subcase_name} - {color}{status}{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
+                        if not w_grad_close:
+                            print(f"    w梯度比较: 失败")
+                        if not v_grad_close:
+                            print(f"    V梯度比较: 失败")
             
             # 使用统一的子用例结果处理
             all_passed, time_taken = self._process_subcase_results(case_name, subcase_results, start_time)
@@ -785,6 +906,20 @@ class TestLinalgEig(unittest.TestCase):
         case_name = "eig输出形状测试"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                # 检查CuPy是否支持eig函数
+                try:
+                    import cupy as cp
+                    if hasattr(cp.linalg, 'eig'):
+                        devices.append("cuda")
+                    else:
+                        if IS_RUNNING_AS_SCRIPT:
+                            print(f"\n{Colors.YELLOW}警告: CuPy不支持eig函数，跳过CUDA测试{Colors.ENDC}")
+                except:
+                    pass
+            
             # 测试不同形状的矩阵
             test_cases = [
                 (3, 3),    # 3x3矩阵
@@ -794,44 +929,48 @@ class TestLinalgEig(unittest.TestCase):
             
             subcase_results = []
             
-            for shape in test_cases:
-                subcase_start_time = time.time()
-                subcase_name = f"形状{shape}"
+            for device in devices:
+                if IS_RUNNING_AS_SCRIPT:
+                    print(f"\n{Colors.BOLD}测试设备: {device}{Colors.ENDC}")
                 
-                try:
-                    # 创建测试数据
-                    if len(shape) == 2:
-                        np_data = np.random.randn(*shape).astype(np.float32)
-                    else:
-                        np_data = np.random.randn(*shape).astype(np.float32)
+                for shape in test_cases:
+                    subcase_start_time = time.time()
+                    subcase_name = f"形状{shape} - {device}"
                     
-                    riemann_tensor = rm.tensor(np_data)
-                    
-                    # 执行eig分解
-                    w, V = rm_eig(riemann_tensor)
-                    
-                    # 检查w的形状
-                    expected_w_shape = shape[:-1]
-                    self.assertEqual(w.shape, expected_w_shape, f"特征值w的形状不匹配: {w.shape} vs {expected_w_shape}")
-                    
-                    # 检查V的形状
-                    expected_V_shape = shape
-                    self.assertEqual(V.shape, expected_V_shape, f"特征向量V的形状不匹配: {V.shape} vs {expected_V_shape}")
-                    
-                    subcase_time_taken = time.time() - subcase_start_time
-                    subcase_results.append(True)
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name + " - " + subcase_name, True)
-                        print(f"  子用例: {subcase_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
+                    try:
+                        # 创建测试数据
+                        if len(shape) == 2:
+                            np_data = np.random.randn(*shape).astype(np.float32)
+                        else:
+                            np_data = np.random.randn(*shape).astype(np.float32)
                         
-                except Exception as sub_e:
-                    subcase_time_taken = time.time() - subcase_start_time
-                    subcase_results.append(False)
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name + " - " + subcase_name, False, [str(sub_e)])
-                        print(f"  子用例: {subcase_name} - {Colors.FAIL}失败{Colors.ENDC} ({subcase_time_taken:.4f}秒) - {str(sub_e)}")
-                    raise
+                        riemann_tensor = rm.tensor(np_data, device=device)
+                        
+                        # 执行eig分解
+                        w, V = rm_eig(riemann_tensor)
+                        
+                        # 检查w的形状
+                        expected_w_shape = shape[:-1]
+                        self.assertEqual(w.shape, expected_w_shape, f"特征值w的形状不匹配: {w.shape} vs {expected_w_shape}")
+                        
+                        # 检查V的形状
+                        expected_V_shape = shape
+                        self.assertEqual(V.shape, expected_V_shape, f"特征向量V的形状不匹配: {V.shape} vs {expected_V_shape}")
+                        
+                        subcase_time_taken = time.time() - subcase_start_time
+                        subcase_results.append(True)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name + " - " + subcase_name, True)
+                            print(f"  子用例: {subcase_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
+                            
+                    except Exception as sub_e:
+                        subcase_time_taken = time.time() - subcase_start_time
+                        subcase_results.append(False)
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name + " - " + subcase_name, False, [str(sub_e)])
+                            print(f"  子用例: {subcase_name} - {Colors.FAIL}失败{Colors.ENDC} ({subcase_time_taken:.4f}秒) - {str(sub_e)}")
+                        raise
             
             time_taken = time.time() - start_time
             
@@ -858,6 +997,11 @@ class TestLinalgEig(unittest.TestCase):
         case_name = "eigh输出形状测试"
         start_time = time.time()
         try:
+            # 定义要测试的设备列表
+            devices = ["cpu"]
+            if CUDA_AVAILABLE:
+                devices.append("cuda")
+            
             # 测试不同形状的矩阵
             test_cases = [
                 (3, 3),    # 3x3矩阵
@@ -867,46 +1011,50 @@ class TestLinalgEig(unittest.TestCase):
             
             subcase_results = []
             
-            for shape in test_cases:
-                subcase_start_time = time.time()
-                subcase_name = f"形状{shape}"
+            for device in devices:
+                if IS_RUNNING_AS_SCRIPT:
+                    print(f"\n{Colors.BOLD}测试设备: {device}{Colors.ENDC}")
                 
-                try:
-                    # 创建对称测试数据
-                    if len(shape) == 2:
-                        np_data = np.random.randn(*shape).astype(np.float32)
-                        np_data = (np_data + np_data.T) / 2  # 使其对称
-                    else:
-                        np_data = np.random.randn(*shape).astype(np.float32)
-                        np_data = (np_data + np_data.transpose(0, 2, 1)) / 2  # 使其对称
+                for shape in test_cases:
+                    subcase_start_time = time.time()
+                    subcase_name = f"形状{shape} - {device}"
                     
-                    riemann_tensor = rm.tensor(np_data)
-                    
-                    # 执行eigh分解
-                    w, V = rm_eigh(riemann_tensor)
-                    
-                    # 检查w的形状
-                    expected_w_shape = shape[:-1]
-                    self.assertEqual(w.shape, expected_w_shape, f"特征值w的形状不匹配: {w.shape} vs {expected_w_shape}")
-                    
-                    # 检查V的形状
-                    expected_V_shape = shape
-                    self.assertEqual(V.shape, expected_V_shape, f"特征向量V的形状不匹配: {V.shape} vs {expected_V_shape}")
-                    
-                    subcase_time_taken = time.time() - subcase_start_time
-                    subcase_results.append(True)
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name + " - " + subcase_name, True)
-                        print(f"  子用例: {subcase_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
+                    try:
+                        # 创建对称测试数据
+                        if len(shape) == 2:
+                            np_data = np.random.randn(*shape).astype(np.float32)
+                            np_data = (np_data + np_data.T) / 2  # 使其对称
+                        else:
+                            np_data = np.random.randn(*shape).astype(np.float32)
+                            np_data = (np_data + np_data.transpose(0, 2, 1)) / 2  # 使其对称
                         
-                except Exception as sub_e:
-                    subcase_time_taken = time.time() - subcase_start_time
-                    subcase_results.append(False)
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name + " - " + subcase_name, False, [str(sub_e)])
-                        print(f"  子用例: {subcase_name} - {Colors.FAIL}失败{Colors.ENDC} ({subcase_time_taken:.4f}秒) - {str(sub_e)}")
-                    raise
+                        riemann_tensor = rm.tensor(np_data, device=device)
+                        
+                        # 执行eigh分解
+                        w, V = rm_eigh(riemann_tensor)
+                        
+                        # 检查w的形状
+                        expected_w_shape = shape[:-1]
+                        self.assertEqual(w.shape, expected_w_shape, f"特征值w的形状不匹配: {w.shape} vs {expected_w_shape}")
+                        
+                        # 检查V的形状
+                        expected_V_shape = shape
+                        self.assertEqual(V.shape, expected_V_shape, f"特征向量V的形状不匹配: {V.shape} vs {expected_V_shape}")
+                        
+                        subcase_time_taken = time.time() - subcase_start_time
+                        subcase_results.append(True)
+                        
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name + " - " + subcase_name, True)
+                            print(f"  子用例: {subcase_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({subcase_time_taken:.4f}秒)")
+                            
+                    except Exception as sub_e:
+                        subcase_time_taken = time.time() - start_time
+                        subcase_results.append(False)
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name + " - " + subcase_name, False, [str(sub_e)])
+                            print(f"  子用例: {subcase_name} - {Colors.FAIL}失败{Colors.ENDC} ({subcase_time_taken:.4f}秒) - {str(sub_e)}")
+                        raise
             
             time_taken = time.time() - start_time
             

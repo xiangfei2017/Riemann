@@ -260,10 +260,7 @@ class Module:
             if param is not None:
                 # 直接对参数张量调用to方法,清除计算图依赖，确保新参数不会向旧参数传递梯度
                 new_param = param.to(device).detach_()
-                # 重新设置requires_grad，因为detach_()会将其设为False
                 new_param.requires_grad = param.requires_grad
-                # 设置为叶子节点
-                new_param.is_leaf = True
                 # 更新参数
                 self._parameters[name] = new_param
                 # 更新实例属性引用
@@ -2887,7 +2884,7 @@ class Dropout(Module):
         # 生成dropout掩码，保留概率为(1-p)
         scale = 1.0 / (1.0 - self.p)
         # 使用rand生成[0,1)之间均匀分布的随机数，保留小于(1-p)的元素
-        mask = (rand(*x.shape, dtype=x.dtype) < (1 - self.p)) * scale
+        mask = (rand(*x.shape, dtype=x.dtype, device=x.device) < (1 - self.p)) * scale
         
         if self.inplace:
             x.mul_(mask)

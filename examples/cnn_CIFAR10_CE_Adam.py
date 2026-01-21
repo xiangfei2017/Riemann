@@ -4,8 +4,8 @@
 @File    :   cnn_CIFAR10_advanced.py
 @Time    :   2025/12/27
 @Author  :   Advanced CNN
-@Version :   1.0
-@Desc    :   基于CFAIR10数据集特点优化的高级卷积神经网络示例
+@Version :   1.1
+@Desc    :   基于CFAIR10数据集特点优化的高级卷积神经网络示例（业界最佳实践版）
 """
 
 import os
@@ -15,6 +15,7 @@ from riemann import nn, optim
 from riemann.vision import datasets, transforms
 from riemann.utils.data import DataLoader
 from riemann import tensor, get_default_dtype
+from riemann import cuda
 
 
 def clear_screen():
@@ -92,19 +93,20 @@ class EasyCIFAR10(datasets.CIFAR10):
 
 class AdvancedConvNet(nn.Module):
     """
-    基于CFAIR10数据集特点优化的高级卷积神经网络（高效版）
+    基于CIFAR10数据集特点优化的高级卷积神经网络（业界最佳实践版）
     
     优化策略：
-    1. 减少网络参数量以加快训练速度
-    2. 使用更大的卷积核和步长快速降采样
-    3. 减少全连接层参数
-    4. 保留关键特征提取能力
-    5. 使用完整训练数据集
+    1. 采用经典的VGG风格网络结构，逐步增加通道数
+    2. 使用适当的卷积核大小和步长，平衡特征提取和计算效率
+    3. 合理设置全连接层参数，避免过拟合
+    4. 完整使用批量归一化和dropout等正则化技术
+    5. 使用ReLU激活函数，提高训练稳定性
     
     网络结构:
-        - 输入块: Conv(3->16, 5x5, stride=2) -> LeakyReLU -> MaxPool(2x2)
-        - 中间块: Conv(16->32, 3x3) -> LeakyReLU -> MaxPool(2x2)
-        - 全连接层: Linear(32*3*3->64) -> LeakyReLU -> Dropout -> Linear(64->10)
+        - 输入块: Conv(3->32, 3x3) -> ReLU -> Conv(32->32, 3x3) -> ReLU -> MaxPool(2x2)
+        - 中间块1: Conv(32->64, 3x3) -> ReLU -> Conv(64->64, 3x3) -> ReLU -> MaxPool(2x2)
+        - 中间块2: Conv(64->128, 3x3) -> ReLU -> Conv(128->128, 3x3) -> ReLU -> MaxPool(2x2)
+        - 全连接层: Linear(128*4*4->512) -> ReLU -> Dropout -> Linear(512->10)
     
     方法:
         forward(inputs): 前向传播计算
@@ -115,37 +117,51 @@ class AdvancedConvNet(nn.Module):
         """
         初始化分类器模型
         
-        基于CFAIR10数据集特点创建优化的网络结构。
+        基于CIFAR10数据集特点创建优化的网络结构。
         """
         super().__init__()
     
-        # 输入块：专注于提取低级特征，使用更大的卷积核和步长快速降采样
-        # 减少通道数以降低参数量
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=5, stride=2, padding=1)  # 32x32 -> 15x15
-        self.bn1 = nn.BatchNorm2d(num_features=16)  # 添加批量归一化
-        self.relu1 = nn.LeakyReLU(alpha=0.1)
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)  # 15x15 -> 7x7
-        self.dropout1 = nn.Dropout(p=0.1)
-        
-        # 中间块：提取中级特征
-        # 减少通道数以降低参数量
-        self.conv2 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1)  # 7x7 -> 7x7
+        # 输入块：提取低级特征
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1)  # 32x32 -> 32x32
+        self.bn1 = nn.BatchNorm2d(num_features=32)  # 添加批量归一化
+        self.relu1 = nn.ReLU()
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1)  # 32x32 -> 32x32
         self.bn2 = nn.BatchNorm2d(num_features=32)  # 添加批量归一化
-        self.relu2 = nn.LeakyReLU(alpha=0.1)
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)  # 7x7 -> 3x3
-        self.dropout2 = nn.Dropout(p=0.2)
+        self.relu2 = nn.ReLU()
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)  # 32x32 -> 16x16
+        self.dropout1 = nn.Dropout(p=0.2)
         
-        # 全连接层（进一步简化）
-        # 大幅减少全连接层参数
-        self.fc1 = nn.Linear(32 * 3 * 3, 64)  # 大幅减少全连接层参数
-        self.relu_fc1 = nn.LeakyReLU(alpha=0.1)
+        # 中间块1：提取中级特征
+        self.conv3 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1)  # 16x16 -> 16x16
+        self.bn3 = nn.BatchNorm2d(num_features=64)  # 添加批量归一化
+        self.relu3 = nn.ReLU()
+        self.conv4 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1)  # 16x16 -> 16x16
+        self.bn4 = nn.BatchNorm2d(num_features=64)  # 添加批量归一化
+        self.relu4 = nn.ReLU()
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)  # 16x16 -> 8x8
+        self.dropout2 = nn.Dropout(p=0.3)
+        
+        # 中间块2：提取高级特征
+        self.conv5 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1)  # 8x8 -> 8x8
+        self.bn5 = nn.BatchNorm2d(num_features=128)  # 添加批量归一化
+        self.relu5 = nn.ReLU()
+        self.conv6 = nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1)  # 8x8 -> 8x8
+        self.bn6 = nn.BatchNorm2d(num_features=128)  # 添加批量归一化
+        self.relu6 = nn.ReLU()
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)  # 8x8 -> 4x4
+        self.dropout3 = nn.Dropout(p=0.4)
+        
+        # 全连接层
+        self.fc1 = nn.Linear(128 * 4 * 4, 512)  # 全连接层
+        self.bn7 = nn.BatchNorm1d(num_features=512)  # 添加批量归一化
+        self.relu_fc1 = nn.ReLU()
         self.dropout_fc1 = nn.Dropout(p=0.5)
-        self.fc2 = nn.Linear(64, 10)
+        self.fc2 = nn.Linear(512, 10)
         
         # 交叉熵损失函数，适用于多分类任务
         self.loss_func = nn.CrossEntropyLoss()
         # 使用Adam优化器，自适应学习率
-        self.optimizer = optim.Adam(self.parameters(), lr=0.001)
+        self.optimizer = optim.Adam(self.parameters(), lr=0.001, weight_decay=5e-4)
     
     def forward(self, inputs):
         """
@@ -159,23 +175,40 @@ class AdvancedConvNet(nn.Module):
             Tensor: 输出张量，形状为(batch_size, 10)
                    表示每个样本属于10个类别的未归一化对数概率
         """
-        # 输入块：专注于提取低级特征
+        # 输入块：提取低级特征
         x = self.conv1(inputs)
         x = self.bn1(x)  # 添加批量归一化
         x = self.relu1(x)
-        x = self.pool1(x)
-        x = self.dropout1(x)
-        
-        # 中间块：提取中级特征
         x = self.conv2(x)
         x = self.bn2(x)  # 添加批量归一化
         x = self.relu2(x)
+        x = self.pool1(x)
+        x = self.dropout1(x)
+        
+        # 中间块1：提取中级特征
+        x = self.conv3(x)
+        x = self.bn3(x)  # 添加批量归一化
+        x = self.relu3(x)
+        x = self.conv4(x)
+        x = self.bn4(x)  # 添加批量归一化
+        x = self.relu4(x)
         x = self.pool2(x)
         x = self.dropout2(x)
+        
+        # 中间块2：提取高级特征
+        x = self.conv5(x)
+        x = self.bn5(x)  # 添加批量归一化
+        x = self.relu5(x)
+        x = self.conv6(x)
+        x = self.bn6(x)  # 添加批量归一化
+        x = self.relu6(x)
+        x = self.pool3(x)
+        x = self.dropout3(x)
         
         # 展平并全连接
         x = x.reshape(x.shape[0], -1)  # 展平
         x = self.fc1(x)
+        x = self.bn7(x)  # 添加批量归一化
         x = self.relu_fc1(x)
         x = self.dropout_fc1(x)
         x = self.fc2(x)
@@ -211,7 +244,7 @@ class AdvancedConvNet(nn.Module):
         
         return loss
     
-    def evaluate(self, dataloader):
+    def evaluate(self, dataloader, cuda_available=False):
         """
         评估模型在数据集上的性能
         
@@ -219,6 +252,7 @@ class AdvancedConvNet(nn.Module):
         
         参数:
             dataloader (DataLoader): 数据加载器，提供批次数据
+            cuda_available (bool): 是否使用CUDA设备
         
         返回:
             tuple: (accuracy, loss)
@@ -233,6 +267,11 @@ class AdvancedConvNet(nn.Module):
         for batch in dataloader:
             img_tensors, target_tensors = batch
             
+            # 将批量数据移动到GPU
+            if cuda_available:
+                img_tensors = img_tensors.to('cuda')
+                target_tensors = target_tensors.to('cuda')
+            
             # 前向传播
             outputs = self.forward(img_tensors)
             
@@ -243,7 +282,14 @@ class AdvancedConvNet(nn.Module):
             # 计算准确率
             predicted = outputs.argmax(dim=1)
             total += target_tensors.size(0)
-            correct += (predicted == target_tensors).sum().item()
+            
+            # 确保predicted和target_tensors在同一设备上
+            if cuda_available:
+                # 如果在GPU上，确保两者都是Cupy数组
+                correct += (predicted == target_tensors).sum().item()
+            else:
+                # 如果在CPU上，确保两者都是NumPy数组
+                correct += (predicted.data == target_tensors.data).sum().item()
         
         accuracy = correct / total
         avg_loss = total_loss / len(dataloader)
@@ -267,6 +313,11 @@ def main():
     clear_screen()
     print("CIFAR-10图像识别高级卷积神经网络示例（基于数据集特点优化）")
     
+    # 检查CUDA可用性
+    CUDA_AVAILABLE = cuda.CUPY_AVAILABLE
+    device = 'cuda' if CUDA_AVAILABLE else 'cpu'
+    print(f"使用设备: {device}")
+    
     # 加载数据集
     print("加载数据集...")
     data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
@@ -280,7 +331,7 @@ def main():
     print(f"类别: {train_dataset.classes}")
     
     # 创建数据加载器
-    batch_size = 16  # 进一步增大批次大小以加快训练速度
+    batch_size = 128  # 调整批次大小，平衡内存使用和训练稳定性
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
@@ -288,8 +339,14 @@ def main():
     print("\n初始化模型...")
     model = AdvancedConvNet()
     
+    # 将模型移动到指定设备
+    if CUDA_AVAILABLE:
+        model.to(device)
+        # 重新初始化优化器，确保它引用GPU上的参数
+        model.optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
+    
     # 训练参数
-    num_epochs = 3  # 3代训练
+    num_epochs = 50  # 增加训练轮数，确保模型充分收敛
     best_accuracy = 0.0
     
     print("\n开始训练...")
@@ -306,6 +363,11 @@ def main():
             for batch_idx, batch in enumerate(pbar):
                 img_tensors, target_tensors = batch
                 
+                # 将批量数据移动到GPU
+                if CUDA_AVAILABLE:
+                    img_tensors = img_tensors.to(device)
+                    target_tensors = target_tensors.to(device)
+                
                 # 执行一步训练
                 loss = model.train_step(img_tensors, target_tensors)
                 total_loss += loss.item()
@@ -319,7 +381,7 @@ def main():
         
         # 评估阶段
         model.eval()  # 设置为评估模式
-        test_accuracy, test_loss = model.evaluate(test_loader)
+        test_accuracy, test_loss = model.evaluate(test_loader, CUDA_AVAILABLE)
         print(f"测试集准确率: {test_accuracy:.4f}, 测试损失: {test_loss:.4f}")
         
         # 保存最佳模型

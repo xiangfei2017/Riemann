@@ -10,6 +10,9 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 try:
     import riemann as rm
     from riemann.nn import functional as rm_func
+    # 从rm.cuda获取cupy引用和CUDA可用性
+    CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+    cp = rm.cuda.cp
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)
@@ -201,17 +204,40 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     if rm_result is None or torch_result is None:
         return False
     
+    # 处理嵌套元组/列表的情况
+    if isinstance(rm_result, (list, tuple)) and isinstance(torch_result, (list, tuple)):
+        if len(rm_result) != len(torch_result):
+            return False
+        
+        all_passed = True
+        for r, t in zip(rm_result, torch_result):
+            if not compare_values(r, t, atol, rtol):
+                all_passed = False
+                break
+        
+        return all_passed
+    
     # 转换为numpy数组
     try:
-        rm_data = rm_result.data if hasattr(rm_result, 'data') else rm_result.numpy()
-        torch_data = torch_result.detach().numpy()
+        # 处理Riemann结果
+        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            rm_data = rm_result.detach().cpu().numpy()
+        else:
+            rm_data = rm_result.detach().numpy()
+        
+        # 处理PyTorch结果
+        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
+            # 如果是CUDA张量，先移动到CPU
+            torch_data = torch_result.detach().cpu().numpy()
+        else:
+            torch_data = torch_result.detach().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
     
     # 处理形状不匹配的情况
     try:
-        # 增加容差参数
         np.testing.assert_allclose(rm_data, torch_data, rtol=rtol, atol=atol)
         return True
     except AssertionError:
@@ -348,87 +374,102 @@ class TestConvFunctions(unittest.TestCase):
 
         ]
         
-        for case in test_cases:
-            case_name = f"unfold - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_input = np.random.randn(*case["input_shape"])
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                else:
-                    torch_input = None
-                
-                # 前向传播测试
-                rm_result = rm_func.unfold(
-                    rm_input,
-                    kernel_size=case["kernel_size"],
-                    dilation=case["dilation"],
-                    padding=case["padding"],
-                    stride=case["stride"]
-                )
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_func.unfold(
-                        torch_input,
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"unfold - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_input = np.random.randn(*case["input_shape"])
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                        else:
+                            torch_input = None
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
+                        else:
+                            torch_input = None
+                    
+                    # 前向传播测试
+                    rm_result = rm_func.unfold(
+                        rm_input,
                         kernel_size=case["kernel_size"],
                         dilation=case["dilation"],
                         padding=case["padding"],
                         stride=case["stride"]
                     )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
-                if not forward_passed and TORCH_AVAILABLE:
-                    print(f"前向传播失败: {case_name}")
-                    print(f"Riemann结果形状: {rm_result.shape}")
-                    print(f"PyTorch结果形状: {torch_result.shape}")
-                    print(f"Riemann结果前10个值: {rm_result.data.flatten()[:10]}")
-                    print(f"PyTorch结果前10个值: {torch_result.data.flatten()[:10]}")
-                    print(f"最大差异: {abs(rm_result.data - torch_result.data).max()}")
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_func.unfold(
+                            torch_input,
+                            kernel_size=case["kernel_size"],
+                            dilation=case["dilation"],
+                            padding=case["padding"],
+                            stride=case["stride"]
+                        )
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
+                    if not forward_passed and TORCH_AVAILABLE:
+                        print(f"前向传播失败: {case_name}")
+                        print(f"Riemann结果形状: {rm_result.shape}")
+                        print(f"PyTorch结果形状: {torch_result.shape}")
+                        print(f"Riemann结果前10个值: {rm_result.data.flatten()[:10]}")
+                        print(f"PyTorch结果前10个值: {torch_result.data.flatten()[:10]}")
+                        print(f"最大差异: {abs(rm_result.data - torch_result.data).max()}")
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_input.grad, torch_input.grad, atol=1e-5, rtol=1e-5)
-                    if not backward_passed:
-                        print(f"反向传播失败: {case_name}")
-                        print(f"Riemann梯度前10个值: {rm_input.grad.data.flatten()[:10]}")
-                        print(f"PyTorch梯度前10个值: {torch_input.grad.data.flatten()[:10]}")
-                        print(f"最大差异: {abs(rm_input.grad.data - torch_input.grad.data).max()}")
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"unfold测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad, atol=1e-5, rtol=1e-5)
+                        if not backward_passed:
+                            print(f"反向传播失败: {case_name}")
+                            print(f"Riemann梯度前10个值: {rm_input.grad.data.flatten()[:10]}")
+                            print(f"PyTorch梯度前10个值: {torch_input.grad.data.flatten()[:10]}")
+                            print(f"最大差异: {abs(rm_input.grad.data - torch_input.grad.data).max()}")
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"unfold测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_4D_fold(self):
         """测试fold函数与PyTorch的一致性"""
@@ -539,95 +580,110 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"fold - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_input = np.random.randn(*case["input_shape"])
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                else:
-                    torch_input = None
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"fold - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_input = np.random.randn(*case["input_shape"])
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                        else:
+                            torch_input = None
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
+                        else:
+                            torch_input = None
                 
-                # 首先使用unfold获取展开后的张量
-                rm_unfolded = rm_func.unfold(
-                    rm_input,
-                    kernel_size=case["kernel_size"],
-                    dilation=case["dilation"],
-                    padding=case["padding"],
-                    stride=case["stride"]
-                )
-                torch_unfolded = None
-                if TORCH_AVAILABLE:
-                    torch_unfolded = torch_func.unfold(
-                        torch_input,
+                    # 首先使用unfold获取展开后的张量
+                    rm_unfolded = rm_func.unfold(
+                        rm_input,
                         kernel_size=case["kernel_size"],
                         dilation=case["dilation"],
                         padding=case["padding"],
                         stride=case["stride"]
                     )
-                
-                # 前向传播测试（fold操作）
-                rm_result = rm_func.fold(
-                    rm_unfolded,
-                    output_size=case["input_shape"][2:],  # (H, W)
-                    kernel_size=case["kernel_size"],
-                    dilation=case["dilation"],
-                    padding=case["padding"],
-                    stride=case["stride"]
-                )
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_func.fold(
-                        torch_unfolded,
+                    torch_unfolded = None
+                    if TORCH_AVAILABLE:
+                        torch_unfolded = torch_func.unfold(
+                            torch_input,
+                            kernel_size=case["kernel_size"],
+                            dilation=case["dilation"],
+                            padding=case["padding"],
+                            stride=case["stride"]
+                        )
+                    
+                    # 前向传播测试（fold操作）
+                    rm_result = rm_func.fold(
+                        rm_unfolded,
                         output_size=case["input_shape"][2:],  # (H, W)
                         kernel_size=case["kernel_size"],
                         dilation=case["dilation"],
                         padding=case["padding"],
                         stride=case["stride"]
                     )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_func.fold(
+                            torch_unfolded,
+                            output_size=case["input_shape"][2:],  # (H, W)
+                            kernel_size=case["kernel_size"],
+                            dilation=case["dilation"],
+                            padding=case["padding"],
+                            stride=case["stride"]
+                        )
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_input.grad, torch_input.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"fold测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"fold测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_conv2d(self):
         """测试conv2d函数与PyTorch的一致性"""
@@ -764,95 +820,116 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"conv2d - {case['name']}"
-            start_time = time.time()
-            try:
-                # 解包测试参数
-                input_shape = case["input_shape"]
-                N, C_in, H_in, W_in = input_shape
-                C_out = case["output_channels"]
-                kernel_size = case["kernel_size"]
-                stride = case["stride"]
-                padding = case["padding"]
-                dilation = case["dilation"]
-                groups = case["groups"]
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"conv2d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 解包测试参数
+                    input_shape = case["input_shape"]
+                    N, C_in, H_in, W_in = input_shape
+                    C_out = case["output_channels"]
+                    kernel_size = case["kernel_size"]
+                    stride = case["stride"]
+                    padding = case["padding"]
+                    dilation = case["dilation"]
+                    groups = case["groups"]
+                    
+                    # 创建测试数据
+                    np_input = np.random.randn(*input_shape)
+                    np_weight = np.random.randn(C_out, C_in // groups, kernel_size[0] if isinstance(kernel_size, tuple) else kernel_size, kernel_size[1] if isinstance(kernel_size, tuple) else kernel_size)
+                    np_bias = np.random.randn(C_out)
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        rm_weight = rm.tensor(np_weight, requires_grad=True)
+                        rm_bias = rm.tensor(np_bias, requires_grad=True)
+                        
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                            torch_weight = torch.tensor(np_weight, requires_grad=True)
+                            torch_bias = torch.tensor(np_bias, requires_grad=True)
+                        else:
+                            torch_input = None
+                            torch_weight = None
+                            torch_bias = None
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        rm_weight = rm.tensor(np_weight, requires_grad=True, device=device)
+                        rm_bias = rm.tensor(np_bias, requires_grad=True, device=device)
+                        
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
+                            torch_weight = torch.tensor(np_weight, requires_grad=True, device=device)
+                            torch_bias = torch.tensor(np_bias, requires_grad=True, device=device)
+                        else:
+                            torch_input = None
+                            torch_weight = None
+                            torch_bias = None
                 
-                # 创建测试数据
-                np_input = np.random.randn(*input_shape)
-                np_weight = np.random.randn(C_out, C_in // groups, kernel_size[0] if isinstance(kernel_size, tuple) else kernel_size, kernel_size[1] if isinstance(kernel_size, tuple) else kernel_size)
-                np_bias = np.random.randn(C_out)
-                
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                rm_weight = rm.tensor(np_weight, requires_grad=True)
-                rm_bias = rm.tensor(np_bias, requires_grad=True)
-                
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                    torch_weight = torch.tensor(np_weight, requires_grad=True)
-                    torch_bias = torch.tensor(np_bias, requires_grad=True)
-                else:
-                    torch_input = None
-                    torch_weight = None
-                    torch_bias = None
-                
-                # 前向传播测试
-                rm_result = rm_func.conv2d(
-                    rm_input, rm_weight, rm_bias,
-                    stride=stride, padding=padding, dilation=dilation, groups=groups
-                )
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_func.conv2d(
-                        torch_input, torch_weight, torch_bias,
+                    # 前向传播测试
+                    rm_result = rm_func.conv2d(
+                        rm_input, rm_weight, rm_bias,
                         stride=stride, padding=padding, dilation=dilation, groups=groups
                     )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_func.conv2d(
+                            torch_input, torch_weight, torch_bias,
+                            stride=stride, padding=padding, dilation=dilation, groups=groups
+                        )
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
                     
-                    # 比较梯度
-                    grad_input_passed = compare_values(rm_input.grad, torch_input.grad)
-                    grad_weight_passed = compare_values(rm_weight.grad, torch_weight.grad)
-                    grad_bias_passed = compare_values(rm_bias.grad, torch_bias.grad)
-                    backward_passed = grad_input_passed and grad_weight_passed and grad_bias_passed
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  输入梯度: {'通过' if grad_input_passed else '失败'}")
-                        print(f"  权重梯度: {'通过' if grad_weight_passed else '失败'}")
-                        print(f"  偏置梯度: {'通过' if grad_bias_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"conv2d测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        grad_input_passed = compare_values(rm_input.grad, torch_input.grad)
+                        grad_weight_passed = compare_values(rm_weight.grad, torch_weight.grad)
+                        grad_bias_passed = compare_values(rm_bias.grad, torch_bias.grad)
+                        backward_passed = grad_input_passed and grad_weight_passed and grad_bias_passed
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  输入梯度: {'通过' if grad_input_passed else '失败'}")
+                            print(f"  权重梯度: {'通过' if grad_weight_passed else '失败'}")
+                            print(f"  偏置梯度: {'通过' if grad_bias_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"conv2d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
             
     def test_conv1d(self):
         """测试conv1d函数与PyTorch的一致性"""
@@ -969,100 +1046,121 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"conv1d - {case['name']}"
-            start_time = time.time()
-            try:
-                # 解包测试参数
-                input_shape = case["input_shape"]
-                N, C_in, L_in = input_shape
-                C_out = case["output_channels"]
-                kernel_size = case["kernel_size"]
-                stride = case["stride"]
-                padding = case["padding"]
-                dilation = case["dilation"]
-                groups = case["groups"]
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"conv1d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 解包测试参数
+                    input_shape = case["input_shape"]
+                    N, C_in, L_in = input_shape
+                    C_out = case["output_channels"]
+                    kernel_size = case["kernel_size"]
+                    stride = case["stride"]
+                    padding = case["padding"]
+                    dilation = case["dilation"]
+                    groups = case["groups"]
+                    
+                    # 处理标量kernel_size
+                    if isinstance(kernel_size, int):
+                        kernel_size = (kernel_size,)
+                    K = kernel_size[0]
+                    
+                    # 创建测试数据
+                    np_input = np.random.randn(*input_shape)
+                    np_weight = np.random.randn(C_out, C_in // groups, K)
+                    np_bias = np.random.randn(C_out)
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        rm_weight = rm.tensor(np_weight, requires_grad=True)
+                        rm_bias = rm.tensor(np_bias, requires_grad=True)
+                        
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                            torch_weight = torch.tensor(np_weight, requires_grad=True)
+                            torch_bias = torch.tensor(np_bias, requires_grad=True)
+                        else:
+                            torch_input = None
+                            torch_weight = None
+                            torch_bias = None
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        rm_weight = rm.tensor(np_weight, requires_grad=True, device=device)
+                        rm_bias = rm.tensor(np_bias, requires_grad=True, device=device)
+                        
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
+                            torch_weight = torch.tensor(np_weight, requires_grad=True, device=device)
+                            torch_bias = torch.tensor(np_bias, requires_grad=True, device=device)
+                        else:
+                            torch_input = None
+                            torch_weight = None
+                            torch_bias = None
                 
-                # 处理标量kernel_size
-                if isinstance(kernel_size, int):
-                    kernel_size = (kernel_size,)
-                K = kernel_size[0]
-                
-                # 创建测试数据
-                np_input = np.random.randn(*input_shape)
-                np_weight = np.random.randn(C_out, C_in // groups, K)
-                np_bias = np.random.randn(C_out)
-                
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                rm_weight = rm.tensor(np_weight, requires_grad=True)
-                rm_bias = rm.tensor(np_bias, requires_grad=True)
-                
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                    torch_weight = torch.tensor(np_weight, requires_grad=True)
-                    torch_bias = torch.tensor(np_bias, requires_grad=True)
-                else:
-                    torch_input = None
-                    torch_weight = None
-                    torch_bias = None
-                
-                # 前向传播测试
-                rm_result = rm_func.conv1d(
-                    rm_input, rm_weight, rm_bias,
-                    stride=stride, padding=padding, dilation=dilation, groups=groups
-                )
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_func.conv1d(
-                        torch_input, torch_weight, torch_bias,
+                    # 前向传播测试
+                    rm_result = rm_func.conv1d(
+                        rm_input, rm_weight, rm_bias,
                         stride=stride, padding=padding, dilation=dilation, groups=groups
                     )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_func.conv1d(
+                            torch_input, torch_weight, torch_bias,
+                            stride=stride, padding=padding, dilation=dilation, groups=groups
+                        )
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
                     
-                    # 比较梯度
-                    grad_input_passed = compare_values(rm_input.grad, torch_input.grad)
-                    grad_weight_passed = compare_values(rm_weight.grad, torch_weight.grad)
-                    grad_bias_passed = compare_values(rm_bias.grad, torch_bias.grad)
-                    backward_passed = grad_input_passed and grad_weight_passed and grad_bias_passed
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  输入梯度: {'通过' if grad_input_passed else '失败'}")
-                        print(f"  权重梯度: {'通过' if grad_weight_passed else '失败'}")
-                        print(f"  偏置梯度: {'通过' if grad_bias_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"conv1d测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        grad_input_passed = compare_values(rm_input.grad, torch_input.grad)
+                        grad_weight_passed = compare_values(rm_weight.grad, torch_weight.grad)
+                        grad_bias_passed = compare_values(rm_bias.grad, torch_bias.grad)
+                        backward_passed = grad_input_passed and grad_weight_passed and grad_bias_passed
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  输入梯度: {'通过' if grad_input_passed else '失败'}")
+                            print(f"  权重梯度: {'通过' if grad_weight_passed else '失败'}")
+                            print(f"  偏置梯度: {'通过' if grad_bias_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"conv1d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
         
     def test_max_pool2d(self):
         """测试max_pool2d函数与PyTorch的一致性"""
@@ -1369,95 +1467,110 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"max_pool2d - {case['name']}"
-            start_time = time.time()
-            try:
-                # 解包测试参数
-                input_shape = case["input_shape"]
-                kernel_size = case["kernel_size"]
-                stride = case["stride"]
-                padding = case["padding"]
-                dilation = case["dilation"]
-                return_indices = case["return_indices"]
-                ceil_mode = case["ceil_mode"]
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"max_pool2d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 解包测试参数
+                    input_shape = case["input_shape"]
+                    kernel_size = case["kernel_size"]
+                    stride = case["stride"]
+                    padding = case["padding"]
+                    dilation = case["dilation"]
+                    return_indices = case["return_indices"]
+                    ceil_mode = case["ceil_mode"]
+                    
+                    # 创建测试数据
+                    np_input = np.random.randn(*input_shape)
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
                 
-                # 创建测试数据
-                np_input = np.random.randn(*input_shape)
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                
-                # 前向传播测试
-                rm_result = None
-                torch_result = None
-                torch_indices = None
-                
-                # 计算前向传播
-                if return_indices:
-                    rm_result, rm_indices = rm_func.max_pool2d(
-                        rm_input, kernel_size=kernel_size, stride=stride, padding=padding, 
-                        dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
-                    )
-                else:
-                    rm_result = rm_func.max_pool2d(
-                        rm_input, kernel_size=kernel_size, stride=stride, padding=padding, 
-                        dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
-                    )
-                
-                if TORCH_AVAILABLE:
+                    # 前向传播测试
+                    rm_result = None
+                    torch_result = None
+                    torch_indices = None
+                    
+                    # 计算前向传播
                     if return_indices:
-                        torch_result, torch_indices = torch_func.max_pool2d(
-                            torch_input, kernel_size=kernel_size, stride=stride, padding=padding, 
+                        rm_result, rm_indices = rm_func.max_pool2d(
+                            rm_input, kernel_size=kernel_size, stride=stride, padding=padding, 
                             dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
                         )
                     else:
-                        torch_result = torch_func.max_pool2d(
-                            torch_input, kernel_size=kernel_size, stride=stride, padding=padding, 
+                        rm_result = rm_func.max_pool2d(
+                            rm_input, kernel_size=kernel_size, stride=stride, padding=padding, 
                             dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
                         )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
-                
-                # 比较索引
-                indices_passed = True
-                if TORCH_AVAILABLE and return_indices:
-                    indices_passed = compare_values(rm_indices, torch_indices)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    if TORCH_AVAILABLE:
+                        if return_indices:
+                            torch_result, torch_indices = torch_func.max_pool2d(
+                                torch_input, kernel_size=kernel_size, stride=stride, padding=padding, 
+                                dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
+                            )
+                        else:
+                            torch_result = torch_func.max_pool2d(
+                                torch_input, kernel_size=kernel_size, stride=stride, padding=padding, 
+                                dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
+                            )
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_input.grad, torch_input.grad)
-                
-                passed = forward_passed and indices_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"max_pool2d测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
+                    
+                    # 比较索引
+                    indices_passed = True
+                    if TORCH_AVAILABLE and return_indices:
+                        indices_passed = compare_values(rm_indices, torch_indices)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and indices_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"max_pool2d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
         
     def test_avg_pool2d(self):
         """测试avg_pool2d函数与PyTorch的一致性"""
@@ -1944,76 +2057,91 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"avg_pool2d - {case['name']}"
-            start_time = time.time()
-            try:
-                # 解包测试参数
-                input_shape = case["input_shape"]
-                kernel_size = case["kernel_size"]
-                stride = case["stride"]
-                padding = case["padding"]
-                ceil_mode = case["ceil_mode"]
-                count_include_pad = case["count_include_pad"]
-                divisor_override = case.get("divisor_override", None)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"avg_pool2d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 解包测试参数
+                    input_shape = case["input_shape"]
+                    kernel_size = case["kernel_size"]
+                    stride = case["stride"]
+                    padding = case["padding"]
+                    ceil_mode = case["ceil_mode"]
+                    count_include_pad = case["count_include_pad"]
+                    divisor_override = case.get("divisor_override", None)
+                    
+                    # 创建测试数据
+                    np_input = np.random.randn(*input_shape)
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
                 
-                # 创建测试数据
-                np_input = np.random.randn(*input_shape)
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                
-                # 前向传播测试
-                rm_result = rm_func.avg_pool2d(
-                    rm_input, kernel_size=kernel_size, stride=stride, padding=padding,
-                    ceil_mode=ceil_mode, count_include_pad=count_include_pad,
-                    divisor_override=divisor_override
-                )
-                
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_func.avg_pool2d(
-                        torch_input, kernel_size=kernel_size, stride=stride, padding=padding,
+                    # 前向传播测试
+                    rm_result = rm_func.avg_pool2d(
+                        rm_input, kernel_size=kernel_size, stride=stride, padding=padding,
                         ceil_mode=ceil_mode, count_include_pad=count_include_pad,
                         divisor_override=divisor_override
                     )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_func.avg_pool2d(
+                            torch_input, kernel_size=kernel_size, stride=stride, padding=padding,
+                            ceil_mode=ceil_mode, count_include_pad=count_include_pad,
+                            divisor_override=divisor_override
+                        )
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_input.grad, torch_input.grad, atol=1e-5, rtol=1e-5)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"avg_pool2d测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad, atol=1e-5, rtol=1e-5)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"avg_pool2d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_conv3d(self):
         """测试conv3d函数与PyTorch的一致性"""
@@ -2160,90 +2288,108 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"conv3d - {case['name']}"
-            start_time = time.time()
-            try:
-                # 解包测试参数
-                input_shape = case["input_shape"]
-                output_channels = case["output_channels"]
-                kernel_size = case["kernel_size"]
-                stride = case["stride"]
-                padding = case["padding"]
-                dilation = case["dilation"]
-                groups = case["groups"]
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"conv3d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 解包测试参数
+                    input_shape = case["input_shape"]
+                    output_channels = case["output_channels"]
+                    kernel_size = case["kernel_size"]
+                    stride = case["stride"]
+                    padding = case["padding"]
+                    dilation = case["dilation"]
+                    groups = case["groups"]
+                    
+                    # 创建测试数据
+                    np_input = np.random.randn(*input_shape).astype(np.float32)
+                    
+                    # 计算权重形状
+                    input_channels = input_shape[1]
+                    if isinstance(kernel_size, int):
+                        weight_shape = (output_channels, input_channels // groups, kernel_size, kernel_size, kernel_size)
+                    else:
+                        weight_shape = (output_channels, input_channels // groups, *kernel_size)
+                    
+                    np_weight = np.random.randn(*weight_shape).astype(np.float32)
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        rm_weight = rm.tensor(np_weight, requires_grad=True)
+                        
+                        torch_input = None
+                        torch_weight = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                            torch_weight = torch.tensor(np_weight, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        rm_weight = rm.tensor(np_weight, requires_grad=True, device=device)
+                        
+                        torch_input = None
+                        torch_weight = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
+                            torch_weight = torch.tensor(np_weight, requires_grad=True, device=device)
                 
-                # 创建测试数据
-                np_input = np.random.randn(*input_shape).astype(np.float32)
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                
-                # 计算权重形状
-                input_channels = input_shape[1]
-                if isinstance(kernel_size, int):
-                    weight_shape = (output_channels, input_channels // groups, kernel_size, kernel_size, kernel_size)
-                else:
-                    weight_shape = (output_channels, input_channels // groups, *kernel_size)
-                
-                np_weight = np.random.randn(*weight_shape).astype(np.float32)
-                rm_weight = rm.tensor(np_weight, requires_grad=True)
-                
-                torch_input = None
-                torch_weight = None
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                    torch_weight = torch.tensor(np_weight, requires_grad=True)
-                
-                # 前向传播测试
-                rm_result = rm_func.conv3d(
-                    rm_input, rm_weight, bias=None, stride=stride, 
-                    padding=padding, dilation=dilation, groups=groups
-                )
-                
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_func.conv3d(
-                        torch_input, torch_weight, bias=None, stride=stride,
+                    # 前向传播测试
+                    rm_result = rm_func.conv3d(
+                        rm_input, rm_weight, bias=None, stride=stride, 
                         padding=padding, dilation=dilation, groups=groups
                     )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_func.conv3d(
+                            torch_input, torch_weight, bias=None, stride=stride,
+                            padding=padding, dilation=dilation, groups=groups
+                        )
                     
-                    # 比较输入梯度
-                    input_grad_passed = compare_values(rm_input.grad, torch_input.grad, atol=1e-5, rtol=1e-5)
-                    # 比较权重梯度
-                    weight_grad_passed = compare_values(rm_weight.grad, torch_weight.grad, atol=1e-5, rtol=1e-5)
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5)
                     
-                    backward_passed = input_grad_passed and weight_grad_passed
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"conv3d测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较输入梯度
+                        input_grad_passed = compare_values(rm_input.grad, torch_input.grad, atol=1e-5, rtol=1e-5)
+                        # 比较权重梯度
+                        weight_grad_passed = compare_values(rm_weight.grad, torch_weight.grad, atol=1e-5, rtol=1e-5)
+                        
+                        backward_passed = input_grad_passed and weight_grad_passed
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"conv3d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_max_pool3d(self):
         """测试max_pool3d函数与PyTorch的一致性"""
@@ -2420,85 +2566,100 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"max_pool3d - {case['name']}"
-            start_time = time.time()
-            try:
-                # 解包测试参数
-                input_shape = case["input_shape"]
-                kernel_size = case["kernel_size"]
-                stride = case["stride"]
-                padding = case["padding"]
-                dilation = case["dilation"]
-                return_indices = case["return_indices"]
-                ceil_mode = case["ceil_mode"]
-                
-                # 创建测试数据
-                np_input = np.random.randn(*input_shape).astype(np.float32)
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                
-                # 前向传播测试
-                rm_result = rm_func.max_pool3d(
-                    rm_input, kernel_size=kernel_size, stride=stride, 
-                    padding=padding, dilation=dilation, return_indices=return_indices,
-                    ceil_mode=ceil_mode
-                )
-                
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_func.max_pool3d(
-                        torch_input, kernel_size=kernel_size, stride=stride,
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"max_pool3d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 解包测试参数
+                    input_shape = case["input_shape"]
+                    kernel_size = case["kernel_size"]
+                    stride = case["stride"]
+                    padding = case["padding"]
+                    dilation = case["dilation"]
+                    return_indices = case["return_indices"]
+                    ceil_mode = case["ceil_mode"]
+                    
+                    # 创建测试数据
+                    np_input = np.random.randn(*input_shape).astype(np.float32)
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
+                    
+                    # 前向传播测试
+                    rm_result = rm_func.max_pool3d(
+                        rm_input, kernel_size=kernel_size, stride=stride, 
                         padding=padding, dilation=dilation, return_indices=return_indices,
                         ceil_mode=ceil_mode
                     )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result[0] if return_indices else rm_result, 
-                                              torch_result[0] if return_indices else torch_result, atol=1e-5, rtol=1e-5)
-                
-                # 如果返回索引，也比较索引
-                if return_indices and TORCH_AVAILABLE:
-                    indices_passed = compare_values(rm_result[1], torch_result[1], atol=1e-5, rtol=1e-5)
-                    forward_passed = forward_passed and indices_passed
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_output = rm_result[0] if return_indices else rm_result
-                    torch_output = torch_result[0] if return_indices else torch_result
                     
-                    rm_loss = rm_output.sum()
-                    torch_loss = torch_output.sum()
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_func.max_pool3d(
+                            torch_input, kernel_size=kernel_size, stride=stride,
+                            padding=padding, dilation=dilation, return_indices=return_indices,
+                            ceil_mode=ceil_mode
+                        )
+                
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result[0] if return_indices else rm_result, 
+                                                torch_result[0] if return_indices else torch_result, atol=1e-5, rtol=1e-5)
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 如果返回索引，也比较索引
+                    if return_indices and TORCH_AVAILABLE:
+                        indices_passed = compare_values(rm_result[1], torch_result[1], atol=1e-5, rtol=1e-5)
+                        forward_passed = forward_passed and indices_passed
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_input.grad, torch_input.grad, atol=1e-5, rtol=1e-5)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"max_pool3d测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_output = rm_result[0] if return_indices else rm_result
+                        torch_output = torch_result[0] if return_indices else torch_result
+                        
+                        rm_loss = rm_output.sum()
+                        torch_loss = torch_output.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad, atol=1e-5, rtol=1e-5)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"max_pool3d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_avg_pool3d(self):
         """测试avg_pool3d函数与PyTorch的一致性"""
@@ -2755,76 +2916,91 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"avg_pool3d - {case['name']}"
-            start_time = time.time()
-            try:
-                # 解包测试参数
-                input_shape = case["input_shape"]
-                kernel_size = case["kernel_size"]
-                stride = case["stride"]
-                padding = case["padding"]
-                ceil_mode = case["ceil_mode"]
-                count_include_pad = case["count_include_pad"]
-                divisor_override = case.get("divisor_override", None)
-                
-                # 创建测试数据
-                np_input = np.random.randn(*input_shape).astype(np.float32)
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                                
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                
-                # 前向传播测试
-                rm_result = rm_func.avg_pool3d(
-                    rm_input, kernel_size=kernel_size, stride=stride, padding=padding,
-                    ceil_mode=ceil_mode, count_include_pad=count_include_pad,
-                    divisor_override=divisor_override
-                )
-                                
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_func.avg_pool3d(
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"avg_pool3d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 解包测试参数
+                    input_shape = case["input_shape"]
+                    kernel_size = case["kernel_size"]
+                    stride = case["stride"]
+                    padding = case["padding"]
+                    ceil_mode = case["ceil_mode"]
+                    count_include_pad = case["count_include_pad"]
+                    divisor_override = case.get("divisor_override", None)
+                    
+                    # 创建测试数据
+                    np_input = np.random.randn(*input_shape).astype(np.float32)
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
+                    
+                    # 前向传播测试
+                    rm_result = rm_func.avg_pool3d(
+                        rm_input, kernel_size=kernel_size, stride=stride, padding=padding,
+                        ceil_mode=ceil_mode, count_include_pad=count_include_pad,
+                        divisor_override=divisor_override
+                    )
+                    
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_func.avg_pool3d(
                         torch_input, kernel_size=kernel_size, stride=stride, padding=padding,
                         ceil_mode=ceil_mode, count_include_pad=count_include_pad,
                         divisor_override=divisor_override
                     )
                 
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result)
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_input.grad, torch_input.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"avg_pool3d测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"avg_pool3d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_max_pool1d(self):
         """测试max_pool1d函数与PyTorch的一致性"""
@@ -2951,96 +3127,111 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"max_pool1d - {case['name']}"
-            start_time = time.time()
-            try:
-                # 解包测试参数
-                input_shape = case["input_shape"]
-                kernel_size = case["kernel_size"]
-                stride = case["stride"]
-                padding = case["padding"]
-                dilation = case["dilation"]
-                return_indices = case["return_indices"]
-                ceil_mode = case["ceil_mode"]
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"max_pool1d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 解包测试参数
+                    input_shape = case["input_shape"]
+                    kernel_size = case["kernel_size"]
+                    stride = case["stride"]
+                    padding = case["padding"]
+                    dilation = case["dilation"]
+                    return_indices = case["return_indices"]
+                    ceil_mode = case["ceil_mode"]
+                    
+                    # 创建测试数据
+                    np_input = np.random.randn(*input_shape)
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
                 
-                # 创建测试数据
-                np_input = np.random.randn(*input_shape)
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                
-                # 前向传播测试
-                rm_result = None
-                rm_indices = None
-                torch_result = None
-                torch_indices = None
-                
-                # 计算前向传播
-                if return_indices:
-                    rm_result, rm_indices = rm_func.max_pool1d(
-                        rm_input, kernel_size=kernel_size, stride=stride, padding=padding, 
-                        dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
-                    )
-                else:
-                    rm_result = rm_func.max_pool1d(
-                        rm_input, kernel_size=kernel_size, stride=stride, padding=padding, 
-                        dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
-                    )
-                
-                if TORCH_AVAILABLE:
+                    # 前向传播测试
+                    rm_result = None
+                    rm_indices = None
+                    torch_result = None
+                    torch_indices = None
+                    
+                    # 计算前向传播
                     if return_indices:
-                        torch_result, torch_indices = torch_func.max_pool1d(
-                            torch_input, kernel_size=kernel_size, stride=stride, padding=padding, 
+                        rm_result, rm_indices = rm_func.max_pool1d(
+                            rm_input, kernel_size=kernel_size, stride=stride, padding=padding, 
                             dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
                         )
                     else:
-                        torch_result = torch_func.max_pool1d(
-                            torch_input, kernel_size=kernel_size, stride=stride, padding=padding, 
+                        rm_result = rm_func.max_pool1d(
+                            rm_input, kernel_size=kernel_size, stride=stride, padding=padding, 
                             dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
                         )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result)
-                
-                # 比较索引
-                indices_passed = True
-                if TORCH_AVAILABLE and return_indices:
-                    indices_passed = compare_values(rm_indices, torch_indices)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    if TORCH_AVAILABLE:
+                        if return_indices:
+                            torch_result, torch_indices = torch_func.max_pool1d(
+                                torch_input, kernel_size=kernel_size, stride=stride, padding=padding, 
+                                dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
+                            )
+                        else:
+                            torch_result = torch_func.max_pool1d(
+                                torch_input, kernel_size=kernel_size, stride=stride, padding=padding, 
+                                dilation=dilation, return_indices=return_indices, ceil_mode=ceil_mode
+                            )
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_input.grad, torch_input.grad)
-                
-                passed = forward_passed and indices_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"max_pool1d测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    # 比较索引
+                    indices_passed = True
+                    if TORCH_AVAILABLE and return_indices:
+                        indices_passed = compare_values(rm_indices, torch_indices)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and indices_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"max_pool1d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
     
     def test_avg_pool1d(self):
         """测试avg_pool1d函数与PyTorch的一致性"""
@@ -3158,82 +3349,97 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"avg_pool1d - {case['name']}"
-            start_time = time.time()
-            try:
-                # 解包测试参数
-                input_shape = case["input_shape"]
-                kernel_size = case["kernel_size"]
-                stride = case["stride"]
-                padding = case["padding"]
-                ceil_mode = case["ceil_mode"]
-                count_include_pad = case["count_include_pad"]
-                divisor_override = case["divisor_override"]
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"avg_pool1d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 解包测试参数
+                    input_shape = case["input_shape"]
+                    kernel_size = case["kernel_size"]
+                    stride = case["stride"]
+                    padding = case["padding"]
+                    ceil_mode = case["ceil_mode"]
+                    count_include_pad = case["count_include_pad"]
+                    divisor_override = case["divisor_override"]
 
-                
-                # 创建测试数据
-                np_input = np.random.randn(*input_shape)
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                
-                torch_input = None
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                
-                # 前向传播测试
-                rm_args = {
-                    "input": rm_input, 
-                    "kernel_size": kernel_size, 
-                    "stride": stride, 
-                    "padding": padding,
-                    "ceil_mode": ceil_mode, 
-                    "count_include_pad": count_include_pad
-                }
-                if divisor_override is not None:
-                    rm_args["divisor_override"] = divisor_override
-                rm_result = rm_func.avg_pool1d(**rm_args)
-                
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_func.avg_pool1d(
-                        torch_input, kernel_size=kernel_size, stride=stride, padding=padding,
-                        ceil_mode=ceil_mode, count_include_pad=count_include_pad
-                    )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 创建测试数据
+                    np_input = np.random.randn(*input_shape)
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        
+                        torch_input = None
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
                 
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"avg_pool1d测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    # 前向传播测试
+                    rm_args = {
+                        "input": rm_input, 
+                        "kernel_size": kernel_size, 
+                        "stride": stride, 
+                        "padding": padding,
+                        "ceil_mode": ceil_mode, 
+                        "count_include_pad": count_include_pad
+                    }
+                    if divisor_override is not None:
+                        rm_args["divisor_override"] = divisor_override
+                    rm_result = rm_func.avg_pool1d(**rm_args)
+                    
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_func.avg_pool1d(
+                            torch_input, kernel_size=kernel_size, stride=stride, padding=padding,
+                            ceil_mode=ceil_mode, count_include_pad=count_include_pad
+                        )
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"avg_pool1d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
 
     def test_tensor_unfold(self):
         """测试tensordef中的unfold方法与PyTorch的一致性"""
@@ -3282,113 +3488,135 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"tensor_unfold - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_input = np.random.randn(*case["input_shape"])
-                rm_input = rm.tensor(np_input, requires_grad=True)
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"tensor_unfold - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_input = np.random.randn(*case["input_shape"])
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True)
+                        else:
+                            torch_input = None
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        
+                        if TORCH_AVAILABLE:
+                            torch_input = torch.tensor(np_input, requires_grad=True, device=device)
+                        else:
+                            torch_input = None
                 
-                if TORCH_AVAILABLE:
-                    torch_input = torch.tensor(np_input, requires_grad=True)
-                else:
-                    torch_input = None
-                
-                # 前向传播测试
-                rm_result = rm_input.unfold(
-                    dimension=case["dimension"],
-                    size=case["size"],
-                    step=case["step"]
-                )
-                torch_result = None
-                if TORCH_AVAILABLE:
-                    torch_result = torch_input.unfold(
+                    # 前向传播测试
+                    rm_result = rm_input.unfold(
                         dimension=case["dimension"],
                         size=case["size"],
                         step=case["step"]
                     )
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(rm_result, torch_result)
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    # 计算损失
-                    rm_loss = rm_result.sum()
-                    torch_loss = torch_result.sum()
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        torch_result = torch_input.unfold(
+                            dimension=case["dimension"],
+                            size=case["size"],
+                            step=case["step"]
+                        )
                     
-                    # 反向传播
-                    rm_loss.backward()
-                    torch_loss.backward()
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result)
                     
-                    # 比较梯度
-                    backward_passed = compare_values(rm_input.grad, torch_input.grad)
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed and TORCH_AVAILABLE:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"tensor_unfold测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-            
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        
+                        # 比较梯度
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"tensor_unfold测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+    
     def test_tensor_fold(self):
         """测试tensordef中的fold方法"""
         # 由于PyTorch没有对应的Tensor.fold方法，我们需要自己验证结果的正确性
         
-        def calculate_expected_fold(input_tensor, dimension, size, step, output_size=None):
+        def calculate_expected_fold(input_tensor, dimension, size, step, output_size=None):   
             """计算fold的预期结果"""
             input_shape = input_tensor.shape
             num_windows = input_shape[dimension]
             window_size = input_shape[-1]
-            
+
             if output_size is None:
                 output_size = (num_windows - 1) * step + size
-            
+
             output_shape = list(input_shape[:-1])  # 移除最后一维（窗口元素）
             output_shape[dimension] = output_size
-            
-            # 创建输出张量
-            output = np.zeros(output_shape)
-            
+
+            # 检测输入张量的类型，使用对应的库创建输出张量
+            # 检查是否是CuPy数组
+            if hasattr(input_tensor, '__module__') and input_tensor.__module__.startswith('cupy'):
+                # 对于CuPy数组（CUDA），使用CuPy
+                output = cp.zeros(output_shape)
+            else:
+                # 对于NumPy数组（CPU），使用NumPy
+                output = np.zeros(output_shape)
+
             # 对于每个窗口，将其内容添加到输出张量的对应位置
             for i in range(num_windows):
                 start = i * step
                 end = start + size
-                
+
                 # 获取当前窗口内容
                 window_idx = [slice(None)] * input_tensor.ndim
                 window_idx[dimension] = i
                 window_idx[-1] = slice(None)
                 window = input_tensor[tuple(window_idx)]
-                
+
                 # 确保窗口形状与输出切片形状匹配
                 window_shape = list(output_shape)
                 window_shape[dimension] = size
                 window = window.reshape(tuple(window_shape))
-                
+
                 # 将窗口内容添加到输出张量的对应位置
                 output_idx = [slice(None)] * output.ndim
                 output_idx[dimension] = slice(start, end)
                 output[tuple(output_idx)] += window
-            
+
             return output
         
         test_cases = [
@@ -3430,77 +3658,87 @@ class TestConvFunctions(unittest.TestCase):
             }
         ]
         
-        for case in test_cases:
-            case_name = f"tensor_fold - {case['name']}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_input = np.random.randn(*case["input_shape"])
-                
-                # 首先对输入进行unfold操作，得到unfolded张量
-                rm_input = rm.tensor(np_input, requires_grad=True)
-                rm_unfolded = rm_input.unfold(
-                    dimension=case["dimension"],
-                    size=case["size"],
-                    step=case["step"]
-                )
-                
-                # 计算预期的fold结果
-                np_unfolded = rm_unfolded.data  # 转换为numpy数组
-                output_size = case.get("output_size", None)
-                expected_output = calculate_expected_fold(np_unfolded, case["dimension"], case["size"], case["step"], output_size)
-                
-                # 执行fold操作
-                rm_folded = rm_unfolded.fold(
-                    dimension=case["dimension"],
-                    size=case["size"],
-                    step=case["step"],
-                    output_size=output_size
-                )
-                
-                # 比较前向传播结果
-                rm_output = rm_folded.data
-                forward_passed = np.allclose(rm_output, expected_output, atol=1e-6, rtol=1e-6)
-                
-                # 反向传播测试
-                backward_passed = True
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"tensor_fold - {case['name']} - {device}"
+                start_time = time.time()
                 try:
-                    # 计算损失
-                    rm_loss = rm_folded.sum()
+                    # 创建测试数据
+                    np_input = np.random.randn(*case["input_shape"])
                     
-                    # 反向传播
-                    rm_loss.backward()
+                    # 首先对输入进行unfold操作，得到unfolded张量
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                    else:  # cuda
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
                     
-                    # 检查梯度是否存在且形状正确
-                    if rm_input.grad is None:
+                    rm_unfolded = rm_input.unfold(
+                        dimension=case["dimension"],
+                        size=case["size"],
+                        step=case["step"]
+                    )
+                
+                    # 计算预期的fold结果
+                    np_unfolded = rm_unfolded.data  # 转换为numpy数组
+                    output_size = case.get("output_size", None)
+                    expected_output = calculate_expected_fold(np_unfolded, case["dimension"], case["size"], case["step"], output_size)
+                    
+                    # 执行fold操作
+                    rm_folded = rm_unfolded.fold(
+                        dimension=case["dimension"],
+                        size=case["size"],
+                        step=case["step"],
+                        output_size=output_size
+                    )
+                    
+                    # 比较前向传播结果
+                    rm_output = rm_folded.data
+                    forward_passed = np.allclose(rm_output, expected_output, atol=1e-6, rtol=1e-6)
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    try:
+                        # 计算损失
+                        rm_loss = rm_folded.sum()
+                        
+                        # 反向传播
+                        rm_loss.backward()
+                        
+                        # 检查梯度是否存在且形状正确
+                        if rm_input.grad is None:
+                            backward_passed = False
+                        elif rm_input.grad.shape != rm_input.shape:
+                            backward_passed = False
+                    except Exception as e:
                         backward_passed = False
-                    elif rm_input.grad.shape != rm_input.shape:
-                        backward_passed = False
+                    
+                    passed = forward_passed and backward_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  Riemann输出形状: {rm_folded.shape}, 预期输出形状: {expected_output.shape}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"tensor_fold测试失败: {case_name}")
+                    
                 except Exception as e:
-                    backward_passed = False
-                
-                passed = forward_passed and backward_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    if not passed:
-                        print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
-                        print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
-                        print(f"  Riemann输出形状: {rm_folded.shape}, 预期输出形状: {expected_output.shape}")
-                
-                # 断言确保测试通过
-                self.assertTrue(passed, f"tensor_fold测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
 
 if __name__ == '__main__':
     # 设置为独立脚本运行模式

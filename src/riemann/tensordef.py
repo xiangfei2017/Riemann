@@ -920,7 +920,7 @@ class TN:
             return self
         
         # 创建新张量
-        ret = TN()
+        ret = type(self)()
         
         # 处理设备迁移、数据转换
         if device_not_change:
@@ -1487,7 +1487,7 @@ class TN:
     
     def _adjust_right_val(self, target_data, val):
         if not isinstance(val,TN):
-            right_val = tensor(val, dtype = self.dtype,device=self.device)
+            right_val = tensor(val, dtype = self.dtype, device=self.device)
         else:
             right_val = val
 
@@ -1860,7 +1860,7 @@ class TN:
             fill_value = src
         else:  # 使用value参数
             # 创建与index形状相同的张量，填充value值
-            fill_value = full_like(index, value, dtype=self.dtype,device=dev)            
+            fill_value = full_like(index, value, dtype=self.dtype, device=dev)            
 
         # 计算直接索引
         full_index = self._compute_to_direct_indices(dim, index.data)
@@ -1961,7 +1961,7 @@ class TN:
             fill_value = src
         else:  # 使用value参数
             # 创建与index形状相同的张量，填充value值
-            fill_value = full_like(index, value, dtype=self.dtype,device=dev)            
+            fill_value = full_like(index, value, dtype=self.dtype, device=dev)            
 
         # 计算直接索引        
         full_index = self._compute_to_direct_indices(dim, index.data)
@@ -3173,8 +3173,8 @@ class TN:
         output_shape[dim] = output_size
         output_shape.pop()  # 移除最后一维（窗口元素）
 
-        # 创建一个形状为output_shape的零张量作为基础
-        output = zeros(output_shape, dtype=self.dtype) #, requires_grad=self.requires_grad)
+        # 创建一个形状为output_shape的零张量作为基础，与输入张量在同一设备上
+        output = zeros(output_shape, dtype=self.dtype, device=self.device) 
 
         # 对于每个窗口，将其内容添加到输出张量的对应位置
         for i in range(num_windows):
@@ -3299,7 +3299,8 @@ class TN:
         
         # 创建新的张量对象
         ret = tensor(expanded_data, 
-                     requires_grad=(is_grad_enabled() and self.requires_grad))
+                     requires_grad=(is_grad_enabled() and self.requires_grad),
+                     device=self.device)
         ret.is_leaf = not ret.requires_grad
         
         # 设置梯度跟踪信息
@@ -3415,12 +3416,12 @@ class TN:
 
     def argmax(self,dim:int|None=None,keepdim:bool=False):  # type: ignore
         idx = self.data.argmax(axis=dim,keepdims=keepdim)
-        ret = tensor(idx, dtype = int64)        
+        ret = tensor(idx, dtype = int64, device=self.device)        
         return ret
     
     def argmin(self,dim:int|None=None,keepdim:bool=False):  # type: ignore
         idx = self.data.argmin(axis=dim,keepdims=keepdim)
-        ret = tensor(idx, dtype = int64)
+        ret = tensor(idx, dtype = int64, device=self.device)
         return ret
 
     def argsort(self,dim:int=-1,descending:bool=False):  # type: ignore
@@ -3676,7 +3677,7 @@ class TN:
             # 如已有梯度值，累计梯度
             if create_graph:
                 # 如果梯度也保存计算图信息，用张量加法，但不能用原地+=
-                target.grad = target.grad_value + self
+                target.grad = target.grad + self
             else:
                 # 如果不保存梯度的计算图信息，直接对data原地加法
                 target.grad.data += self.data
@@ -5186,7 +5187,6 @@ def _sum_backward(result_tensor:TN,i:int)->TN:
         new_result_grad = result_tensor.grad_value
     
     x=result_tensor.fromvars[i]
-    # mask = tensor(np.ones_like(x.data,dtype=x.data.dtype))
     mask = ones_like(x)
     grad = new_result_grad * mask
     
@@ -6635,7 +6635,8 @@ def where(cond: TN, x: TN | int | float, y: TN | int | float) -> TN:
 def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | None = None) -> TN | Tuple[TN, ...]:
     
     if not isinstance(cond,TN):
-        cond = tensor(cond)
+        # cond = tensor(cond)
+        raise ValueError('cond must be a tensor')
     
     arrlib = cond._get_array_lib()
 
@@ -6643,7 +6644,7 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
         tup = arrlib.where(cond.data)
         lst = []
         for idx_arr in tup:
-            lst.append(tensor(idx_arr))
+            lst.append(tensor(idx_arr,device=cond.device))
         return tuple(lst)
 
     if x is None or y is None:
@@ -6772,7 +6773,6 @@ def _split_backward(result_tensor: TN, i: int) -> TN:
     split_indices, dim, split_pos = result_tensor.parms[i]
     parent = result_tensor.fromvars[i]
     
-    # grad = tensor(np.zeros_like(parent.data,dtype=parent.data.dtype))
     grad = zeros_like(parent)
 
     # 梯度切片计算逻辑
@@ -7553,7 +7553,7 @@ def diagonal(
         output_shape.pop(builtins.max(dim1, dim2))
         output_shape[builtins.min(dim1, dim2)] = 0
         # 将列表转换为元组并解包传递给zeros函数
-        return zeros(*tuple(output_shape), dtype=input.dtype, requires_grad=input.requires_grad)
+        return zeros(*tuple(output_shape), dtype=input.dtype, device=input.device, requires_grad=input.requires_grad)
     
     
     # 创建对角线索引
@@ -7621,7 +7621,7 @@ def diag(input: TN, offset: int = 0) -> TN:
         n = input.data.shape[0]
         
         # 创建单位矩阵模板
-        identity_tensor = eye(n)
+        identity_tensor = eye(n, device = input.device, dtype = input.dtype)
         
         # 使用广播机制生成对角矩阵
         # 将输入张量扩展维度，然后与单位矩阵相乘
@@ -7701,7 +7701,7 @@ def fill_diagonal(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int =
  
     # 准备填充值
     if not isinstance(value, TN):
-        fill_value = tensor(value, dtype = input.dtype,device=input.device)
+        fill_value = tensor(value, dtype = input.dtype, device=input.device)
     else:
         fill_value = value
 
@@ -7776,7 +7776,7 @@ def fill_diagonal_(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int 
  
     # 准备填充值
     if not isinstance(value, TN):
-        fill_value = tensor(value, dtype = input.dtype,device=input.device)
+        fill_value = tensor(value, dtype = input.dtype, device=input.device)
     else:
         fill_value = value
 
@@ -7805,7 +7805,7 @@ def batch_diag(v):
     n = shape[-1]  # 最后一维的大小
     
     # 创建单位矩阵模板，确保与输入张量的数据类型一致
-    identity_tensor = eye(n, dtype=v.dtype)
+    identity_tensor = eye(n, device=v.device, dtype=v.dtype)
     
     # 使用广播机制生成对角矩阵
     # 将输入张量扩展维度，然后与单位矩阵相乘
@@ -7849,7 +7849,7 @@ def nonzero(input: TN, *, as_tuple: bool = False) -> TN | Tuple[TN, ...]:
     
     if as_tuple:
         # 返回元组形式，每个维度一个张量
-        result = tuple(tensor(idx) for idx in indices)
+        result = tuple(tensor(idx,device=input.device) for idx in indices)
     else:
         # 返回二维张量形式，每行是一个坐标
         if len(indices) > 0:

@@ -730,7 +730,7 @@ def _compute_multi_axis_norm(A: TN, p: int | float | str | None, dim: tuple, kee
                     result_shape[d] = 1
                 else:
                     result_shape.pop(d)
-            return zeros(tuple(result_shape), requires_grad=A.requires_grad)
+            return zeros(tuple(result_shape), device=dev, requires_grad=A.requires_grad)
     
     if p == 0:
         raise ValueError("Multi-axis norm does not support p=0")
