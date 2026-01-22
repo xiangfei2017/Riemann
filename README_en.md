@@ -1,48 +1,170 @@
 # Riemann
 
-Riemann is a lightweight automatic differentiation library and neural network programming framework that supports automatic gradient tracking for scalars, vectors, and tensors. It provides common components needed for building neural networks, compatible with PyTorch, and specifically designed for learning, education, and research related to neural networks.
+Riemann is a lightweight automatic differentiation library and neural network programming framework that supports automatic gradient tracking for scalars/vectors/tensors, provides common components needed for building neural networks, has PyTorch-compatible interfaces, and is designed for neural network-related learning, education, and research purposes.
 
-## Key Features
 
-- **Automatic Differentiation**: Supports real and complex tensor computation and backpropagation algorithm for automatic differentiation, provides `backward` and `grad` functions for efficient gradient calculation, supports backward gradient tracking in scalar, vector, matrix, and multi-dimensional tensor computations, and enables custom gradient tracking functions via the `track_grad` decorator or `Function` class
-- **Tensor Operations**: Provides rich tensor operation functionality, including: addition, subtraction, multiplication, division, mathematical functions, indexing operations, shape operations, dimension expansion/reduction, stacking/splitting, tensor serialization/deserialization
-- **Neural Network Components**: Contains basic neural network modules, activation functions, loss functions, and optimizers
-- **Computer Vision Support**: Provides commonly used dataset classes and image transformation functions, supporting loading and preprocessing of datasets such as MNIST and CIFAR10
-- **CUDA Support**: Provides GPU acceleration, Supports migration of tensors and models between CPU and GPU
+## Feature Introduction
 
-## Module Structure
+### 1. Tensor Operations
+- Provides tensor creation functions (tensor, zeros, ones, randn, normal, etc., supporting complex tensors)
+- Supports basic mathematical operations (addition, subtraction, multiplication, division, exponentiation, exponential, logarithmic, trigonometric, hyperbolic functions, and statistical functions like sum, mean, variance, standard deviation)
+- Supports vector and matrix operations (batch matrix multiplication, vector dot product, matrix determinant, matrix inverse, matrix decomposition, etc.)
+- Supports tensor shape reshaping, dimension expansion/contraction, indexing and slicing, element gathering/scattering, concatenation/splitting, etc.
+- Supports tensor serialization/deserialization for easy model training and deployment
 
-```
-riemann/                 # Main package
-├── autograd             # Automatic differentiation module
-│   └── functional       # Automatic differentiation functional interface
-├── linalg               # Linear algebra module
-├── nn                   # Neural network module
-│   └── functional       # Neural network functions
-├── optim                # Optimizer module
-├── utils                # Utility functions module
-│   └── data             # Data processing utilities
-├── vision               # Computer vision module
-│   ├── datasets         # Dataset classes
-│   └── transforms       # Image transformation operations
-└── cuda                 # CUDA/GPU support
-```
+### 2. Automatic Differentiation
+- **backward method**: Triggers backpropagation to calculate gradients
+- **grad function**: Calculates gradients of functions with respect to inputs
+- **track_grad decorator and Function class**: Supports custom gradient tracking functions
+- **Jacobian and Hessian matrices**: Supports Jacobian matrix calculation for multi-input multi-output functions, and Hessian matrix calculation for multi-input functions
+
+### 3. Linear Algebra Module
+- Provides matrix decompositions with reverse gradient tracking (SVD, PLU, QR, etc.)
+- Supports matrix inverse, pseudo-inverse, determinant, eigenvalues/eigenvectors
+- Matrix norm and condition number calculation
+- Supports linear equation solving and least squares solving
+
+### 4. Neural Network Module
+- Basic layers (Linear, Dropout, BatchNorm, LayerNorm, Embedding, etc.)
+- Activation functions (ReLU, Sigmoid, Softmax, etc.)
+- Convolution and pooling layers (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, etc.)
+- Loss functions (MSE, CrossEntropy, etc.)
+- Optimizers (SGD, Adam, Adagrad, LBFGS, etc.)
+- Network module containers (Sequential, ModuleList, ModuleDict, etc.)
+
+### 5. Computer Vision Module
+- Dataset classes:
+  - **MNIST**: Handwritten digit recognition dataset
+  - **CIFAR10**: 10-class color image dataset
+
+- Image transforms:
+  - **Basic transforms**: ToTensor, ToPILImage, Normalize
+  - **Geometric transforms**: Resize, CenterCrop, RandomResizedCrop, FiveCrop, TenCrop, Pad
+  - **Random transforms**: RandomHorizontalFlip, RandomVerticalFlip, RandomRotation, RandomGrayscale
+  - **Color transforms**: ColorJitter, Grayscale
+  - **Composite transforms**: Compose, Lambda
+
+### 6. CUDA/GPU Support
+- Provides GPU acceleration, supports tensor and model migration between CPU and GPU
+- Optimized GPU computation performance
+
+
+## Application Scenarios
+
+- **Deep learning research**: Custom model and algorithm development
+- **Scientific computing**: Gradient calculation for complex mathematical models
+- **Optimization problem solving**: Gradient descent and Adam optimization algorithms
+- **Computer vision**: Image classification, object detection and other vision tasks
+- **Education and teaching**: Learning automatic differentiation and deep learning principles
+
 
 ## PyTorch Interface Compatibility
 
-The Riemann library is designed with attention to PyTorch interface compatibility, maintaining consistent interfaces for functions and classes with the same names, making it easy for PyTorch users to get started quickly:
+Riemann library is designed with a focus on compatibility with PyTorch interfaces, with consistent interfaces for functions and classes with the same names, making it easy for PyTorch users to get started:
 
-- **Tensor Operations**: Supports tensor operation functions and methods with the same names as PyTorch, such as `tensor()`, `grad()`, `backward()`, etc.
-- **Neural Network Components**: Layers, activation functions, and loss functions in the `nn` module maintain interface compatibility with PyTorch
-- **Optimizers**: Optimizers in the `optim` module (such as SGD, Adam, etc.) maintain consistent interfaces with PyTorch
-- **Automatic Differentiation Mechanism**: `requires_grad`, backpropagation mechanisms are similar to PyTorch
-- **Computer Vision**: Datasets and transformations in the `vision` module maintain interface compatibility with torchvision
+- **Tensor operations**: Supports tensor operation functions and methods with the same names as PyTorch, such as `tensor()`, `grad()`, `backward()`, etc.
+- **Neural network components**: Layers, activation functions and loss functions in the `nn` module are interface-compatible with PyTorch
+- **Optimizers**: Optimizers (such as SGD, Adam, etc.) in the `optim` module have consistent interfaces with PyTorch
+- **Automatic differentiation mechanism**: `requires_grad` and backpropagation mechanism are similar to PyTorch
+- **Computer vision**: Datasets and transforms in the `vision` module are interface-compatible with torchvision
 
 This design allows users familiar with PyTorch to easily migrate to the Riemann library for development and research work.
 
-## Installation
 
-### Install from PyPI (To Be Released)
+## Project Folder Structure
+
+```
+Riemann/
+├── src/
+│   └── riemann/              # Core source code
+│       ├── autograd/         # Automatic differentiation related modules
+│       ├── nn/               # Neural network modules
+│       ├── utils/            # Utility functions
+│       ├── vision/           # Computer vision modules
+│       ├── __init__.py       # Package configuration file
+│       ├── dtype.py          # Data type definitions
+│       ├── gradmode.py       # Gradient mode control
+│       ├── linalg.py         # Linear algebra functions
+│       ├── optim.py          # Optimizers
+│       ├── serialization.py  # Object saving and loading
+│       └── tensordef.py      # Tensor definition and core operations
+├── data/                     # Training and testing dataset directory
+├── docs/                     # Project documentation directory
+├── tests/                    # Test files
+├── examples/                     # Example code
+│   ├── backward_demo.py          # Backward propagation example
+│   ├── grad_demo.py              # Gradient calculation example
+│   ├── custom_grad_decorator.py  # Custom gradient tracking function example
+│   ├── optimizers_comparison.py  # Optimizer comparison example
+│   ├── nn_MNIST_CE_SGD.py        # Neural network training example
+│   ├── cnn_CIFAR10_CE_SGD.py     # Convolutional network training example
+│   └── ...
+├── README.md                 # Project documentation
+├── LICENSE                   # License file
+└── pyproject.toml            # Project configuration and dependency management
+```
+
+### Code Directory
+
+The code directory `src/riemann/` is the location of Riemann library's core source code, containing all major functional modules:
+
+- **autograd/**: Implements automatic differentiation functionality, including backpropagation algorithm and gradient calculation
+- **nn/**: Neural network-related components, such as various layers, activation functions, and loss functions
+- **utils/**: Utility functions, including data processing tools
+- **vision/**: Computer vision-related functionality, including datasets and image transforms
+- **Core files**: Such as `tensordef.py` (tensor definition), `linalg.py` (linear algebra), `optim.py` (optimizers), etc.
+
+### tests Directory
+
+The `tests/` directory contains a large number of test cases for verifying that various functions of the Riemann library work correctly:
+
+- Test cases are classified by module, covering various functional modules such as automatic differentiation, tensor operations, neural networks, etc.
+- Test cases can be run in batches using pytest or run individually as standalone scripts
+- Provides detailed test coverage to ensure library stability and reliability
+
+### docs Directory
+
+The `docs/` directory is used to store project documentation:
+
+- Contains detailed API documentation
+- Provides usage guides and tutorials
+- Records project architecture and design decisions
+- Helps users and developers better understand and use the Riemann library
+
+### examples Directory
+
+The `examples/` directory contains various example codes that demonstrate how to use different features of the Riemann library:
+
+- **Basic examples**: Such as backward propagation example (backward_demo.py), gradient calculation example (grad_demo.py)
+- **Custom gradient examples**: Such as custom_grad_decorator.py, demonstrating how to use decorators to customize gradients
+- **Optimizer examples**: Such as optimizers_comparison.py, comparing the performance of different optimizers
+- **Neural network examples**: Such as nn_MNIST_CE_SGD.py (MNIST handwritten digit recognition), cnn_CIFAR10_CE_SGD.py (CIFAR10 image classification)
+
+These example codes provide references for users to actually use the Riemann library, helping users quickly get started and understand the library's functionality.
+
+Riemann provides rich example codes located in the `examples/` directory:
+
+- **backward_demo.py**: Backward function usage demonstration
+- **grad_demo.py**: Grad function usage demonstration
+- **hessian.py**: Hessian matrix calculation example
+- **jacobian.py**: Jacobian matrix calculation example
+- **nn_MNIST_CE_SGD.py**: Neural network training example based on MNIST (cross-entropy loss + SGD optimization)
+- **nn_MNIST_CE_Adam.py**: Neural network training example based on MNIST (cross-entropy loss + Adam optimization)
+- **nn_MNIST_CE_Adagrad.py**: Neural network training example based on MNIST (cross-entropy loss + Adagrad optimization)
+- **nn_MNIST_MSE_GD.py**: Neural network training example based on MNIST (mean squared error + gradient descent)
+- **nn_MNIST_MSE_SGD.py**: Neural network training example based on MNIST (mean squared error + SGD optimization)
+- **nn_MNIST_MSE_LBFGS.py**: Neural network training example based on MNIST (mean squared error + LBFGS optimization)
+- **cnn_CIFAR10_CE_SGD.py**: Convolutional neural network example based on CIFAR10 (cross-entropy loss + SGD optimization)
+- **cnn_CIFAR10_CE_Adam.py**: Convolutional neural network example based on CIFAR10 (cross-entropy loss + Adam optimization)
+- **optimizers_comparison.py**: Optimizer performance comparison
+- **scatter.py**: Tensor scatter operation example
+- **custom_grad_decorator.py**: Example of using @track_grad decorator to customize gradient tracking functions
+- **custom_grad_FunctionClass.py**: Example of using Function class to customize gradient tracking functions
+
+
+## Installation Method
+
+### Install from PyPI (to be released)
 
 ```bash
 pip install riemann
@@ -54,36 +176,109 @@ pip install riemann
 # Get Riemann library source code from Gitee
 git clone https://gitee.com/xfcode2021/Riemann.git
 cd Riemann
-# Install the package and its core dependencies in development mode (-e means editable mode, no need to reinstall after code modification)
+# Install package and its core dependencies in development mode (-e means editable mode, no need to reinstall after modifying code)
 pip install -e .
 
-# If you need to run test code in the tests directory, you also need to install testing dependencies
+# If you need to run test code in the tests directory, you also need to install test dependencies
 pip install -e .[tests]
 
 # If you need to use CUDA/GPU acceleration, you also need to install CUDA dependencies
 pip install -e .[cuda]
 ```
 
-### Dependency Notes
+### Dependency Description
 
-Riemann library's core dependencies include:
+The core dependencies of the Riemann library include:
 - **numpy>=1.20.0**: Core numerical computation library
-- **scipy>=1.7.0**: Linear algebra algorithms library
+- **scipy>=1.7.0**: Linear algebra algorithm library
 - **pillow>=8.0.0**: Used for image processing functionality in computer vision (provides PIL module)
 - **tqdm>=4.0.0**: Used for progress bar display in neural network training
 
-numpy, pillow, and tqdm are already included as core dependencies in the package installation and do not need to be installed separately.
+numpy, pillow, and tqdm are included as core dependencies in the package installation and do not need to be installed separately.
 
-Dependencies may vary slightly among different example files, and specific dependency information will be explained in the header comments of each example file.
+The dependencies in each example file may be slightly different, and specific dependency information will also be stated in the header comments of each example file.
 
-## Quick Start
+
+## Usage Method
+
+### Riemann Package Module Structure
+
+```
+riemann                  # Main package
+├── autograd             # Automatic differentiation module
+│   └── functional       # Automatic differentiation functional interface
+├── linalg               # Linear algebra module
+├── nn                   # Neural network module
+│   └── functional       # Neural network functions
+├── optim                # Optimizer module
+├── utils                # Utility function module
+│   └── data             # Data processing tools
+├── vision               # Computer vision module
+│   ├── datasets         # Dataset classes
+│   └── transforms       # Image transform operations
+└── cuda                 # CUDA/GPU support
+```
+
+#### Module Import Examples
+
+**Import the entire riemann module:**
 
 ```python
+import riemann as r
+
+# Use tensor creation function
+t = r.tensor([1.0, 2.0, 3.0])
+
+# Use automatic differentiation functionality
+x = r.tensor([1.0, 2.0], requires_grad=True)
+y = x ** 2
+y.sum().backward()
+print(x.grad)  # Output: [2. 4.]
+```
+
+**Import required functions and classes by module tree:**
+
+```python
+# Import tensor-related functionality
+from riemann import tensor, zeros, ones, randn
+
+# Import automatic differentiation functionality
+from riemann.autograd import grad, backward
+from riemann.autograd.functional import jacobian, hessian
+
+# Import linear algebra functionality
+from riemann import linalg
+from riemann.linalg import svd, det, inv
+
+# Import neural network components
+from riemann.nn import Linear, Conv2d, ReLU, CrossEntropyLoss
+from riemann.nn.functional import relu, cross_entropy
+
+# Import optimizers
+from riemann.optim import SGD, Adam, Adagrad
+
+# Import computer vision functionality
+from riemann.vision.datasets import MNIST, CIFAR10
+from riemann.vision.transforms import Compose, ToTensor, Normalize, RandomHorizontalFlip
+
+# Import CUDA support
+from riemann import cuda
+from riemann.cuda import is_available, Device
+```
+
+### Example 1: Derivative (Gradient) Calculation Example
+
+```python
+# Example 1: Derivative (Gradient) Calculation Example
+# This example demonstrates two methods of calculating gradients:
+# 1. Using the grad function to directly calculate the gradient of a function with respect to input
+# 2. Using the backward method to calculate gradients through backpropagation
+
 # Import riemann library
 from riemann import tensor
 from riemann.autograd import grad
 
-# Create tensors
+# Create tensor
 t = tensor([1.0, 2.0, 3.0], requires_grad=True)
 
 # Define function
@@ -95,92 +290,22 @@ output = f(t)
 grad_f = grad(output, t)[0]
 print("Gradient:", grad_f)  # Output: Gradient: [2. 4. 6.]
 
-# Backpropagation example
+# Backward propagation example
 x = tensor([1.0, 2.0], requires_grad=True)
 y = tensor([3.0, 4.0], requires_grad=True)
 z = (x * y).sum()
 z.backward()
-print("Gradient of x:", x.grad)  # Output: Gradient of x: [3. 4.]
-print("Gradient of y:", y.grad)  # Output: Gradient of y: [1. 2.]
+print("x's gradient:", x.grad)  # Output: x's gradient: [3. 4.]
+print("y's gradient:", y.grad)  # Output: y's gradient: [1. 2.]
 ```
 
-## Core Features
-
-### 1. Tensor Operations
-- Provides tensor creation functions (tensor, zeros, ones, random, etc.) with support for complex tensors
-- Supports basic mathematical operations (addition, subtraction, multiplication, division, exponentiation, elementary functions like exponential, logarithmic, trigonometric, hyperbolic functions, statistical functions like sum, mean, variance, standard deviation, etc.)
-- Supports vector and matrix operations (batch matrix multiplication, vector dot product, matrix determinant, matrix inverse, matrix factorization, etc.)
-- Supports tensor shape reshaping, dimension expansion/reduction, indexing and slicing, element gathering/scattering, concatenation/splitting, etc.
-- Supports tensor serialization/deserialization, facilitating model training and deployment
-
-### 2. Automatic Differentiation
-- **backward method**: Triggers backpropagation to compute gradients
-- **grad function**: Computes gradients of functions with respect to inputs
-- **track_grad Decorator and Function Class**: Support custom gradient tracking functions
-
-### 3. Jacobian and Hessian Matrices
-- Supports Jacobian matrix computation for multi-input multi-output functions
-- Provides Hessian matrix computation functionality for second-order derivatives
-- Efficient computation of Jacobian-vector products and vector-Jacobian products
-- Supports Hessian-vector product and vector-Hessian product computation
-
-### 4. Linear Algebra Module
-- Provides matrix factorization and backward gradient tracking (SVD, PLU, QR, etc.)
-- Supports calculation of matrix inverse, pseudo-inverse, determinant, eigenvalues/eigenvectors
-- Matrix norm and condition number computation
-- Supports linear equation solving and least squares solving
-
-### 5. Neural Network Modules
-- Basic layers (Linear, Dropout, BatchNorm, LayerNorm, Embedding, etc.)
-- Activation functions (ReLU, Sigmoid, Softmax, etc.)
-- Convolution and pooling layers (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, etc.)
-- Loss functions (MSE, CrossEntropy, etc.)
-- Optimizers (SGD, Adam, Adagrad, LBFGS, etc.)
-- Network module containers (Sequential, ModuleList, ModuleDict, etc.)
-
-### 6. Computer Vision Module
-- Dataset classes: Loading and preprocessing of commonly used datasets such as MNIST, CIFAR10
-- Image transformations: Resize, Crop, Flip, Rotate, Normalize and other image preprocessing operations
-
-## Project Structure
-
-```
-Riemann/
-├── src/
-│   └── riemann/              # Core source code
-│       ├── autograd/         # Automatic differentiation related modules
-│       ├── nn/               # Neural network module
-│       ├── utils/            # Utility functions
-│       ├── vision/           # Computer vision module
-│       ├── __init__.py       # Package configuration file
-│       ├── dtype.py          # Data type definitions
-│       ├── gradmode.py       # Gradient mode control
-│       ├── linalg.py         # Linear algebra functions
-│       ├── optim.py          # Optimizers
-│       ├── serialization.py  # Object saving and loading
-│       └── tensordef.py      # Tensor definition and core operations
-├── data/                     # Training and test dataset file directory
-├── docs/                     # Project documentation directory
-├── tests/                    # Test files
-├── examples/                     # Example code
-│   ├── backward_demo.py          # Backpropagation example
-│   ├── grad_demo.py              # Gradient computation example
-│   ├── custom_grad_decorator.py  # Custom gradient tracking function
-│   ├── optimizers_comparison.py  # Optimizer comparison example
-│   ├── nn_MNIST_CE_SGD.py        # Neural network training example
-│   ├── cnn_CIFAR10_CE_SGD.py     # CNN training example
-│   └── ...
-├── README.md                 # Project documentation
-├── README_en.md              # English project documentation
-├── LICENSE                   # License file
-└── pyproject.toml            # Project configuration and dependency management
-```
-
-## More Examples
-
-### Jacobian Matrix Computation
+### Example 2: Jacobian Matrix Calculation Example
 
 ```python
+# Example 2: Jacobian Matrix Calculation Example
+# This example demonstrates how to use the jacobian function to calculate the Jacobian matrix of a function with respect to input
+# The Jacobian matrix is a matrix of partial derivatives of function outputs with respect to inputs, which is very important for multi-input multi-output functions
+
 from riemann import tensor
 from riemann.autograd.functional import jacobian
 
@@ -191,15 +316,19 @@ def f(x):
 # Create input tensor
 x = tensor([1.0, 2.0, 3.0], requires_grad=True)
 
-# Compute Jacobian matrix
+# Calculate Jacobian matrix
 jacob = jacobian(f, x)
 print("Jacobian matrix:", jacob)
 ```
 
-### Neural Network Training
+### Example 3: Simple Neural Network Training Example
 
 ```python
-# Neural network training example: Train a network to find the sum of two numbers, this model is essentially linear regression
+# Example 3: Simple Neural Network Training Example
+# This example demonstrates how to train a simple neural network (linear regression model) to sum two numbers
+# Including model creation, loss function definition, optimizer configuration, training loop, and prediction process
+
+# Neural network training example: training a network for summing two numbers, this network model is essentially a linear regression
 from riemann import tensor
 from riemann.nn import Linear, MSELoss
 from riemann.optim import SGD
@@ -219,7 +348,7 @@ for epoch in range(100):
     outputs = model(inputs)
     loss = criterion(outputs, targets)
     
-    # Backpropagation and optimization
+    # Backward propagation and optimization
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
@@ -233,63 +362,13 @@ prediction = model(new_input)
 print(f'Prediction result: {prediction.item()}')
 ```
 
-### Computer Vision Support
-
-Riemann provides rich computer vision functionality, including commonly used dataset classes and image transformation functions:
-
-### Supported Datasets
-
-- **MNIST**: Handwritten digit recognition dataset
-- **CIFAR10**: 10-class color image dataset
-
-### Supported Image Transformations
-
-- **Basic transformations**: ToTensor, ToPILImage, Normalize
-- **Geometric transformations**: Resize, CenterCrop, RandomResizedCrop, FiveCrop, TenCrop, Pad
-- **Random transformations**: RandomHorizontalFlip, RandomVerticalFlip, RandomRotation, RandomGrayscale
-- **Color transformations**: ColorJitter, Grayscale
-- **Combined transformations**: Compose, Lambda
-
-### Computer Vision Dataset Loading
+### Example 4: Simple Convolutional Neural Network Training Example
 
 ```python
-from riemann.vision.datasets import MNIST, CIFAR10
-from riemann.vision.transforms import Compose, ToTensor, Normalize, RandomHorizontalFlip
+# Example 4: Simple Convolutional Neural Network Training Example
+# This example demonstrates how to use a convolutional neural network (CNN) to train a CIFAR10 image classification model
+# Including model definition, data loading and preprocessing, training loop, model evaluation, and single sample inference
 
-# Define MNIST transformations
-mnist_transform = Compose([
-    ToTensor(),
-    Normalize((0.1307,), (0.3081,))  # MNIST normalization parameters
-])
-
-# Define CIFAR10 training set transformations (including data augmentation)
-cifar10_train_transform = Compose([
-    RandomHorizontalFlip(),  # Random horizontal flip
-    ToTensor(),
-    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # Actual CIFAR10 normalization parameters
-])
-
-# Define CIFAR10 test set transformations (without data augmentation)
-cifar10_test_transform = Compose([
-    ToTensor(),
-    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # Actual CIFAR10 normalization parameters
-])
-
-# Load MNIST dataset
-train_dataset = MNIST(root='data', train=True, transform=mnist_transform)
-test_dataset = MNIST(root='data', train=False, transform=mnist_transform)
-
-# Load CIFAR10 dataset
-cifar10_train = CIFAR10(root='data', train=True, transform=cifar10_train_transform)
-cifar10_test = CIFAR10(root='data', train=False, transform=cifar10_test_transform)
-
-print(f"MNIST training set size: {len(train_dataset)}")
-print(f"CIFAR10 test set size: {len(cifar10_test)}")
-```
-
-### CNN Example
-
-```python
 import riemann as r
 from riemann.vision.datasets import CIFAR10
 from riemann.vision.transforms import *
@@ -300,13 +379,13 @@ from riemann.optim import SGD
 class SimpleCNN(r.Module):
     def __init__(self):
         super(SimpleCNN, self).__init__()
-        # Use only 1 convolutional layer
+        # Only use 1 convolutional layer
         self.conv1 = Conv2d(3, 16, kernel_size=3, padding=1)
         self.relu1 = ReLU()
         self.pool1 = MaxPool2d(kernel_size=2, stride=2)
         
         self.flatten = Flatten()
-        # After pooling, image size changes from 32x32 to 16x16, with 16 channels
+        # After pooling, the image size changes from 32x32 to 16x16, with 16 channels
         self.fc1 = Linear(16 * 16 * 16, 10)  # Directly output 10 classes
     
     def forward(self, x):
@@ -316,22 +395,22 @@ class SimpleCNN(r.Module):
         return x
 
 # Load data
-# Training set uses data augmentation, test set does not
+# Use data augmentation for training set, not for test set
 train_transform = Compose([
     RandomHorizontalFlip(),  # Random horizontal flip
     ToTensor(),
-    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # Actual CIFAR10 normalization parameters
+    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10 actual normalization parameters
 ])
 
 test_transform = Compose([
     ToTensor(),
-    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # Actual CIFAR10 normalization parameters
+    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10 actual normalization parameters
 ])
 
 train_dataset = CIFAR10(root='data', train=True, transform=train_transform)
 test_dataset = CIFAR10(root='data', train=False, transform=test_transform)
 
-# Reduce batch size and data amount to speed up testing
+# Reduce batch size and data volume to speed up testing
 train_loader = r.utils.DataLoader(train_dataset, batch_size=100, shuffle=True)
 test_loader = r.utils.DataLoader(test_dataset, batch_size=100, shuffle=False)
 
@@ -343,7 +422,7 @@ optimizer = SGD(model.parameters(), lr=0.01)
 # Training loop
 from tqdm import tqdm
 
-for epoch in range(3):  # Train 3 epochs
+for epoch in range(3):  # Train for 3 epochs
     total_loss = 0
     # Use tqdm to display progress bar
     progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/3")
@@ -353,7 +432,7 @@ for epoch in range(3):  # Train 3 epochs
         output = model(data)
         loss = criterion(output, target)
         
-        # Backpropagation
+        # Backward propagation
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -366,7 +445,7 @@ for epoch in range(3):  # Train 3 epochs
     avg_loss = total_loss/len(train_loader)
     print(f"Epoch {epoch+1}, Average Loss: {avg_loss:.4f}")
 
-# Model evaluation (inference testing)
+# Model evaluation (inference test)
 model.eval()  # Set to evaluation mode
 correct = 0
 total = 0
@@ -374,7 +453,7 @@ total = 0
 # Use tqdm to display test progress
 test_progress_bar = tqdm(test_loader, desc="Testing")
 
-with r.no_grad():  # Disable gradient computation
+with r.no_grad():  # Disable gradient calculation
     for data, target in test_progress_bar:
         # Forward propagation
         outputs = model(data)
@@ -394,26 +473,30 @@ print(f"Test set accuracy: {test_accuracy:.2f}% ({correct}/{total})")
 
 # Single sample inference example
 sample_data, sample_target = next(iter(test_loader))
-sample_output = model(sample_data[:1])  # Take only the first sample
+sample_output = model(sample_data[:1])  # Only take the first sample
 _, predicted_class = r.max(sample_output, 1)
-print(f"Sample predicted class: {predicted_class.item()}, Actual class: {sample_target[0].item()}")
+print(f"Sample predicted class: {predicted_class.item()}, actual class: {sample_target[0].item()}")
 
-print("CNN training and inference testing completed!")
+print("CNN training and inference test completed!")
 ```
 
-### Image Transformation Example
+### Example 5: Image Transform Example
 
 ```python
+# Example 5: Image Transform Example
+# This example demonstrates how to use Riemann's image transform functionality to preprocess images
+# Including operations such as resizing, center cropping, random horizontal flipping, converting to tensor, and normalization
+
 from riemann.vision.transforms import Compose, ToTensor, Normalize, Resize, CenterCrop, RandomHorizontalFlip
 from PIL import Image
 
-# Define transformation sequence
+# Define transform sequence
 transform = Compose([
     Resize(256),               # Resize image
     CenterCrop(224),           # Center crop
     RandomHorizontalFlip(),    # Random horizontal flip
     ToTensor(),                # Convert to tensor
-    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalize
+    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalization
 ])
 
 # Load and transform image
@@ -422,41 +505,126 @@ transformed_image = transform(image)
 print(f"Transformed image shape: {transformed_image.shape}")  # Output: (3, 224, 224)
 ```
 
-> ## Example Descriptions
+#### Example 6: GPU Acceleration Example
 
-  Riemann provides rich example code located in the `examples/` directory:
+```python
+# Example 6: GPU Acceleration Example
+# This example demonstrates how to use GPU acceleration for neural network training in Riemann
+# Including device detection and setup, model and data device migration, training and evaluation process on GPU
 
-  - **backward_demo.py**: Demonstration of backward function usage
-  - **grad_demo.py**: Demonstration of grad function usage
-  - **hessian.py**: Hessian matrix computation example
-  - **jacobian.py**: Jacobian matrix computation example
-  - **nn_MNIST_CE_SGD.py**: Handwritten digit recognition neural network example based on MNIST (Cross-entropy loss + SGD optimizer)
-  - **nn_MNIST_CE_Adam.py**: Handwritten digit recognition neural network example based on MNIST (Cross-entropy loss + Adam optimizer)
-  - **nn_MNIST_CE_Adagrad.py**: Handwritten digit recognition neural network example based on MNIST (Cross-entropy loss + Adagrad optimizer)
-  - **nn_MNIST_MSE_SGD.py**: Handwritten digit recognition neural network example based on MNIST (Mean squared error loss + SGD optimizer)
-  - **nn_MNIST_MSE_GD.py**: Handwritten digit recognition neural network example based on MNIST (Mean squared error loss + Gradient descent optimizer)
-  - **nn_MNIST_MSE_LBFGS.py**: Handwritten digit recognition neural network example based on MNIST (Mean squared error loss + LBFGS optimizer)
-  - **cnn_CIFAR10_CE_SGD.py**: Convolutional neural network example based on CIFAR10 (Cross-entropy loss + SGD optimizer)
-  - **cnn_CIFAR10_CE_Adam.py**: Convolutional neural network example based on CIFAR10 (Cross-entropy loss + Adam optimizer)
-  - **custom_grad_decorator.py**: Example of custom gradient tracking using decorators
-  - **custom_grad_FunctionClass.py**: Example of custom gradient tracking using Function class
-  - **optimizers_comparison.py**: Optimizer performance comparison
-  - **scatter.py**: Tensor scatter operation example
+import riemann as r
+from riemann.nn import Linear, CrossEntropyLoss
+from riemann.optim import Adam
+from riemann.vision.datasets import MNIST
+from riemann.vision.transforms import Compose, ToTensor, Normalize
 
-## Testing Methods
+# Check if CUDA is available
+device = r.device('cuda' if r.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
 
-### Running Tests in Batches with pytest
+# Define simple neural network model
+class SimpleNN(r.Module):
+    def __init__(self):
+        super(SimpleNN, self).__init__()
+        self.flatten = r.nn.Flatten()
+        self.fc1 = Linear(28*28, 128)
+        self.relu = r.nn.ReLU()
+        self.fc2 = Linear(128, 10)
+    
+    def forward(self, x):
+        x = self.flatten(x)
+        x = self.relu(self.fc1(x))
+        x = self.fc2(x)
+        return x
 
-Riemann uses pytest as its testing framework. You can use the following commands to run all tests in batches:
+# Load MNIST dataset
+transform = Compose([
+    ToTensor(),
+    Normalize((0.1307,), (0.3081,))
+])
+
+train_dataset = MNIST(root='data', train=True, transform=transform)
+test_dataset = MNIST(root='data', train=False, transform=transform)
+
+train_loader = r.utils.DataLoader(train_dataset, batch_size=128, shuffle=True)
+test_loader = r.utils.DataLoader(test_dataset, batch_size=128, shuffle=False)
+
+# Create model and move to specified device
+model = SimpleNN().to(device)
+criterion = CrossEntropyLoss()
+optimizer = Adam(model.parameters(), lr=0.001)
+
+# Training loop
+from tqdm import tqdm
+
+num_epochs = 5
+for epoch in range(num_epochs):
+    model.train()
+    total_loss = 0
+    progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+    
+    for batch_idx, (data, target) in enumerate(progress_bar):
+        # Move data to specified device
+        data, target = data.to(device), target.to(device)
+        
+        # Forward propagation
+        output = model(data)
+        loss = criterion(output, target)
+        
+        # Backward propagation and optimization
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item()
+        progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
+    
+    avg_loss = total_loss / len(train_loader)
+    print(f"Epoch {epoch+1}, Average Loss: {avg_loss:.4f}")
+
+# Model evaluation
+model.eval()
+correct = 0
+total = 0
+
+with r.no_grad():
+    test_progress_bar = tqdm(test_loader, desc="Testing")
+    for data, target in test_progress_bar:
+        # Move data to specified device
+        data, target = data.to(device), target.to(device)
+        
+        # Forward propagation
+        outputs = model(data)
+        
+        # Get prediction results
+        _, predicted = r.max(outputs, 1)
+        total += target.size(0)
+        correct += (predicted == target).sum().item()
+        
+        current_accuracy = 100 * correct / total
+        test_progress_bar.set_postfix({"Accuracy": f"{current_accuracy:.2f}%"})
+
+# Output final test accuracy
+test_accuracy = 100 * correct / total
+print(f"Test set accuracy: {test_accuracy:.2f}% ({correct}/{total})")
+```
+
+## Testing Method
+
+The tests directory in the Riemann project folder includes test cases that cover all functionalities, which can be run in batches using pytest or as standalone scripts.
+
+### Run Tests in Batches with pytest
+
+You can use the following commands to run all tests in batches:
 
 ```bash
 # Run all test files in the tests directory
 pytest tests
 
-# Run specific test file
+# Run specific test files
 pytest tests/test_010_grad.py
 
-# Run specific test class or method
+# Run specific test classes or methods
 pytest tests/test_011_jacobian.py::TestJacobianFunctions::test_single_input_single_output
 
 # Run tests and generate coverage report
@@ -466,7 +634,7 @@ pytest --cov=riemann tests/
 pytest tests/test_052_vision.py
 ```
 
-### Running Test Scripts Individually
+### Run Test Scripts Individually
 
 You can also run test scripts individually:
 
@@ -476,25 +644,6 @@ python test_010_grad.py
 # Run other test scripts
 ```
 
-## Technical Features
-
-- **Efficient Implementation**: Optimized automatic differentiation algorithms
-- **Easy-to-use API**: Concise and clear interface design,Highly compatible with PyTorch interfaces
-- **Flexible Extension**: Supports custom operations and derivative rules
-- **Comprehensive Testing**: Full unit test coverage
-- **Computer Vision Support**: Provides commonly used datasets and image transformation functions
-
-## Application Scenarios
-
-- **Deep Learning Research**: Custom model and algorithm development
-- **Scientific Computing**: Gradient computation for complex mathematical models
-- **Optimization Problem Solving**: Gradient descent and Adam optimization algorithms
-- **Computer Vision**: Image classification, object detection, and other vision tasks
-- **Education and Teaching**: Learning automatic differentiation and deep learning principles
-
-## Contributing Guide
-
-Issues and Pull Requests are welcome! Before contributing code, please ensure all tests pass.
 
 ## Third-party Dependencies and Licenses
 
@@ -529,16 +678,14 @@ Issues and Pull Requests are welcome! Before contributing code, please ensure al
 
 ## License
 
-This project is licensed under the BSD 3-Clause License. See the LICENSE file for details.
+This project adopts the BSD 3-Clause license. See the LICENSE file for details.
 
-## Contributing
+## Contribution Guidelines
 
-Issues and pull requests are welcome. Please ensure all contributions comply with the project's coding standards.
+Welcome to submit Issues and Pull Requests! Before contributing code, please ensure all contributions comply with the project's coding standards and pass all tests.
 
-## Contact
+## Contact Information
 
 Author: Fei Xiang
 Email: xfeix@outlook.com
 Gitee: https://gitee.com/xfcode2021
-
-
