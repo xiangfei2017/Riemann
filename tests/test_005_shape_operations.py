@@ -312,21 +312,22 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result)
                     
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
                         # 计算损失
                         rm_loss = rm_result.sum()
                         torch_loss = torch_result.sum()
-                        
                         # 反向传播
                         rm_loss.backward()
                         torch_loss.backward()
-                        
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
@@ -397,21 +398,22 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result)
                     
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
                         # 计算损失
                         rm_loss = rm_result.sum()
                         torch_loss = torch_result.sum()
-                        
                         # 反向传播
                         rm_loss.backward()
                         torch_loss.backward()
-                        
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
@@ -485,21 +487,22 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
                     
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
                         # 计算损失
                         rm_loss = rm_result.sum()
                         torch_loss = torch_result.sum()
-                        
                         # 反向传播
                         rm_loss.backward()
                         torch_loss.backward()
-                        
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
@@ -576,6 +579,9 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
                     
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
@@ -591,7 +597,94 @@ class TestShapeOperations(unittest.TestCase):
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad if torch_result is not None else None)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                        if not passed and TORCH_AVAILABLE:
+                            print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
+                            print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"squeeze测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+    
+    def test_repeat(self):
+        """测试repeat函数"""
+        test_cases = [
+            {"name": "一维张量重复", "shape": (3,), "repeats": (2,)},
+            {"name": "一维张量多维度重复", "shape": (3,), "repeats": (2, 2)},
+            {"name": "二维张量重复", "shape": (2, 2), "repeats": (2, 3)},
+            {"name": "二维张量多维度重复", "shape": (2, 2), "repeats": (2, 1, 2)},
+            {"name": "三维张量重复", "shape": (2, 2, 2), "repeats": (1, 2, 3)},
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"repeat - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True)
+                        else:
+                            torch_x = None
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                        if TORCH_AVAILABLE:
+                            torch_x = torch.tensor(np_x, requires_grad=True, device=device)
+                        else:
+                            torch_x = None
+                    
+                    # 前向传播测试
+                    rm_result = rm_x.repeat(*case["repeats"])
+                    torch_result = None
+                    if TORCH_AVAILABLE:
+                        try:
+                            torch_result = torch_x.repeat(*case["repeats"])
+                        except RuntimeError:
+                            # 如果PyTorch报错，我们也期望Riemann报错
+                            self.fail(f"PyTorch repeat失败但Riemann成功: {case_name}")
+                    
+                    # 比较前向传播结果
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
+                    # 反向传播测试
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        # 计算损失
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        # 反向传播
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        # 比较梯度
+                        backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
@@ -605,7 +698,7 @@ class TestShapeOperations(unittest.TestCase):
                             print(f"  Riemann形状: {rm_result.shape}, PyTorch形状: {torch_result.shape if torch_result is not None else 'N/A'}")
                     
                     # 断言确保测试通过
-                    self.assertTrue(passed, f"squeeze测试失败: {case_name}")
+                    self.assertTrue(passed, f"repeat测试失败: {case_name}")
                     
                 except Exception as e:
                     time_taken = time.time() - start_time
@@ -613,7 +706,7 @@ class TestShapeOperations(unittest.TestCase):
                         stats.add_result(case_name, False, [str(e)])
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
-    
+
     def test_unsqueeze(self):
         """测试unsqueeze函数"""
         test_cases = [
@@ -676,6 +769,9 @@ class TestShapeOperations(unittest.TestCase):
                             forward_passed = True  # 非空元组维度测试只验证Riemann是否正常运行
                     else:
                         forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
+                    
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
                     
                     # 初始化backward_passed，确保在所有情况下都有定义
                     backward_passed = True
@@ -773,6 +869,21 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
                     
+                    # 验证设备是否正确
+                    device_passed = True
+                    if device == "cuda":
+                        # 验证Riemann结果是否在CUDA设备上
+                        device_passed = hasattr(rm_result, 'is_cuda') and rm_result.is_cuda
+                        if TORCH_AVAILABLE:
+                            # 验证PyTorch结果是否在CUDA设备上
+                            device_passed = device_passed and torch_result.is_cuda
+                    else:
+                        # 验证Riemann结果是否在CPU设备上
+                        device_passed = not (hasattr(rm_result, 'is_cuda') and rm_result.is_cuda)
+                        if TORCH_AVAILABLE:
+                            # 验证PyTorch结果是否在CPU设备上
+                            device_passed = device_passed and not torch_result.is_cuda
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
@@ -787,7 +898,7 @@ class TestShapeOperations(unittest.TestCase):
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
@@ -798,6 +909,7 @@ class TestShapeOperations(unittest.TestCase):
                         if not passed and TORCH_AVAILABLE:
                             print(f"  前向传播比较: {'通过' if forward_passed else '失败'}")
                             print(f"  反向传播比较: {'通过' if backward_passed else '失败'}")
+                            print(f"  设备验证: {'通过' if device_passed else '失败'}")
                     
                     # 断言确保测试通过
                     self.assertTrue(passed, f"expand测试失败: {case_name}")
@@ -867,21 +979,22 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
                     
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
                         # 计算损失
                         rm_loss = rm_result.sum()
                         torch_loss = torch_result.sum()
-                        
                         # 反向传播
                         rm_loss.backward()
                         torch_loss.backward()
-                        
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
@@ -949,6 +1062,9 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
                     
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
@@ -963,7 +1079,7 @@ class TestShapeOperations(unittest.TestCase):
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
@@ -1033,21 +1149,22 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
                     
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
                         # 计算损失
                         rm_loss = rm_result.sum()
                         torch_loss = torch_result.sum()
-                        
                         # 反向传播
                         rm_loss.backward()
                         torch_loss.backward()
-                        
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
@@ -1173,21 +1290,22 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result if TORCH_AVAILABLE else None)
                     
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
                         # 计算损失
                         rm_loss = rm_result.sum()
                         torch_loss = torch_result.sum()
-                        
                         # 反向传播
                         rm_loss.backward()
                         torch_loss.backward()
-                        
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
@@ -1260,21 +1378,22 @@ class TestShapeOperations(unittest.TestCase):
                     # 比较前向传播结果
                     forward_passed = compare_values(rm_result, torch_result)
                     
+                    # 检查设备一致性
+                    device_passed = rm_result.device == rm_x.device
+                    
                     # 反向传播测试
                     backward_passed = True
                     if TORCH_AVAILABLE:
                         # 计算损失
                         rm_loss = rm_result.sum()
                         torch_loss = torch_result.sum()
-                        
                         # 反向传播
                         rm_loss.backward()
                         torch_loss.backward()
-                        
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
                     
-                    passed = forward_passed and backward_passed
+                    passed = forward_passed and backward_passed and device_passed
                     
                     time_taken = time.time() - start_time
                     
