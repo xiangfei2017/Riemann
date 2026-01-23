@@ -58,6 +58,7 @@ from typing import List, Tuple, Callable, Any
 import numpy as np
 from ..tensordef import *
 
+
 def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, create_graph: bool = False):
         """执行反向模式自动微分（反向传播）。
 
@@ -404,7 +405,7 @@ def _sum_all(tensors):
     return result
 
 
-def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-5, atol: float = 1e-1, rtol: float = 1e-0, raise_exception: bool = True, check_sparse_nnz: bool = False, fast_mode: bool = False) -> bool:
+def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-6, atol: float = 1e-5, rtol: float = 1e-3, raise_exception: bool = True, check_sparse_nnz: bool = False, fast_mode: bool = False) -> bool:
     """
     验证给定函数的梯度计算是否正确，通过比较数值梯度和解析梯度。
 
@@ -414,7 +415,8 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
     参数：
         func (Callable[..., Any]): 需要验证梯度的函数，该函数应接受一个或多个TN张量作为输入，
                                   并返回一个或多个TN张量作为输出。
-        inputs (Tuple[TN, ...]): 用于测试的输入张量元组，所有张量必须设置requires_grad=True。
+        inputs (Tuple[TN, ...]): 用于测试的输入张量元组，所有张量必须设置requires_grad=True，
+                               且必须是双精度（float64）类型。
         eps (float, 可选): 用于计算数值梯度的微小扰动，默认为1e-6。
         atol (float, 可选): 绝对误差容限，默认为1e-5。
         rtol (float, 可选): 相对误差容限，默认为1e-3。
@@ -434,19 +436,20 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
         >>> def f(x, y):
         >>>     return x * y
         >>> 
-        >>> # 准备输入
-        >>> x = tensor(2.0, requires_grad=True)
-        >>> y = tensor(3.0, requires_grad=True)
+        >>> # 准备输入（必须是双精度类型）
+        >>> x = tensor(2.0, requires_grad=True, dtype=np.float64)
+        >>> y = tensor(3.0, requires_grad=True, dtype=np.float64)
         >>> 
         >>> # 验证梯度
         >>> result = gradcheck(f, (x, y))
         >>> print(result)  # 输出: True
 
     注意：
-        1. 该函数目前仅支持实值函数和实值输入。
-        2. 对于具有多个输出的函数，梯度将被求和。
-        3. 小的误差是正常的，尤其是对于复杂函数或使用较大eps值时。
-        4. fast_mode=True可以加速检查，但会降低验证的全面性。
+        1. 该函数要求输入张量必须是双精度（float64）类型，以确保数值梯度计算的精度。
+        2. 该函数目前仅支持实值函数和实值输入。
+        3. 对于具有多个输出的函数，梯度将被求和。
+        4. 小的误差是正常的，尤其是对于复杂函数或使用较大eps值时。
+        5. fast_mode=True可以加速检查，但会降低验证的全面性。
     """
         
     # 验证输入参数
@@ -456,12 +459,20 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
     if not isinstance(inputs, (tuple, list)):
         raise ValueError("inputs must be a tuple or list of tensors")
     
-    # 检查所有输入是否为TN张量且requires_grad=True
+    # 检查是否支持稀疏张量检查
+    if check_sparse_nnz:
+        raise ValueError("check_sparse_nnz is not supported in current version of Riemann (sparse tensors are not implemented)")
+    
+    # 检查所有输入是否为TN张量且requires_grad=True，以及是否为双精度类型
     for i, inp in enumerate(inputs):
         if not isinstance(inp, TN):
             raise ValueError(f"Input {i} must be a TN tensor")
         if not inp.requires_grad:
             raise ValueError(f"Input {i} must have requires_grad=True")
+        if inp.dtype != np.float64:
+            raise ValueError(f"Input {i} must be double precision (float64), got {inp.dtype}")
+        if np.issubdtype(inp.dtype, np.complexfloating):
+            raise ValueError(f"Input {i} is complex, but gradcheck only supports real inputs")
     
     inputs = tuple(inputs)
     
@@ -498,11 +509,12 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
             inputs_neg = list(inputs)
             
             # 计算正向扰动的输出
-            x_pos = input_tensor.copy()
-            # 使用TN张量操作而不是直接修改data
-            delta = zeros_like(x_pos)
-            delta.data[idx] = eps
-            x_pos = x_pos + delta
+            # 为正向扰动创建全新的输入张量
+            x_pos_data = input_tensor.data.copy()
+            x_pos_data[idx] += eps
+            x_pos = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
+            x_pos.data = x_pos_data
+            x_pos.requires_grad = input_tensor.requires_grad
             inputs_pos[i] = x_pos
             outputs_pos = func(*inputs_pos)
             if isinstance(outputs_pos, (tuple, list)):
@@ -511,10 +523,12 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
                 outputs_pos = outputs_pos.sum()
             
             # 计算负向扰动的输出
-            x_neg = input_tensor.copy()
-            delta = zeros_like(x_neg)
-            delta.data[idx] = eps
-            x_neg = x_neg - delta
+            # 为负向扰动创建全新的输入张量
+            x_neg_data = input_tensor.data.copy()
+            x_neg_data[idx] -= eps
+            x_neg = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
+            x_neg.data = x_neg_data
+            x_neg.requires_grad = input_tensor.requires_grad
             inputs_neg[i] = x_neg
             outputs_neg = func(*inputs_neg)
             if isinstance(outputs_neg, (tuple, list)):
@@ -526,20 +540,27 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
             numerical_grad.data[idx] = (outputs_pos.data - outputs_neg.data) / (2 * eps)
         else:
             # 遍历所有元素
-            it = np.nditer(input_tensor.data, flags=['multi_index'], op_flags=['readwrite'])  # type: ignore
-            while not it.finished:
-                idx = it.multi_index
+            # 统一使用索引迭代方法，适用于CUDA和CPU张量
+            # 获取张量形状
+            shape = input_tensor.data.shape
+            # 计算总元素数
+            num_elements = input_tensor.data.size
+            # 遍历每个元素的线性索引
+            for linear_idx in range(num_elements):
+                # 将线性索引转换为多维索引
+                idx = np.unravel_index(linear_idx, shape)
                 
                 # 创建输入副本列表
                 inputs_pos = list(inputs)
                 inputs_neg = list(inputs)
                 
                 # 计算正向扰动的输出
-                x_pos = input_tensor.copy()
-                # 使用TN张量操作而不是直接修改data
-                delta = zeros_like(x_pos)
-                delta.data[idx] = eps
-                x_pos = x_pos + delta
+                # 为正向扰动创建全新的输入张量
+                x_pos_data = input_tensor.data.copy()
+                x_pos_data[idx] += eps
+                x_pos = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
+                x_pos.data = x_pos_data
+                x_pos.requires_grad = input_tensor.requires_grad
                 inputs_pos[i] = x_pos
                 outputs_pos = func(*inputs_pos)
                 if isinstance(outputs_pos, (tuple, list)):
@@ -548,10 +569,12 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
                     outputs_pos = outputs_pos.sum()
                 
                 # 计算负向扰动的输出
-                x_neg = input_tensor.copy()
-                delta = zeros_like(x_neg)
-                delta.data[idx] = eps
-                x_neg = x_neg - delta
+                # 为负向扰动创建全新的输入张量
+                x_neg_data = input_tensor.data.copy()
+                x_neg_data[idx] -= eps
+                x_neg = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
+                x_neg.data = x_neg_data
+                x_neg.requires_grad = input_tensor.requires_grad
                 inputs_neg[i] = x_neg
                 outputs_neg = func(*inputs_neg)
                 if isinstance(outputs_neg, (tuple, list)):
@@ -561,8 +584,6 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
                 
                 # 计算数值梯度（中心差分）
                 numerical_grad.data[idx] = (outputs_pos.data - outputs_neg.data) / (2 * eps)
-                
-                it.iternext()
         
         numerical_grads.append(numerical_grad)
     
@@ -578,10 +599,26 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
         rel_error = abs_error / (np.abs(num_grad.data) + np.abs(an_grad.data) + 1e-10)
         
         # 检查误差是否在容限范围内
-        if (abs_error > atol).any() and (rel_error > rtol).any():
-            if raise_exception:
-                raise RuntimeError(f"Gradient check failed for input {i}: absolute error {abs_error.max():.6f}, relative error {rel_error.max():.6f}")
-            return False
+        if fast_mode:
+            # 快速模式下只检查第一个元素
+            idx = tuple([0] * num_grad.data.ndim)
+            if abs_error[idx] > atol and rel_error[idx] > rtol:
+                if raise_exception:
+                    raise RuntimeError(f"Gradient check failed for input {i} (fast mode): "
+                                      f"absolute error {abs_error[idx]:.6f} at {idx}, "
+                                      f"relative error {rel_error[idx]:.6f} at {idx}")
+                return False
+        else:
+            # 正常模式下检查所有元素
+            if (abs_error > atol).any() and (rel_error > rtol).any():
+                if raise_exception:
+                    # 增强错误信息，显示最大误差位置
+                    max_abs_error_idx = np.unravel_index(abs_error.argmax(), abs_error.shape)
+                    max_rel_error_idx = np.unravel_index(rel_error.argmax(), rel_error.shape)
+                    raise RuntimeError(f"Gradient check failed for input {i}: "
+                                      f"max absolute error {abs_error.max():.6f} at {max_abs_error_idx}, "
+                                      f"max relative error {rel_error.max():.6f} at {max_rel_error_idx}")
+                return False
     
     return True
 # end of gradcheck
