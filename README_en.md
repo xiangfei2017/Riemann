@@ -374,25 +374,7 @@ from riemann.vision.datasets import CIFAR10
 from riemann.vision.transforms import *
 from riemann.nn import *
 from riemann.optim import SGD
-
-# Define CNN model
-class SimpleCNN(r.Module):
-    def __init__(self):
-        super(SimpleCNN, self).__init__()
-        # Only use 1 convolutional layer
-        self.conv1 = Conv2d(3, 16, kernel_size=3, padding=1)
-        self.relu1 = ReLU()
-        self.pool1 = MaxPool2d(kernel_size=2, stride=2)
-        
-        self.flatten = Flatten()
-        # After pooling, the image size changes from 32x32 to 16x16, with 16 channels
-        self.fc1 = Linear(16 * 16 * 16, 10)  # Directly output 10 classes
-    
-    def forward(self, x):
-        x = self.pool1(self.relu1(self.conv1(x)))
-        x = self.flatten(x)
-        x = self.fc1(x)
-        return x
+from tqdm import tqdm
 
 # Load data
 # Use data augmentation for training set, not for test set
@@ -412,16 +394,20 @@ test_dataset = CIFAR10(root='data', train=False, transform=test_transform)
 
 # Reduce batch size and data volume to speed up testing
 train_loader = r.utils.DataLoader(train_dataset, batch_size=100, shuffle=True)
-test_loader = r.utils.DataLoader(test_dataset, batch_size=100, shuffle=False)
+test_loader = r.utils.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # Create model, loss function, and optimizer
-model = SimpleCNN()
+model = Sequential(
+    Conv2d(3, 16, kernel_size=3, padding=1),
+    ReLU(),
+    MaxPool2d(kernel_size=2, stride=2),
+    Flatten(),
+    Linear(16 * 16 * 16, 10)
+)
 criterion = CrossEntropyLoss()
 optimizer = SGD(model.parameters(), lr=0.01)
 
 # Training loop
-from tqdm import tqdm
-
 for epoch in range(3):  # Train for 3 epochs
     total_loss = 0
     # Use tqdm to display progress bar
@@ -430,12 +416,12 @@ for epoch in range(3):  # Train for 3 epochs
     for batch_idx, (data, target) in enumerate(progress_bar):
         # Forward propagation
         output = model(data)
-        loss = criterion(output, target)
+        loss = criterion(output, target)   # Calculate loss between output and target labels
         
-        # Backward propagation
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # Backward propagation and optimizer update
+        optimizer.zero_grad()   # Clear gradients of training parameters
+        loss.backward()         # Calculate gradients of loss with respect to training parameters
+        optimizer.step()        # Update training parameters
         
         total_loss += loss.item()
         
@@ -459,9 +445,9 @@ with r.no_grad():  # Disable gradient calculation
         outputs = model(data)
         
         # Get prediction results
-        _, predicted = r.max(outputs, 1)
-        total += target.size(0)
-        correct += (predicted == target).sum().item()
+        predicted = outputs.argmax(dim=1)  # Get predicted class for each sample
+        total += target.size(0)  # Accumulate test sample count
+        correct += (predicted == target).sum().item() # Accumulate correctly predicted sample count
         
         # Update progress bar to display current accuracy
         current_accuracy = 100 * correct / total
@@ -474,7 +460,7 @@ print(f"Test set accuracy: {test_accuracy:.2f}% ({correct}/{total})")
 # Single sample inference example
 sample_data, sample_target = next(iter(test_loader))
 sample_output = model(sample_data[:1])  # Only take the first sample
-_, predicted_class = r.max(sample_output, 1)
+predicted_class = sample_output.argmax(dim=1)
 print(f"Sample predicted class: {predicted_class.item()}, actual class: {sample_target[0].item()}")
 
 print("CNN training and inference test completed!")
@@ -513,29 +499,15 @@ print(f"Transformed image shape: {transformed_image.shape}")  # Output: (3, 224,
 # Including device detection and setup, model and data device migration, training and evaluation process on GPU
 
 import riemann as r
-from riemann.nn import Linear, CrossEntropyLoss
+from riemann.nn import Linear, Flatten, ReLU, Sequential, CrossEntropyLoss
 from riemann.optim import Adam
 from riemann.vision.datasets import MNIST
 from riemann.vision.transforms import Compose, ToTensor, Normalize
+from tqdm import tqdm
 
 # Check if CUDA is available
 device = r.device('cuda' if r.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
-
-# Define simple neural network model
-class SimpleNN(r.Module):
-    def __init__(self):
-        super(SimpleNN, self).__init__()
-        self.flatten = r.nn.Flatten()
-        self.fc1 = Linear(28*28, 128)
-        self.relu = r.nn.ReLU()
-        self.fc2 = Linear(128, 10)
-    
-    def forward(self, x):
-        x = self.flatten(x)
-        x = self.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
 
 # Load MNIST dataset
 transform = Compose([
@@ -547,16 +519,20 @@ train_dataset = MNIST(root='data', train=True, transform=transform)
 test_dataset = MNIST(root='data', train=False, transform=transform)
 
 train_loader = r.utils.DataLoader(train_dataset, batch_size=128, shuffle=True)
-test_loader = r.utils.DataLoader(test_dataset, batch_size=128, shuffle=False)
+test_loader = r.utils.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # Create model and move to specified device
-model = SimpleNN().to(device)
+model = Sequential(
+    Flatten(),
+    Linear(28*28, 128),
+    ReLU(),
+    Linear(128, 10)
+)
+model.to(device)
 criterion = CrossEntropyLoss()
 optimizer = Adam(model.parameters(), lr=0.001)
 
 # Training loop
-from tqdm import tqdm
-
 num_epochs = 5
 for epoch in range(num_epochs):
     model.train()
@@ -597,7 +573,7 @@ with r.no_grad():
         outputs = model(data)
         
         # Get prediction results
-        _, predicted = r.max(outputs, 1)
+        predicted = outputs.argmax(dim=1)
         total += target.size(0)
         correct += (predicted == target).sum().item()
         
