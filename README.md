@@ -374,25 +374,7 @@ from riemann.vision.datasets import CIFAR10
 from riemann.vision.transforms import *
 from riemann.nn import *
 from riemann.optim import SGD
-
-# 定义CNN模型
-class SimpleCNN(r.Module):
-    def __init__(self):
-        super(SimpleCNN, self).__init__()
-        # 只使用1个卷积层
-        self.conv1 = Conv2d(3, 16, kernel_size=3, padding=1)
-        self.relu1 = ReLU()
-        self.pool1 = MaxPool2d(kernel_size=2, stride=2)
-        
-        self.flatten = Flatten()
-        # 经过池化后，图像尺寸从32x32变为16x16，通道数为16
-        self.fc1 = Linear(16 * 16 * 16, 10)  # 直接输出10个类别
-    
-    def forward(self, x):
-        x = self.pool1(self.relu1(self.conv1(x)))
-        x = self.flatten(x)
-        x = self.fc1(x)
-        return x
+from tqdm import tqdm
 
 # 加载数据
 # 训练集使用数据增强，测试集不使用
@@ -412,16 +394,20 @@ test_dataset = CIFAR10(root='data', train=False, transform=test_transform)
 
 # 减小批次大小和数据量以加快测试
 train_loader = r.utils.DataLoader(train_dataset, batch_size=100, shuffle=True)
-test_loader = r.utils.DataLoader(test_dataset, batch_size=100, shuffle=False)
+test_loader = r.utils.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # 创建模型、损失函数和优化器
-model = SimpleCNN()
+model = Sequential(
+    Conv2d(3, 16, kernel_size=3, padding=1),
+    ReLU(),
+    MaxPool2d(kernel_size=2, stride=2),
+    Flatten(),
+    Linear(16 * 16 * 16, 10)
+)
 criterion = CrossEntropyLoss()
 optimizer = SGD(model.parameters(), lr=0.01)
 
 # 训练循环
-from tqdm import tqdm
-
 for epoch in range(3):  # 训练3代
     total_loss = 0
     # 使用tqdm显示进度条
@@ -430,12 +416,12 @@ for epoch in range(3):  # 训练3代
     for batch_idx, (data, target) in enumerate(progress_bar):
         # 前向传播
         output = model(data)
-        loss = criterion(output, target)
+        loss = criterion(output, target)   # 计算输出与目标标签间的损失
         
-        # 反向传播
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # 反向传播和优化器更新
+        optimizer.zero_grad()   # 清空训练参数的梯度
+        loss.backward()         # 计算loss对训练参数的梯度
+        optimizer.step()        # 更新训练参数
         
         total_loss += loss.item()
         
@@ -459,9 +445,9 @@ with r.no_grad():  # 禁用梯度计算
         outputs = model(data)
         
         # 获取预测结果
-        _, predicted = r.max(outputs, 1)
-        total += target.size(0)
-        correct += (predicted == target).sum().item()
+        predicted = outputs.argmax(dim=1)  # 获取每个样本的预测类别
+        total += target.size(0)  # 累加测试样本数
+        correct += (predicted == target).sum().item() # 累加正确预测的样本数
         
         # 更新进度条显示当前准确率
         current_accuracy = 100 * correct / total
@@ -474,7 +460,7 @@ print(f"测试集准确率: {test_accuracy:.2f}% ({correct}/{total})")
 # 单个样本推理示例
 sample_data, sample_target = next(iter(test_loader))
 sample_output = model(sample_data[:1])  # 只取第一个样本
-_, predicted_class = r.max(sample_output, 1)
+predicted_class = sample_output.argmax(dim=1)
 print(f"样本预测类别: {predicted_class.item()}, 实际类别: {sample_target[0].item()}")
 
 print("CNN训练和推理测试完成！")
@@ -513,29 +499,15 @@ print(f"变换后的图像形状: {transformed_image.shape}")  # 输出: (3, 224
 # 包括设备检测与设置、模型和数据的设备迁移、GPU上的训练和评估过程
 
 import riemann as r
-from riemann.nn import Linear, CrossEntropyLoss
+from riemann.nn import Linear, Flatten, ReLU, Sequential, CrossEntropyLoss
 from riemann.optim import Adam
 from riemann.vision.datasets import MNIST
 from riemann.vision.transforms import Compose, ToTensor, Normalize
+from tqdm import tqdm
 
 # 检查CUDA是否可用
 device = r.device('cuda' if r.cuda.is_available() else 'cpu')
 print(f"使用设备: {device}")
-
-# 定义简单的神经网络模型
-class SimpleNN(r.Module):
-    def __init__(self):
-        super(SimpleNN, self).__init__()
-        self.flatten = r.nn.Flatten()
-        self.fc1 = Linear(28*28, 128)
-        self.relu = r.nn.ReLU()
-        self.fc2 = Linear(128, 10)
-    
-    def forward(self, x):
-        x = self.flatten(x)
-        x = self.relu(self.fc1(x))
-        x = self.fc2(x)
-        return x
 
 # 加载MNIST数据集
 transform = Compose([
@@ -547,16 +519,20 @@ train_dataset = MNIST(root='data', train=True, transform=transform)
 test_dataset = MNIST(root='data', train=False, transform=transform)
 
 train_loader = r.utils.DataLoader(train_dataset, batch_size=128, shuffle=True)
-test_loader = r.utils.DataLoader(test_dataset, batch_size=128, shuffle=False)
+test_loader = r.utils.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
 # 创建模型并移动到指定设备
-model = SimpleNN().to(device)
+model = Sequential(
+    Flatten(),
+    Linear(28*28, 128),
+    ReLU(),
+    Linear(128, 10)
+)
+model.to(device)
 criterion = CrossEntropyLoss()
 optimizer = Adam(model.parameters(), lr=0.001)
 
 # 训练循环
-from tqdm import tqdm
-
 num_epochs = 5
 for epoch in range(num_epochs):
     model.train()
@@ -597,7 +573,7 @@ with r.no_grad():
         outputs = model(data)
         
         # 获取预测结果
-        _, predicted = r.max(outputs, 1)
+        predicted = outputs.argmax(dim=1)
         total += target.size(0)
         correct += (predicted == target).sum().item()
         
