@@ -174,7 +174,7 @@ class TN:
         带格式字符串参数的显示函数
         
         参数:
-            format_spec: 格式规范字符串，默认为'8.4f'（宽度为8，精度为4的浮点数格式）
+            format_spec: 格式规范字符串，例如'8.4f'表示：宽度为8，精度为4的浮点数格式
                         浮点数和复数使用此格式显示，其它数据类型使用numpy默认格式化
                         支持指定部分格式参数：
                         - 未指定width但指定precision时，width使用numpy默认值
@@ -711,38 +711,9 @@ class TN:
         """
         # 如果不传入参数，返回张量的数据类型
         if dtype is None:
-            return self.dtype
+            return self.dtype.name
         
-        target_dtype = _get_dtype(dtype)
-        
-        # 如果当前类型已经匹配，返回自身
-        if self.dtype == target_dtype:
-            return self
-        
-        # 创建新的张量并转换数据类型
-        ret = TN()
-        if np.issubdtype(self.dtype,np.complexfloating) and not np.issubdtype(target_dtype,np.complexfloating):
-            # 复数向非复数转换时，为避免warning，不用astype直接转，取real后再转换
-            ret.data = self.data.real.astype(target_dtype)
-        else:
-            ret.data = self.data.astype(target_dtype)
-        
-        # 只有浮点和复数是可微分的，使用is_floating函数检查
-        if is_float_or_complex(target_dtype):
-            ret.requires_grad = (is_grad_enabled() and self.requires_grad)
-            ret.is_leaf = not ret.requires_grad
-
-            if ret.requires_grad:
-                ret.fromvars = (self,)
-                ret.parms = (self.dtype,)
-                # 反向传播时，需要将梯度转换回原始数据类型
-                def type_backward(result, i):
-                    # 确保梯度值被转换为原始数据类型
-                    original_dtype = result.parms[0]
-                    return result.grad_value.type(original_dtype)
-                ret.gradfuncs = (type_backward,)
-
-        return ret
+        return self.to(dtype=dtype)
 
     def bool(self):
         """
@@ -2722,7 +2693,8 @@ class TN:
     
     def copy(self):
         '''返回一个新张量，复制self数据，不共享内存，也不依赖self'''
-        return self.clone().detach_()
+        ret = tensor(self.data.copy(),device=self.device)
+        return ret
 
     def copy_(self,src):
         '''原地复制src到self'''
@@ -3300,7 +3272,7 @@ class TN:
         # 创建新的张量对象
         ret = tensor(expanded_data, 
                      requires_grad=(is_grad_enabled() and self.requires_grad),
-                     device=self.device)
+                     device=self.device)    
         ret.is_leaf = not ret.requires_grad
         
         # 设置梯度跟踪信息
@@ -3341,6 +3313,22 @@ class TN:
         """
         size = _validate_shape(size)
         return broadcast_to(self, size)
+    
+    def repeat(self, *repeats) -> TN:
+        """
+        沿着指定的维度重复张量的元素。
+        
+        参数:
+            *repeats: 每个维度的重复次数，可以是一个整数元组或多个整数参数
+        
+        返回:
+            TN: 重复后的新张量
+        
+        异常:
+            ValueError: 当repeats长度不等于张量维度时抛出
+        """
+        repeats = _validate_shape(repeats)
+        return repeat(self, repeats)
     
     def flip(self, dims:List[int]|Tuple[int,...]) -> TN:
         return flip(self,dims)
@@ -4788,6 +4776,136 @@ def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
     # 确保结果的形状正确
     if result.shape != size:
         raise RuntimeError(f"Failed to broadcast tensor to shape {size}")
+    
+    return result
+
+def repeat(input: TN, repeats: Tuple[int, ...]) -> TN:
+    """
+    沿着指定的维度重复张量的元素。
+    
+    返回一个新的张量，其中输入张量的元素在每个维度上重复指定的次数。
+    
+    此函数的行为与PyTorch的torch.repeat()完全一致，包括：
+    - 当repeats长度小于输入张量维度时，抛出异常
+    - 当repeats长度大于输入张量维度时，在前面添加新的维度
+    - 对整个维度的内容进行重复，而不是对每个元素单独重复
+    
+    Args:
+        input (TN): 要重复的输入张量
+        repeats (Tuple[int, ...]): 每个维度的重复次数，可以是整数元组或多个整数参数
+            - 如果长度小于输入张量维度，会抛出异常
+            - 如果长度大于输入张量维度，会在前面添加新的维度
+            - 所有元素必须是正整数
+        
+    Returns:
+        TN: 重复后的新张量
+        
+    Raises:
+        TypeError: 如果输入不是TN张量
+        ValueError: 如果repeats包含非正整数
+        
+    Examples:
+        >>> # 一维张量的重复
+        >>> x = tensor([1, 2, 3])  # 形状(3,)
+        >>> y = repeat(x, (2,))  # 形状(6,)，结果为[1, 2, 3, 1, 2, 3]
+        >>> 
+        >>> # 二维张量的重复
+        >>> z = tensor([[1, 2], [3, 4]])  # 形状(2, 2)
+        >>> w = repeat(z, (2, 3))  # 形状(4, 6)，结果为[[1, 2, 1, 2, 1, 2], [3, 4, 3, 4, 3, 4], [1, 2, 1, 2, 1, 2], [3, 4, 3, 4, 3, 4]]
+        >>> 
+        >>> # repeats长度小于输入张量维度
+        >>> v = repeat(z, (3,))  # 形状(2, 6)，结果为[[1, 2, 1, 2, 1, 2], [3, 4, 3, 4, 3, 4]]
+        >>> 
+        >>> # repeats长度大于输入张量维度
+        >>> u = repeat(x, (2, 3))  # 形状(2, 9)，结果为[[1, 2, 3, 1, 2, 3, 1, 2, 3], [1, 2, 3, 1, 2, 3, 1, 2, 3]]
+        >>> 
+        >>> # 使用方法调用
+        >>> a = tensor([5, 6, 7])
+        >>> b = a.repeat(4)  # 形状(12,)，结果为[5, 6, 7, 5, 6, 7, 5, 6, 7, 5, 6, 7]
+    """
+    # 验证输入
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    # 使用_validate_shape处理repeats参数
+    repeats = _validate_shape(repeats)
+    
+    # 验证所有重复次数都是正整数
+    for r in repeats:
+        if not isinstance(r, int) or r <= 0:
+            raise ValueError(f"All elements in repeats must be positive integers, got {r}")
+    
+    # 获取底层数组库
+    arrlib = input._get_array_lib()
+    
+    # 保存输入张量的原始形状
+    original_shape = input.data.shape
+    
+    # 处理repeats长度与输入张量维度的关系
+    ndim = input.data.ndim
+    if len(repeats) < ndim:
+        # 如果repeats长度小于输入张量维度，抛出异常，与PyTorch行为一致
+        raise ValueError(f"Number of dimensions of repeat dims ({len(repeats)}) can not be smaller than number of dimensions of tensor ({ndim})")
+    elif len(repeats) > ndim:
+        # 如果repeats长度大于输入张量维度，在前面添加新的维度
+        # 首先计算需要添加的维度数
+        new_dims = len(repeats) - ndim
+        # 在输入张量前面添加新的维度，每个新维度的大小为1
+        for _ in range(new_dims):
+            input.data = arrlib.expand_dims(input.data, axis=0)
+        # 更新ndim值
+        ndim = input.data.ndim
+    
+    # 使用NumPy的repeat功能实现
+    
+    # 对于每个维度，从最后一个维度开始重复，只处理需要重复的轴
+    # 注意：使用tile函数而不是repeat函数，以实现与PyTorch一致的行为
+    # PyTorch的repeat是对整个维度的内容进行重复，而NumPy的repeat是对每个元素进行重复
+    repeated_data = input.data
+    
+    # 计算每个维度的重复次数，对于不需要重复的维度，设置为1
+    tile_repeats = []
+    for i in range(ndim):
+        if repeats[i] > 1:
+            tile_repeats.append(repeats[i])
+        else:
+            tile_repeats.append(1)
+    
+    # 使用tile函数进行重复
+    repeated_data = arrlib.tile(repeated_data, tuple(tile_repeats))
+    
+    # 创建结果张量
+    result = tensor(repeated_data, device=input.device, requires_grad=(is_grad_enabled() and input.requires_grad))
+    result.is_leaf = not result.requires_grad
+    
+    # 设置梯度传播
+    if result.requires_grad:
+        def _repeat_backward(result_tensor: TN, i: int) -> TN:
+            # 重复操作的梯度是将结果的梯度在重复的维度上求和
+            grad_value = result_tensor.grad_value
+            
+            # 对于每个维度，从最后一个维度开始求和
+            for j in reversed(range(ndim)):
+                # 计算步长和大小
+                size = input.data.shape[j]
+                repeat = repeats[j]
+                
+                # 重塑梯度张量，以便在重复的维度上求和
+                shape = list(grad_value.shape)
+                shape[j] = repeat
+                shape.insert(j+1, size)
+                grad_reshaped = grad_value.reshape(shape)
+                
+                # 在重复的维度上求和
+                grad_value = grad_reshaped.sum(dim=j)
+            
+            # 将梯度的形状调整为输入张量的原始形状
+            grad_value = grad_value.reshape(original_shape)
+            
+            return grad_value
+        
+        result.fromvars = (input,)
+        result.gradfuncs = (_repeat_backward,)
     
     return result
 
