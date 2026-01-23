@@ -257,49 +257,113 @@ class TestDefineGradFunc(unittest.TestCase):
             {
                 "name": "简单乘法测试",
                 "func": lambda x, y: x * y,
-                "inputs": lambda: [rm.tensor(2.0, requires_grad=True), rm.tensor(3.0, requires_grad=True)],
+                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True), rm.tensor(3.0, dtype=rm.float64, requires_grad=True)],
                 "description": "测试两个标量的乘法运算"
             },
             {
                 "name": "线性函数测试",
                 "func": lambda x, w, b: (x * w).sum() + b,
                 "inputs": lambda: [
-                    rm.tensor([1.0, 2.0, 3.0], requires_grad=True),
-                    rm.tensor([0.5, 0.5, 0.5], requires_grad=True),
-                    rm.tensor(1.0, requires_grad=True)
+                    rm.tensor([1.0, 2.0, 3.0], dtype=rm.float64, requires_grad=True),
+                    rm.tensor([0.5, 0.5, 0.5], dtype=rm.float64, requires_grad=True),
+                    rm.tensor(1.0, dtype=rm.float64, requires_grad=True)
                 ],
                 "description": "测试带权重和偏置的线性函数"
             },
             {
                 "name": "Sigmoid激活函数测试",
                 "func": lambda x: 1.0 / (1.0 + (-x).exp()),
-                "inputs": lambda: [rm.tensor([-1.0, 0.0, 1.0], requires_grad=True)],
+                "inputs": lambda: [rm.tensor([-1.0, 0.0, 1.0], dtype=rm.float64, requires_grad=True)],
                 "description": "测试sigmoid非线性激活函数"
             },
             {
                 "name": "快速模式测试",
                 "func": lambda x, y: x * y,
-                "inputs": lambda: [rm.tensor(2.0, requires_grad=True), rm.tensor(3.0, requires_grad=True)],
+                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True), rm.tensor(3.0, dtype=rm.float64, requires_grad=True)],
                 "description": "测试快速模式下的梯度检查",
                 "fast_mode": True
             },
             {
                 "name": "高维输入测试",
                 "func": lambda x: x.sum(),
-                "inputs": lambda: [rm.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)],
+                "inputs": lambda: [rm.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=rm.float64, requires_grad=True)],
                 "description": "测试高维张量的梯度检查"
+            },
+            {
+                "name": "多个输出测试",
+                "func": lambda x, y: (x * y, x + y),
+                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True), rm.tensor(3.0, dtype=rm.float64, requires_grad=True)],
+                "description": "测试函数返回多个张量的情况"
+            },
+            {
+                "name": "复杂函数测试",
+                "func": lambda x: (x * x + x).sin(),
+                "inputs": lambda: [rm.tensor(1.0, dtype=rm.float64, requires_grad=True)],
+                "description": "测试包含多个操作的复杂函数"
+            },
+            {
+                "name": "不同误差容限测试",
+                "func": lambda x: x * x,
+                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True)],
+                "description": "测试不同的误差容限参数",
+                "eps": 1e-5,
+                "atol": 1e-4,
+                "rtol": 1e-2
+            },
+            {
+                "name": "矩阵乘法测试",
+                "func": lambda x, y: x @ y,
+                "inputs": lambda: [
+                    rm.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=rm.float64, requires_grad=True),
+                    rm.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=rm.float64, requires_grad=True)
+                ],
+                "description": "测试矩阵乘法的梯度计算"
+            },
+            {
+                "name": "自定义Function类测试",
+                "func": None,  # 特殊处理，使用自定义Function类
+                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True), rm.tensor(3.0, dtype=rm.float64, requires_grad=True)],
+                "description": "测试使用自定义Function类的函数"
             }
         ]
         
         for case in test_cases:
             start_time = time.time()
             try:
-                func = case["func"]
+                # 特殊处理自定义Function类测试
+                if case["name"] == "自定义Function类测试":
+                    # 定义自定义乘法函数
+                    class MulFunction(Function):
+                        """自定义乘法函数类"""
+                        
+                        @staticmethod
+                        def forward(ctx, x, y):
+                            """前向传播"""
+                            ctx.save_for_backward(x, y)
+                            return x * y
+                        
+                        @staticmethod
+                        def backward(ctx, grad_output):
+                            """反向传播"""
+                            x, y = ctx.saved_tensors
+                            return grad_output * y, grad_output * x
+                    
+                    # 创建使用自定义Function的函数
+                    def custom_mul(x, y):
+                        return MulFunction.apply(x, y)
+                    
+                    func = custom_mul
+                else:
+                    func = case["func"]
+                
                 inputs = case["inputs"]()  # 调用工厂函数获取输入
                 
                 # 调用gradcheck函数
                 fast_mode = case.get("fast_mode", False)
-                result = gradcheck(func, inputs, fast_mode=fast_mode)
+                eps = case.get("eps", 1e-6)
+                atol = case.get("atol", 1e-5)
+                rtol = case.get("rtol", 1e-3)
+                result = gradcheck(func, inputs, eps=eps, atol=atol, rtol=rtol, fast_mode=fast_mode)
                 
                 passed = result == True
                 if passed:
