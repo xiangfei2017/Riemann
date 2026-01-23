@@ -713,7 +713,7 @@ class TN:
         if dtype is None:
             return self.dtype.name
         
-        return self.to(dtype=dtype)
+        return self.to(dtype=dtype,device=self.device)
 
     def bool(self):
         """
@@ -3590,12 +3590,12 @@ class TN:
                 
         return
 
-    def _init_calc_graph_(self):
+    def _init_calc_graph_thoroughly(self):
         '''初始化以self为根的计算图中的缓存信息，包括：grad_value、rcv_grad_count           
            该函数被backward和grad函数调用，用于：
            1、将从self开始的反向计算图中所有节点的梯度缓存grad_value置None
            2、初始化各节点应收到反向传播梯度的次数rcv_grad_count
-           该函数_init_calc_graph的区别：
+           与_init_calc_graph的区别：
            1、不假定计算图中的缓存信息已清理干净
            2、性能比_init_calc_graph略差，但逻辑上初始化操作更完备
            3、如backward和grad函数调用此函数初始化计算图，
@@ -3659,8 +3659,8 @@ class TN:
             if create_graph:
                 target.grad = self
             else:
-                # 如果不保存梯度的计算图信息，self清除计算图信息后赋值给target.grad_value
-                target.grad = self.detach_()
+                # 如果不保存梯度的计算图信息，self的独立副本赋值给target.grad
+                target.grad = self.copy()
         else:
             # 如已有梯度值，累计梯度
             if create_graph:
@@ -3695,8 +3695,8 @@ class TN:
             if create_graph:
                 target.grad_value = self
             else:
-                # 如果不保存梯度的计算图信息，self清除计算图信息后赋值给target.grad_value
-                target.grad_value = self.detach_()
+                # 如果不保存梯度的计算图信息，self的独立副本赋值给target.grad_value
+                target.grad_value = self.copy()
         else:
             # 如已有梯度值，累计梯度
             if create_graph:
