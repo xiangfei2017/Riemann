@@ -946,6 +946,135 @@ def test_forward_propagation():
     finally:
         stats.end_function()
 
+# ==================== to() 方法测试 ====================
+def test_to_method():
+    """测试Module的to()方法"""
+    stats.start_function("to()方法测试")
+    
+    try:
+        # 检查CUDA是否可用
+        CUDA_AVAILABLE = rm.cuda.CUPY_AVAILABLE
+        print(f"CUDA可用状态: {CUDA_AVAILABLE}")
+        
+        # 测试1: 创建模型
+        print("测试创建模型...")
+        module = CustomModule(10, 5)
+        input_data = rm.randn(2, 10)
+        
+        # 测试2: 模型在CPU上的前向传播
+        print("测试模型在CPU上的前向传播...")
+        cpu_output = module(input_data)
+        expected_shape = (2, 5)
+        actual_shape = cpu_output.shape
+        passed = actual_shape == expected_shape
+        stats.add_result("CPU前向传播", passed, f"输出形状: 期望{expected_shape}, 实际{actual_shape}")
+        
+        # 测试3: 如果CUDA可用，测试模型移动到CUDA
+        if CUDA_AVAILABLE:
+            print("测试模型移动到CUDA...")
+            try:
+                # 将模型移动到CUDA
+                cuda_module = module.to('cuda')
+                
+                # 检查模型参数是否在CUDA上
+                params_on_cuda = True
+                for i, param in enumerate(cuda_module.parameters()):
+                    if not hasattr(param.data, 'device'):
+                        params_on_cuda = False
+                        break
+                    # 检查device属性的字符串表示是否包含'cuda'
+                    device_str = str(param.data.device)
+                    if 'cuda' not in device_str.lower():
+                        params_on_cuda = False
+                        break
+                
+                buffers_on_cuda = True
+                for i, buffer in enumerate(cuda_module.buffers()):
+                    if not hasattr(buffer.data, 'device'):
+                        buffers_on_cuda = False
+                        break
+                    # 检查device属性的字符串表示是否包含'cuda'
+                    device_str = str(buffer.data.device)
+                    if 'cuda' not in device_str.lower():
+                        buffers_on_cuda = False
+                        break
+                
+                passed = params_on_cuda and buffers_on_cuda
+                stats.add_result("模型移动到CUDA", passed, f"参数在CUDA: {params_on_cuda}, 缓冲区在CUDA: {buffers_on_cuda}")
+                
+                # 测试4: 模型在CUDA上的前向传播
+                print("测试模型在CUDA上的前向传播...")
+                cuda_input = input_data.to('cuda')
+                cuda_output = cuda_module(cuda_input)
+                actual_shape = cuda_output.shape
+                passed = actual_shape == expected_shape
+                stats.add_result("CUDA前向传播", passed, f"输出形状: 期望{expected_shape}, 实际{actual_shape}")
+                
+                # 测试5: 模型从CUDA移动回CPU
+                print("测试模型从CUDA移动回CPU...")
+                cpu_module_back = cuda_module.to('cpu')
+                
+                # 检查模型参数是否在CPU上
+                params_on_cpu = True
+                for param in cpu_module_back.parameters():
+                    if hasattr(param.data, 'device') and param.data.device == 'cuda':
+                        params_on_cpu = False
+                        break
+                
+                buffers_on_cpu = True
+                for buffer in cpu_module_back.buffers():
+                    if hasattr(buffer.data, 'device') and buffer.data.device == 'cuda':
+                        buffers_on_cpu = False
+                        break
+                
+                passed = params_on_cpu and buffers_on_cpu
+                stats.add_result("模型移动回CPU", passed, f"参数在CPU: {params_on_cpu}, 缓冲区在CPU: {buffers_on_cpu}")
+                
+                # 测试6: 模型在CPU上的前向传播（移动后）
+                print("测试模型在CPU上的前向传播（移动后）...")
+                cpu_output_back = cpu_module_back(input_data)
+                actual_shape = cpu_output_back.shape
+                passed = actual_shape == expected_shape
+                stats.add_result("CPU前向传播（移动后）", passed, f"输出形状: 期望{expected_shape}, 实际{actual_shape}")
+                
+            except Exception as e:
+                print(f"CUDA测试出现异常: {e}")
+                stats.add_result("CUDA测试异常", False, str(e))
+        else:
+            print("CUDA不可用，跳过CUDA相关测试")
+            stats.add_result("CUDA不可用", True, "跳过CUDA相关测试")
+        
+        # 测试7: 测试to()方法的dtype参数
+        print("测试to()方法的dtype参数...")
+        try:
+            # 将模型转换为float32
+            float32_module = module.to(np.float32)
+            
+            # 检查模型参数是否为float32
+            params_float32 = all(param.data.dtype == np.float32 for param in float32_module.parameters())
+            buffers_float32 = all(buffer.data.dtype == np.float32 for buffer in float32_module.buffers())
+            passed = params_float32 and buffers_float32
+            stats.add_result("to()方法dtype转换", passed, f"参数为float32: {params_float32}, 缓冲区为float32: {buffers_float32}")
+            
+            # 测试8: 模型在float32上的前向传播
+            print("测试模型在float32上的前向传播...")
+            float32_input = input_data.to(np.float32)
+            float32_output = float32_module(float32_input)
+            actual_shape = float32_output.shape
+            passed = actual_shape == expected_shape
+            stats.add_result("float32前向传播", passed, f"输出形状: 期望{expected_shape}, 实际{actual_shape}")
+            
+        except Exception as e:
+            print(f"dtype转换测试出现异常: {e}")
+            stats.add_result("dtype转换测试异常", False, str(e))
+        
+    except Exception as e:
+        print(f"to()方法测试出现异常: {e}")
+        stats.add_result("to()方法测试异常", False, str(e))
+    
+    finally:
+        stats.end_function()
+
 # ==================== 主测试函数 ====================
 def run_all_tests():
     """运行所有测试"""
@@ -973,7 +1102,8 @@ def run_all_tests():
         test_string_representation,
         test_module_copying,
         test_attribute_management,
-        test_forward_propagation
+        test_forward_propagation,
+        test_to_method
     ]
     
     start_time = time.time()
