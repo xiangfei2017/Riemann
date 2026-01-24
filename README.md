@@ -196,6 +196,18 @@ Riemann库的核心依赖已包含：
 
 numpy、pillow和tqdm已作为核心依赖包含在包安装中，无需额外安装。
 
+#### 测试依赖
+
+运行测试代码时，还需要安装以下测试依赖：
+- **pytest>=7.0.0**: 测试框架
+- **torch>=2.0.0**: PyTorch深度学习框架（用于对比测试）
+- **torchvision>=0.15.0**: PyTorch的计算机视觉库（用于对比测试）
+
+可以通过以下命令安装测试依赖：
+```bash
+pip install -e .[tests]
+```
+
 各个示例文件中的依赖可能略有不同，具体依赖信息也会在每个示例文件的头部注释中说明。
 
 
@@ -633,11 +645,11 @@ python test_010_grad.py
 | tqdm    | >=4.0.0             | MIT          | Progress bar for training and data loading|
 
 ### Testing Dependencies
-
-| Library  | Version Requirement | Purpose           | License Type  | Notes                                     |
-|----------|---------------------|-------------------|---------------|-------------------------------------------|
-| PyTorch  | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying calculation results    |
-| pytest   | >=7.0.0             | Testing framework | MIT           | Used for organizing and running tests     |
+| Library    | Version Requirement | Purpose           | License Type  | Notes                                     |
+|------------|---------------------|-------------------|---------------|-------------------------------------------|
+| PyTorch    | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying calculation results    |
+| torchvision| >=0.15.0            | Computer vision   | BSD 3-Clause  | PyTorch's computer vision library         |
+| pytest     | >=7.0.0             | Testing framework | MIT           | Used for organizing and running tests     |
 
 ### Optional CUDA Dependencies
 
