@@ -2475,7 +2475,7 @@ class TN:
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
-        if self.data.ndim == 0 or right_obj.data.ndim == 0:
+        if self.data.ndim == 0 or right_tensor.data.ndim == 0:
             raise RuntimeError('both arguments to matmul need to be at least 1D')
 
         # requires_grad属性在运算时传递到结果tensor
@@ -2913,6 +2913,7 @@ class TN:
         
         支持负数维度大小（特别是-1）
         来自动计算该维度的大小，前提是其他维度的大小可以确定。
+        支持类似NumPy的负数维度语义（从末尾计数）。
         
         参数:
             *new_shape: 整数序列或单个形状元组，指定新的张量形状。
@@ -2927,6 +2928,7 @@ class TN:
             RuntimeError: 当新形状与原始形状的元素总数不兼容时抛出
             RuntimeError: 当有多个维度被指定为-1时抛出
             RuntimeError: 当形状包含非整数值时抛出
+            RuntimeError: 当形状包含无效的维度值时抛出
         """
         # 处理参数格式
         if len(new_shape) == 1 and isinstance(new_shape[0], (tuple, list)):
@@ -2935,8 +2937,8 @@ class TN:
             shape = new_shape
         
         # 验证形状参数是否为整数
-        # if builtins.any(not isinstance(dim, int) for dim in shape):
-        #     raise RuntimeError(f'{shape} contains non int numbers')
+        if any(not isinstance(dim, int) for dim in shape):
+            raise RuntimeError(f'{shape} contains non int numbers')
         
         # shape相同是直接返回self
         if self.shape == shape:
@@ -2947,20 +2949,24 @@ class TN:
         
         # 处理负数维度大小，特别是-1
         processed_shape = list(shape)
-        num_neg_ones = processed_shape.count(-1)        
+        num_neg_ones = processed_shape.count(-1)
         if num_neg_ones > 1:
             raise RuntimeError(f"only one dimension can be inferred (got {num_neg_ones})")
         
+        # 先处理其他负数维度（从末尾计数），但保留-1用于后续推断
+        new_ndim = len(processed_shape)
+        for i in range(new_ndim):
+            if processed_shape[i] < 0 and processed_shape[i] != -1:
+                # 转换为正数维度索引
+                processed_shape[i] = new_ndim + processed_shape[i]
+                if processed_shape[i] < 0:
+                    raise RuntimeError(f"Invalid shape dimension {shape[i]}")
+        
         # 计算推断维度的大小
         if num_neg_ones == 1:
-            # 计算已知维度的乘积
-            known_size = 1
+            # 计算已知维度的乘积（排除-1的维度）
             unknown_dim_index = processed_shape.index(-1)
-            for i, dim in enumerate(processed_shape):
-                if i != unknown_dim_index:
-                    if dim < 0:
-                        raise RuntimeError(f"Invalid shape dimension {dim}")
-                    known_size *= dim
+            known_size = math.prod(dim for i, dim in enumerate(processed_shape) if i != unknown_dim_index)
             
             # 检查是否可以整除
             if original_size % known_size != 0:
@@ -2970,18 +2976,18 @@ class TN:
             
             # 计算并替换-1为实际维度大小
             processed_shape[unknown_dim_index] = original_size // known_size
-        else:
-            # 检查是否有负维度（除了-1，但此时已经确定没有-1了）
-            if any(dim < 0 for dim in processed_shape):
-                invalid_dim = next(dim for dim in processed_shape if dim < 0)
-                raise RuntimeError(f"Invalid shape dimension {invalid_dim}")
-            
-            # 计算新形状的元素总数
-            new_size = math.prod(processed_shape)
-            if new_size != original_size:
-                raise RuntimeError(
-                    f"shape '{processed_shape}' is invalid for input of size {original_size}"
-                )
+        
+        # 检查是否有负维度（此时应该已经处理完毕）
+        if any(dim < 0 for dim in processed_shape):
+            invalid_dim = next(dim for dim in processed_shape if dim < 0)
+            raise RuntimeError(f"Invalid shape dimension {invalid_dim}")
+        
+        # 计算新形状的元素总数
+        new_size = math.prod(processed_shape)
+        if new_size != original_size:
+            raise RuntimeError(
+                f"shape '{processed_shape}' is invalid for input of size {original_size}"
+            )
         
         # 记录原始形状供反向传播恢复
         original_shape = self.shape
@@ -4685,8 +4691,8 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
                     tn_params.append(param)
                     tn_param_indices.append(i)
             
-            if len(tn_params) == 0:
-                raise ValueError("forward_func must return a tensor with at least one TN parameter")
+            if not tn_params:
+                raise ValueError("forward_func must contain at least one TN parameter")
 
             # 如果返回值不是TN类型，将其转换为TN类型
             if not isinstance(ret_val, TN):

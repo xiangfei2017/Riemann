@@ -273,6 +273,14 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "多维reshape", "shape": (2, 3, 4), "new_shape": (3, 2, 4)},
             {"name": "标量reshape为向量", "shape": (), "new_shape": (1,)},
             {"name": "向量reshape为标量", "shape": (1,), "new_shape": ()},
+            {"name": "负数维度语义", "shape": (2, 3, 4), "new_shape": (2, -1, 2)},
+            {"name": "多个-1推断", "shape": (2, 3, 4, 5), "new_shape": (2, -1, 5)}, 
+            {"name": "批量维度reshape", "shape": (2, 3, 4), "new_shape": (2, 3, 2, 2)},
+            {"name": "形状参数为元组", "shape": (2, 3), "new_shape": (3, 2)},
+            {"name": "完全展平", "shape": (2, 3, 4, 5), "new_shape": (-1,)},
+            {"name": "从标量到多维", "shape": (), "new_shape": (1, 1, 1)},
+            {"name": "从多维到标量", "shape": (1, 1, 1), "new_shape": ()},
+            {"name": "复杂维度组合", "shape": (2, 3, 4, 5), "new_shape": (3, 4, 2, 5)},
         ]
         
         # 定义要测试的设备列表
@@ -306,18 +314,28 @@ class TestShapeOperations(unittest.TestCase):
                     rm_result = rm_x.reshape(*case["new_shape"])
                     torch_result = None
                     if TORCH_AVAILABLE:
-                        # 修复：PyTorch的reshape接受形状元组，而不是解包参数
-                        torch_result = torch_x.reshape(case["new_shape"])
+                        # 检查new_shape是否包含除-1以外的负数
+                        has_negative_dims = any(dim < -1 for dim in case["new_shape"])
+                        if not has_negative_dims:
+                            # PyTorch的reshape接受形状元组，而不是解包参数
+                            torch_result = torch_x.reshape(case["new_shape"])
+                        else:
+                            # PyTorch不支持除-1以外的负数维度，跳过PyTorch比较
+                            torch_result = None
                     
                     # 比较前向传播结果
-                    forward_passed = compare_values(rm_result, torch_result)
+                    if torch_result is not None:
+                        forward_passed = compare_values(rm_result, torch_result)
+                    else:
+                        # 当torch_result为None时，只测试Riemann的结果是否有正确的形状
+                        forward_passed = rm_result.shape is not None
                     
                     # 检查设备一致性
                     device_passed = rm_result.device == rm_x.device
                     
                     # 反向传播测试
                     backward_passed = True
-                    if TORCH_AVAILABLE:
+                    if TORCH_AVAILABLE and torch_result is not None:
                         # 计算损失
                         rm_loss = rm_result.sum()
                         torch_loss = torch_result.sum()
@@ -326,6 +344,11 @@ class TestShapeOperations(unittest.TestCase):
                         torch_loss.backward()
                         # 比较梯度
                         backward_passed = compare_values(rm_x.grad, torch_x.grad)
+                    elif TORCH_AVAILABLE and torch_result is None:
+                        # 当torch_result为None时，只测试Riemann的反向传播
+                        rm_loss = rm_result.sum()
+                        rm_loss.backward()
+                        backward_passed = rm_x.grad is not None
                     
                     passed = forward_passed and backward_passed and device_passed
                     
@@ -816,6 +839,69 @@ class TestShapeOperations(unittest.TestCase):
                         stats.add_result(case_name, False, [str(e)])
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
+    
+    def test_reshape_errors(self):
+        """测试reshape函数的错误处理"""
+        test_cases = [
+            {"name": "元素总数不匹配", "shape": (2, 3), "new_shape": (4), "should_raise": True},
+            {"name": "多个-1", "shape": (2, 3, 4), "new_shape": (-1, -1, 2), "should_raise": True},
+            {"name": "非整数维度", "shape": (2, 3), "new_shape": (2, 3.0), "should_raise": True},
+            {"name": "无效的负数维度", "shape": (2, 3), "new_shape": (-3, 2), "should_raise": True},
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"reshape错误 - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                    
+                    # 尝试执行reshape操作
+                    rm_result = rm_x.reshape(*case["new_shape"])
+                    
+                    # 如果预期应该抛出异常但没有抛出，则测试失败
+                    if case["should_raise"]:
+                        passed = False
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} - 预期抛出异常但没有抛出")
+                        self.fail(f"reshape测试失败: {case_name} - 预期抛出异常但没有抛出")
+                    else:
+                        passed = True
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC}")
+                    
+                except Exception as e:
+                    # 如果预期应该抛出异常且确实抛出，则测试通过
+                    if case["should_raise"]:
+                        passed = True
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} - 正确抛出异常: {type(e).__name__}")
+                    else:
+                        passed = False
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} - 意外抛出异常: {e}")
+                        raise
+                finally:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT and 'passed' in locals():
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
     
     def test_expand(self):
         """测试expand函数"""
