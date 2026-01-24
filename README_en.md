@@ -196,6 +196,18 @@ The core dependencies of the Riemann library include:
 
 numpy, pillow, and tqdm are included as core dependencies in the package installation and do not need to be installed separately.
 
+#### Test Dependencies
+
+When running test code, the following test dependencies are also required:
+- **pytest>=7.0.0**: Testing framework
+- **torch>=2.0.0**: PyTorch deep learning framework (for comparison testing)
+- **torchvision>=0.15.0**: PyTorch's computer vision library (for comparison testing)
+
+You can install test dependencies with the following command:
+```bash
+pip install -e .[tests]
+```
+
 The dependencies in each example file may be slightly different, and specific dependency information will also be stated in the header comments of each example file.
 
 
@@ -634,10 +646,11 @@ python test_010_grad.py
 
 ### Testing Dependencies
 
-| Library  | Version Requirement | Purpose           | License Type  | Notes                                     |
-|----------|---------------------|-------------------|---------------|-------------------------------------------|
-| PyTorch  | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying calculation results    |
-| pytest   | >=7.0.0             | Testing framework | MIT           | Used for organizing and running tests     |
+| Library    | Version Requirement | Purpose           | License Type  | Notes                                     |
+|------------|---------------------|-------------------|---------------|-------------------------------------------|
+| PyTorch    | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying calculation results    |
+| torchvision| >=0.15.0            | Computer vision   | BSD 3-Clause  | PyTorch's computer vision library         |
+| pytest     | >=7.0.0             | Testing framework | MIT           | Used for organizing and running tests     |
 
 ### Optional CUDA Dependencies
 
