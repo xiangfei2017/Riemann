@@ -103,7 +103,7 @@ class Device:
     
     def __eq__(self, other):
         if not isinstance(other, Device):
-            return False
+            other = Device(other)
         return self.type == other.type and self.index == other.index
     
     def __str__(self):
