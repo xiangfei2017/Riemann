@@ -119,136 +119,64 @@ def is_float_or_complex(dtype:np.dtype):
     return False
 
 # 预定义类型值映射，避免在每次函数调用时重新创建字典
-# 使用更高效的元组结构存储类型信息
-type_info = {
-    # (size_value, is_signed, numpy_dtype)
-    bool: (1, 0, np.dtype('bool')),
-    np.bool_: (1, 0, np.dtype('bool')),
-    int: (64, 1, np.dtype('int64')),
-    np.int8: (8, 1, np.dtype('int8')),
-    np.uint8: (8, 0, np.dtype('uint8')),
-    np.int16: (16, 1, np.dtype('int16')),
-    np.uint16: (16, 0, np.dtype('uint16')),
-    np.int32: (32, 1, np.dtype('int32')),
-    np.uint32: (32, 0, np.dtype('uint32')),
-    np.int64: (64, 1, np.dtype('int64')),
-    np.uint64: (64, 0, np.dtype('uint64')),
-    float: (64+64, 0, get_default_dtype()),
-    np.float16: (64+16, 1, np.dtype('float16')),
-    np.float32: (64+32, 1, np.dtype('float32')),
-    np.float64: (64+64, 0, np.dtype('float64')),
-    complex: (64+128, 1, get_default_complex()),
-    np.complex64: (64+64, 1, np.dtype('complex64')),
-    np.complex128: (64+128, 1, np.dtype('complex128')),
-}
-
-# 预定义常见类型的直接映射
-_dtype_cache = {
-    np.dtype('bool'): (1, 0),
-    np.dtype('int8'): (8, 1),
-    np.dtype('uint8'): (8, 0),
-    np.dtype('int16'): (16, 1),
-    np.dtype('uint16'): (16, 0),
-    np.dtype('int32'): (32, 1),
-    np.dtype('uint32'): (32, 0),
-    np.dtype('int64'): (64, 1),
-    np.dtype('uint64'): (64, 0),
-    np.dtype('float16'): (64+16, 1),
-    np.dtype('float32'): (64+32, 1),
-    np.dtype('float64'): (64+64, 0),
-    np.dtype('complex64'): (64+64, 1),
-    np.dtype('complex128'): (64+128, 1),
-}
+type_value_dict = { np.dtype('bool'):(1,0),
+                    np.dtype('uint8'):(8,0),
+                    np.dtype('int8'):(8,1),
+                    np.dtype('uint16'):(16,0),
+                    np.dtype('int16'):(16,1),
+                    np.dtype('uint32'):(32,0),
+                    np.dtype('int32'):(32,1),
+                    np.dtype('uint64'):(64,0),  
+                    np.dtype('int64'):(64,1),               
+                    np.dtype('float16'):(64+16,1),
+                    np.dtype('float32'):(64+32,1),
+                    np.dtype('float64'):(64+64,0),
+                    np.dtype('complex64'):(64+64,1),
+                    np.dtype('complex128'):(64+128,1),
+} 
 
 def infer_data_type(v):
-    """
-    推断输入数据的最佳numpy数据类型。
-    
-    优化点：
-    1. 预计算类型映射，避免每次调用重新创建字典
-    2. 为常见类型提供直接快速路径
-    3. 使用迭代而非递归处理嵌套结构
-    4. 优化类型比较逻辑，减少分支
-    5. 缓存类型检查结果
-    6. 使用更高效的类型创建方式
-    """
-    # 快速路径：标量类型
-    v_type = type(v)
-    if v_type in type_info:
-        return type_info[v_type][2]
-    
-    # 快速路径：numpy数组
-    if isinstance(v, np.ndarray):
-        return v.dtype
-    
-    # 快速路径：numpy标量（处理不在type_info中的特殊情况）
-    if hasattr(v, 'dtype'):
-        return v.dtype
-    
-    # 处理列表和元组
-    if isinstance(v, (list, tuple)):
-        if not v:
+    # 优先检查numpy标量类型、python bool，然后是python整形、浮点、复数
+    if isinstance(v,bool):        
+        dt = np.dtype('bool')
+    elif isinstance(v,int):
+        dt = np.dtype('int64')
+    elif isinstance(v,(np.bool_,np.integer,np.floating,np.complexfloating)):
+        dt = v.dtype
+    elif isinstance(v,float):
+        dt = get_default_dtype()    
+    elif isinstance(v,complex):
+        dt = get_default_complex()
+    elif isinstance(v,np.ndarray):
+        dt = v.dtype
+    elif isinstance(v,(list,tuple)):
+        if len(v) == 0:
             return default_float
         
-        # 初始化最大值跟踪
-        max_type, max_value, max_sign = None, 0, 0
-        
-        # 使用迭代处理，避免递归
-        stack = list(v)
-        while stack:
-            item = stack.pop()
-            item_type = type(item)
-            
-            if item_type in type_info:
-                # 快速处理已知类型
-                size_val, is_signed, dtype = type_info[item_type]
-                type_val = size_val
-            elif isinstance(item, np.ndarray):
-                # 处理numpy数组
-                dtype = item.dtype
-                type_val, is_signed = _dtype_cache.get(dtype, (64+64, 0))  # 默认float64
-            elif hasattr(item, 'dtype'):
-                # 处理numpy标量
-                dtype = item.dtype
-                type_val, is_signed = _dtype_cache.get(dtype, (64+64, 0))  # 默认float64
-            elif isinstance(item, (list, tuple)):
-                # 处理嵌套结构
-                stack.extend(item)
-                continue
-            else:
-                # 未知类型
-                raise TypeError('elements of v need to be number')
-            
-            # 更新最大值
-            if type_val > max_value:
-                max_type, max_value, max_sign = dtype, type_val, is_signed
-            elif type_val == max_value and is_signed != max_sign:
-                # 处理同大小但符号不同的情况
-                if type_val == 128:  # float64和complex64的情况
+        # 初始化max_type以处理空列表/元组情况
+        max_type, max_value, max_sign =None, 0, 0
+        for e in v:
+            data_type = infer_data_type(e)
+            type_value,sign = type_value_dict[data_type]
+            if type_value > max_value:
+                max_type, max_value, max_sign = data_type,type_value,sign
+            elif type_value == max_value and sign != max_sign:
+                if type_value == 128: # float64和complex64比较
                     max_type = np.dtype('complex128')
                     max_sign = 1
                 else:
-                    # 升级到更大的类型
-                    new_type_val = type_val * 2
-                    if new_type_val > 64:
+                    new_type_value = 2*type_value
+                    if new_type_value > 64:
                         max_type = np.dtype('float64')
                         max_sign = 0
                     else:
-                        # 使用预定义的类型映射，避免字符串格式化
-                        if new_type_val == 16:
-                            max_type = np.dtype('int16')
-                        elif new_type_val == 32:
-                            max_type = np.dtype('int32')
-                        elif new_type_val == 64:
-                            max_type = np.dtype('int64')
-                        else:
-                            max_type = np.dtype('float64')
+                        max_type = np.dtype(f'int{new_type_value}')
                         max_sign = 1
-        
-        return max_type
-    
-    # 所有其他情况
-    raise TypeError('elements of v need to be number')
+                
+        dt = max_type
+    else:
+        raise TypeError('elements of v need to be number')
+    return dt
 
 def is_scalar(value):
     '''检查value是否为标量：int、float、complex、numpy标量、TN标量'''
