@@ -83,7 +83,7 @@ def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, crea
         """
         return self.backward(gradient=gradient, create_graph=create_graph)
 
-def _save_grad_and_check_if_grads_are_completed(grad_completed_var, input_tensor_list, grad_list):
+def _save_grad_and_check_if_grads_are_completed(grad_completed_var, input_tensor_list, grad_list,create_graph):
     """保存计算出的梯度并检查所有需要的梯度是否已完成计算。
     
     这个内部工具函数检查所有指定输入张量的梯度是否已计算完毕
@@ -99,7 +99,11 @@ def _save_grad_and_check_if_grads_are_completed(grad_completed_var, input_tensor
     """
     for i, var in enumerate(input_tensor_list):
         if var is grad_completed_var:
-            grad_list[i] = var.grad_value.type(input_tensor_list[i].dtype)
+            if create_graph:
+                grad = var.grad_value
+            else:
+                grad = var.grad_value.copy()
+            grad_list[i] = grad
 
     return all(grad is not None for grad in grad_list)
 
@@ -238,7 +242,7 @@ def grad(outputs:TN,
         
         # 当前节点已收集完梯度，保存当前节点的grad到grad_list中
         # 如grad_list已收集全了inputs中张量的梯度，及时跳出循环，提高效率
-        if _save_grad_and_check_if_grads_are_completed(item, inputs, grad_list):
+        if _save_grad_and_check_if_grads_are_completed(item, inputs, grad_list,create_graph):
             break
 
         fromvars = item.fromvars  #取出当前节点依赖的来源tensor节点列表
