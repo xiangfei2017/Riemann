@@ -2535,6 +2535,7 @@ class TN:
         
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
+        # print(f'{self.data} ** {right_tensor.data}')
         ret=tensor(self.data ** right_tensor.data, device=dev, requires_grad=requires_grad)
         ret.is_leaf=not requires_grad
 
@@ -2729,7 +2730,14 @@ class TN:
     def zero_(self):
         if self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
-        self.data.fill(0.)               
+        
+        arrlib = self._get_array_lib()
+        if isinstance(self.data,arrlib.ndarray):
+            self.data.fill(0.)
+        elif isinstance(self.data,arrlib.number):
+            self.data = type(self.data)(0.)
+        else:
+            raise ValueError(f'zero_ only supports numpy/cupy ndarray or number object but got {type(self.data)}')
         return self
     
     def fill_(self, value):
@@ -3656,26 +3664,27 @@ class TN:
         
         return
     
-    def _addto_grad(self:TN, target:TN, create_graph:bool):  # type: ignore
-        '''将self添加到target的grad中
+    def _save_grad(self:TN, create_graph:bool):  # type: ignore
+        '''将self的grad_value保存到self的grad中
         '''
-        # self = self.type(target.dtype)
-        if target.grad is None:
+        # self.grad = self.grad_value.type(self.dtype)
+        if self.grad is None:
             # 如还没有梯度值，直接赋值
             if create_graph:
-                target.grad = self
+                self.grad = self.grad_value
             else:
-                # 如果不保存梯度的计算图信息，self的独立副本赋值给target.grad
-                target.grad = self.copy()
+                # 如果不保存梯度的计算图信息，self.grad_value的副本赋值给self.grad
+                # 确保与其它张量没有任何依赖或data共享内存
+                self.grad = self.grad_value.copy()
         else:
             # 如已有梯度值，累计梯度
             if create_graph:
                 # 如果梯度也保存计算图信息，用张量加法，但不能用原地+=
-                target.grad = target.grad + self
+                self.grad = self.grad + self.grad_value
             else:
-                # 如果不保存梯度的计算图信息，直接对data原地加法
-                target.grad.data += self.data
-
+                # 如果不保存梯度的计算图信息，对data累加梯度值
+                self.grad.data += self.grad_value.data
+                
         return
 
     def _addto_grad_value(self:TN, target:TN, create_graph:bool):  # type: ignore
@@ -3693,25 +3702,15 @@ class TN:
         # 处理特殊情况：梯度self是大小为0空张量(如[])，target是单元素张量(如1.、[1.]、[[1.]])
         # 处理空张量某些运算中梯度反向传播也为空张量的情况，比如给空张量原地赋值单元素张量时，单元素张量收到的梯度会是空张量，
         # 梯度需要设置为和单元张量形状一致的0张量
-        if self.numel()==0 and target.numel()==1:
-            self = zeros_like(target)
+        # if self.numel()==0 and target.numel()==1:
+        #     self = zeros_like(target)
         
         if target.grad_value is None:
             # 如还没有梯度值，直接赋值
-            if create_graph:
-                target.grad_value = self
-            else:
-                # 如果不保存梯度的计算图信息，self的独立副本赋值给target.grad_value
-                target.grad_value = self.copy()
+            target.grad_value = self
         else:
-            # 如已有梯度值，累计梯度
-            if create_graph:
-                # 如果梯度也保存计算图信息，用张量加法，但不能用原地+=
-                target.grad_value = target.grad_value + self
-            else:
-                # 如果不保存梯度的计算图信息，直接对data原地加法
-                target.grad_value.data += self.data
-
+            # 如已有梯度值，累计梯度,不能用原地+=
+            target.grad_value = target.grad_value + self
         return
 
     def backward(self, gradient: TN|None = None, 
@@ -3769,7 +3768,7 @@ class TN:
             
             # 对于叶子节点或要求保存梯度的中间节点，保存grad
             if item.is_leaf or item.retains_grad:
-                item.grad_value._addto_grad(item,create_graph)
+                item._save_grad(create_graph)
             
             fromvars = item.fromvars
             gradfuncs = item.gradfuncs
@@ -3890,8 +3889,7 @@ def _get_device(device:str|int|Device=None)->Device:
         # device参数为None，优先级：device上下文 > 默认设备
         if CUPY_AVAILABLE and is_in_cuda_context():
             # 当前线程在CUDA设备上下文中，使用当前CUDA设备
-            target_device_idx = cp.cuda.runtime.getDevice()
-            return_device = Device(target_device_idx)
+            return_device = Device(cp.cuda.runtime.getDevice())
         else:
             # 否则使用默认设备
             return_device = get_default_device()
