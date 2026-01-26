@@ -346,7 +346,7 @@ def main():
         model.optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
     
     # 训练参数
-    num_epochs = 50  # 增加训练轮数，确保模型充分收敛
+    num_epochs = 5  # 增加训练轮数，确保模型充分收敛
     best_accuracy = 0.0
     
     print("\n开始训练...")
