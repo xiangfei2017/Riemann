@@ -450,13 +450,11 @@ def copy_weights_torch_to_riemann(torch_layer, riemann_layer, device="cpu"):
                 # 移动到CUDA设备，然后detach_()并设置is_leaf=True
                 new_weight_tensor = new_weight_tensor.to(device).detach_()
                 new_weight_tensor.requires_grad = True
-                new_weight_tensor.is_leaf = True
                 # 创建Parameter对象
                 new_weight = rm.nn.Parameter(new_weight_tensor, requires_grad=True)
             else:
                 # 创建CPU张量
                 new_weight_tensor = rm.tensor(torch_weight_copy, requires_grad=True)
-                new_weight_tensor.is_leaf = True
                 # 创建Parameter对象
                 new_weight = rm.nn.Parameter(new_weight_tensor, requires_grad=True)
             # 替换权重
@@ -473,13 +471,11 @@ def copy_weights_torch_to_riemann(torch_layer, riemann_layer, device="cpu"):
                 # 移动到CUDA设备，然后detach_()并设置is_leaf=True
                 new_weight_tensor = new_weight_tensor.to(device).detach_()
                 new_weight_tensor.requires_grad = True
-                new_weight_tensor.is_leaf = True
                 # 创建Parameter对象
                 new_weight = rm.nn.Parameter(new_weight_tensor, requires_grad=True)
             else:
                 # 创建CPU张量
                 new_weight_tensor = rm.tensor(torch_weight_copy, requires_grad=True)
-                new_weight_tensor.is_leaf = True
                 # 创建Parameter对象
                 new_weight = rm.nn.Parameter(new_weight_tensor, requires_grad=True)
             # 替换权重
@@ -497,13 +493,11 @@ def copy_weights_torch_to_riemann(torch_layer, riemann_layer, device="cpu"):
                 # 移动到CUDA设备，然后detach_()并设置is_leaf=True
                 new_bias_tensor = new_bias_tensor.to(device).detach_()
                 new_bias_tensor.requires_grad = True
-                new_bias_tensor.is_leaf = True
                 # 创建Parameter对象
                 new_bias = rm.nn.Parameter(new_bias_tensor, requires_grad=True)
             else:
                 # 创建CPU张量
                 new_bias_tensor = rm.tensor(torch_bias_copy, requires_grad=True)
-                new_bias_tensor.is_leaf = True
                 # 创建Parameter对象
                 new_bias = rm.nn.Parameter(new_bias_tensor, requires_grad=True)
             # 替换偏置

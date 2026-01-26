@@ -708,7 +708,7 @@ class Function:
         
         # 如果输出不是张量，将其转换为张量
         if not isinstance(outputs, TN):
-            outputs = tensor(outputs)
+            outputs = tensor(outputs,device=inputs[0].device)
         
         # 检查是否需要计算梯度
         requires_grad = any(input.requires_grad for input in inputs)
@@ -716,7 +716,6 @@ class Function:
         if requires_grad:
             # 设置输出张量的梯度跟踪信息
             outputs.requires_grad = True
-            outputs.is_leaf = False
             
             # 收集所有需要跟踪的输入张量
             fromvars = tuple(input for input in inputs if input.requires_grad)

@@ -134,7 +134,6 @@ class Parameter(TN):
             self.data = data.data
             
         self.requires_grad = requires_grad
-        self.is_leaf = True
         
     def __str__(self):
         """

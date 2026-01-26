@@ -197,7 +197,6 @@ def _prepare_for_serialization(obj: Any) -> Any:
             'dtype': str(obj.dtype),
             'device': str(obj.device),
             'requires_grad': obj.requires_grad,
-            'is_leaf': obj.is_leaf,
         }
     elif isinstance(obj, Parameter):
         # 将参数转换为可序列化的字典
@@ -263,7 +262,6 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
                 data = data.reshape(obj['shape'])
 
                 tensor_obj = tensor(data, dtype=dtype,device=device, requires_grad=obj.get('requires_grad', False))
-                tensor_obj.is_leaf = obj.get('is_leaf', True)
             except Exception as e:
                 # 恢复失败时，返回None作为占位符
                 tensor_obj = None
@@ -288,7 +286,6 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
                 # 使用tensor函数创建参数以确保正确初始化
                 parameter_tensor = tensor(data, dtype=dtype,device=device, requires_grad=obj.get('requires_grad', True))
                 parameter = Parameter(parameter_tensor)
-                parameter.is_leaf = obj.get('is_leaf', True)
             except Exception as e:
                 # 恢复失败时，返回None作为占位符
                 parameter = None

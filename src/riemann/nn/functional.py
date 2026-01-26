@@ -200,7 +200,6 @@ def sigmoid(x: TN) -> TN:
                            1. / (1. + arrlib.exp(-x_data))))
     
     ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
-    ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
         ret.fromvars = (x,)
@@ -293,7 +292,6 @@ def relu(x: TN) -> TN:
     arrlib = x._get_array_lib()
     data = arrlib.maximum(0, x.data)
     ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
-    ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
     if ret.requires_grad:
@@ -313,7 +311,6 @@ def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
     arrlib = x._get_array_lib()
     data = arrlib.where(x.data > 0, x.data, alpha * x.data)
     ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
-    ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
         ret.fromvars = (x,)
@@ -337,7 +334,6 @@ def prelu(x: TN, alpha: TN) -> TN:
     arrlib = x._get_array_lib()
     data = arrlib.where(x.data > 0, x.data, alpha.data * x.data)
     ret = tensor(data, device=x.device, requires_grad=(x.requires_grad or alpha.requires_grad))
-    ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
         ret.fromvars = (x, alpha)
@@ -373,7 +369,6 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
     # 前向计算
     data = arrlib.where(x.data > 0, x.data, alpha * x.data)
     ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
-    ret.is_leaf = not ret.requires_grad
     
     if x.requires_grad:
         ret.fromvars = (x,)
@@ -401,7 +396,6 @@ def gelu(x: TN) -> TN:
     x_data = x.data
     data = 0.5 * x_data * (1.0 + arrlib.tanh(c * (x_data + 0.044715 * x_data**3.0)))
     ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
-    ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
         ret.fromvars = (x,)
@@ -2722,8 +2716,7 @@ def embedding(
     # 创建输出张量
     requires_grad = (is_grad_enabled() and weight.requires_grad)
     output = tensor(output_data, device=input.device, requires_grad =requires_grad )
-    output.is_leaf = not requires_grad
-
+    
     # 如果需要跟踪梯度
     if requires_grad:
         # 设置fromvars，记录参与计算的变量

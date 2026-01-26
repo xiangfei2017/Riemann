@@ -127,7 +127,6 @@ class TN:
     - grad: TN类型，存储计算得到的梯度
     - requires_grad: 布尔值，控制是否需要计算梯度
     - retains_grad: 布尔值，控制是否保留梯度值
-    - is_leaf: 布尔值，表示是否为计算图的叶节点
     - rcv_grad_count: 整数，用于梯度计算时记录节点可接收梯度的计数
     - grad_value: TN类型，反向传播中的临时梯度存储
     
@@ -148,7 +147,6 @@ class TN:
             grad (TN): 与data的shape一致的张量，用于存放梯度，初始化为None以节省空间
             requires_grad (bool): 是否需要计算梯度，默认为False
             retains_grad (bool): 是否保留梯度，默认为False
-            is_leaf (bool): 是否为叶子节点，默认为True
             rcv_grad_count (int): 在计算图中可接收梯度的计数，计算梯度时临时使用
             grad_value (TN): 用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
         """
@@ -161,8 +159,7 @@ class TN:
                                         #初始化为None是为了节省空间，计算梯度时才分配空间
         self.requires_grad = False      #tensor默认不计算梯度，在tensor函数构建对象时指定是否需要计算梯度
         self.retains_grad = False
-        self.is_leaf = True
-
+        
         self.rcv_grad_count = 0         #在具体计算图中，self可接收梯度的计数，计算梯度时临时使用
         self.grad_value:TN = None       #用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
         
@@ -563,7 +560,6 @@ class TN:
             return self
             
         result = tensor(self.data.real, device=self.device, requires_grad=(is_grad_enabled() and self.requires_grad))
-        result.is_leaf = not result.requires_grad
         
         if result.requires_grad:
             result.fromvars = (self,)
@@ -594,7 +590,6 @@ class TN:
             raise RuntimeError("imag property is only defined for complex tensors")
         
         result = tensor(self.data.imag, device=self.device, requires_grad=(is_grad_enabled() and self.requires_grad))
-        result.is_leaf = not result.requires_grad
         
         if result.requires_grad:
             result.fromvars = (self,)
@@ -626,7 +621,6 @@ class TN:
         
         # 创建结果张量
         ret = tensor(conj_data, device=self.device,requires_grad=(is_grad_enabled() and self.requires_grad))
-        ret.is_leaf = not ret.requires_grad
         
         # 设置梯度传播
         if ret.requires_grad:
@@ -923,7 +917,6 @@ class TN:
         # 设置梯度跟踪信息
         if is_float_or_complex(target_dtype):
             ret.requires_grad = (is_grad_enabled() and self.requires_grad)
-            ret.is_leaf = not ret.requires_grad
             
             if ret.requires_grad:
                 # 设置计算图相关属性
@@ -941,8 +934,7 @@ class TN:
         else:
             # 非浮点/复数类型不支持梯度
             ret.requires_grad = False
-            ret.is_leaf = True
-        
+            
         return ret
 
     def cuda(self, device=None):
@@ -985,6 +977,10 @@ class TN:
     def is_cpu(self):
         return self.device.type == 'cpu'
     
+    @property
+    def is_leaf(self):
+        return self.requires_grad == False or self.fromvars == ()
+
     def __getitem__(self, index):
         # 类型转换：TN索引转为NumPy数组
         index_val = _convert_TNindex_to_numpy(index)
@@ -1003,7 +999,6 @@ class TN:
         
         # 创建结果张量
         ret = tensor(indexed_data, device=self.device, requires_grad = (is_grad_enabled() and self.requires_grad))
-        ret.is_leaf = not ret.requires_grad
         
         # 设置视图属性
         ret._is_view = is_view
@@ -1521,8 +1516,7 @@ class TN:
         oper_func(self.data, index_val, right_val.data)
 
         self.requires_grad = (is_grad_enabled() and (self.requires_grad or right_val.requires_grad))
-        self.is_leaf = not self.requires_grad
-
+        
         if self.requires_grad:
             # 原地赋值时，须在self的现有计算图上增加依赖关系，注意:
             # 1、只能记录右值的依赖关系，不能记录self，避免依赖循环
@@ -1555,8 +1549,7 @@ class TN:
         oper_func(ret.data, index_val, right_val.data)
 
         ret.requires_grad = (is_grad_enabled() and (self.requires_grad or right_val.requires_grad))
-        ret.is_leaf = not ret.requires_grad        
-
+        
         if ret.requires_grad:
             ret.fromvars = (self,right_val)
             ret.parms = (index_val,)
@@ -2145,8 +2138,7 @@ class TN:
             #转置产生一个新对象，但与原对象共用内存数据
             newobj = tensor(trandata,device=self.device,
                             requires_grad = (is_grad_enabled() and self.requires_grad))
-            newobj.is_leaf = not newobj.requires_grad
-
+            
             if newobj.requires_grad:
                 newobj.fromvars = (self,)
                 newobj.parms = ((dim1,dim2),)
@@ -2251,9 +2243,6 @@ class TN:
         # 创建新张量
         requires_grad = is_grad_enabled() and self.requires_grad
         newobj = tensor(new_data, device=self.device, requires_grad=requires_grad)
-        
-        # 设置叶子节点状态
-        newobj.is_leaf = not requires_grad
         
         # 如果需要梯度，设置梯度跟踪信息
         if requires_grad:
@@ -2397,7 +2386,6 @@ class TN:
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
         ret = tensor(self.data + right_tensor.data, device=dev, requires_grad=requires_grad)
-        ret.is_leaf = not requires_grad
         
         if requires_grad:
             ret.fromvars=(self,right_tensor) 
@@ -2424,8 +2412,7 @@ class TN:
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
         ret = tensor(self.data - right_tensor.data, device=dev, requires_grad=requires_grad)
-        ret.is_leaf = not requires_grad
-
+        
         if requires_grad:
             ret.fromvars=(self,right_tensor) 
             ret.gradfuncs=(_sub_grad_left,_sub_grad_right)
@@ -2451,8 +2438,7 @@ class TN:
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
         ret = tensor(self.data * right_tensor.data, device=dev, requires_grad=requires_grad)
-        ret.is_leaf = not requires_grad
-
+        
         if requires_grad:
             ret.fromvars=(self,right_tensor) 
             ret.gradfuncs=(_mul_grad_left,_mul_grad_right)      
@@ -2481,8 +2467,7 @@ class TN:
         # requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
         ret = tensor(self.data @ right_tensor.data, device=dev, requires_grad=requires_grad)
-        ret.is_leaf=not requires_grad
-
+        
         if requires_grad:
             ret.fromvars=(self,right_tensor) 
             ret.gradfuncs=(_matmul_grad_left,_matmul_grad_right)
@@ -2509,8 +2494,7 @@ class TN:
         #requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
         ret=tensor(self.data / right_tensor.data, device=dev, requires_grad=requires_grad)
-        ret.is_leaf=not requires_grad
-
+        
         if requires_grad:
             ret.fromvars=(self,right_tensor)
             ret.gradfuncs=(_div_grad_left,_div_grad_right)
@@ -2537,8 +2521,7 @@ class TN:
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
         # print(f'{self.data} ** {right_tensor.data}')
         ret=tensor(self.data ** right_tensor.data, device=dev, requires_grad=requires_grad)
-        ret.is_leaf=not requires_grad
-
+        
         if requires_grad:
             ret.fromvars=(self,right_tensor) 
             ret.gradfuncs=(_pow_grad_left,_pow_grad_right)
@@ -2578,7 +2561,6 @@ class TN:
         # 现在取负操作会得到正确的负值
         ret = tensor(-data, dtype=dtype, device=self.device,
                     requires_grad = (is_grad_enabled() and self.requires_grad))
-        ret.is_leaf = not ret.requires_grad
         if  ret.requires_grad:
             ret.fromvars=(self,)
             fn = lambda result,i: -result.grad_value
@@ -2673,7 +2655,6 @@ class TN:
         """
         self.requires_grad = False
         self.retains_grad = False
-        self.is_leaf = True
         self.fromvars = ()
         self.gradfuncs = ()
         self.parms = ()
@@ -2685,7 +2666,6 @@ class TN:
         '''返回一个新张量，与self共享内存，依赖self'''
         ret=tensor(self.data.copy(),device=self.device,
                     requires_grad=(is_grad_enabled() and self.requires_grad))
-        ret.is_leaf = not ret.requires_grad
         if ret.requires_grad:
             ret.fromvars=(self,)
             fn = lambda result,i: result.grad_value
@@ -2888,8 +2868,7 @@ class TN:
         ret = TN()
         ret.data = newarr        
         ret.requires_grad = (is_grad_enabled() and self.requires_grad)
-        ret.is_leaf = not ret.requires_grad
-
+        
         if ret.requires_grad:
             ret.fromvars = (self,)
             ret.parms = (new_dim,)
@@ -2907,7 +2886,6 @@ class TN:
         ret = TN()
         ret.data = newarr        
         ret.requires_grad = (is_grad_enabled() and self.requires_grad)
-        ret.is_leaf = not ret.requires_grad
         
         if ret.requires_grad:
             ret.fromvars = (self,)
@@ -3002,7 +2980,6 @@ class TN:
         ret = TN()
         ret.data = self.data.reshape(tuple(processed_shape))
         ret.requires_grad = (is_grad_enabled() and self.requires_grad)
-        ret.is_leaf = not ret.requires_grad
         
         if ret.requires_grad:
             ret.fromvars = (self,)
@@ -3287,7 +3264,6 @@ class TN:
         ret = tensor(expanded_data, 
                      requires_grad=(is_grad_enabled() and self.requires_grad),
                      device=self.device)    
-        ret.is_leaf = not ret.requires_grad
         
         # 设置梯度跟踪信息
         if ret.requires_grad:
@@ -4702,8 +4678,7 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
             
             # 设置梯度跟踪标志
             ret.requires_grad = (is_grad_enabled() and any(x.requires_grad for x in tn_params))
-            ret.is_leaf = not ret.requires_grad
-
+            
             if ret.requires_grad:
                 # 只保留需要梯度的TN类型输入张量及其原始索引
                 grad_required_tn_indices = [i for i, x in enumerate(tn_params) if x.requires_grad]
@@ -4880,7 +4855,6 @@ def repeat(input: TN, repeats: Tuple[int, ...]) -> TN:
     
     # 创建结果张量
     result = tensor(repeated_data, device=input.device, requires_grad=(is_grad_enabled() and input.requires_grad))
-    result.is_leaf = not result.requires_grad
     
     # 设置梯度传播
     if result.requires_grad:
@@ -5246,7 +5220,6 @@ def flip(input: TN, dims:List[int]|Tuple[int,...]) -> TN:
     
     # 创建新的张量
     result = tensor(data, device = input.device, requires_grad = (is_grad_enabled() and input.requires_grad))
-    result.is_leaf = not result.requires_grad
     
     # 如果需要计算梯度，设置计算图信息
     if result.requires_grad:
@@ -5328,8 +5301,7 @@ def sum(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     
     # 创建与x在相同设备上的张量
     ret=tensor(sumvalue, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
-    ret.is_leaf=not ret.requires_grad
-
+    
     if ret.requires_grad:
         ret.fromvars=(x,)
         ret.parms=((dim,keepdim),)
@@ -5407,7 +5379,6 @@ def cumsum(input: TN, dim: int, *, dtype: Optional[Union[str, np.dtype]] = None,
         # 如果指定了输出张量，将结果写入其中
         if out is not None:
             out.data = ret.data
-            out.is_leaf = True
         return ret
 
     # 处理1D向量情况，验证dim参数的有效性
@@ -5424,11 +5395,9 @@ def cumsum(input: TN, dim: int, *, dtype: Optional[Union[str, np.dtype]] = None,
     # 如果指定了输出张量，将结果写入其中
     if out is not None:
         out.data = result_data
-        out.is_leaf = True
     
     # 创建结果张量
     ret = tensor(result_data, device=input.device, requires_grad=(is_grad_enabled() and input.requires_grad))
-    ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
     if ret.requires_grad:
@@ -5596,8 +5565,7 @@ def prod(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     # 使用numpy/cupy的prod函数计算乘积
     prod_value = arrlib.prod(x.data, axis=dim, keepdims=keepdim)
     ret = tensor(prod_value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
-    ret.is_leaf = not ret.requires_grad
-
+    
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = ((dim, keepdim),)
@@ -5644,8 +5612,7 @@ def mean(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     arrlib = x._get_array_lib()
     value = arrlib.mean(x.data, axis=dim, keepdims=keepdim)
     ret = tensor(value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
-    ret.is_leaf=not ret.requires_grad
-
+    
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = ((dim,keepdim),)
@@ -5687,8 +5654,7 @@ def abs(x:TN)->TN:
     arrlib = x._get_array_lib()
     value = arrlib.abs(x.data)
     ret = tensor(value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
-    ret.is_leaf = not ret.requires_grad
-
+    
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.gradfuncs = (_abs_backward,)
@@ -5863,7 +5829,6 @@ def max(x:TN, dim:int|None=None, keepdim:bool=False, *, out=None):
     # 计算最大值 - 利用numpy原生的axis=None行为
     values_arr = arrlib.max(x.data, axis=dim, keepdims=keepdim)
     values_tensor = tensor(values_arr, device=dev, requires_grad=(is_grad_enabled() and x.requires_grad))
-    values_tensor.is_leaf = not values_tensor.requires_grad
     
     # 为values_tensor设置梯度信息
     if values_tensor.requires_grad:
@@ -5893,7 +5858,6 @@ def min(x:TN, dim:int|None=None, keepdim:bool=False, *, out=None):
     # 计算最小值 - 利用numpy原生的axis=None行为
     values_arr = arrlib.min(x.data, axis=dim, keepdims=keepdim)
     values_tensor = tensor(values_arr, device=dev, requires_grad=(is_grad_enabled() and x.requires_grad))
-    values_tensor.is_leaf = not values_tensor.requires_grad
     
     # 为values_tensor设置梯度信息
     if values_tensor.requires_grad:
@@ -5974,8 +5938,7 @@ def var(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->
     arrlib = x._get_array_lib()
     value = arrlib.var(x.data, axis=dim, ddof=ddof, keepdims=keepdim)
     ret=tensor(value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
-    ret.is_leaf = not ret.requires_grad
-
+    
     if ret.requires_grad:
         ret.fromvars=(x,)
         ret.parms=((dim,unbiased,keepdim),)
@@ -6781,8 +6744,7 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
     # 条件选择，cond不参与梯度计算
     data = arrlib.where(cond.data, x.data, y.data)
     ret = tensor(data, device = cond.device, requires_grad = (is_grad_enabled() and (x.requires_grad or y.requires_grad)))
-    ret.is_leaf = not ret.requires_grad
-
+    
     if ret.requires_grad:
         ret.fromvars = (x, y)
         ret.parms = (cond,cond)  # cond存入parms而非fromvars
@@ -6832,8 +6794,7 @@ def clamp(x: TN, min: float | None = None, max: float | None = None, out: TN | N
     # 否则创建新的张量
     data = arrlib.clip(x.data, np_min, np_max)
     ret = tensor(data, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
-    ret.is_leaf = not ret.requires_grad
-
+    
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = ((min, max),)  # 保存原始参数用于反向传播
@@ -6879,7 +6840,6 @@ def split(ts: TN, split_indices, dim: int = 0) -> List[TN]:
     sub_tensors = []
     for i, data in enumerate(split_data):
         subt = tensor(data, device=ts.device, requires_grad = (is_grad_enabled() and ts.requires_grad))
-        subt.is_leaf = False
         
         # 记录计算图信息
         if ts.requires_grad:
@@ -7017,7 +6977,6 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
     
     # 创建排序值张量
     sorted_values = tensor(sorted_values_data, device=input.device,requires_grad=(is_grad_enabled() and input.requires_grad))
-    sorted_values.is_leaf = not sorted_values.requires_grad
     
     # 创建索引张量（索引张量不需要梯度）
     sorted_indices_tensor = tensor(sorted_indices, device=input.device,requires_grad=False)
@@ -7116,8 +7075,7 @@ def stack(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
     requires_grad = (is_grad_enabled() and builtins.any(t.requires_grad for t in tensors))
     
     ret = tensor(data, device=tensors[0].device, requires_grad=requires_grad)
-    ret.is_leaf = not requires_grad
-
+    
     if requires_grad:
         ret.fromvars = tuple(tensors)  # 确保tuple类型
         num = len(tensors)
@@ -7134,8 +7092,7 @@ def concatenate(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
     requires_grad = (is_grad_enabled() and builtins.any(t.requires_grad for t in tensors))
     
     ret = tensor(data, device=tensors[0].device, requires_grad=requires_grad)
-    ret.is_leaf = not requires_grad
-
+    
     if requires_grad:
         ret.fromvars = tuple(tensors)  # 确保tuple类型
         num = len(tensors)
@@ -7363,7 +7320,6 @@ def maximum(input: TN, other: TN) -> TN:
     # 前向计算：使用numpy的maximum
     value = arrlib.maximum(input.data, other.data)
     ret = tensor(value, device=dev, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
-    ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
     if ret.requires_grad:
@@ -7488,7 +7444,6 @@ def minimum(input: TN, other: TN) -> TN:
     # 前向计算：使用numpy的minimum
     value = arrlib.minimum(input.data, other.data)
     ret = tensor(value, device=dev, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
-    ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
     if ret.requires_grad:
@@ -8146,7 +8101,6 @@ def tril(input_tensor: TN, diagonal: int = 0) -> TN:
     arrlib = input_tensor._get_array_lib()
     data = arrlib.tril(input_tensor.data, k=diagonal)
     ret = tensor(data, device=input_tensor.device, requires_grad = (is_grad_enabled() and input_tensor.requires_grad))
-    ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
     if ret.requires_grad:
@@ -8186,7 +8140,6 @@ def triu(input_tensor: TN, diagonal: int = 0) -> TN:
     arrlib = input_tensor._get_array_lib()
     data = arrlib.triu(input_tensor.data, k=diagonal)
     ret = tensor(data, device=input_tensor.device, requires_grad = (is_grad_enabled() and input_tensor.requires_grad))
-    ret.is_leaf = not ret.requires_grad
     
     # 注册梯度函数
     if ret.requires_grad:
