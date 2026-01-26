@@ -1078,7 +1078,6 @@ def det(A:TN):
     detvalue = arrlib.linalg.det(A.data)
     
     ret = tensor(detvalue, device=dev, requires_grad=(is_grad_enabled() and A.requires_grad))
-    ret.is_leaf = not ret.requires_grad
     
     if ret.requires_grad:
         ret.fromvars = (A,)
@@ -1139,8 +1138,7 @@ def inv(A:TN):
         raise RuntimeError(f"linalg.inv: Matrix is not invertible: {str(e)}")
     
     ret = tensor(invarr, device=dev, requires_grad=(is_grad_enabled() and A.requires_grad))
-    ret.is_leaf = not ret.requires_grad
-    
+        
     if ret.requires_grad:
         ret.fromvars = (A,)
         ret.gradfuncs = (_matinv_backward,)
@@ -1242,11 +1240,6 @@ def svd(A, full_matrices=True, driver=None, out=None):
     U = tensor(U_data, device=dev, requires_grad=requires_grad)
     S = tensor(S_data, device=dev, requires_grad=requires_grad)
     Vh = tensor(Vh_data, device=dev, requires_grad=requires_grad)
-    
-    # 设置叶子节点状态
-    U.is_leaf = not U.requires_grad
-    S.is_leaf = not S.requires_grad
-    Vh.is_leaf = not Vh.requires_grad
     
     # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
     if requires_grad:
@@ -1585,10 +1578,6 @@ def eig(A, *, out=None):
     w = tensor(w_data, device=dev, requires_grad = requires_grad)
     V = tensor(V_data, device=dev, requires_grad = requires_grad)
         
-    # 设置叶子节点状态
-    w.is_leaf = not w.requires_grad
-    V.is_leaf = not V.requires_grad
-
     # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
     if requires_grad:
         U = inv(V).mH # 计算左特征向量矩阵U
@@ -1875,10 +1864,6 @@ def eigh(A, *, UPLO='L', out=None):
     w = tensor(w_data, device=dev, requires_grad = requires_grad)
     V = tensor(V_data, device=dev, requires_grad=requires_grad)
     
-    # 设置叶子节点状态
-    w.is_leaf = not w.requires_grad
-    V.is_leaf = not V.requires_grad
-    
     # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
     if requires_grad:
         w.fromvars = (A,)
@@ -2019,10 +2004,6 @@ def _squared_mat_lu(A, *, pivot=True):
     P = tensor(P_data, device=dev)  # 置换矩阵不需要梯度
     L = tensor(L_data, device=dev, requires_grad=requires_grad)
     U = tensor(U_data, device=dev, requires_grad=requires_grad)
-    
-    # 设置叶子节点状态
-    L.is_leaf = not L.requires_grad
-    U.is_leaf = not U.requires_grad
     
     # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
     if requires_grad:
@@ -2384,10 +2365,6 @@ def qr(A, mode='reduced', *, out=None):
     else:
         Q = tensor(Q_data, device=dev, requires_grad=requires_grad)
         R = tensor(R_data, device=dev, requires_grad=requires_grad)
-    
-    # 设置叶子节点状态
-    Q.is_leaf = not Q.requires_grad
-    R.is_leaf = not R.requires_grad
     
     # 如果需要梯度，设置fromvars和gradfuncs（mode='r'除外）
     if requires_grad and mode != 'r':

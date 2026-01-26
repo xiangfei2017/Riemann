@@ -203,7 +203,6 @@ class TestSerialization(unittest.TestCase):
                         data = np.random.randn(*case['shape']).astype(case['dtype'])
                     
                     original_tensor = rm.tensor(data, requires_grad=case['requires_grad'])
-                    original_tensor.is_leaf = True
                     
                     # 保存到临时文件
                     with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
@@ -652,7 +651,6 @@ class TestSerialization(unittest.TestCase):
             start_time = time.time()
             # 测试CPU设备
             cpu_tensor = rm.tensor([1.0, 2.0, 3.0], requires_grad=True, device='cpu')
-            cpu_tensor.is_leaf = True
             
             # 保存到临时文件
             with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
