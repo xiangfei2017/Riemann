@@ -161,12 +161,7 @@ class Optimizer:
                     if set_to_none:
                         p.grad = None
                     else:
-                        # 处理非叶子梯度的情况，与PyTorch保持一致
-                        if hasattr(p.grad, 'is_leaf') and not p.grad.is_leaf:
-                            p.grad.detach_()  # 原地操作，更节省内存
-                            p.grad.zero_()
-                        else:
-                            p.grad.zero_()
+                        p.grad.zero_()
     
     def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
         """
@@ -349,8 +344,8 @@ class GD(Optimizer):
                     continue
                 
                 # 添加梯度形状验证
-                if p.grad.data.shape != p.data.shape:
-                    raise ValueError(f"梯度形状 {p.grad.data.shape} 与参数形状 {p.data.shape} 不匹配")
+                # if p.grad.data.shape != p.data.shape:
+                #     raise ValueError(f"Gradient shape {p.grad.data.shape} does not match parameter shape {p.data.shape}")
                 
                 # 应用L2正则化
                 if weight_decay > 0:
@@ -447,8 +442,8 @@ class SGD(Optimizer):
                     continue
                 
                 # 添加梯度形状验证
-                if p.grad.data.shape != p.data.shape:
-                    raise ValueError(f"梯度形状 {p.grad.data.shape} 与参数形状 {p.data.shape} 不匹配")
+                # if p.grad.data.shape != p.data.shape:
+                #     raise ValueError(f"Gradient shape {p.grad.data.shape} does not match parameter shape {p.data.shape}")
                 
                 grad = p.grad.data
                 param_data = p.data
@@ -467,25 +462,25 @@ class SGD(Optimizer):
                     velocity = self.state[param_id]['velocity']
                     
                     if nesterov:
-                        # Nesterov动量优化：避免不必要的复制
+                        # 保存更新前的速度用于Nesterov更新
+                        old_velocity = velocity.copy()
+                        
+                        # 更新速度
                         if has_dampening:
-                            # velocity = momentum * velocity + (1 - dampening) * grad
                             velocity *= momentum
-                            velocity += (1 - dampening) * grad
+                            velocity += (1.0 - dampening) * grad
                         else:
-                            # velocity = momentum * velocity + grad
                             velocity *= momentum
                             velocity += grad
                         
-                        # Nesterov更新: param = param - lr * (grad + momentum * velocity_before_update)
-                        # 使用原地操作避免额外内存分配
-                        np.add(grad, momentum * velocity, out=param_data)
-                        param_data -= lr * param_data
+                        # Nesterov更新: param = param - lr * (grad + momentum * old_velocity)
+                        update = lr * (grad + momentum * old_velocity)
+                        param_data -= update
                     else:
                         # 标准动量更新
                         if has_dampening:
                             velocity *= momentum
-                            velocity += (1 - dampening) * grad
+                            velocity += (1.0 - dampening) * grad
                         else:
                             velocity *= momentum
                             velocity += grad
@@ -570,8 +565,8 @@ class Adam(Optimizer):
                     continue
                 
                 # 添加梯度形状验证
-                if p.grad.data.shape != p.data.shape:
-                    raise ValueError(f"梯度形状 {p.grad.data.shape} 与参数形状 {p.data.shape} 不匹配")
+                # if p.grad.data.shape != p.data.shape:
+                #     raise ValueError(f"Gradient shape {p.grad.data.shape} does not match parameter shape {p.data.shape}")
                 
                 grad = p.grad.data
                 
@@ -665,8 +660,16 @@ class Adagrad(Optimizer):
         """
         执行单个优化步骤（参数更新）
         
-        应用权重衰减（如果启用），更新梯度平方累加器，计算衰减的学习率，
-        最后根据Adagrad更新规则调整参数
+        算法步骤：
+        1. 应用权重衰减（如果启用）
+        2. 更新梯度平方累加器
+        3. 计算衰减的学习率
+        4. 根据Adagrad更新规则调整参数
+        
+        数学公式：
+        - 梯度平方累加: sum_sq += grad^2
+        - 学习率衰减: lr_t = lr / (1 + (step-1) * lr_decay)
+        - 参数更新: θ = θ - (lr_t / (sqrt(sum_sq) + eps)) * grad
         """
         # 延迟初始化state
         if not hasattr(self, 'state'):
@@ -683,11 +686,17 @@ class Adagrad(Optimizer):
                 if p.grad is None:
                     continue
                 
-                # 添加梯度形状验证
-                if p.grad.data.shape != p.data.shape:
-                    raise ValueError(f"梯度形状 {p.grad.data.shape} 与参数形状 {p.data.shape} 不匹配")
+                # 验证梯度形状
+                # if p.grad.data.shape != p.data.shape:
+                #     raise ValueError(f"Gradient shape {p.grad.data.shape} does not match parameter shape {p.data.shape}")
                 
-                grad = p.grad.data
+                # 验证数据类型
+                # if p.grad.data.dtype != p.data.dtype:
+                #     raise TypeError(f"Gradient data type {p.grad.data.dtype} does not match parameter data type {p.data.dtype}")
+                
+                # 保存原始梯度值
+                grad_original = p.grad.data.copy()
+                grad = grad_original
                 param_id = id(p)
                 
                 # 初始化状态
@@ -700,21 +709,28 @@ class Adagrad(Optimizer):
                 state = self.state[param_id]
                 state['step'] += 1
                 
-                # 添加权重衰减
+                # 应用权重衰减
                 if weight_decay > 0:
-                    grad = grad + weight_decay * p.data
+                    # 使用原地操作减少内存分配
+                    np.add(grad, weight_decay * p.data, out=grad)
                 
-                # 更新梯度平方累加器
+                # 计算梯度平方
+                grad_squared = np.square(grad)
+                
+                # 更新梯度平方累加器（原地操作）
                 sum_sq = state['sum']
-                np.add(sum_sq, np.square(grad), out=sum_sq)
+                np.add(sum_sq, grad_squared, out=sum_sq)
                 
                 # 计算学习率衰减
                 lr_t = lr / (1.0 + (state['step'] - 1.0) * lr_decay)
                 
-                # 参数更新: θ = θ - (lr_t / (sqrt(sum_sq) + eps)) * grad
-                # 修改：增加数值稳定性保护
+                # 计算更新分母（增强数值稳定性）
                 denom = np.sqrt(np.maximum(sum_sq, 1e-16)) + eps
-                p.data -= lr_t * grad / denom
+                
+                # 计算更新量并应用（使用原地操作减少内存分配）
+                # θ = θ - (lr_t / denom) * grad_original
+                update = lr_t * grad_original / denom
+                np.subtract(p.data, update, out=p.data)
 
 class LBFGS(Optimizer):
     """

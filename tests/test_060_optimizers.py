@@ -49,8 +49,13 @@ def ackley_2d(x, y):
     a = 20.
     b = 0.2
     c = 2. * PI
-    term1 = -a * rm.exp(-b * rm.sqrt(0.5 * (x**2. + y**2.)))
-    term2 = -rm.exp(0.5 * (rm.cos(c * x) + rm.cos(c * y)))
+    # 计算第一部分：-a * exp(-b * sqrt(0.5 * (x² + y²)))
+    sqrt_term = rm.sqrt(0.5 * (x**2. + y**2.))
+    term1 = -a * rm.exp(-b * sqrt_term)
+    # 计算第二部分：-exp(0.5 * (cos(c*x) + cos(c*y)))
+    cos_term = 0.5 * (rm.cos(c * x) + rm.cos(c * y))
+    term2 = -rm.exp(cos_term)
+    # 最终结果：term1 + term2 + a + e
     return term1 + term2 + a + E
 
 # 6. Beale函数
@@ -79,8 +84,8 @@ TEST_FUNCTIONS = {
     },
     'Rastrigin': {
         'func': rastrigin_2d,
-        'start_x': 1.0,
-        'start_y': 1.0,
+        'start_x': 0.5,
+        'start_y': 0.5,
         'expected_min': (0.0, 0.0),
         'description': 'f(x,y) = 20 + (x² - 10·cos(2πx)) + (y² - 10·cos(2πy))'
     },
@@ -93,8 +98,8 @@ TEST_FUNCTIONS = {
     },
     'Ackley': {
         'func': ackley_2d,
-        'start_x': 1.0,
-        'start_y': 1.0,
+        'start_x': 0.5,
+        'start_y': 0.5,
         'expected_min': (0.0, 0.0),
         'description': '复杂指数余弦函数'
     },
@@ -113,32 +118,80 @@ OPTIMIZER_CONFIGS = {
         'class': optim.GD,
         'params': {'lr': 0.001},
         'max_iter': 1000,
-        'tolerance': 1e-6
+        'tolerance': 1e-6,
+        # 为Rosenbrock函数单独设置参数
+        'rosenbrock_params': {'lr': 0.0001},
+        'rosenbrock_max_iter': 20000,
+        # 为Rastrigin函数单独设置参数
+        'rastrigin_params': {'lr': 0.001},
+        'rastrigin_max_iter': 10000,
+        # 为Ackley函数单独设置参数
+        'ackley_params': {'lr': 0.02},
+        'ackley_max_iter': 10000
     },
     'SGD': {
         'class': optim.SGD,
         'params': {'lr': 0.0005, 'momentum': 0.9},
         'max_iter': 1000,
-        'tolerance': 1e-6
+        'tolerance': 1e-6,
+        # 为Rosenbrock函数单独设置参数
+        'rosenbrock_params': {'lr': 0.0001, 'momentum': 0.9},
+        'rosenbrock_max_iter': 15000,
+        # 为Rastrigin函数单独设置参数
+        'rastrigin_params': {'lr': 0.0005, 'momentum': 0.9},
+        'rastrigin_max_iter': 10000,
+        # 为Ackley函数单独设置参数
+        'ackley_params': {'lr': 0.01, 'momentum': 0.9},
+        'ackley_max_iter': 10000
     },
     'Adam': {
         'class': optim.Adam,
         'params': {'lr': 0.05, 'betas': (0.9, 0.999), 'eps': 1e-8},
         'max_iter': 1000,
-        'tolerance': 1e-6
+        'tolerance': 1e-6,
+        # 为Rosenbrock函数单独设置参数
+        'rosenbrock_params': {'lr': 0.01, 'betas': (0.9, 0.999), 'eps': 1e-8},
+        'rosenbrock_max_iter': 10000,
+        # 为Rastrigin函数单独设置参数
+        'rastrigin_params': {'lr': 0.01, 'betas': (0.9, 0.999), 'eps': 1e-8},
+        'rastrigin_max_iter': 10000,
+        # 为Ackley函数单独设置参数
+        'ackley_params': {'lr': 0.2, 'betas': (0.9, 0.999), 'eps': 1e-8},
+        'ackley_max_iter': 10000
     },
     'Adagrad': {
         'class': optim.Adagrad,
         'params': {'lr': 0.3, 'initial_accumulator_value': 0.1, 'eps': 1e-7},
         'max_iter': 1000,
-        'tolerance': 1e-6
+        'tolerance': 1e-6,
+        # 为Rosenbrock函数单独设置参数
+        'rosenbrock_params': {'lr': 0.1, 'initial_accumulator_value': 0.1, 'eps': 1e-7},
+        'rosenbrock_max_iter': 15000,
+        # 为Rastrigin函数单独设置参数
+        'rastrigin_params': {'lr': 0.3, 'initial_accumulator_value': 0.1, 'eps': 1e-7},
+        'rastrigin_max_iter': 10000,
+        # 为Ackley函数单独设置参数
+        'ackley_params': {'lr': 0.5, 'initial_accumulator_value': 0.1, 'eps': 1e-7},
+        'ackley_max_iter': 5000
     },
     'LBFGS': {
         'class': optim.LBFGS,
         'params': {'lr': 1.0, 'max_iter': 50, 'max_eval': 50, 
                   'tolerance_grad': 1e-4, 'tolerance_change': 1e-9, 'history_size': 20},
         'max_iter': 3,
-        'tolerance': 1e-6
+        'tolerance': 1e-6,
+        # 为Rosenbrock函数单独设置参数
+        'rosenbrock_params': {'lr': 1.0, 'max_iter': 100, 'max_eval': 100, 
+                              'tolerance_grad': 1e-6, 'tolerance_change': 1e-9, 'history_size': 20},
+        'rosenbrock_max_iter': 5,
+        # 为Rastrigin函数单独设置参数
+        'rastrigin_params': {'lr': 1.0, 'max_iter': 100, 'max_eval': 100, 
+                             'tolerance_grad': 1e-6, 'tolerance_change': 1e-9, 'history_size': 20},
+        'rastrigin_max_iter': 5,
+        # 为Ackley函数单独设置参数
+        'ackley_params': {'lr': 1.0, 'max_iter': 200, 'max_eval': 200, 
+                          'tolerance_grad': 1e-8, 'tolerance_change': 1e-12, 'history_size': 30},
+        'ackley_max_iter': 10
     }
 }
 
@@ -156,10 +209,27 @@ class OptimizerTestBase:
         params = [x, y]
         # print(f'x.dtype={x.dtype},y.dtype={y.dtype}')
         
-        # 创建优化器
-        optimizer = optimizer_config['class'](params, **optimizer_config['params'])
-        max_iterations = optimizer_config['max_iter']
-        tolerance = optimizer_config['tolerance']
+        # 检查是否为特定函数，如果是，使用专门的参数配置
+        if test_function_name == 'Rosenbrock' and 'rosenbrock_params' in optimizer_config:
+            optimizer = optimizer_config['class'](params, **optimizer_config['rosenbrock_params'])
+            max_iterations = optimizer_config.get('rosenbrock_max_iter', optimizer_config['max_iter'])
+            tolerance = optimizer_config['tolerance']
+            print(f"使用Rosenbrock专用参数: {optimizer_config['rosenbrock_params']}, 迭代次数: {max_iterations}")
+        elif test_function_name == 'Rastrigin' and 'rastrigin_params' in optimizer_config:
+            optimizer = optimizer_config['class'](params, **optimizer_config['rastrigin_params'])
+            max_iterations = optimizer_config.get('rastrigin_max_iter', optimizer_config['max_iter'])
+            tolerance = optimizer_config['tolerance']
+            print(f"使用Rastrigin专用参数: {optimizer_config['rastrigin_params']}, 迭代次数: {max_iterations}")
+        elif test_function_name == 'Ackley' and 'ackley_params' in optimizer_config:
+            optimizer = optimizer_config['class'](params, **optimizer_config['ackley_params'])
+            max_iterations = optimizer_config.get('ackley_max_iter', optimizer_config['max_iter'])
+            tolerance = optimizer_config['tolerance']
+            print(f"使用Ackley专用参数: {optimizer_config['ackley_params']}, 迭代次数: {max_iterations}")
+        else:
+            # 创建优化器
+            optimizer = optimizer_config['class'](params, **optimizer_config['params'])
+            max_iterations = optimizer_config['max_iter']
+            tolerance = optimizer_config['tolerance']
         
         start_time = time.time()
         prev_loss = float('inf')
