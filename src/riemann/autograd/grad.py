@@ -102,7 +102,7 @@ def _save_grad_and_check_if_grads_are_completed(grad_completed_var, input_tensor
             if create_graph:
                 grad = var.grad_value
             else:
-                grad = var.grad_value.copy()
+                grad = var.grad_value.detach()
             grad_list[i] = grad
 
     return all(grad is not None for grad in grad_list)

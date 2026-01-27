@@ -3649,17 +3649,16 @@ class TN:
             if create_graph:
                 self.grad = self.grad_value
             else:
-                # 如果不保存梯度的计算图信息，self.grad_value的副本赋值给self.grad
-                # 确保与其它张量没有任何依赖或data共享内存
-                self.grad = self.grad_value.copy()
+                # 如果不保存梯度的计算图信息，保存self.grad_value的无计算图副本
+                self.grad = self.grad_value.detach()
         else:
             # 如已有梯度值，累计梯度
             if create_graph:
                 # 如果梯度也保存计算图信息，用张量加法，但不能用原地+=
                 self.grad = self.grad + self.grad_value
             else:
-                # 如果不保存梯度的计算图信息，对data累加梯度值
-                self.grad.data += self.grad_value.data
+                # 如果不保存梯度的计算图信息，累加grad_value的无计算图副本
+                self.grad =self.grad + self.grad_value.detach()
                 
         return
 
