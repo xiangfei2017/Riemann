@@ -184,7 +184,7 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                 # 从完整雅可比矩阵中切分当前输入对应的部分
                 sliced_jac = jacobian_results[0][..., start_idx:start_idx + size]
                 # 重塑为正确的形状
-                sliced_jac = sliced_jac.reshape(result_shape)
+                sliced_jac = sliced_jac._reshape(result_shape)
                 result_list.append(sliced_jac)
                 start_idx += size
             return tuple(result_list)
@@ -207,7 +207,7 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                     # 从完整雅可比矩阵中切分当前输入对应的部分
                     sliced_jac = jac[..., start_idx:start_idx + size]
                     # 重塑为正确的形状
-                    sliced_jac = sliced_jac.reshape(result_shape)
+                    sliced_jac = sliced_jac._reshape(result_shape)
                     output_result_list.append(sliced_jac)
                     start_idx += size
                 result_list.append(tuple(output_result_list))  # type: ignore
@@ -344,7 +344,7 @@ def hessian(func: Callable[..., TN],
         expected_shape = input_size + input_size
         if hessian_tensor.shape != expected_shape:
             # 重塑为正确的形状
-            hessian_tensor = hessian_tensor.reshape(expected_shape)
+            hessian_tensor = hessian_tensor._reshape(expected_shape)
         
         return hessian_tensor
     else:

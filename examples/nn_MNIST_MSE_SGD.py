@@ -44,10 +44,8 @@ sys.path.append(project_root)
 # 导入riemann包中的模块
 import riemann.nn as nn
 import riemann.optim as opt
-from riemann.tensordef import tensor
 from riemann.vision.datasets import EasyMNIST
 from riemann.utils.data import DataLoader
-import numpy as np
 
 # 定义 Classifier 类
 class Classifier(nn.Module):

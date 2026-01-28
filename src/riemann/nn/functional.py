@@ -993,7 +993,7 @@ def unfold(input: TN, kernel_size, dilation=1, padding=0, stride=1) -> TN:
     
     # 直接返回池化函数所需的形状 (N, C*kh*kw, H_out*W_out)
     # 只需要一次reshape即可
-    unfolded_result = unfolded_blocks.reshape(N, C*kh*kw, H_out*W_out)
+    unfolded_result = unfolded_blocks._reshape(N, C*kh*kw, H_out*W_out)
     
     return unfolded_result
 
@@ -1192,7 +1192,7 @@ def fold(input: TN, output_size, kernel_size, dilation=1, padding=0, stride=1) -
     all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kw_indices[:, :, arrlib.newaxis, arrlib.newaxis]
     
     # 直接将输入重塑为 (N, C, kh, kw, H_out, W_out)，无需额外reshape
-    folded_input = input.reshape(N, C, kh, kw, H_out, W_out)
+    folded_input = input._reshape(N, C, kh, kw, H_out, W_out)
     
     # 使用高级索引一次性将所有块添加到输出张量的正确位置
     # output[:, :, all_h_indices, all_w_indices] += folded_input
@@ -1442,13 +1442,13 @@ def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
     unfolded_temp = unfolded_temp.transpose(2, 3)
     
     # 重塑为 (N, C_in*K, L_out) 形状
-    unfolded_input = unfolded_temp.reshape(N, C_in*K, L_out)
+    unfolded_input = unfolded_temp._reshape(N, C_in*K, L_out)
 
     # 处理分组卷积
     if groups > 1:
         # 将输入和权重分成groups组
-        unfolded_input = unfolded_input.reshape(N, groups, C_in_per_group * K, L_out)
-        weight_reshaped = weight.reshape(groups, C_out // groups, C_in_per_group * K)
+        unfolded_input = unfolded_input._reshape(N, groups, C_in_per_group * K, L_out)
+        weight_reshaped = weight._reshape(groups, C_out // groups, C_in_per_group * K)
         
         # 对每个组进行矩阵乘法
         output = zeros((N, groups, C_out // groups, L_out), dtype=input.dtype,device=input.device)
@@ -1460,10 +1460,10 @@ def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
             output.setat_(index, weight_reshaped[g] @ unfolded_input[index])
 
         # 合并所有组的结果
-        output = output.reshape(N, C_out, L_out)
+        output = output._reshape(N, C_out, L_out)
     else:
         # 将权重reshape为 (C_out, C_in*K)
-        weight_reshaped = weight.reshape(C_out, C_in * K)
+        weight_reshaped = weight._reshape(C_out, C_in * K)
         
         # 直接使用批量矩阵乘法
         # weight_reshaped形状: (C_out, C_in*K)
@@ -1479,7 +1479,7 @@ def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
             raise ValueError(f"bias shape ({bias.shape}) must match output channels ({C_out})")
         
         # 广播偏置到输出张量
-        output = output + bias.reshape(1, C_out, 1)
+        output = output + bias._reshape(1, C_out, 1)
     
     return output
 
@@ -1548,8 +1548,8 @@ def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
     # 处理分组卷积
     if groups > 1:
         # 将输入和权重分成groups组,每组为一个矩阵，滑窗内通道数据的列向量化为矩阵的列，矩阵列数为滑窗数目
-        unfolded_result = unfolded_input.reshape(N, groups, C_in_per_group * K_h * K_w, H_out * W_out)
-        weight_reshaped = weight.reshape(groups, C_out // groups, C_in_per_group * K_h * K_w)
+        unfolded_result = unfolded_input._reshape(N, groups, C_in_per_group * K_h * K_w, H_out * W_out)
+        weight_reshaped = weight._reshape(groups, C_out // groups, C_in_per_group * K_h * K_w)
         
         # 对每个组进行矩阵乘法
         output = zeros((N, groups, C_out // groups, H_out * W_out), dtype=input.dtype,device=input.device)
@@ -1563,13 +1563,13 @@ def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
             output.setat_(index, weight_reshaped[g] @ unfolded_result[index])
 
         # 合并所有组的结果
-        output = output.reshape(N, C_out, H_out * W_out)
+        output = output._reshape(N, C_out, H_out * W_out)
     else:
         # 将展开后输入reshape为形状 (N, C_in*K_h*K_w, H_out*W_out)
-        unfolded_result = unfolded_input.reshape(N, C_in*K_h*K_w, H_out*W_out)
+        unfolded_result = unfolded_input._reshape(N, C_in*K_h*K_w, H_out*W_out)
 
         # 将权重reshape为 (C_out, C_in*K_h*K_w)
-        weight_reshaped = weight.reshape(C_out, C_in * K_h * K_w)
+        weight_reshaped = weight._reshape(C_out, C_in * K_h * K_w)
         
         # 直接使用批量矩阵乘法，避免冗余转置
         # weight_reshaped形状: (C_out, C_in*K_h*K_w)
@@ -1578,7 +1578,7 @@ def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         output = weight_reshaped @ unfolded_result
     
     # 将结果reshape为 (N, C_out, H_out, W_out)
-    output = output.reshape(N, C_out, H_out, W_out)
+    output = output._reshape(N, C_out, H_out, W_out)
     
     # 添加偏置项
     if bias is not None:
@@ -1586,7 +1586,7 @@ def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
             raise ValueError(f"bias shape ({bias.shape}) must match output channels ({C_out})")
         
         # 广播偏置到输出张量
-        output = output + bias.reshape(1, C_out, 1, 1)
+        output = output + bias._reshape(1, C_out, 1, 1)
     
     return output
 
@@ -1656,8 +1656,8 @@ def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
     # 处理分组卷积
     if groups > 1:
         # 将输入和权重分成groups组,每组为一个矩阵，滑窗内通道数据的列向量化为矩阵的列，矩阵列数为滑窗数目
-        unfolded_result = unfolded_input.reshape(N, groups, C_in_per_group * K_d * K_h * K_w, D_out * H_out * W_out)
-        weight_reshaped = weight.reshape(groups, C_out // groups, C_in_per_group * K_d * K_h * K_w)
+        unfolded_result = unfolded_input._reshape(N, groups, C_in_per_group * K_d * K_h * K_w, D_out * H_out * W_out)
+        weight_reshaped = weight._reshape(groups, C_out // groups, C_in_per_group * K_d * K_h * K_w)
         
         # 对每个组进行矩阵乘法
         output = zeros((N, groups, C_out // groups, D_out * H_out * W_out), dtype=input.dtype,device=input.device)
@@ -1671,13 +1671,13 @@ def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
             output.setat_(index, weight_reshaped[g] @ unfolded_result[index])
 
         # 合并所有组的结果
-        output = output.reshape(N, C_out, D_out * H_out * W_out)
+        output = output._reshape(N, C_out, D_out * H_out * W_out)
     else:
         # 将展开后输入reshape为形状 (N, C_in*K_d*K_h*K_w, D_out*H_out*W_out)
-        unfolded_result = unfolded_input.reshape(N, C_in*K_d*K_h*K_w, D_out*H_out*W_out)
+        unfolded_result = unfolded_input._reshape(N, C_in*K_d*K_h*K_w, D_out*H_out*W_out)
 
         # 将权重reshape为 (C_out, C_in*K_d*K_h*K_w)
-        weight_reshaped = weight.reshape(C_out, C_in * K_d * K_h * K_w)
+        weight_reshaped = weight._reshape(C_out, C_in * K_d * K_h * K_w)
         
         # 直接使用批量矩阵乘法，避免冗余转置
         # weight_reshaped形状: (C_out, C_in*K_d*K_h*K_w)
@@ -1686,7 +1686,7 @@ def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         output = weight_reshaped @ unfolded_result
     
     # 将结果reshape为 (N, C_out, D_out, H_out, W_out)
-    output = output.reshape(N, C_out, D_out, H_out, W_out)
+    output = output._reshape(N, C_out, D_out, H_out, W_out)
     
     # 添加偏置项
     if bias is not None:
@@ -1694,7 +1694,7 @@ def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
             raise ValueError(f"bias shape ({bias.shape}) must match output channels ({C_out})")
         
         # 广播偏置到输出张量
-        output = output + bias.reshape(1, C_out, 1, 1, 1)
+        output = output + bias._reshape(1, C_out, 1, 1, 1)
     
     return output
 
@@ -1773,7 +1773,7 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     unfolded_temp = padded_input[:, :, all_indices]
     
     # 直接重塑为 (N*C, L_out, K) 形状，避免不必要的转置
-    unfolded_input_reshaped = unfolded_temp.reshape(N * C, L_out, K)
+    unfolded_input_reshaped = unfolded_temp._reshape(N * C, L_out, K)
     
     # 在核维度上计算最大值
     max_result = max(unfolded_input_reshaped, dim=2, keepdim=False)
@@ -1781,7 +1781,7 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     indices = max_result.indices
     
     # 将输出重塑为 (N, C, L_out)
-    output = values.reshape(N, C, L_out)
+    output = values._reshape(N, C, L_out)
     
     if return_indices:
         # 修复索引计算，使其与PyTorch一致
@@ -1864,7 +1864,7 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
                                             check_pad=True)
     
     # 直接reshape返回池化函数所需的形状 (N*C, kh*kw, H_out*W_out)
-    unfolded_result = unfolded_input.reshape(N*C, kh*kw, H_out*W_out)
+    unfolded_result = unfolded_input._reshape(N*C, kh*kw, H_out*W_out)
     
     # 在核维度上计算最大值
     max_result = max(unfolded_result, dim=1, keepdim=False)
@@ -1872,7 +1872,7 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     indices = max_result.indices
     
     # 将输出重塑为 (N, C, H_out, W_out)
-    output = values.reshape(N, C, H_out, W_out)
+    output = values._reshape(N, C, H_out, W_out)
     
     if return_indices:
         # 计算每个输出位置对应的输入位置
@@ -1960,7 +1960,7 @@ def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
                                                     check_pad=True)
     
     # 直接reshape返回池化函数所需的形状 (N*C, kd*kh*kw, D_out*H_out*W_out)
-    unfolded_result = unfolded_input.reshape(N*C, kd*kh*kw, D_out*H_out*W_out)
+    unfolded_result = unfolded_input._reshape(N*C, kd*kh*kw, D_out*H_out*W_out)
     
     # 在核维度上计算最大值
     max_result = max(unfolded_result, dim=1, keepdim=False)
@@ -1968,7 +1968,7 @@ def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     indices = max_result.indices
     
     # 将输出重塑为 (N, C, D_out, H_out, W_out)
-    output = values.reshape(N, C, D_out, H_out, W_out)
+    output = values._reshape(N, C, D_out, H_out, W_out)
     
     if return_indices:
         # 计算每个输出位置对应的输入位置
@@ -2097,7 +2097,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     unfolded_temp = padded_input[:, :, all_indices]
     
     # 直接重塑为 (N*C, L_out, K) 形状，避免不必要的转置
-    unfolded_input_reshaped = unfolded_temp.reshape(N * C, L_out, K)
+    unfolded_input_reshaped = unfolded_temp._reshape(N * C, L_out, K)
     
     # 计算平均值
     if divisor_override is not None:
@@ -2123,7 +2123,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         mask_unfolded_temp = mask_padded_input[:, :, all_indices]
         
         # 直接重塑为 (N*C, L_out, K) 形状，避免不必要的转置
-        mask_unfolded_reshaped = mask_unfolded_temp.reshape(N * C, L_out, K)
+        mask_unfolded_reshaped = mask_unfolded_temp._reshape(N * C, L_out, K)
         
         # 计算每个输出位置的有效元素数
         effective_counts = mask_unfolded_reshaped.sum(dim=2)
@@ -2163,7 +2163,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         avg_values = unfolded_input_reshaped.sum(dim=2) / effective_counts
     
     # 将输出重塑为 (N, C, L_out)
-    output = avg_values.reshape(N, C, L_out)
+    output = avg_values._reshape(N, C, L_out)
     return output
 
 def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True, divisor_override=None) -> TN:
@@ -2209,7 +2209,7 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     
     # 直接返回池化函数所需的形状 (N*C, kh*kw, H_out*W_out)
     # 只需要一次reshape即可
-    unfolded_result = unfolded_input.reshape(N*C, kh*kw, H_out*W_out)
+    unfolded_result = unfolded_input._reshape(N*C, kh*kw, H_out*W_out)
 
     # 计算平均值
     if divisor_override is not None:
@@ -2230,7 +2230,7 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
                                             stride=stride, 
                                             ceil_mode=ceil_mode)
         
-        unfolded_mask_reshaped = unfolded_mask.reshape(N*C, kh*kw, H_out*W_out)
+        unfolded_mask_reshaped = unfolded_mask._reshape(N*C, kh*kw, H_out*W_out)
         
         # 计算每个输出位置的有效元素数
         effective_counts = unfolded_mask_reshaped.sum(dim=1)
@@ -2284,7 +2284,7 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         avg_values = unfolded_result.sum(dim=1) / effective_counts
     
     # 将输出重塑为 (N, C, H_out, W_out)
-    output = avg_values.reshape(N, C, H_out, W_out)
+    output = avg_values._reshape(N, C, H_out, W_out)
     
     return output
 
@@ -2331,7 +2331,7 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     
     # 直接返回池化函数所需的形状 (N*C, kd*kh*kw, D_out*H_out*W_out)
     # 只需要一次reshape即可
-    unfolded_result = unfolded_input.reshape(N*C, kd*kh*kw, D_out*H_out*W_out)
+    unfolded_result = unfolded_input._reshape(N*C, kd*kh*kw, D_out*H_out*W_out)
 
     # 计算平均值
     if divisor_override is not None:
@@ -2352,7 +2352,7 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
                                                       stride=stride, 
                                                       ceil_mode=ceil_mode)
         
-        unfolded_mask_reshaped = unfolded_mask.reshape(N*C, kd*kh*kw, D_out*H_out*W_out)
+        unfolded_mask_reshaped = unfolded_mask._reshape(N*C, kd*kh*kw, D_out*H_out*W_out)
         
         # 计算每个输出位置的有效元素数
         effective_counts = unfolded_mask_reshaped.sum(dim=1)
@@ -2414,7 +2414,7 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         avg_values = unfolded_result.sum(dim=1) / effective_counts
     
     # 将输出重塑为 (N, C, D_out, H_out, W_out)
-    output = avg_values.reshape(N, C, D_out, H_out, W_out)
+    output = avg_values._reshape(N, C, D_out, H_out, W_out)
 
     return output
 

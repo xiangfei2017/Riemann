@@ -238,7 +238,7 @@ class AdvancedConvNet(nn.Module):
         loss = self.loss_func(outputs, targets)
         
         # 反向传播和优化
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(True)
         loss.backward()
         self.optimizer.step()
         
