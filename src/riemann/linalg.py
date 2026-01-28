@@ -592,7 +592,7 @@ def _compute_max_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
         for d in pos_dim:
             output_shape[d] = 1
         # 2. 重塑结果张量
-        spectral_norm = spectral_norm.reshape(tuple(output_shape))
+        spectral_norm = spectral_norm._reshape(tuple(output_shape))
     else:
         # 如果不需要保持维度，移除计算的两个维度
         # 由于我们已经在奇异值维度上取了最大值，现在需要移除原始的两个计算维度
@@ -602,7 +602,7 @@ def _compute_max_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
             if i not in pos_dim:
                 output_shape.append(A.shape[i])
         # 重塑结果张量
-        spectral_norm = spectral_norm.reshape(tuple(output_shape))
+        spectral_norm = spectral_norm._reshape(tuple(output_shape))
     
     return spectral_norm
 
@@ -678,14 +678,14 @@ def _compute_min_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
         output_shape = list(A.shape)
         for d in pos_dim:
             output_shape[d] = 1
-        min_singular = min_singular.reshape(tuple(output_shape))
+        min_singular = min_singular._reshape(tuple(output_shape))
     else:
         # 移除计算的两个维度
         output_shape = []
         for i in range(A.ndim):
             if i not in pos_dim:
                 output_shape.append(A.shape[i])
-        min_singular = min_singular.reshape(tuple(output_shape))
+        min_singular = min_singular._reshape(tuple(output_shape))
     
     return min_singular
 

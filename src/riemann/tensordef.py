@@ -1473,7 +1473,7 @@ class TN:
             else:
                 raise ValueError(f"Right value size {right_size} exceeds target size {target_size}")
         elif right_size == target_size:
-            right_val = right_val.reshape(target_data.shape)
+            right_val = right_val._reshape(target_data.shape)
         elif right_val.ndim <= target_data.ndim:
             right_val = right_val.broadcast_to(target_data.shape)
         else:
@@ -3004,6 +3004,51 @@ class TN:
         """
         return self.reshape(*new_shape)
 
+    def _reshape(self, *new_shape):
+        """
+        Simplified version of reshape with better performance.
+        
+        Optimizations:
+        - Removed integer type checking
+        - Removed negative dimension handling (including -1 for auto-inference)
+        - Direct numpy reshape call with minimal validation
+        - Only accepts non-negative integer tuples or sequences
+        
+        Args:
+            *new_shape: Sequence of non-negative integers or a single shape tuple, 
+                       specifying the new tensor shape.
+                       All dimensions must be non-negative integers.
+                       The product of dimensions must match the original tensor size.
+        
+        Returns:
+            TN: Tensor with the new shape
+        
+        Note:
+            This function assumes valid input parameters for better performance.
+            For robust error handling with -1 support, use reshape() method instead.
+        """
+        # Handle parameter format
+        if len(new_shape) == 1 and isinstance(new_shape[0], (tuple, list)):
+            shape = tuple(new_shape[0])
+        else:
+            shape = new_shape
+        
+        # Return self if shape is the same
+        if self.shape == shape:
+            return self
+        
+        # Record original shape for backward propagation
+        original_shape = self.shape
+        ret = TN()
+        ret.data = self.data.reshape(shape)
+        ret.requires_grad = (is_grad_enabled() and self.requires_grad)
+        
+        if ret.requires_grad:
+            ret.fromvars = (self,)
+            ret.parms = ((original_shape, shape),)
+            ret.gradfuncs = (_reshape_backward,)
+        return ret
+
     def unfold(self, dimension: int, size: int, step: int = None) -> 'TN':  # type: ignore
         """将张量的指定维度展开为多个连续的切片。
         
@@ -3073,7 +3118,7 @@ class TN:
             # 在原dim位置插入1，形成窗口数量维度
             window_shape = list(window.shape)
             window_shape.insert(dim, 1)
-            window = window.reshape(window_shape)
+            window = window._reshape(window_shape)
             
             # 将窗口添加到列表中
             windows.append(window)
@@ -3184,7 +3229,7 @@ class TN:
         new_shape = new_shape[:start_dim] + [flattened_size] + new_shape[end_dim + 1:]
 
         # 通过reshape实现展平（继承梯度传播能力）
-        return self.reshape(*new_shape)
+        return self._reshape(*new_shape)
 
     def expand(self, *size):
         """
@@ -4871,13 +4916,13 @@ def repeat(input: TN, repeats: Tuple[int, ...]) -> TN:
                 shape = list(grad_value.shape)
                 shape[j] = repeat
                 shape.insert(j+1, size)
-                grad_reshaped = grad_value.reshape(shape)
+                grad_reshaped = grad_value._reshape(shape)
                 
                 # 在重复的维度上求和
                 grad_value = grad_reshaped.sum(dim=j)
             
             # 将梯度的形状调整为输入张量的原始形状
-            grad_value = grad_value.reshape(original_shape)
+            grad_value = grad_value._reshape(original_shape)
             
             return grad_value
         
@@ -4944,7 +4989,7 @@ def _unsqueeze_backward(result_tensor:TN, i: int) -> TN:
 
 def _reshape_backward(result_tensor: TN, i: int) -> TN:
     original_shape, _ = result_tensor.parms[i]
-    grad = result_tensor.grad_value.reshape(original_shape)
+    grad = result_tensor.grad_value._reshape(original_shape)
     return grad
 
 def _expand_backward(result_tensor: TN, i: int) -> TN:
@@ -4988,10 +5033,10 @@ def _expand_backward(result_tensor: TN, i: int) -> TN:
         for dim in sorted(sum_dims, reverse=True):
             summed_grad = summed_grad.sum(dim=dim, keepdim=True)
         # 使用Riemann的reshape函数，保留计算图
-        grad = summed_grad.reshape(original_shape)
+        grad = summed_grad._reshape(original_shape)
     else:
         # 如果没有维度被扩展，直接使用Riemann的reshape函数
-        grad = grad_value.reshape(original_shape)
+        grad = grad_value._reshape(original_shape)
     
     return grad
 
@@ -5910,7 +5955,7 @@ def _var_backward(result_tensor:TN, i:int)->TN:
     if not keepdim:
         if dim is None:
             # 对于全局方差，需要扩展到原始形状
-            new_result_grad = grad_value.reshape(tuple(1 for _ in x.shape))
+            new_result_grad = grad_value._reshape(tuple(1 for _ in x.shape))
         elif isinstance(dim, int):
             new_result_grad = grad_value.unsqueeze(dim)
         else:  # tuple
@@ -6038,7 +6083,7 @@ def _add_grad_left(result_tensor:TN, i:int)->TN:
     else:
         # left_tensor与result_tensor的shape比较，获取需left_tensor广播轴序号的元组
         broadcast_axes=_get_broadcast_axis(result_shape,left_var_shape)
-        grad = sum(result_tensor.grad_value,dim=broadcast_axes,keepdim=False).reshape(left_var_shape)
+        grad = sum(result_tensor.grad_value,dim=broadcast_axes,keepdim=False)._reshape(left_var_shape)
     return grad
 
 def _add_grad_right(result_tensor:TN, i:int)->TN:
@@ -6052,7 +6097,7 @@ def _add_grad_right(result_tensor:TN, i:int)->TN:
     else:
         # right_tensor与result_tensor的shape比较，获取需right_tensor广播轴序号的元组
         broadcast_axes=_get_broadcast_axis(result_shape,right_var_shape)
-        grad = sum(result_tensor.grad_value,dim=broadcast_axes,keepdim=False).reshape(right_var_shape)
+        grad = sum(result_tensor.grad_value,dim=broadcast_axes,keepdim=False)._reshape(right_var_shape)
     return grad
 
 def _sub_grad_left(result_tensor:TN, i:int)->TN:
@@ -6078,7 +6123,7 @@ def _mul_grad_left(result_tensor:TN, i:int)->TN:
         broadcast_axes=_get_broadcast_axis(result_shape,left_var_shape)
         grad = sum(left_grad,
                     dim=broadcast_axes,
-                    keepdim=False).reshape(left_var_shape)
+                    keepdim=False)._reshape(left_var_shape)
     return grad
 
 def _mul_grad_right(result_tensor:TN, i:int)->TN:
@@ -6097,7 +6142,7 @@ def _mul_grad_right(result_tensor:TN, i:int)->TN:
         broadcast_axes=_get_broadcast_axis(result_shape,right_var_shape)
         grad = sum(right_grad,
                     dim=broadcast_axes,
-                    keepdim=False).reshape(right_var_shape)
+                    keepdim=False)._reshape(right_var_shape)
     return grad
 
 def _matmul_grad_left(result_tensor:TN, i:int)->TN:
@@ -6204,7 +6249,7 @@ def _div_grad_left(result_tensor:TN, i:int)->TN:
         broadcast_axes=_get_broadcast_axis(result_shape,left_var_shape)
         grad = sum(left_grad,
                     dim=broadcast_axes,
-                    keepdim=False).reshape(left_var_shape)
+                    keepdim=False)._reshape(left_var_shape)
     return grad
  
 def _div_grad_right(result_tensor:TN, i:int)->TN:
@@ -6223,7 +6268,7 @@ def _div_grad_right(result_tensor:TN, i:int)->TN:
         broadcast_axes=_get_broadcast_axis(result_shape,right_var_shape)
         grad = sum(right_grad,
                     dim=broadcast_axes,
-                    keepdim=False).reshape(right_var_shape)
+                    keepdim=False)._reshape(right_var_shape)
     return grad
 
 def _pow_grad_left(result_tensor:TN, i:int)->TN:
@@ -6242,7 +6287,7 @@ def _pow_grad_left(result_tensor:TN, i:int)->TN:
         broadcast_axes=_get_broadcast_axis(result_shape,left_var_shape)
         grad = sum(left_grad,
                     dim=broadcast_axes,
-                    keepdim=False).reshape(left_var_shape)
+                    keepdim=False)._reshape(left_var_shape)
     return grad
 
 def _pow_grad_right(result_tensor:TN, i:int)->TN:
@@ -6261,7 +6306,7 @@ def _pow_grad_right(result_tensor:TN, i:int)->TN:
         broadcast_axes=_get_broadcast_axis(result_shape,right_var_shape)
         grad = sum(right_grad,
                     dim=broadcast_axes,
-                    keepdim=False).reshape(right_var_shape)
+                    keepdim=False)._reshape(right_var_shape)
     return grad
 
 def pow(input, exponent)->TN|float:
@@ -7117,7 +7162,7 @@ def vstack(tensors: Tuple[TN, ...]|List[TN]) -> TN:
     all_1d = all(t.ndim == 1 for t in tensors)
     if all_0d:
         # 对于0D张量，添加新维度后沿第0轴连接
-        expanded_tensors = [t.reshape(1, 1) for t in tensors]
+        expanded_tensors = [t._reshape(1, 1) for t in tensors]
         return concatenate(expanded_tensors, dim=0)
     elif all_1d:
         # 对于一维张量，添加新维度后沿第0轴连接
@@ -7141,7 +7186,7 @@ def hstack(tensors: Tuple[TN, ...]|List[TN]) -> TN:
     all_1d = all(t.ndim == 1 for t in tensors)
     if all_0d:
         # 对于0D张量，添加新维度后沿第0轴连接
-        expanded_tensors = [t.reshape(1) for t in tensors]
+        expanded_tensors = [t._reshape(1) for t in tensors]
         return concatenate(expanded_tensors, dim=0)
     elif all_1d:
         # 对于一维张量，沿第0轴连接（水平堆叠）
@@ -7363,7 +7408,7 @@ def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
     if input_shape != result_shape:
         # 获取需要缩减的广播轴
         broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
-        grad = sum(grad, dim=broadcast_axes, keepdim=False).reshape(input_shape)
+        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
     
     return grad
 
@@ -7403,7 +7448,7 @@ def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
     if other_shape != result_shape:
         # 获取需要缩减的广播轴
         broadcast_axes = _get_broadcast_axis(result_shape, other_shape)
-        grad = sum(grad, dim=broadcast_axes, keepdim=False).reshape(other_shape)
+        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(other_shape)
     
     return grad
 
@@ -7487,7 +7532,7 @@ def _minimum_grad_input(result_tensor: TN, i: int) -> TN:
     if input_shape != result_shape:
         # 获取需要缩减的广播轴
         broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
-        grad = sum(grad, dim=broadcast_axes, keepdim=False).reshape(input_shape)
+        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
     
     return grad
 
@@ -7527,7 +7572,7 @@ def _minimum_grad_other(result_tensor: TN, i: int) -> TN:
     if other_shape != result_shape:
         # 获取需要缩减的广播轴
         broadcast_axes = _get_broadcast_axis(result_shape, other_shape)
-        grad = sum(grad, dim=broadcast_axes, keepdim=False).reshape(other_shape)
+        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(other_shape)
     
     return grad
 
@@ -7949,6 +7994,14 @@ def equal(a:TN,b:TN)->bool:
     返回:
         bool: 如果两个张量形状相同且所有元素都相等，则返回True；否则返回False
     """
+    # 检查参数是否为None
+    if a is None or b is None:
+        raise TypeError("equal(): arguments must be Tensor, not NoneType")
+    
+    # 检查参数是否为TN类型
+    if not isinstance(a, TN) or not isinstance(b, TN):
+        raise TypeError("equal(): arguments must be Tensor")
+    
     # 检查形状是否相同
     if a.shape != b.shape:
         return False
