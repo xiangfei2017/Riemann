@@ -5,7 +5,7 @@
 @Time    :   2025/12/27
 @Author  :   Advanced CNN
 @Version :   1.1
-@Desc    :   基于CFAIR10数据集特点优化的高级卷积神经网络示例（业界最佳实践版）
+@Desc    :   基于CIFAR10数据集特点优化的高级卷积神经网络示例（业界最佳实践版）
 """
 
 import os
@@ -29,7 +29,7 @@ def clear_screen():
 
 class EasyCIFAR10(datasets.CIFAR10):
     """
-    继承自CFAIR10的子类，在初始化时对图像数据应用归一化、标准化转换，
+    继承自CIFAR10的子类，在初始化时对图像数据应用归一化、标准化转换，
     这样训练过程中不再需要转换数据，可节省训练时间。
     """
     
@@ -45,7 +45,7 @@ class EasyCIFAR10(datasets.CIFAR10):
         def tensor_transform(img):
             # 将图像转换为张量
             tensor_img = transforms.ToTensor()(img)
-            # 使用CFAIR10数据集的实际均值和标准差进行标准化
+            # 使用CIFAR10数据集的实际均值和标准差进行标准化
             # 根据数据分析：R(134.57,69.84), G(135.19,69.56), B(136.95,66.95)
             # 转换为0-1范围的均值和标准差
             normalized_img = transforms.Normalize(
@@ -61,7 +61,7 @@ class EasyCIFAR10(datasets.CIFAR10):
         super().__init__(root, train=train, transform=tensor_transform, target_transform=tensor_label_transform)
         
         # 预处理所有数据
-        print("Transforming CFAIR-10 to EasyCFAIR10 ...")
+        print("Transforming CIFAR-10 to EasyCIFAR10 ...")
         self.data_list = []
         # 使用父类的长度，而不是子类的长度
         parent_length = super().__len__()
@@ -160,8 +160,7 @@ class AdvancedConvNet(nn.Module):
         
         # 交叉熵损失函数，适用于多分类任务
         self.loss_func = nn.CrossEntropyLoss()
-        # 使用Adam优化器，自适应学习率
-        self.optimizer = optim.Adam(self.parameters(), lr=0.001, weight_decay=5e-4)
+        # 优化器将在设备移动后初始化
     
     def forward(self, inputs):
         """
@@ -342,8 +341,9 @@ def main():
     # 将模型移动到指定设备
     if CUDA_AVAILABLE:
         model.to(device)
-        # 重新初始化优化器，确保它引用GPU上的参数
-        model.optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
+    
+    # 初始化优化器，确保它引用正确设备上的参数
+    model.optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
     
     # 训练参数
     num_epochs = 5  # 增加训练轮数，确保模型充分收敛
