@@ -183,7 +183,58 @@ pip install -e .
 pip install -e .[tests]
 
 # 如果需要使用CUDA/GPU加速，还需安装CUDA依赖
+# 注意：使用CUDA加速前，请确保已安装对应版本的CUDA驱动
 pip install -e .[cuda]
+
+# 对于特定CUDA版本的用户，也可以直接安装对应版本的依赖
+# CUDA 12.x
+pip install -e .[cuda12]
+# CUDA 11.x
+pip install -e .[cuda11]
+# CUDA 10.x (仅Linux)
+pip install -e .[cuda10]
+
+# CUDA驱动安装说明
+# 1. 检查CUDA驱动版本
+# Windows系统：
+#   右键点击桌面 → NVIDIA控制面板 → 帮助 → 系统信息 → 驱动程序版本
+# Linux系统：
+#   终端运行：nvidia-smi
+#   或：nvcc --version
+
+# 2. 下载并安装对应版本的CUDA驱动
+# 访问NVIDIA官方网站：https://developer.nvidia.com/cuda-toolkit-archive
+# 根据你的GPU型号和操作系统选择合适的驱动版本
+# 安装过程中请按照向导提示完成
+
+# 3. 验证CUDA驱动安装
+# 安装完成后，重启电脑并运行：
+# Windows: nvidia-smi
+# Linux: nvidia-smi 或 nvcc --version
+# 确认输出中显示正确的CUDA版本信息
+
+# macOS和ARM硬件环境说明
+# 1. macOS系统（包括搭载Apple Silicon的Mac）
+#   - macOS不支持NVIDIA CUDA
+#   - 对于搭载Apple Silicon的Mac（M1/M2/M3等），可以使用Metal Performance Shaders (MPS)进行GPU加速
+#   - 但Riemann目前暂未实现MPS支持，在macOS上会自动使用CPU模式
+
+# 2. ARM架构硬件
+#   - 对于NVIDIA Jetson等ARM架构设备，可能支持CUDA，但需要安装对应ARM版本的CUDA驱动
+#   - 对于其他ARM架构设备（如ARM服务器、部分Android设备），通常不支持CUDA
+
+# 3. macOS和ARM环境的cupy安装
+#   - 在这些环境下，pip会自动安装通用版本的cupy（仅CPU模式）
+#   - 安装命令：pip install -e .[cupy]
+#   - 或：pip install cupy
+
+# 4. 验证安装
+#   - 安装完成后，可以运行以下代码验证：
+#   ```python
+#   import riemann as r
+#   print("CUDA可用:", r.cuda.is_available())
+#   print("使用设备:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
+#   ```
 ```
 
 ### 依赖说明

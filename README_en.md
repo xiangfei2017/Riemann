@@ -183,7 +183,58 @@ pip install -e .
 pip install -e .[tests]
 
 # If you need to use CUDA/GPU acceleration, you also need to install CUDA dependencies
+# Note: Before using CUDA acceleration, please ensure you have installed the corresponding version of CUDA driver
 pip install -e .[cuda]
+
+# For users with specific CUDA versions, you can also directly install the corresponding version of dependencies
+# CUDA 12.x
+pip install -e .[cuda12]
+# CUDA 11.x
+pip install -e .[cuda11]
+# CUDA 10.x (Linux only)
+pip install -e .[cuda10]
+
+# CUDA Driver Installation Instructions
+# 1. Check CUDA Driver Version
+# Windows system:
+#   Right-click on desktop → NVIDIA Control Panel → Help → System Information → Driver Version
+# Linux system:
+#   Run in terminal: nvidia-smi
+#   or: nvcc --version
+
+# 2. Download and Install Corresponding CUDA Driver
+# Visit NVIDIA official website: https://developer.nvidia.com/cuda-toolkit-archive
+# Select appropriate driver version based on your GPU model and operating system
+# Follow the wizard instructions to complete the installation
+
+# 3. Verify CUDA Driver Installation
+# After installation, restart your computer and run:
+# Windows: nvidia-smi
+# Linux: nvidia-smi or nvcc --version
+# Confirm that the output shows the correct CUDA version information
+
+# macOS and ARM Hardware Environment Instructions
+# 1. macOS System (including Apple Silicon Macs)
+#   - macOS does not support NVIDIA CUDA
+#   - For Macs with Apple Silicon (M1/M2/M3, etc.), you can use Metal Performance Shaders (MPS) for GPU acceleration
+#   - However, Riemann currently does not implement MPS support and will automatically use CPU mode on macOS
+
+# 2. ARM Architecture Hardware
+#   - For ARM architecture devices like NVIDIA Jetson, CUDA may be supported, but you need to install the corresponding ARM version of CUDA driver
+#   - For other ARM architecture devices (such as ARM servers, some Android devices), CUDA is usually not supported
+
+# 3. CuPy Installation for macOS and ARM Environments
+#   - In these environments, pip will automatically install the general version of CuPy (CPU-only mode)
+#   - Installation command: pip install -e .[cupy]
+#   - Or: pip install cupy
+
+# 4. Verify Installation
+#   - After installation, you can run the following code to verify:
+#   ```python
+#   import riemann as r
+#   print("CUDA available:", r.cuda.is_available())
+#   print("Using device:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
+#   ```
 ```
 
 ### Dependency Description
