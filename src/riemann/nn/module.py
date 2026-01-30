@@ -48,11 +48,13 @@ This file implements the following key components:
 All modules implement a PyTorch-compatible interface, making it easy to migrate code
 between Riemann and PyTorch frameworks.
 """
-from typing import Callable, Any, List, Tuple, Dict
+from typing import Any, Dict
 import copy
 from ..tensordef import *
+from ..cuda import cp
 from .functional import *
 
+                        
 class Parameter(TN):
     """
     模型参数类 (Model Parameter Class)
@@ -1136,12 +1138,21 @@ class Module:
                     missing_keys.append(key)
                 else:
                     try:
-                        # 复制数据到本地参数/缓冲区
-                        source_data = value.data if hasattr(value, 'data') else value
+                        # 直接使用value作为source_data
+                        source_data = value
                         if isinstance(local_state[key], Parameter):
                             target_data = local_state[key].data
                         else:
                             target_data = local_state[key]
+                        
+                        # 处理不同类型的数据
+                        if isinstance(source_data, list):
+                            # 将列表转换为数组
+                            source_data = np.array(source_data).reshape(target_data.shape)
+                        elif isinstance(source_data, dict) and '__type__' in source_data:
+                            # 处理序列化的张量格式
+                            if source_data['__type__'] == 'tensor' or source_data['__type__'] == 'parameter':
+                                source_data = np.array(source_data['data']).reshape(source_data['shape'])
                         
                         # 处理不同维度的张量
                         if target_data.ndim == 0:

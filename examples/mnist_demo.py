@@ -45,6 +45,10 @@ class MNISTGUI:
         self.training = False
         self.train_thread = None
         self.data_root = os.path.join(os.path.dirname(__file__), '..', 'data')
+        # 共享的测试数据集
+        self.test_dataset = None
+        # 加载测试数据集
+        self._load_test_dataset()
         
         # 检测是否有可用的GPU
         try:
@@ -94,6 +98,27 @@ class MNISTGUI:
         self._init_right_panel()  # 右侧训练数据显示和模型状态
         self._init_digit_recognition()  # 手写识别功能
         self._init_mnist_test_tab()  # MNIST测试集标签页
+    
+    def _load_test_dataset(self):
+        """加载测试数据集（只加载一次）"""
+        try:
+            # 定义数据变换
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.1307,), (0.3081,))
+            ])
+            
+            # 加载测试数据集
+            print("加载MNIST测试数据集...")
+            self.test_dataset = MNIST(
+                root=self.data_root,
+                train=False,
+                transform=transform
+            )
+            print(f"MNIST测试数据集加载完成，共 {len(self.test_dataset)} 个样本")
+        except Exception as e:
+            print(f"加载MNIST测试数据集失败: {str(e)}")
+            self.test_dataset = None
         
     def _init_left_panel(self):
         """初始化左侧面板，包含训练参数输入和控制按钮"""
@@ -104,23 +129,23 @@ class MNISTGUI:
         # 批大小设置
         batch_frame = ttk.Frame(settings_frame)
         batch_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(batch_frame, text="批大小:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(batch_frame, text="批大小:", width=8, anchor=tk.E).pack(side=tk.LEFT, padx=5)
         self.batch_var = tk.StringVar(value="100")
-        ttk.Entry(batch_frame, textvariable=self.batch_var, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Entry(batch_frame, textvariable=self.batch_var, width=12).pack(side=tk.LEFT, padx=5)
         
         # 训练轮数设置
         epoch_frame = ttk.Frame(settings_frame)
         epoch_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(epoch_frame, text="训练轮数:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(epoch_frame, text="训练轮数:", width=8, anchor=tk.E).pack(side=tk.LEFT, padx=5)
         self.epoch_var = tk.StringVar(value="3")
-        ttk.Entry(epoch_frame, textvariable=self.epoch_var, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Entry(epoch_frame, textvariable=self.epoch_var, width=12).pack(side=tk.LEFT, padx=5)
         
         # 学习率设置
         lr_frame = ttk.Frame(settings_frame)
         lr_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(lr_frame, text="学习率:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(lr_frame, text="学习率:", width=8, anchor=tk.E).pack(side=tk.LEFT, padx=5)
         self.lr_var = tk.StringVar(value="0.001")
-        ttk.Entry(lr_frame, textvariable=self.lr_var, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Entry(lr_frame, textvariable=self.lr_var, width=12).pack(side=tk.LEFT, padx=5)
         
         # 训练按钮框架
         train_button_frame = ttk.Frame(self.left_frame)
@@ -278,9 +303,9 @@ class MNISTGUI:
             # 创建分类器模型，使用在__init__中检测好的设备
             self.model = Classifier(device=self.device)
             self.model_status_var.set("模型已初始化")
-            messagebox.showinfo("成功", "模型初始化成功！")
+            self.log("模型初始化成功！")
         except Exception as e:
-            messagebox.showerror("错误", f"模型初始化失败: {str(e)}")
+            self.log(f"模型初始化失败: {str(e)}")
     
     def start_training(self):
         """开始训练"""
@@ -289,8 +314,9 @@ class MNISTGUI:
             try:
                 self.model = Classifier(device=self.device)
                 self.model_status_var.set("模型已初始化")
+                self.log("模型初始化成功！")
             except Exception as e:
-                messagebox.showerror("错误", f"模型初始化失败: {str(e)}")
+                self.log(f"模型初始化失败: {str(e)}")
                 return
         
         # 获取训练参数
@@ -299,7 +325,7 @@ class MNISTGUI:
             epochs = int(self.epoch_var.get())
             lr = float(self.lr_var.get())
         except ValueError:
-            messagebox.showerror("错误", "请输入有效的训练参数！")
+            self.log("错误: 请输入有效的训练参数！")
             return
         
         # 禁用按钮
@@ -328,6 +354,13 @@ class MNISTGUI:
             # 显示使用的设备类型
             self.log(f"使用 {self.device.upper()} 进行训练")
             
+            # 验证模型设备一致性
+            if hasattr(self.model, 'parameters'):
+                first_param = next(self.model.parameters(), None)
+                if first_param is not None:
+                    param_device = getattr(first_param, 'device', 'unknown')
+                    self.log(f"模型参数设备: {param_device}")
+            
             # 定义数据变换
             transform = transforms.Compose([
                 transforms.ToTensor(),
@@ -341,11 +374,15 @@ class MNISTGUI:
                 train=True,
                 transform=transform
             )
-            test_dataset = MNIST(
-                root=self.data_root,
-                train=False,
-                transform=transform
-            )
+            # 使用共享的测试数据集
+            if self.test_dataset is None:
+                test_dataset = MNIST(
+                    root=self.data_root,
+                    train=False,
+                    transform=transform
+                )
+            else:
+                test_dataset = self.test_dataset
             
             # 创建数据加载器
             train_loader = DataLoader(
@@ -365,6 +402,7 @@ class MNISTGUI:
             # 更新模型的学习率
             for param_group in self.model.optimizer.param_groups:
                 param_group['lr'] = lr
+                self.log(f"优化器学习率: {param_group['lr']}")
             
             # 训练模型
             total_batches = epochs * len(train_loader)
@@ -410,10 +448,10 @@ class MNISTGUI:
             
             if self.training:
                 self.log("训练完成！")
-                messagebox.showinfo("成功", "训练完成！")
+                self.log("成功: 训练完成！")
         except Exception as e:
             self.log(f"训练出错: {str(e)}")
-            messagebox.showerror("错误", f"训练失败: {str(e)}")
+            self.log(f"错误: 训练失败: {str(e)}")
         finally:
             # 恢复按钮状态
             self.training = False
@@ -434,7 +472,7 @@ class MNISTGUI:
     def save_model(self):
         """保存模型"""
         if not self.model:
-            messagebox.showwarning("警告", "请先初始化模型！")
+            self.log("警告: 请先初始化模型！")
             return
         
         # 选择保存路径
@@ -451,9 +489,9 @@ class MNISTGUI:
             try:
                 # 保存模型
                 self.model.save(file_path)
-                messagebox.showinfo("成功", "模型保存成功！")
+                self.log("模型保存成功！")
             except Exception as e:
-                messagebox.showerror("错误", f"模型保存失败: {str(e)}")
+                self.log(f"模型保存失败: {str(e)}")
     
     def load_model(self):
         """加载模型"""
@@ -465,21 +503,31 @@ class MNISTGUI:
         
         if file_path:
             try:
-                # 初始化模型
+                # 初始化模型，使用已检测的设备
                 if not self.model:
-                    self.model = Classifier()
+                    self.model = Classifier(device=self.device)
                 
                 # 加载模型
                 self.model.load(file_path)
+                
+                # 确保模型在正确的设备上（只进行一次设备迁移）
+                if self.model.device != self.device:
+                    self.model.to(self.device)
+                    self.log(f"模型已从 {self.model.device} 迁移到 {self.device}")
+                else:
+                    self.log(f"模型设备与目标设备一致: {self.device}")
+                
                 self.model_status_var.set("模型已加载")
-                messagebox.showinfo("成功", "模型加载成功！")
+                self.log("模型加载成功！")
+                # 显示设备信息
+                self.log(f"模型加载后设备: {self.model.device}")
             except Exception as e:
-                messagebox.showerror("错误", f"模型加载失败: {str(e)}")
+                self.log(f"模型加载失败: {str(e)}")
     
     def test_model(self):
         """测试模型"""
         if not self.model:
-            messagebox.showwarning("警告", "请先初始化或加载模型！")
+            self.log("警告: 请先初始化或加载模型！")
             return
         
         try:
@@ -489,12 +537,15 @@ class MNISTGUI:
                 transforms.Normalize((0.1307,), (0.3081,))
             ])
             
-            # 加载测试数据集
-            test_dataset = MNIST(
-                root=self.data_root,
-                train=False,
-                transform=transform
-            )
+            # 使用共享的测试数据集
+            if self.test_dataset is None:
+                test_dataset = MNIST(
+                    root=self.data_root,
+                    train=False,
+                    transform=transform
+                )
+            else:
+                test_dataset = self.test_dataset
             
             test_loader = DataLoader(
                 dataset=test_dataset,
@@ -510,9 +561,9 @@ class MNISTGUI:
             self.log(f"测试集准确率: {test_accuracy:.4f}")
             self.log(f"测试集损失: {test_loss:.4f}")
             
-            messagebox.showinfo("测试结果", f"准确率: {test_accuracy:.4f}\n损失: {test_loss:.4f}")
+            self.log(f"测试结果 - 准确率: {test_accuracy:.4f}, 损失: {test_loss:.4f}")
         except Exception as e:
-            messagebox.showerror("错误", f"测试失败: {str(e)}")
+            self.log(f"测试失败: {str(e)}")
     
     def start_draw(self, event):
         """开始绘制"""
@@ -570,7 +621,7 @@ class MNISTGUI:
     def recognize_digit(self):
         """识别手写数字"""
         if not self.model:
-            messagebox.showwarning("警告", "请先初始化或加载模型！")
+            self.log("警告: 请先初始化或加载模型！")
             return
         
         try:
@@ -666,7 +717,7 @@ class MNISTGUI:
                 if i == predicted:
                     prob_label.config(foreground="red", font=("Arial", 10, "bold"))
         except Exception as e:
-            messagebox.showerror("错误", f"识别失败: {str(e)}")
+            self.log(f"识别失败: {str(e)}")
 
     def _init_mnist_test_tab(self):
         """初始化MNIST测试集标签页"""
@@ -727,18 +778,22 @@ class MNISTGUI:
     def _load_mnist_test_data(self):
         """加载MNIST测试数据集"""
         try:
-            # 定义数据变换
-            transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize((0.1307,), (0.3081,))
-            ])
-            
-            # 加载测试数据集
-            test_dataset = MNIST(
-                root=self.data_root,
-                train=False,
-                transform=transform
-            )
+            # 使用共享的测试数据集
+            if self.test_dataset is None:
+                # 定义数据变换
+                transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.1307,), (0.3081,))
+                ])
+                
+                # 加载测试数据集
+                test_dataset = MNIST(
+                    root=self.data_root,
+                    train=False,
+                    transform=transform
+                )
+            else:
+                test_dataset = self.test_dataset
             
             # 提取样本和标签
             self.mnist_test_dataset = test_dataset
@@ -903,9 +958,9 @@ class Classifier(nn.Module):
         
         # 将模型移动到指定设备
         if hasattr(self, 'to'):
-            self.to(device)
+            super().to(device)
         
-        # Adam优化器，优化学习率设置
+        # Adam优化器，优化学习率设置（在设备移动后初始化，确保使用正确设备上的参数）
         self.optimizer = opt.Adam(self.parameters(), 
                                 lr=0.001,  # 初始学习率
                                 betas=(0.9, 0.999),
@@ -968,44 +1023,70 @@ class Classifier(nn.Module):
     
     def save(self, path):
         """保存模型"""
-        # 保存模型参数和超参数
-        import pickle
-        model_data = {
-            'parameters': {name: param.data for name, param in self.named_parameters()},
-            'requires_grad': {name: param.requires_grad for name, param in self.named_parameters()},
-            'optimizer': {
-                'lr': self.optimizer.param_groups[0]['lr'],
-                'betas': self.optimizer.param_groups[0]['betas'],
-                'eps': self.optimizer.param_groups[0]['eps'],
-                'weight_decay': self.optimizer.param_groups[0]['weight_decay']
-            }
+        # 构建完整的检查点字典
+        checkpoint = {
+            'model_state_dict': self.state_dict(),
+            'device': self.device
         }
-        
-        with open(path, 'wb') as f:
-            pickle.dump(model_data, f)
-    
+        # 使用 Riemann 内置的 save 函数
+        riemann.save(checkpoint, path)
+
     def load(self, path):
         """加载模型"""
-        import pickle
+        # 使用 Riemann 内置的 load 函数
+        checkpoint = riemann.load(path)
         
-        with open(path, 'rb') as f:
-            model_data = pickle.load(f)
+        # 加载模型状态（不进行设备迁移，保持原始设备）
+        self.load_state_dict(checkpoint['model_state_dict'])
         
-        # 加载参数
-        param_dict = {name: param for name, param in self.named_parameters()}
-        for name, data in model_data['parameters'].items():
-            if name in param_dict:
-                param_dict[name].data = data
-                param_dict[name].requires_grad = model_data['requires_grad'][name]
+        # 恢复设备信息
+        if 'device' in checkpoint:
+            self.device = checkpoint['device']
         
-        # 加载优化器参数
-        if 'optimizer' in model_data:
-            opt_params = model_data['optimizer']
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = opt_params['lr']
-                param_group['betas'] = opt_params['betas']
-                param_group['eps'] = opt_params['eps']
-                param_group['weight_decay'] = opt_params['weight_decay']
+        # 重新初始化优化器，确保它使用当前模型的参数
+        # 保存优化器的超参数
+        lr = self.optimizer.param_groups[0]['lr']
+        betas = self.optimizer.param_groups[0]['betas']
+        eps = self.optimizer.param_groups[0]['eps']
+        weight_decay = self.optimizer.param_groups[0]['weight_decay']
+        amsgrad = self.optimizer.param_groups[0].get('amsgrad', False)
+        
+        # 重新初始化优化器，使用当前模型的参数
+        self.optimizer = opt.Adam(self.parameters(), 
+                                lr=lr,
+                                betas=betas,
+                                eps=eps,
+                                weight_decay=weight_decay,
+                                amsgrad=amsgrad)
+        
+        # 记录加载信息
+        print(f"模型加载成功，原设备: {checkpoint.get('device', 'unknown')}")
+        print(f"当前模型设备: {self.device}")
+
+    def to(self, device):
+        """将模型移动到指定设备"""
+        # 调用父类的 to 方法移动模型参数
+        super().to(device)
+        # 更新设备信息
+        self.device = device
+        
+        # 更新优化器，确保它使用新设备上的参数
+        # 保存优化器的超参数
+        lr = self.optimizer.param_groups[0]['lr']
+        betas = self.optimizer.param_groups[0]['betas']
+        eps = self.optimizer.param_groups[0]['eps']
+        weight_decay = self.optimizer.param_groups[0]['weight_decay']
+        amsgrad = self.optimizer.param_groups[0].get('amsgrad', False)
+        
+        # 重新初始化优化器，使用新设备上的参数
+        self.optimizer = opt.Adam(self.parameters(), 
+                                lr=lr,
+                                betas=betas,
+                                eps=eps,
+                                weight_decay=weight_decay,
+                                amsgrad=amsgrad)
+        
+        return self
 
 def main():
     """主函数"""

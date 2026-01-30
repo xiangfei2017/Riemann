@@ -224,6 +224,14 @@ def _prepare_for_serialization(obj: Any) -> Any:
         # 递归处理列表和元组
         processed = [_prepare_for_serialization(item) for item in obj]
         return processed if isinstance(obj, list) else tuple(processed)
+    elif cp is not None and isinstance(obj, cp.ndarray):
+        # 直接使用cupy数组的tolist()方法，不需要转换为NumPy数组
+        return {
+            '__type__': 'cupy_array',
+            'data': obj.tolist(),
+            'shape': obj.shape,
+            'dtype': str(obj.dtype)
+        }
     else:
         # 其他对象原样返回
         return obj
@@ -242,7 +250,6 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
     返回：
         恢复的Riemann对象
     """
-        
     if isinstance(obj, dict) and '__type__' in obj:
         obj_type = obj['__type__']
         
@@ -257,11 +264,11 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
                 device = Device(device_str)
                 arrlib = cp if device.type == 'cuda' else np
 
-                # 将列表转换回具有正确形状和dtype的numpy数组
-                data = arrlib.array(obj['data'],dtype=dtype)
+                # 将列表转换回具有正确形状和dtype的数组
+                data = arrlib.array(obj['data'], dtype=dtype)
                 data = data.reshape(obj['shape'])
 
-                tensor_obj = tensor(data, dtype=dtype,device=device, requires_grad=obj.get('requires_grad', False))
+                tensor_obj = tensor(data, dtype=dtype, device=device, requires_grad=obj.get('requires_grad', False))
             except Exception as e:
                 # 恢复失败时，返回None作为占位符
                 tensor_obj = None
@@ -279,13 +286,16 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
                 device = Device(device_str)
                 arrlib = cp if device.type == 'cuda' else np
 
-                # 将列表转换回具有正确形状和dtype的numpy数组
-                data = arrlib.array(obj['data'],dtype=dtype)
+                # 将列表转换回具有正确形状和dtype的数组
+                data = arrlib.array(obj['data'], dtype=dtype)
                 data = data.reshape(obj['shape'])
             
                 # 使用tensor函数创建参数以确保正确初始化
-                parameter_tensor = tensor(data, dtype=dtype,device=device, requires_grad=obj.get('requires_grad', True))
+                parameter_tensor = tensor(data, dtype=dtype, device=device, requires_grad=obj.get('requires_grad', True))
                 parameter = Parameter(parameter_tensor)
+                # 恢复is_leaf属性
+                if 'is_leaf' in obj:
+                    parameter.is_leaf = obj['is_leaf']
             except Exception as e:
                 # 恢复失败时，返回None作为占位符
                 parameter = None
@@ -296,6 +306,28 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
             # 恢复模块（这更复杂，可能需要类注册）
             # 目前只返回状态字典
             return obj['state_dict']
+            
+        elif obj_type == 'cupy_array':
+            # 恢复CuPy数组
+            try:
+                # 获取数据
+                data = obj.get('data')
+                shape = obj.get('shape')
+                dtype_str = obj.get('dtype')
+                
+                # 转换数据类型
+                dtype = np.dtype(dtype_str)
+                
+                # 创建数组，优先使用CuPy（如果可用）
+                if cp is not None:
+                    return cp.array(data, dtype=dtype).reshape(shape)
+                else:
+                    # 如果CuPy不可用，返回NumPy数组
+                    return np.array(data, dtype=dtype).reshape(shape)
+            except Exception as e:
+                # 恢复失败时，返回None作为占位符
+                print(f"Error restoring cupy_array: {e}")
+                return None
             
     elif isinstance(obj, dict):
         # 递归处理字典
