@@ -1145,15 +1145,6 @@ class Module:
                         else:
                             target_data = local_state[key]
                         
-                        # 处理不同类型的数据
-                        if isinstance(source_data, list):
-                            # 将列表转换为数组
-                            source_data = np.array(source_data).reshape(target_data.shape)
-                        elif isinstance(source_data, dict) and '__type__' in source_data:
-                            # 处理序列化的张量格式
-                            if source_data['__type__'] == 'tensor' or source_data['__type__'] == 'parameter':
-                                source_data = np.array(source_data['data']).reshape(source_data['shape'])
-                        
                         # 处理不同维度的张量
                         if target_data.ndim == 0:
                             # 0维张量（标量）
