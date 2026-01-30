@@ -2638,9 +2638,9 @@ class TN:
         Returns:
             TN: 与原张量共享数据但断开计算图的新张量
         """
-        ret = TN()
+        ret = type(self)()
         ret.data = self.data
-        return ret    
+        return ret
     
     def detach_(self):
         """

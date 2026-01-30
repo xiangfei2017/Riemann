@@ -258,8 +258,9 @@ class Module:
         for name, param in self._parameters.items():
             if param is not None:
                 # 直接对参数张量调用to方法,清除计算图依赖，确保新参数不会向旧参数传递梯度
-                new_param = param.to(device).detach_()
-                new_param.requires_grad = param.requires_grad
+                requires_grad = param.requires_grad
+                new_param = param.to(device).detach()
+                new_param.requires_grad = requires_grad
                 # 更新参数
                 self._parameters[name] = new_param
                 # 更新实例属性引用
@@ -269,7 +270,7 @@ class Module:
         for name, buffer in self._buffers.items():
             if buffer is not None:
                 # 直接对缓冲区张量调用to方法,并清除计算图依赖
-                new_buffer = buffer.to(device).detach_()
+                new_buffer = buffer.to(device).detach()
                 # 更新缓冲区
                 self._buffers[name] = new_buffer
                 # 更新实例属性引用

@@ -43,7 +43,24 @@ when CUDA is not present or CuPy cannot be imported.
 
 try:
     import cupy as cp  # type: ignore
-    CUPY_AVAILABLE = True
+    # Test if CUDA is actually available by trying to perform a CUDA operation
+    try:
+        # Try to get device count first
+        device_count = cp.cuda.runtime.getDeviceCount()
+        if device_count <= 0:
+            raise RuntimeError("No CUDA devices found")
+        
+        # Try to create a CUDA array using cp.full() which requires CUDA runtime compiler
+        # This will fail if CUDA is not properly installed (missing nvrtc64_*.dll)
+        test_array = cp.full((10, 10), 5.0)
+        test_result = test_array.sum()
+        
+        # If we got here, CUDA is working
+        CUPY_AVAILABLE = True
+    except Exception as e:
+        print(f"Warning: CuPy imported but CUDA is not functional ({e}). Riemann will only work on CPU")
+        CUPY_AVAILABLE = False
+        cp = None
 except ImportError:
     print("Warning: Cannot import cupy, riemann will only work on CPU")
     CUPY_AVAILABLE = False
