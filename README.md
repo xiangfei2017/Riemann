@@ -96,6 +96,7 @@ Riemann/
 │   ├── grad_demo.py              # 梯度计算示例
 │   ├── custom_grad_decorator.py  # 自定义梯度跟踪函数示例
 │   ├── optimizers_comparison.py  # 优化器比较示例
+│   ├── mnist_demo.py             # MNIST手写数字识别GUI示例
 │   ├── nn_MNIST_CE_SGD.py        # 神经网络训练示例
 │   ├── cnn_CIFAR10_CE_SGD.py     # 卷积网路训练示例
 │   └── ...
@@ -139,6 +140,7 @@ Riemann/
 - **自定义梯度示例**: 如custom_grad_decorator.py，展示如何使用装饰器自定义梯度
 - **优化器示例**: 如optimizers_comparison.py，比较不同优化器的性能
 - **神经网络示例**: 如nn_MNIST_CE_SGD.py（MNIST手写数字识别）、cnn_CIFAR10_CE_SGD.py（CIFAR10图像分类）
+- **GUI应用示例**: 如mnist_demo.py，提供图形界面的MNIST手写数字识别应用
 
 这些示例代码为用户提供了实际使用Riemann库的参考，帮助用户快速上手和理解库的功能。
 
@@ -148,6 +150,7 @@ Riemann提供了丰富的示例代码，位于`examples/`目录：
 - **grad_demo.py**: grad函数使用演示
 - **hessian.py**: 海森矩阵计算示例
 - **jacobian.py**: 雅可比矩阵计算示例
+- **mnist_demo.py**: MNIST手写数字识别GUI示例（图形界面训练与识别）
 - **nn_MNIST_CE_SGD.py**: 基于MNIST的手写数字识别神经网络示例（交叉熵损失 + SGD优化）
 - **nn_MNIST_CE_Adam.py**: 基于MNIST的手写数字识别神经网络示例（交叉熵损失 + Adam优化）
 - **nn_MNIST_CE_Adagrad.py**: 基于MNIST的手写数字识别神经网络示例（交叉熵损失 + Adagrad优化）
@@ -164,10 +167,43 @@ Riemann提供了丰富的示例代码，位于`examples/`目录：
 
 ## 安装方法
 
-### 从PyPI安装（待发布）
+### 从PyPI安装
+
+#### 基本安装
+
+直接运行以下命令安装Riemann及其核心依赖：
 
 ```bash
 pip install riemann
+```
+
+#### 安装CUDA依赖
+
+如果需要使用GPU加速，需要显式指定CUDA依赖选项：
+
+```bash
+# 安装默认CUDA版本（推荐CUDA 12.x）
+pip install riemann[cuda]
+
+# 对于特定CUDA版本的用户，也可以直接安装对应版本的依赖
+# CUDA 13.x
+pip install riemann[cuda13]
+# CUDA 12.x
+pip install riemann[cuda12]
+# CUDA 11.x
+pip install riemann[cuda11]
+# CUDA 10.x (仅Linux)
+pip install riemann[cuda10]
+```
+
+#### 安装其他可选依赖
+
+```bash
+# 安装测试依赖（用于运行tests目录下的测试代码）
+pip install riemann[tests]
+
+# 安装通用cupy依赖（适用于macOS、ARM64等不支持CUDA的平台）
+pip install riemann[cupy]
 ```
 
 ### 源码安装与开发环境配置
@@ -179,14 +215,16 @@ cd Riemann
 # 使用开发模式安装包及其核心依赖（-e表示可编辑模式，修改代码后无需重新安装）
 pip install -e .
 
-# 如果需要运行tests目录下的测试代码，还需安装测试依赖
+# 安装测试依赖
 pip install -e .[tests]
 
-# 如果需要使用CUDA/GPU加速，还需安装CUDA依赖
+# 安装CUDA依赖
 # 注意：使用CUDA加速前，请确保已安装对应版本的CUDA驱动
 pip install -e .[cuda]
 
-# 对于特定CUDA版本的用户，也可以直接安装对应版本的依赖
+# 安装特定版本的CUDA依赖
+# CUDA 13.x
+pip install -e .[cuda13]
 # CUDA 12.x
 pip install -e .[cuda12]
 # CUDA 11.x
@@ -194,72 +232,63 @@ pip install -e .[cuda11]
 # CUDA 10.x (仅Linux)
 pip install -e .[cuda10]
 
-# CUDA驱动安装说明
-# 1. 检查CUDA驱动版本
-# Windows系统：
-#   右键点击桌面 → NVIDIA控制面板 → 帮助 → 系统信息 → 驱动程序版本
-# Linux系统：
-#   终端运行：nvidia-smi
-#   或：nvcc --version
-
-# 2. 下载并安装对应版本的CUDA驱动
-# 访问NVIDIA官方网站：https://developer.nvidia.com/cuda-toolkit-archive
-# 根据你的GPU型号和操作系统选择合适的驱动版本
-# 安装过程中请按照向导提示完成
-
-# 3. 验证CUDA驱动安装
-# 安装完成后，重启电脑并运行：
-# Windows: nvidia-smi
-# Linux: nvidia-smi 或 nvcc --version
-# 确认输出中显示正确的CUDA版本信息
-
-# macOS和ARM硬件环境说明
-# 1. macOS系统（包括搭载Apple Silicon的Mac）
-#   - macOS不支持NVIDIA CUDA
-#   - 对于搭载Apple Silicon的Mac（M1/M2/M3等），可以使用Metal Performance Shaders (MPS)进行GPU加速
-#   - 但Riemann目前暂未实现MPS支持，在macOS上会自动使用CPU模式
-
-# 2. ARM架构硬件
-#   - 对于NVIDIA Jetson等ARM架构设备，可能支持CUDA，但需要安装对应ARM版本的CUDA驱动
-#   - 对于其他ARM架构设备（如ARM服务器、部分Android设备），通常不支持CUDA
-
-# 3. macOS和ARM环境的cupy安装
-#   - 在这些环境下，pip会自动安装通用版本的cupy（仅CPU模式）
-#   - 安装命令：pip install -e .[cupy]
-#   - 或：pip install cupy
-
-# 4. 验证安装
-#   - 安装完成后，可以运行以下代码验证：
-#   ```python
-#   import riemann as r
-#   print("CUDA可用:", r.cuda.is_available())
-#   print("使用设备:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
-#   ```
+# 安装通用cupy依赖（适用于macOS、ARM64等平台）
+pip install -e .[cupy]
 ```
 
 ### 依赖说明
 
-Riemann库的核心依赖已包含：
+#### 核心依赖
+
+直接运行`pip install riemann`会自动安装以下核心依赖：
 - **numpy>=1.20.0**: 核心数值计算库
 - **scipy>=1.7.0**: 线性代数算法库
-- **pillow>=8.0.0**: 用于计算机视觉中的图像处理功能（提供PIL模块）
+- **pillow>=8.0.0**: 用于计算机视觉中的图像处理功能
 - **tqdm>=4.0.0**: 用于神经网络训练中的进度条显示
 
-numpy、pillow和tqdm已作为核心依赖包含在包安装中，无需额外安装。
+#### CUDA依赖
 
-#### 测试依赖
+CUDA依赖不会自动安装，需要显式指定：
+- **cupy-cuda13x**: 适用于CUDA 13.x的Linux和Windows平台
+- **cupy-cuda12x**: 适用于CUDA 12.x的Linux和Windows平台
+- **cupy-cuda11x**: 适用于CUDA 11.x的Linux和Windows平台
+- **cupy-cuda10x**: 适用于CUDA 10.x的Linux平台
+- **cupy**: 通用版本（适用于macOS、ARM64等不支持CUDA的平台）
 
-运行测试代码时，还需要安装以下测试依赖：
-- **pytest>=7.0.0**: 测试框架
-- **torch>=2.0.0**: PyTorch深度学习框架（用于对比测试）
-- **torchvision>=0.15.0**: PyTorch的计算机视觉库（用于对比测试）
+#### 平台兼容性
 
-可以通过以下命令安装测试依赖：
-```bash
-pip install -e .[tests]
+- **CUDA支持**: 仅在Linux或Windows系统，且x86_64/AMD64架构下可用
+- **macOS系统**: 不支持NVIDIA CUDA，会自动使用CPU模式
+- **ARM架构**: 对于NVIDIA Jetson等设备可能支持CUDA，但需要安装对应ARM版本的CUDA驱动
+
+### CUDA驱动安装说明
+
+1. **检查CUDA驱动版本**
+   - Windows系统：右键点击桌面 → NVIDIA控制面板 → 帮助 → 系统信息 → 驱动程序版本
+   - Linux系统：终端运行 `nvidia-smi` 或 `nvcc --version`
+
+2. **下载并安装对应版本的CUDA驱动**
+   - 访问NVIDIA官方网站：https://developer.nvidia.com/cuda-toolkit-archive
+   - 根据你的GPU型号和操作系统选择合适的驱动版本
+   - 安装过程中请按照向导提示完成
+
+3. **验证CUDA驱动安装**
+   - 安装完成后，重启电脑并运行：
+     - Windows: `nvidia-smi`
+     - Linux: `nvidia-smi` 或 `nvcc --version`
+   - 确认输出中显示正确的CUDA版本信息
+
+### 验证安装
+
+安装完成后，可以运行以下代码验证：
+
+```python
+import riemann as r
+print("CUDA可用:", r.cuda.is_available())
+print("使用设备:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
 ```
 
-各个示例文件中的依赖可能略有不同，具体依赖信息也会在每个示例文件的头部注释中说明。
+如果CUDA安装成功，会显示`CUDA可用: True`，否则会显示`CUDA可用: False`并自动使用CPU模式。
 
 
 ## 使用方法

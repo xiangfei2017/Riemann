@@ -96,6 +96,7 @@ Riemann/
 │   ├── grad_demo.py              # Gradient calculation example
 │   ├── custom_grad_decorator.py  # Custom gradient tracking function example
 │   ├── optimizers_comparison.py  # Optimizer comparison example
+│   ├── mnist_demo.py             # MNIST handwritten digit recognition GUI example
 │   ├── nn_MNIST_CE_SGD.py        # Neural network training example
 │   ├── cnn_CIFAR10_CE_SGD.py     # Convolutional network training example
 │   └── ...
@@ -139,6 +140,7 @@ The `examples/` directory contains various example codes that demonstrate how to
 - **Custom gradient examples**: Such as custom_grad_decorator.py, demonstrating how to use decorators to customize gradients
 - **Optimizer examples**: Such as optimizers_comparison.py, comparing the performance of different optimizers
 - **Neural network examples**: Such as nn_MNIST_CE_SGD.py (MNIST handwritten digit recognition), cnn_CIFAR10_CE_SGD.py (CIFAR10 image classification)
+- **GUI application examples**: Such as mnist_demo.py, providing a graphical interface for MNIST handwritten digit recognition
 
 These example codes provide references for users to actually use the Riemann library, helping users quickly get started and understand the library's functionality.
 
@@ -148,6 +150,7 @@ Riemann provides rich example codes located in the `examples/` directory:
 - **grad_demo.py**: Grad function usage demonstration
 - **hessian.py**: Hessian matrix calculation example
 - **jacobian.py**: Jacobian matrix calculation example
+- **mnist_demo.py**: MNIST handwritten digit recognition GUI example (graphical interface training and recognition)
 - **nn_MNIST_CE_SGD.py**: Neural network training example based on MNIST (cross-entropy loss + SGD optimization)
 - **nn_MNIST_CE_Adam.py**: Neural network training example based on MNIST (cross-entropy loss + Adam optimization)
 - **nn_MNIST_CE_Adagrad.py**: Neural network training example based on MNIST (cross-entropy loss + Adagrad optimization)
@@ -164,10 +167,43 @@ Riemann provides rich example codes located in the `examples/` directory:
 
 ## Installation Method
 
-### Install from PyPI (to be released)
+### Install from PyPI
+
+#### Basic Installation
+
+Run the following command to install Riemann and its core dependencies:
 
 ```bash
 pip install riemann
+```
+
+#### Install CUDA Dependencies
+
+If you need GPU acceleration, you need to explicitly specify CUDA dependency options:
+
+```bash
+# Install default CUDA version (recommended CUDA 12.x)
+pip install riemann[cuda]
+
+# For users with specific CUDA versions, you can also directly install the corresponding version of dependencies
+# CUDA 13.x
+pip install riemann[cuda13]
+# CUDA 12.x
+pip install riemann[cuda12]
+# CUDA 11.x
+pip install riemann[cuda11]
+# CUDA 10.x (Linux only)
+pip install riemann[cuda10]
+```
+
+#### Install Other Optional Dependencies
+
+```bash
+# Install test dependencies (for running test code in the tests directory)
+pip install riemann[tests]
+
+# Install general CuPy dependency (for macOS, ARM64, and other platforms that don't support CUDA)
+pip install riemann[cupy]
 ```
 
 ### Source Installation and Development Environment Configuration
@@ -179,14 +215,16 @@ cd Riemann
 # Install package and its core dependencies in development mode (-e means editable mode, no need to reinstall after modifying code)
 pip install -e .
 
-# If you need to run test code in the tests directory, you also need to install test dependencies
+# Install test dependencies
 pip install -e .[tests]
 
-# If you need to use CUDA/GPU acceleration, you also need to install CUDA dependencies
+# Install CUDA dependencies
 # Note: Before using CUDA acceleration, please ensure you have installed the corresponding version of CUDA driver
 pip install -e .[cuda]
 
-# For users with specific CUDA versions, you can also directly install the corresponding version of dependencies
+# Install specific CUDA version dependencies
+# CUDA 13.x
+pip install -e .[cuda13]
 # CUDA 12.x
 pip install -e .[cuda12]
 # CUDA 11.x
@@ -194,72 +232,65 @@ pip install -e .[cuda11]
 # CUDA 10.x (Linux only)
 pip install -e .[cuda10]
 
-# CUDA Driver Installation Instructions
-# 1. Check CUDA Driver Version
-# Windows system:
-#   Right-click on desktop → NVIDIA Control Panel → Help → System Information → Driver Version
-# Linux system:
-#   Run in terminal: nvidia-smi
-#   or: nvcc --version
-
-# 2. Download and Install Corresponding CUDA Driver
-# Visit NVIDIA official website: https://developer.nvidia.com/cuda-toolkit-archive
-# Select appropriate driver version based on your GPU model and operating system
-# Follow the wizard instructions to complete the installation
-
-# 3. Verify CUDA Driver Installation
-# After installation, restart your computer and run:
-# Windows: nvidia-smi
-# Linux: nvidia-smi or nvcc --version
-# Confirm that the output shows the correct CUDA version information
-
-# macOS and ARM Hardware Environment Instructions
-# 1. macOS System (including Apple Silicon Macs)
-#   - macOS does not support NVIDIA CUDA
-#   - For Macs with Apple Silicon (M1/M2/M3, etc.), you can use Metal Performance Shaders (MPS) for GPU acceleration
-#   - However, Riemann currently does not implement MPS support and will automatically use CPU mode on macOS
-
-# 2. ARM Architecture Hardware
-#   - For ARM architecture devices like NVIDIA Jetson, CUDA may be supported, but you need to install the corresponding ARM version of CUDA driver
-#   - For other ARM architecture devices (such as ARM servers, some Android devices), CUDA is usually not supported
-
-# 3. CuPy Installation for macOS and ARM Environments
-#   - In these environments, pip will automatically install the general version of CuPy (CPU-only mode)
-#   - Installation command: pip install -e .[cupy]
-#   - Or: pip install cupy
-
-# 4. Verify Installation
-#   - After installation, you can run the following code to verify:
-#   ```python
-#   import riemann as r
-#   print("CUDA available:", r.cuda.is_available())
-#   print("Using device:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
-#   ```
+# Install general CuPy dependency (for macOS, ARM64, etc.)
+pip install -e .[cupy]
 ```
 
 ### Dependency Description
 
-The core dependencies of the Riemann library include:
+#### Core Dependencies
+
+Running `pip install riemann` will automatically install the following core dependencies:
 - **numpy>=1.20.0**: Core numerical computation library
 - **scipy>=1.7.0**: Linear algebra algorithm library
-- **pillow>=8.0.0**: Used for image processing functionality in computer vision (provides PIL module)
+- **pillow>=8.0.0**: Used for image processing functionality in computer vision
 - **tqdm>=4.0.0**: Used for progress bar display in neural network training
 
-numpy, pillow, and tqdm are included as core dependencies in the package installation and do not need to be installed separately.
+#### CUDA Dependencies
 
-#### Test Dependencies
+CUDA dependencies are not automatically installed and need to be explicitly specified:
+- **cupy-cuda13x**: For CUDA 13.x on Linux and Windows platforms
+- **cupy-cuda12x**: For CUDA 12.x on Linux and Windows platforms
+- **cupy-cuda11x**: For CUDA 11.x on Linux and Windows platforms
+- **cupy-cuda10x**: For CUDA 10.x on Linux platforms
+- **cupy**: General version (for macOS, ARM64, and other platforms that don't support CUDA)
 
-When running test code, the following test dependencies are also required:
-- **pytest>=7.0.0**: Testing framework
-- **torch>=2.0.0**: PyTorch deep learning framework (for comparison testing)
-- **torchvision>=0.15.0**: PyTorch's computer vision library (for comparison testing)
+#### Platform Compatibility
 
-You can install test dependencies with the following command:
-```bash
-pip install -e .[tests]
+- **CUDA support**: Only available on Linux or Windows systems with x86_64/AMD64 architecture
+- **macOS systems**: NVIDIA CUDA is not supported, will automatically use CPU mode
+- **ARM architecture**: For devices like NVIDIA Jetson, CUDA may be supported, but you need to install the corresponding ARM version of CUDA driver
+
+### CUDA Driver Installation Instructions
+
+1. **Check CUDA Driver Version**
+   - Windows system: Right-click on desktop → NVIDIA Control Panel → Help → System Information → Driver Version
+   - Linux system: Run in terminal `nvidia-smi` or `nvcc --version`
+
+2. **Download and Install Corresponding CUDA Driver**
+   - Visit NVIDIA official website: https://developer.nvidia.com/cuda-toolkit-archive
+   - Select appropriate driver version based on your GPU model and operating system
+   - Follow the wizard instructions to complete the installation
+
+3. **Verify CUDA Driver Installation**
+   - After installation, restart your computer and run:
+     - Windows: `nvidia-smi`
+     - Linux: `nvidia-smi` or `nvcc --version`
+   - Confirm that the output shows the correct CUDA version information
+
+### Verify Installation
+
+After installation, you can run the following code to verify:
+
+```python
+import riemann as r
+print("CUDA available:", r.cuda.is_available())
+print("Using device:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
 ```
 
-The dependencies in each example file may be slightly different, and specific dependency information will also be stated in the header comments of each example file.
+If CUDA is installed successfully, it will display `CUDA available: True`, otherwise it will display `CUDA available: False` and automatically use CPU mode.
+
+
 
 
 ## Usage Method
