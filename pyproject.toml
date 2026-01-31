@@ -38,6 +38,9 @@ dependencies = [
 [project.optional-dependencies]
 # CUDA支持 - 提供不同CUDA版本的选项
 # 注意：CuPy主要支持x86_64/AMD64架构的Linux和Windows平台
+cuda13 = [
+    "cupy-cuda13x; (platform_system=='Linux' or platform_system=='Windows') and (platform_machine=='x86_64' or platform_machine=='AMD64')",
+]
 cuda12 = [
     "cupy-cuda12x; (platform_system=='Linux' or platform_system=='Windows') and (platform_machine=='x86_64' or platform_machine=='AMD64')",
 ]
