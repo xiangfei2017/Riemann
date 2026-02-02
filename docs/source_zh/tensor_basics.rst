@@ -1,7 +1,22 @@
 张量基础
 ========
 
-张量是 Riemann 中的核心数据结构，类似于 NumPy 数组，但具有额外的自动微分和梯度跟踪功能。
+什么是张量
+----------
+
+张量是 Riemann 中的核心数据结构，本质上是一个0维或多维的数组，用于量化描述客观事物，如文本、图像、视频、语音等等。
+
+在 Riemann 中，张量具有以下特点：
+
+- **多维数组结构**：支持0维（标量）、1维（向量）、2维（矩阵）以及更高维度的数组表示
+- **数学运算支持**：支持加减乘除、内积等基本数学运算，以及各种常见数学函数
+- **形状变换能力**：支持张量形状重塑、维度扩缩、索引和切片等操作
+- **自动梯度跟踪**：内置自动微分机制，支持梯度计算和反向传播
+- **设备兼容性**：支持在CPU和GPU等不同设备上运行
+
+张量是构建神经网络和梯度下降类算法的基础。您熟悉的数学中的0维标量、1维向量、2维矩阵都是张量的特殊形式。
+
+需要注意的是，Riemann 中的张量与张量代数或张量分析里说的张量不完全等价，主要是运算规则上有些差异。这里提到的张量主要服务于神经网络相关的计算，其本质是多维数组、支持多种运算符和函数、支持自动梯度跟踪。
 
 创建张量
 --------
@@ -2066,6 +2081,243 @@ Riemann 支持以下原地操作函数和运算符：
 - 左值方向的梯度跟踪在原地赋值位置可能会出现异常行为
 - 对于带梯度跟踪属性的叶子节点，必须先clone()后才能执行原地操作
 - 因此，在需要精确梯度计算的场景中，应谨慎使用原地操作
+
+对角化操作
+--------------
+
+Riemann 提供了多种对角化操作函数，用于处理张量的对角线元素、三角部分等。以下是常用的对角化操作函数：
+
+**diagonal 函数**
+
+从输入张量中提取对角线元素。
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # 创建示例张量
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("原始张量:")
+    print(x)
+    
+    # 提取主对角线
+    print("\n主对角线:")
+    print(rm.diagonal(x))  # tensor([1, 5, 9])
+    
+    # 提取偏移对角线
+    print("\n偏移对角线 (offset=1):")
+    print(rm.diagonal(x, offset=1))  # tensor([2, 6])
+    
+    # 提取负偏移对角线
+    print("\n负偏移对角线 (offset=-1):")
+    print(rm.diagonal(x, offset=-1))  # tensor([4, 8])
+
+**diag 函数**
+
+提取张量的对角线元素或从1D张量创建对角矩阵。
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # 从1D张量创建对角矩阵
+    v = rm.tensor([1, 2, 3])
+    print("\n从1D张量创建对角矩阵:")
+    print(rm.diag(v))
+    # 输出:
+    # tensor([[1, 0, 0],
+    #         [0, 2, 0],
+    #         [0, 0, 3]])
+    
+    # 提取2D张量的对角线元素
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\n提取2D张量的对角线元素:")
+    print(rm.diag(x))  # tensor([1, 5, 9])
+
+**batch_diag 函数**
+
+从批量1D张量生成批量对角矩阵。
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # 创建批量1D张量
+    batch_v = rm.tensor([[1, 2], [3, 4]])
+    print("\n批量1D张量:")
+    print(batch_v)
+    
+    # 生成批量对角矩阵
+    print("\n批量对角矩阵:")
+    print(rm.batch_diag(batch_v))
+    # 输出:
+    # tensor([[[1, 0],
+    #          [0, 2]],
+    #         
+    #         [[3, 0],
+    #          [0, 4]]])
+
+**fill_diagonal 函数**
+
+用指定值填充张量指定维度之间的对角线元素，返回新张量。
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # 创建示例张量
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\n原始张量:")
+    print(x)
+    
+    # 用0填充主对角线
+    print("\n用0填充主对角线:")
+    print(rm.fill_diagonal(x, 0))
+    # 输出:
+    # tensor([[0, 2, 3],
+    #         [4, 0, 6],
+    #         [7, 8, 0]])
+    
+    # 用5填充偏移对角线
+    print("\n用5填充偏移对角线 (offset=1):")
+    print(rm.fill_diagonal(x, 5, offset=1))
+
+**fill_diagonal_ 函数**
+
+用指定值原地填充张量指定维度之间的对角线元素，返回原张量。
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # 创建示例张量
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\n原始张量:")
+    print(x)
+    
+    # 原地用0填充主对角线
+    print("\n原地用0填充主对角线:")
+    result = rm.fill_diagonal_(x, 0)
+    print(result)
+    print("原张量是否被修改:")
+    print(x)
+
+**tril 函数**
+
+提取张量的下三角部分（包括对角线）。
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # 创建示例张量
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\n原始张量:")
+    print(x)
+    
+    # 提取下三角部分
+    print("\n下三角部分:")
+    print(rm.tril(x))
+    # 输出:
+    # tensor([[1, 0, 0],
+    #         [4, 5, 0],
+    #         [7, 8, 9]])
+    
+    # 提取偏移下三角部分
+    print("\n偏移下三角部分 (diagonal=-1):")
+    print(rm.tril(x, diagonal=-1))
+
+**triu 函数**
+
+提取张量的上三角部分（包括对角线）。
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # 创建示例张量
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\n原始张量:")
+    print(x)
+    
+    # 提取上三角部分
+    print("\n上三角部分:")
+    print(rm.triu(x))
+    # 输出:
+    # tensor([[1, 2, 3],
+    #         [0, 5, 6],
+    #         [0, 0, 9]])
+    
+    # 提取偏移上三角部分
+    print("\n偏移上三角部分 (diagonal=1):")
+    print(rm.triu(x, diagonal=1))
+
+**函数参数说明**
+
+.. list-table:: 对角化操作函数参数
+    :widths: 15 35 25 25
+    :header-rows: 1
+
+    * - 函数名
+      - 主要参数
+      - 默认值
+      - 说明
+    * - ``diagonal``
+      - input, offset, dim1, dim2
+      - offset=0, dim1=0, dim2=1
+      - 提取指定维度间的对角线元素
+    * - ``diag``
+      - input, offset
+      - offset=0
+      - 提取对角线元素或创建对角矩阵
+    * - ``batch_diag``
+      - v
+      - 无
+      - 从批量1D张量生成批量对角矩阵
+    * - ``fill_diagonal``
+      - input, value, offset, dim1, dim2
+      - offset=0, dim1=-2, dim2=-1
+      - 填充对角线元素，返回新张量
+    * - ``fill_diagonal_``
+      - input, value, offset, dim1, dim2
+      - offset=0, dim1=-2, dim2=-1
+      - 原地填充对角线元素，返回原张量
+    * - ``tril``
+      - input_tensor, diagonal
+      - diagonal=0
+      - 提取下三角部分
+    * - ``triu``
+      - input_tensor, diagonal
+      - diagonal=0
+      - 提取上三角部分
+
+**注意事项**
+
+1. ``diagonal`` 函数：
+   - 输入张量必须至少是2维的
+   - dim1 和 dim2 不能相同
+   - 支持负索引（-1表示最后一个维度）
+
+2. ``diag`` 函数：
+   - 当输入是1D张量时，返回对角矩阵
+   - 当输入是2D张量时，返回对角线元素
+   - 不支持3D及以上维度的输入
+
+3. ``batch_diag`` 函数：
+   - 输入张量的最后一维是对角线元素的长度
+   - 输出张量的形状为 ``(*, n, n)``，其中 n 是输入张量的最后一维大小
+
+4. ``fill_diagonal`` 和 ``fill_diagonal_`` 函数：
+   - input 张量必须至少是2维的
+   - dim1 和 dim2 不能相同
+   - 支持负索引（默认填充最后两个维度的对角线）
+   - ``fill_diagonal_`` 是原地操作，会修改原张量
+
+5. ``tril`` 和 ``triu`` 函数：
+   - diagonal 参数控制对角线的偏移量
+   - diagonal=0 表示主对角线
+   - diagonal>0 表示主对角线以上
+   - diagonal<0 表示主对角线以下
 
 保存和加载张量
 --------------

@@ -1,7 +1,22 @@
 Tensor Basics
 =============
 
-Tensors are the core data structure in Riemann, similar to NumPy arrays but with additional capabilities for automatic differentiation and gradient tracking.
+What is a Tensor
+----------------
+
+Tensors are the core data structure in Riemann, essentially a 0-dimensional or multi-dimensional array used to quantify and describe objective things such as text, images, videos, audio, and more.
+
+In Riemann, tensors have the following characteristics:
+
+- **Multi-dimensional array structure**: Supports 0-dimensional (scalar), 1-dimensional (vector), 2-dimensional (matrix), and higher-dimensional array representations
+- **Mathematical operation support**: Supports basic mathematical operations such as addition, subtraction, multiplication, division, inner product, and various common mathematical functions
+- **Shape transformation capabilities**: Supports tensor shape reshaping, dimension expansion/reduction, indexing and slicing operations
+- **Automatic gradient tracking**: Built-in automatic differentiation mechanism that supports gradient calculation and backpropagation
+- **Device compatibility**: Supports running on different devices such as CPU and GPU
+
+Tensors are the foundation for building neural networks and gradient descent algorithms. The 0-dimensional scalars, 1-dimensional vectors, and 2-dimensional matrices you are familiar with in mathematics are all special forms of tensors.
+
+It should be noted that tensors in Riemann are not exactly equivalent to tensors in tensor algebra or tensor analysis, mainly due to some differences in operation rules. The tensors mentioned here primarily serve neural network-related computations, and their essence is multi-dimensional arrays that support various operators and functions, as well as automatic gradient tracking.
 
 Creating Tensors
 ----------------
@@ -2066,6 +2081,243 @@ Here is an example of gradient tracking for in-place array assignment by index:
 - Gradient tracking for the left-hand side may exhibit abnormal behavior at the in-place assignment position
 - For leaf nodes with gradient tracking, you must clone() them before performing in-place operations
 - Therefore, in-place operations should be used with caution in scenarios requiring precise gradient calculation
+
+Diagonalization Operations
+--------------------------
+
+Riemann provides various diagonalization operation functions for handling tensor diagonal elements, triangular parts, etc. Here are the commonly used diagonalization operation functions:
+
+**diagonal Function**
+
+Extracts diagonal elements from the input tensor.
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # Create example tensor
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("Original tensor:")
+    print(x)
+    
+    # Extract main diagonal
+    print("\nMain diagonal:")
+    print(rm.diagonal(x))  # tensor([1, 5, 9])
+    
+    # Extract offset diagonal
+    print("\nOffset diagonal (offset=1):")
+    print(rm.diagonal(x, offset=1))  # tensor([2, 6])
+    
+    # Extract negative offset diagonal
+    print("\nNegative offset diagonal (offset=-1):")
+    print(rm.diagonal(x, offset=-1))  # tensor([4, 8])
+
+**diag Function**
+
+Extracts diagonal elements from a tensor or creates a diagonal matrix from a 1D tensor.
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # Create diagonal matrix from 1D tensor
+    v = rm.tensor([1, 2, 3])
+    print("\nCreate diagonal matrix from 1D tensor:")
+    print(rm.diag(v))
+    # Output:
+    # tensor([[1, 0, 0],
+    #         [0, 2, 0],
+    #         [0, 0, 3]])
+    
+    # Extract diagonal elements from 2D tensor
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\nExtract diagonal elements from 2D tensor:")
+    print(rm.diag(x))  # tensor([1, 5, 9])
+
+**batch_diag Function**
+
+Generates batch diagonal matrices from batch 1D tensors.
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # Create batch 1D tensor
+    batch_v = rm.tensor([[1, 2], [3, 4]])
+    print("\nBatch 1D tensor:")
+    print(batch_v)
+    
+    # Generate batch diagonal matrices
+    print("\nBatch diagonal matrices:")
+    print(rm.batch_diag(batch_v))
+    # Output:
+    # tensor([[[1, 0],
+    #          [0, 2]],
+    #         
+    #         [[3, 0],
+    #          [0, 4]]])
+
+**fill_diagonal Function**
+
+Fills the diagonal elements between specified dimensions with a given value, returns a new tensor.
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # Create example tensor
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\nOriginal tensor:")
+    print(x)
+    
+    # Fill main diagonal with 0
+    print("\nFill main diagonal with 0:")
+    print(rm.fill_diagonal(x, 0))
+    # Output:
+    # tensor([[0, 2, 3],
+    #         [4, 0, 6],
+    #         [7, 8, 0]])
+    
+    # Fill offset diagonal with 5
+    print("\nFill offset diagonal with 5 (offset=1):")
+    print(rm.fill_diagonal(x, 5, offset=1))
+
+**fill_diagonal_ Function**
+
+In-place fills the diagonal elements between specified dimensions with a given value, returns the original tensor.
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # Create example tensor
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\nOriginal tensor:")
+    print(x)
+    
+    # In-place fill main diagonal with 0
+    print("\nIn-place fill main diagonal with 0:")
+    result = rm.fill_diagonal_(x, 0)
+    print(result)
+    print("Is original tensor modified:")
+    print(x)
+
+**tril Function**
+
+Extracts the lower triangular part of the tensor (including the diagonal).
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # Create example tensor
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\nOriginal tensor:")
+    print(x)
+    
+    # Extract lower triangular part
+    print("\nLower triangular part:")
+    print(rm.tril(x))
+    # Output:
+    # tensor([[1, 0, 0],
+    #         [4, 5, 0],
+    #         [7, 8, 9]])
+    
+    # Extract offset lower triangular part
+    print("\nOffset lower triangular part (diagonal=-1):")
+    print(rm.tril(x, diagonal=-1))
+
+**triu Function**
+
+Extracts the upper triangular part of the tensor (including the diagonal).
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # Create example tensor
+    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    print("\nOriginal tensor:")
+    print(x)
+    
+    # Extract upper triangular part
+    print("\nUpper triangular part:")
+    print(rm.triu(x))
+    # Output:
+    # tensor([[1, 2, 3],
+    #         [0, 5, 6],
+    #         [0, 0, 9]])
+    
+    # Extract offset upper triangular part
+    print("\nOffset upper triangular part (diagonal=1):")
+    print(rm.triu(x, diagonal=1))
+
+**Function Parameter Description**
+
+.. list-table:: Diagonalization Operation Function Parameters
+    :widths: 15 35 25 25
+    :header-rows: 1
+
+    * - Function Name
+      - Main Parameters
+      - Default Values
+      - Description
+    * - ``diagonal``
+      - input, offset, dim1, dim2
+      - offset=0, dim1=0, dim2=1
+      - Extracts diagonal elements between specified dimensions
+    * - ``diag``
+      - input, offset
+      - offset=0
+      - Extracts diagonal elements or creates diagonal matrix
+    * - ``batch_diag``
+      - v
+      - None
+      - Generates batch diagonal matrices from batch 1D tensors
+    * - ``fill_diagonal``
+      - input, value, offset, dim1, dim2
+      - offset=0, dim1=-2, dim2=-1
+      - Fills diagonal elements, returns new tensor
+    * - ``fill_diagonal_``
+      - input, value, offset, dim1, dim2
+      - offset=0, dim1=-2, dim2=-1
+      - In-place fills diagonal elements, returns original tensor
+    * - ``tril``
+      - input_tensor, diagonal
+      - diagonal=0
+      - Extracts lower triangular part
+    * - ``triu``
+      - input_tensor, diagonal
+      - diagonal=0
+      - Extracts upper triangular part
+
+**Notes**
+
+1. ``diagonal`` Function:
+   - Input tensor must be at least 2-dimensional
+   - dim1 and dim2 cannot be the same
+   - Supports negative indices (-1 represents the last dimension)
+
+2. ``diag`` Function:
+   - When input is 1D tensor, returns diagonal matrix
+   - When input is 2D tensor, returns diagonal elements
+   - Does not support 3D or higher-dimensional inputs
+
+3. ``batch_diag`` Function:
+   - The last dimension of the input tensor is the length of the diagonal elements
+   - The output tensor shape is ``(*, n, n)``, where n is the size of the last dimension of the input tensor
+
+4. ``fill_diagonal`` and ``fill_diagonal_`` Functions:
+   - input tensor must be at least 2-dimensional
+   - dim1 and dim2 cannot be the same
+   - Support negative indices (default fills the diagonal of the last two dimensions)
+   - ``fill_diagonal_`` is an in-place operation that modifies the original tensor
+
+5. ``tril`` and ``triu`` Functions:
+   - The diagonal parameter controls the offset of the diagonal
+   - diagonal=0 represents the main diagonal
+   - diagonal>0 represents above the main diagonal
+   - diagonal<0 represents below the main diagonal
 
 Saving and Loading Tensors
 --------------------------
