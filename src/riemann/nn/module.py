@@ -1209,29 +1209,27 @@ class Module:
                             source_data = cp.asarray(source_data)
                         
                         # 确保source_data是数组
-                        if cp is not None:
-                            if not isinstance(source_data, (np.ndarray, cp.ndarray)):
-                                # 如果source_data不是数组，尝试将其转换为数组
-                                try:
-                                    # 尝试根据target_data的类型选择合适的数组库
-                                    if isinstance(target_data, cp.ndarray):
-                                        source_data = cp.array(source_data)
-                                    else:
-                                        source_data = np.array(source_data)
-                                except Exception:
-                                    # 如果转换失败，使用默认值
-                                    if isinstance(target_data, cp.ndarray):
-                                        source_data = cp.zeros(target_data.shape, dtype=target_data.dtype)
-                                    else:
-                                        source_data = np.zeros(target_data.shape, dtype=target_data.dtype)
-                        else:
-                            if not isinstance(source_data, np.ndarray):
-                                # 如果source_data不是数组，尝试将其转换为数组
-                                try:
+                        if not isinstance(source_data, (np.ndarray, cp.ndarray if cp is not None else type(None))):
+                            # 如果source_data不是数组，尝试将其转换为数组
+                            try:
+                                # 尝试根据target_data的类型选择合适的数组库
+                                if cp is not None and isinstance(target_data, cp.ndarray):
+                                    source_data = cp.array(source_data)
+                                else:
                                     source_data = np.array(source_data)
-                                except Exception:
-                                    # 如果转换失败，使用默认值
+                            except Exception:
+                                # 如果转换失败，使用默认值
+                                import warnings
+                                original_shape = getattr(value, 'shape', 'unknown')
+                                if cp is not None and isinstance(target_data, cp.ndarray):
+                                    source_data = cp.zeros(target_data.shape, dtype=target_data.dtype)
+                                else:
                                     source_data = np.zeros(target_data.shape, dtype=target_data.dtype)
+                                warnings.warn(
+                                    f"Warning: Failed to convert parameter '{key}' from checkpoint to array. "
+                                    f"Original shape: {original_shape}, "
+                                    f"Expected shape: {target_data.shape}. "
+                                    f"Filling with zeros.")
                         
                         # 统一数组赋值（无论维度多少）
                         target_data[()] = source_data
