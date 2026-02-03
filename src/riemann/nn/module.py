@@ -50,6 +50,7 @@ between Riemann and PyTorch frameworks.
 """
 from typing import Any, Dict
 import copy
+import numpy as np
 from ..tensordef import *
 from ..cuda import cp, Device
 from .functional import *
@@ -1185,20 +1186,55 @@ class Module:
                     missing_keys.append(key)
                 else:
                     try:
-                        # 直接使用value作为source_data
-                        source_data = value
-                        if isinstance(local_state[key], Parameter):
-                            target_data = local_state[key].data
-                        else:
-                            target_data = local_state[key]
+                        # 统一处理：获取目标对象的底层数组
+                        target_data = local_state[key].data
                         
-                        # 处理不同维度的张量
-                        if target_data.ndim == 0:
-                            # 0维张量（标量）
-                            target_data[()] = source_data
+                        # 如果value是张量对象（keep_vars=True的情况），获取其data属性
+                        if isinstance(value, (TN, Parameter)):
+                            source_data = value.data
                         else:
-                            # 多维张量
-                            target_data[:] = source_data
+                            source_data = value
+                        
+                        # 处理数组类型转换（CuPy/NumPy互转）
+                        is_cupy_to_numpy = False
+                        is_numpy_to_cupy = False
+                        
+                        if cp is not None:
+                            is_cupy_to_numpy = isinstance(source_data, cp.ndarray) and isinstance(target_data, np.ndarray)
+                            is_numpy_to_cupy = isinstance(source_data, np.ndarray) and isinstance(target_data, cp.ndarray)
+                        
+                        if is_cupy_to_numpy:
+                            source_data = source_data.get()
+                        elif is_numpy_to_cupy:
+                            source_data = cp.asarray(source_data)
+                        
+                        # 确保source_data是数组
+                        if cp is not None:
+                            if not isinstance(source_data, (np.ndarray, cp.ndarray)):
+                                # 如果source_data不是数组，尝试将其转换为数组
+                                try:
+                                    # 尝试根据target_data的类型选择合适的数组库
+                                    if isinstance(target_data, cp.ndarray):
+                                        source_data = cp.array(source_data)
+                                    else:
+                                        source_data = np.array(source_data)
+                                except Exception:
+                                    # 如果转换失败，使用默认值
+                                    if isinstance(target_data, cp.ndarray):
+                                        source_data = cp.zeros(target_data.shape, dtype=target_data.dtype)
+                                    else:
+                                        source_data = np.zeros(target_data.shape, dtype=target_data.dtype)
+                        else:
+                            if not isinstance(source_data, np.ndarray):
+                                # 如果source_data不是数组，尝试将其转换为数组
+                                try:
+                                    source_data = np.array(source_data)
+                                except Exception:
+                                    # 如果转换失败，使用默认值
+                                    source_data = np.zeros(target_data.shape, dtype=target_data.dtype)
+                        
+                        # 统一数组赋值（无论维度多少）
+                        target_data[()] = source_data
                     except Exception as e:
                         error_msgs.append(f'While copying the parameter named "{key}", '
                                         f'whose dimensions in the model are {local_state[key].shape} and '
