@@ -243,7 +243,7 @@ class AdvancedConvNet(nn.Module):
         
         return loss
     
-    def evaluate(self, dataloader, cuda_available=False):
+    def evaluate(self, dataloader, device):
         """
         评估模型在数据集上的性能
         
@@ -267,9 +267,8 @@ class AdvancedConvNet(nn.Module):
             img_tensors, target_tensors = batch
             
             # 将批量数据移动到GPU
-            if cuda_available:
-                img_tensors = img_tensors.to('cuda')
-                target_tensors = target_tensors.to('cuda')
+            img_tensors = img_tensors.to(device)
+            target_tensors = target_tensors.to(device)
             
             # 前向传播
             outputs = self.forward(img_tensors)
@@ -282,14 +281,8 @@ class AdvancedConvNet(nn.Module):
             predicted = outputs.argmax(dim=1)
             total += target_tensors.size(0)
             
-            # 确保predicted和target_tensors在同一设备上
-            if cuda_available:
-                # 如果在GPU上，确保两者都是Cupy数组
-                correct += (predicted == target_tensors).sum().item()
-            else:
-                # 如果在CPU上，确保两者都是NumPy数组
-                correct += (predicted.data == target_tensors.data).sum().item()
-        
+            correct += (predicted == target_tensors).sum().item()
+            
         accuracy = correct / total
         avg_loss = total_loss / len(dataloader)
         
@@ -339,8 +332,7 @@ def main():
     model = AdvancedConvNet()
     
     # 将模型移动到指定设备
-    if CUDA_AVAILABLE:
-        model.to(device)
+    model.to(device)
     
     # 初始化优化器，确保它引用正确设备上的参数
     model.optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
@@ -364,9 +356,8 @@ def main():
                 img_tensors, target_tensors = batch
                 
                 # 将批量数据移动到GPU
-                if CUDA_AVAILABLE:
-                    img_tensors = img_tensors.to(device)
-                    target_tensors = target_tensors.to(device)
+                img_tensors = img_tensors.to(device)
+                target_tensors = target_tensors.to(device)
                 
                 # 执行一步训练
                 loss = model.train_step(img_tensors, target_tensors)
@@ -381,7 +372,7 @@ def main():
         
         # 评估阶段
         model.eval()  # 设置为评估模式
-        test_accuracy, test_loss = model.evaluate(test_loader, CUDA_AVAILABLE)
+        test_accuracy, test_loss = model.evaluate(test_loader, device)
         print(f"测试集准确率: {test_accuracy:.4f}, 测试损失: {test_loss:.4f}")
         
         # 保存最佳模型

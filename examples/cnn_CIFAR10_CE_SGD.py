@@ -4,10 +4,9 @@ CIFAR-10图像识别极简卷积神经网络示例（预处理版）
 本示例展示了如何使用Riemann深度学习框架构建一个极简的卷积神经网络，
 用于CIFAR-10图像分类任务。本版本进行了以下优化：
 1. 极简网络结构，最少参数量
-2. 移除所有torch模块引用
-3. 极少训练epoch数量，快速验证
-4. 预处理数据集，避免训练时变换，提升性能
-5. 最小化数据加载和处理流程
+2. 极少训练epoch数量，快速验证
+3. 预处理数据集，避免训练时变换，提升性能
+4. 最小化数据加载和处理流程
 
 主要组件：
     - MinimalConvNet: 极简的卷积神经网络模型
@@ -28,6 +27,7 @@ from riemann import nn, optim
 from riemann.vision import datasets, transforms
 from riemann.utils.data import DataLoader
 from riemann import tensor, get_default_dtype
+from riemann import cuda
 
 
 def clear_screen():
@@ -140,8 +140,7 @@ class MinimalConvNet(nn.Module):
 
         # 交叉熵损失函数，适用于多分类任务
         self.loss_func = nn.CrossEntropyLoss()
-        # 随机梯度下降优化器，使用较小的学习率
-        self.optimizer = optim.SGD(self.parameters(), lr=0.01)
+        # 优化器将在设备移动后初始化，确保它引用正确设备上的参数
 
     def forward(self, inputs):
         """
@@ -198,7 +197,7 @@ class MinimalConvNet(nn.Module):
         
         return loss
     
-    def evaluate(self, dataloader):
+    def evaluate(self, dataloader, device):
         """
         评估模型在数据集上的性能
         
@@ -206,6 +205,7 @@ class MinimalConvNet(nn.Module):
         
         参数:
             dataloader (DataLoader): 数据加载器，提供批次数据
+            cuda_available (bool): 是否在CUDA设备上运行
         
         返回:
             tuple: (accuracy, loss)
@@ -220,6 +220,10 @@ class MinimalConvNet(nn.Module):
         for batch in dataloader:
             img_tensors, target_tensors = batch
             
+            # 将批量数据移动到GPU
+            img_tensors = img_tensors.to(device)
+            target_tensors = target_tensors.to(device)
+            
             # 前向传播
             outputs = self.forward(img_tensors)
             
@@ -231,7 +235,7 @@ class MinimalConvNet(nn.Module):
             predicted = outputs.argmax(dim=1)
             total += target_tensors.size(0)
             correct += (predicted == target_tensors).sum().item()
-        
+            
         accuracy = correct / total
         avg_loss = total_loss / len(dataloader)
         
@@ -252,6 +256,11 @@ def main():
     """
     clear_screen()
     print("CIFAR-10图像识别极简卷积神经网络示例（预处理版）")
+    
+    # 检查CUDA可用性
+    CUDA_AVAILABLE = cuda.CUPY_AVAILABLE
+    device = 'cuda' if CUDA_AVAILABLE else 'cpu'
+    print(f"使用设备: {device}")
     
     data_root = os.path.join(os.path.dirname(__file__), '..','data')
     # 加载训练和测试数据集
@@ -285,6 +294,12 @@ def main():
     print("\n初始化模型...")
     model = MinimalConvNet()
     
+    # 将模型移动到指定设备
+    model.to(device)
+    
+    # 初始化优化器，确保它引用正确设备上的参数
+    model.optimizer = optim.SGD(model.parameters(), lr=0.01)
+    
     # 训练模型
     print("\n开始训练...")
     epochs = 3  # 极少的训练epoch数
@@ -301,6 +316,11 @@ def main():
         progress_bar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}', leave=False)
         for batch_idx, batch in enumerate(progress_bar):
             img_tensors, target_tensors = batch
+            
+            # 将批量数据移动到GPU
+            img_tensors = img_tensors.to(device)
+            target_tensors = target_tensors.to(device)
+            
             loss = model.train_step(img_tensors, target_tensors)
             epoch_loss += loss.item()
             
@@ -314,7 +334,7 @@ def main():
         
         # 在测试集上评估
         model.eval()  # 设置为评估模式
-        test_accuracy, test_loss = model.evaluate(test_loader)
+        test_accuracy, test_loss = model.evaluate(test_loader, device)
         print(f'测试集准确率: {test_accuracy:.4f}, 测试损失: {test_loss:.4f}')
         
         # 保存最佳模型
