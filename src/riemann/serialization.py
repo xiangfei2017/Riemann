@@ -68,7 +68,7 @@ PyTorch's serialization ecosystem.
 import numpy as np
 import pickle
 import os
-from typing import Any, Union, Dict, List, Tuple, Optional
+from typing import Any, Union, Optional
 from .tensordef import TN, tensor
 from .nn.module import Parameter, Module
 from .cuda import Device, cp
@@ -188,7 +188,17 @@ def _prepare_for_serialization(obj: Any) -> Any:
     返回：
         对象的可序列化版本
     """
-    if isinstance(obj, TN):
+    if isinstance(obj, Parameter):
+        # 将参数转换为可序列化的字典
+        return {
+            '__type__': 'parameter',
+            'data': obj.data.tolist(),
+            'shape': obj.shape,
+            'dtype': str(obj.dtype),
+            'device': str(obj.device),
+            'requires_grad': obj.requires_grad
+        }
+    elif isinstance(obj, TN):
         # 将张量转换为可序列化的字典
         return {
             '__type__': 'tensor',
@@ -197,17 +207,6 @@ def _prepare_for_serialization(obj: Any) -> Any:
             'dtype': str(obj.dtype),
             'device': str(obj.device),
             'requires_grad': obj.requires_grad,
-        }
-    elif isinstance(obj, Parameter):
-        # 将参数转换为可序列化的字典
-        return {
-            '__type__': 'parameter',
-            'data': obj.data.tolist(),
-            'shape': obj.shape,
-            'dtype': str(obj.dtype),
-            'device': str(obj.device),
-            'requires_grad': obj.requires_grad,
-            'is_leaf': obj.is_leaf
         }
     elif isinstance(obj, Module):
         # 将模块转换为其状态字典
@@ -261,8 +260,14 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
                 dtype = np.dtype(dtype_str)
                 # 获取设备信息
                 device_str = obj.get('device', 'cpu')
-                device = Device(device_str)
-                arrlib = cp if device.type == 'cuda' else np
+                # 尝试创建设备，如果失败就回退到CPU
+                try:
+                    device = Device(device_str)
+                except Exception:
+                    # 设备创建失败，回退到CPU
+                    device = Device('cpu')
+                # 检查是否真的支持CUDA
+                arrlib = cp if (device.type == 'cuda' and cp is not None) else np
 
                 # 将列表转换回具有正确形状和dtype的数组
                 data = arrlib.array(obj['data'], dtype=dtype)
@@ -283,8 +288,14 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
                 dtype = np.dtype(dtype_str)
                 # 获取设备信息
                 device_str = obj.get('device', 'cpu')
-                device = Device(device_str)
-                arrlib = cp if device.type == 'cuda' else np
+                # 尝试创建设备，如果失败就回退到CPU
+                try:
+                    device = Device(device_str)
+                except Exception:
+                    # 设备创建失败，回退到CPU
+                    device = Device('cpu')
+                # 检查是否真的支持CUDA
+                arrlib = cp if (device.type == 'cuda' and cp is not None) else np
 
                 # 将列表转换回具有正确形状和dtype的数组
                 data = arrlib.array(obj['data'], dtype=dtype)
@@ -293,9 +304,6 @@ def _restore_from_serialization(obj: Any, map_location: Optional[Any] = None) ->
                 # 使用tensor函数创建参数以确保正确初始化
                 parameter_tensor = tensor(data, dtype=dtype, device=device, requires_grad=obj.get('requires_grad', True))
                 parameter = Parameter(parameter_tensor)
-                # 恢复is_leaf属性
-                if 'is_leaf' in obj:
-                    parameter.is_leaf = obj['is_leaf']
             except Exception as e:
                 # 恢复失败时，返回None作为占位符
                 parameter = None

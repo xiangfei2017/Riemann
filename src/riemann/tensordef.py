@@ -365,7 +365,7 @@ class TN:
         else:
             return self.__disp__(format_spec)
 
-    def __array__(self, dtype=None, copy=None):
+    def __array__(self, dtype=None, copy=False):
         '''
         numpy函数处理TN张量的参数时，自动调用张量的该方法函数将张量转换为numpy数组。
         '''
@@ -376,9 +376,8 @@ class TN:
         if dtype is not None and arr.dtype != dtype:
             arr = arr.astype(dtype)
         
-        # 处理copy参数（虽然在当前实现中我们总是返回底层数据的引用）
-        # 在numpy的array protocol中，copy=False意味着尽可能返回视图而非副本
-        if copy == True:
+        # 处理copy参数
+        if copy:
             arr = arr.copy()
 
         return arr
