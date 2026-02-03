@@ -375,6 +375,7 @@ class TN:
         # 根据指定的dtype转换数据
         if dtype is not None and arr.dtype != dtype:
             arr = arr.astype(dtype)
+            copy = True  # 类型转换后，默认返回新数组
         
         # 处理copy参数
         if copy:
