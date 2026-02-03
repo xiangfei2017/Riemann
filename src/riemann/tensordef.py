@@ -947,18 +947,13 @@ class TN:
         Returns:
             TN: 移动到CUDA设备上的新张量
         """
-        if device is None:
-            # 使用当前CUDA设备
-            device_id = current_device()
-            device_name = f'cuda:{device_id}'
-        elif isinstance(device, int):
-            # 设备ID
-            device_name = f'cuda:{device}'
-        else:
-            # 设备名称
-            device_name = device
+        if device == 'cpu':
+            raise ValueError("cuda() method is not supported for 'cpu'")
         
-        return self.to(device=device_name)
+        if device is None:
+            device = "cuda"
+        
+        return self.to(device=Device(device))
     
     @property
     def is_cuda(self):
