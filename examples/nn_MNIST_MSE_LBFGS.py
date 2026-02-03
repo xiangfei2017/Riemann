@@ -34,6 +34,7 @@ import riemann.optim as opt
 from riemann.utils.data import DataLoader
 from riemann.vision.datasets import EasyMNIST
 from riemann.vision import transforms
+from riemann import cuda
 
 class Classifier(nn.Module):
     """
@@ -80,15 +81,7 @@ class Classifier(nn.Module):
         # 均方误差损失函数，适用于回归任务，这里用于分类需要将目标转换为one-hot编码
         self.loss_func = nn.MSELoss()
         
-        # 使用LBFGS优化器，这是一种二阶优化方法，在小数据集上通常表现良好
-        # 调整参数以平衡收敛速度和训练时间，找到最佳平衡点：
-        self.optimizer = opt.LBFGS(self.parameters(), 
-                                  lr=1.0,       # 保持学习率
-                                  max_iter=2,    # 适度增加迭代次数，提高收敛速度
-                                  max_eval=8,   # 适度增加函数评估次数，提高线搜索精度
-                                  tolerance_grad=1e-4,   # 放宽梯度容忍度，避免过早收敛
-                                  tolerance_change=1e-7,  # 放宽变化容忍度，允许更多优化
-                                  history_size=8)       # 适度增加历史大小，提高Hessian近似质量
+        # 优化器将在设备移动后初始化，确保它引用正确设备上的参数
     
     def forward(self, inputs):
         """
@@ -143,7 +136,7 @@ class Classifier(nn.Module):
         outputs = self.forward(inputs)
         return self.loss_func(outputs, targets)
     
-    def evaluate(self, dataloader):
+    def evaluate(self, dataloader, device):
         """
         模型评估方法
         
@@ -152,6 +145,7 @@ class Classifier(nn.Module):
         
         参数:
             dataloader (DataLoader): 数据加载器，提供批量的测试数据
+            cuda_available (bool): 是否在CUDA设备上运行
         
         返回:
             tuple: 包含两个元素的元组
@@ -164,6 +158,11 @@ class Classifier(nn.Module):
         
         for batch in dataloader:
             img_tensors, target_tensors = batch
+            
+            # 将批量数据移动到GPU
+            img_tensors = img_tensors.to(device)
+            target_tensors = target_tensors.to(device)
+            
             outputs = self.forward(img_tensors)
             
             # 计算损失
@@ -204,6 +203,11 @@ def main():
     clear_screen()
     print("MNIST手写数字识别神经网络示例（MSELoss+LBFGS优化器版）")
     
+    # 检查CUDA可用性
+    CUDA_AVAILABLE = cuda.CUPY_AVAILABLE
+    device = 'cuda' if CUDA_AVAILABLE else 'cpu'
+    print(f"使用设备: {device}")
+    
     # EasyMNIST在初始化时已经处理了所有数据变换，所以这里不需要定义transform
     # 但是需要指定是否使用one-hot编码的标签
     use_onehot = True  # 使用one-hot编码，适用于MSELoss损失函数
@@ -230,7 +234,7 @@ def main():
     )
     test_loader = DataLoader(
         dataset=test_dataset,
-        batch_size=1,
+        batch_size=100,
         shuffle=False
     )
     
@@ -240,6 +244,18 @@ def main():
     # 创建模型
     print("\n初始化模型...")
     model = Classifier()
+    
+    # 将模型移动到指定设备
+    model.to(device)
+    
+    # 初始化优化器，确保它引用正确设备上的参数
+    model.optimizer = opt.LBFGS(model.parameters(), 
+                              lr=1.0,       # 保持学习率
+                              max_iter=2,    # 适度增加迭代次数，提高收敛速度
+                              max_eval=8,   # 适度增加函数评估次数，提高线搜索精度
+                              tolerance_grad=1e-4,   # 放宽梯度容忍度，避免过早收敛
+                              tolerance_change=1e-7,  # 放宽变化容忍度，允许更多优化
+                              history_size=8)       # 适度增加历史大小，提高Hessian近似质量
     
     # 训练模型
     print("\n开始训练...")
@@ -255,6 +271,11 @@ def main():
         progress_bar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}', leave=False)
         for batch_idx, batch in enumerate(progress_bar):
             img_tensors, target_tensors = batch
+            
+            # 将批量数据移动到GPU
+            img_tensors = img_tensors.to(device)
+            target_tensors = target_tensors.to(device)
+            
             loss = model.train_step(img_tensors, target_tensors)
             epoch_loss += loss.item()
             
@@ -268,7 +289,7 @@ def main():
         
         # 在测试集上评估
         model.eval()  # 设置为评估模式
-        test_accuracy, test_loss = model.evaluate(test_loader)
+        test_accuracy, test_loss = model.evaluate(test_loader, device)
         print(f'测试集准确率: {test_accuracy:.4f}, 测试损失: {test_loss:.4f}')
         print('-' * 50)
     

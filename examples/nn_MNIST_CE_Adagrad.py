@@ -32,6 +32,7 @@ import riemann.optim as opt
 from riemann.utils.data import DataLoader
 from riemann.vision.datasets import MNIST
 from riemann.vision import transforms
+from riemann import cuda
 
 class Classifier(nn.Module):
     """
@@ -76,13 +77,7 @@ class Classifier(nn.Module):
 
         # 交叉熵损失函数，适用于多分类任务
         self.loss_func = nn.CrossEntropyLoss()
-        
-        # 使用Adagrad优化器，相比SGD通常收敛更快
-        self.optimizer = opt.Adagrad(self.parameters(), 
-                                    lr=0.01,       # 学习率，Adagrad通常使用比SGD更高的学习率
-                                    weight_decay=0.0001,  # 权重衰减，用于L2正则化
-                                    eps=1e-10,      # 数值稳定性参数，防止除零错误
-                                    initial_accumulator_value=0.0)  # 累加器初始值
+        # 优化器将在设备移动后初始化
     
     def forward(self, inputs):
         """
@@ -124,7 +119,7 @@ class Classifier(nn.Module):
         self.optimizer.step()
         return loss
     
-    def evaluate(self, dataloader):
+    def evaluate(self, dataloader,device):
         """
         模型评估方法
         
@@ -133,6 +128,7 @@ class Classifier(nn.Module):
         
         参数:
             dataloader (DataLoader): 数据加载器，提供批量的测试数据
+            device (str): 模型运行设备对象
         
         返回:
             tuple: 包含两个元素的元组
@@ -145,6 +141,11 @@ class Classifier(nn.Module):
         
         for batch in dataloader:
             img_tensors, target_tensors = batch
+            
+            # 将批量数据移动到GPU
+            img_tensors = img_tensors.to(device)
+            target_tensors = target_tensors.to(device)
+            
             outputs = self.forward(img_tensors)
             
             # 计算损失
@@ -154,8 +155,9 @@ class Classifier(nn.Module):
             # 计算准确率
             predicted = outputs.argmax(dim=1)
             total += target_tensors.size(0)
+            
             correct += (predicted == target_tensors).sum().item()
-        
+            
         accuracy = correct / total
         avg_loss = total_loss / len(dataloader)
         return accuracy, avg_loss
@@ -183,6 +185,11 @@ def main():
     """
     clear_screen()
     print("MNIST手写数字识别神经网络示例（Adagrad优化器版）")
+    
+    # 检查CUDA可用性
+    CUDA_AVAILABLE = cuda.CUPY_AVAILABLE
+    device = 'cuda' if CUDA_AVAILABLE else 'cpu'
+    print(f"使用设备: {device}")
     
     # 定义数据变换
     transform = transforms.Compose([
@@ -212,7 +219,7 @@ def main():
     )
     test_loader = DataLoader(
         dataset=test_dataset,
-        batch_size=1,
+        batch_size=100,
         shuffle=False
     )
     
@@ -222,6 +229,16 @@ def main():
     # 创建模型
     print("\n初始化模型...")
     model = Classifier()
+    
+    # 将模型移动到指定设备
+    model.to(device)
+    
+    # 初始化优化器，确保它引用正确设备上的参数
+    model.optimizer = opt.Adagrad(model.parameters(), 
+                                lr=0.01,       # 学习率，Adagrad通常使用比SGD更高的学习率
+                                weight_decay=0.0001,  # 权重衰减，用于L2正则化
+                                eps=1e-10,      # 数值稳定性参数，防止除零错误
+                                initial_accumulator_value=0.0)  # 累加器初始值
     
     # 训练模型
     print("\n开始训练...")
@@ -237,6 +254,11 @@ def main():
         progress_bar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}', leave=False)
         for batch_idx, batch in enumerate(progress_bar):
             img_tensors, target_tensors = batch
+            
+            # 将批量数据移动到GPU
+            img_tensors = img_tensors.to(device)
+            target_tensors = target_tensors.to(device)
+            
             loss = model.train_step(img_tensors, target_tensors)
             epoch_loss += loss.item()
             
@@ -250,7 +272,7 @@ def main():
         
         # 在测试集上评估
         model.eval()  # 设置为评估模式
-        test_accuracy, test_loss = model.evaluate(test_loader)
+        test_accuracy, test_loss = model.evaluate(test_loader, device)
         print(f'测试集准确率: {test_accuracy:.4f}, 测试损失: {test_loss:.4f}')
         print('-' * 50)
     

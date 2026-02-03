@@ -52,6 +52,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Union, Callable, Iterable, Generator
 from .tensordef import *
 from .nn import *
+from .cuda import cp
 
 class Optimizer:
     """
@@ -100,6 +101,13 @@ class Optimizer:
             if len(para_list) == 0:
                 raise ValueError("optimizer got an empty parameter list")
             self.add_param_group({'params': para_list})
+        
+        # 检测参数所在的设备类型，设置arrlib属性
+        self.arrlib = np
+        if len(self.param_groups) > 0 and len(self.param_groups[0]['params']) > 0:
+            first_param = self.param_groups[0]['params'][0]
+            if hasattr(first_param, 'device') and first_param.device.type == 'cuda':
+                self.arrlib = cp
 
     def add_param_group(self, param_group: Dict[str, Any]) -> None:
         """
@@ -420,6 +428,8 @@ class SGD(Optimizer):
         返回:
             如果提供了closure，则返回损失值；否则返回None
         """
+        arrlib = self.arrlib
+
         loss = None
         if closure is not None:
             loss = closure()
@@ -457,7 +467,7 @@ class SGD(Optimizer):
                     
                     # 获取或初始化动量状态
                     if param_id not in self.state:
-                        self.state[param_id] = {'velocity': np.zeros_like(param_data)}
+                        self.state[param_id] = {'velocity': arrlib.zeros_like(param_data)}
                     
                     velocity = self.state[param_id]['velocity']
                     
@@ -549,6 +559,8 @@ class Adam(Optimizer):
         应用权重衰减（如果启用），更新一阶和二阶矩估计，执行偏差校正，
         最后根据Adam更新规则调整参数
         """
+        arrlib = self.arrlib
+
         # 延迟初始化state
         if not hasattr(self, 'state'):
             self.state = {}
@@ -580,21 +592,21 @@ class Adam(Optimizer):
                 if param_id not in self.state:
                     self.state[param_id] = {
                         'step': 0,
-                        'exp_avg': np.zeros_like(p.data),
-                        'exp_avg_sq': np.zeros_like(p.data)
+                        'exp_avg': arrlib.zeros_like(p.data),
+                        'exp_avg_sq': arrlib.zeros_like(p.data)
                     }
                     if amsgrad:
-                        self.state[param_id]['max_exp_avg_sq'] = np.zeros_like(p.data)
+                        self.state[param_id]['max_exp_avg_sq'] = arrlib.zeros_like(p.data)
                 
                 state = self.state[param_id]
                 state['step'] += 1  # 先递增步数
                 
                 # 优化更新计算，使用原地操作减少内存分配
-                np.multiply(beta1, state['exp_avg'], out=state['exp_avg'])
-                np.add(state['exp_avg'], (1.0 - beta1) * grad, out=state['exp_avg'])
+                arrlib.multiply(beta1, state['exp_avg'], out=state['exp_avg'])
+                arrlib.add(state['exp_avg'], (1.0 - beta1) * grad, out=state['exp_avg'])
                 
-                np.multiply(beta2, state['exp_avg_sq'], out=state['exp_avg_sq'])
-                np.add(state['exp_avg_sq'], (1.0 - beta2) * np.square(grad), out=state['exp_avg_sq'])
+                arrlib.multiply(beta2, state['exp_avg_sq'], out=state['exp_avg_sq'])
+                arrlib.add(state['exp_avg_sq'], (1.0 - beta2) * arrlib.square(grad), out=state['exp_avg_sq'])
                 
                 # 偏差校正
                 bias_correction1 = 1.0 - beta1 ** state['step']
@@ -602,13 +614,13 @@ class Adam(Optimizer):
                 
                 # AMSGrad处理
                 if amsgrad:
-                    np.maximum(state['max_exp_avg_sq'], state['exp_avg_sq'], out=state['max_exp_avg_sq'])
-                    denom = np.sqrt(state['max_exp_avg_sq']) + eps
+                    arrlib.maximum(state['max_exp_avg_sq'], state['exp_avg_sq'], out=state['max_exp_avg_sq'])
+                    denom = arrlib.sqrt(state['max_exp_avg_sq']) + eps
                 else:
-                    denom = np.sqrt(state['exp_avg_sq']) + eps
+                    denom = arrlib.sqrt(state['exp_avg_sq']) + eps
                 
                 # 计算更新量
-                step_size = lr * np.sqrt(bias_correction2) / bias_correction1
+                step_size = lr * arrlib.sqrt(bias_correction2) / bias_correction1
                 p.data -= step_size * (state['exp_avg'] / denom)
 
 class Adagrad(Optimizer):
@@ -671,6 +683,8 @@ class Adagrad(Optimizer):
         - 学习率衰减: lr_t = lr / (1 + (step-1) * lr_decay)
         - 参数更新: θ = θ - (lr_t / (sqrt(sum_sq) + eps)) * grad
         """
+        arrlib = self.arrlib
+        
         # 延迟初始化state
         if not hasattr(self, 'state'):
             self.state = {}
@@ -703,7 +717,7 @@ class Adagrad(Optimizer):
                 if param_id not in self.state:
                     self.state[param_id] = {
                         'step': 0,
-                        'sum': np.full_like(p.data, initial_accumulator_value)
+                        'sum': arrlib.full_like(p.data, initial_accumulator_value)
                     }
                 
                 state = self.state[param_id]
@@ -712,25 +726,25 @@ class Adagrad(Optimizer):
                 # 应用权重衰减
                 if weight_decay > 0:
                     # 使用原地操作减少内存分配
-                    np.add(grad, weight_decay * p.data, out=grad)
+                    arrlib.add(grad, weight_decay * p.data, out=grad)
                 
                 # 计算梯度平方
-                grad_squared = np.square(grad)
+                grad_squared = arrlib.square(grad)
                 
                 # 更新梯度平方累加器（原地操作）
                 sum_sq = state['sum']
-                np.add(sum_sq, grad_squared, out=sum_sq)
+                arrlib.add(sum_sq, grad_squared, out=sum_sq)
                 
                 # 计算学习率衰减
                 lr_t = lr / (1.0 + (state['step'] - 1.0) * lr_decay)
                 
                 # 计算更新分母（增强数值稳定性）
-                denom = np.sqrt(np.maximum(sum_sq, 1e-16)) + eps
+                denom = arrlib.sqrt(arrlib.maximum(sum_sq, 1e-16)) + eps
                 
                 # 计算更新量并应用（使用原地操作减少内存分配）
                 # θ = θ - (lr_t / denom) * grad_original
                 update = lr_t * grad_original / denom
-                np.subtract(p.data, update, out=p.data)
+                arrlib.subtract(p.data, update, out=p.data)
 
 class LBFGS(Optimizer):
     """
@@ -812,10 +826,12 @@ class LBFGS(Optimizer):
         Returns:
             tuple: (params_to_vector, vector_to_params, grads_to_vector) 三个辅助函数
         """
+        arrlib = self.arrlib
+        
         # 将参数列表转换为单一向量
         def params_to_vector(param_list):
             """将参数列表转换为单一向量"""
-            vec = np.zeros(total_params)
+            vec = arrlib.zeros(total_params)
             for info in param_info:
                 p = info['param']
                 offset = info['offset']
@@ -842,7 +858,7 @@ class LBFGS(Optimizer):
         # 将梯度转换为单一向量
         def grads_to_vector():
             """将梯度转换为单一向量"""
-            vec = np.zeros(total_params)
+            vec = arrlib.zeros(total_params)
             for info in param_info:
                 p = info['param']
                 offset = info['offset']
@@ -857,7 +873,7 @@ class LBFGS(Optimizer):
             
         return params_to_vector, vector_to_params, grads_to_vector
     
-    def _compute_lbfgs_direction(self, grad_vector, old_dirs, old_stps, n_old, H_diag, np_dot):
+    def _compute_lbfgs_direction(self, grad_vector, old_dirs, old_stps, n_old, H_diag, arrlib):
         """
         计算L-BFGS搜索方向（双循环算法）
         
@@ -867,19 +883,33 @@ class LBFGS(Optimizer):
             old_stps: 历史梯度变化列表
             n_old: 历史记录数量
             H_diag: Hessian对角线估计
-            np_dot: numpy点积函数引用
+            arrlib: 数组库（numpy或cupy）
             
         Returns:
             tuple: (search_dir, H_diag) 搜索方向和更新后的Hessian对角线估计
         """
-        # 预计算ys值和点积，避免重复计算
-        ys_values = np.array([np_dot(old_stps[i], old_dirs[i]) for i in range(n_old)])
+        arrlib_dot = arrlib.dot
+        arrlib_zeros_like = arrlib.zeros_like
+        arrlib_zeros = arrlib.zeros
+        arrlib_array = arrlib.array
+        arrlib_where = arrlib.where
+        arrlib_subtract = arrlib.subtract
+        arrlib_multiply = arrlib.multiply
+        arrlib_add = arrlib.add
+        arrlib_negative = arrlib.negative
         
-        # 过滤掉不稳定的项
-        valid_indices = np.where(ys_values > 1e-12)[0]
+        # 预计算ys值和点积，避免重复计算
+        ys_values = arrlib_array([arrlib_dot(old_stps[i], old_dirs[i]) for i in range(n_old)])
+        
+        # 过滤掉不稳定的项，numpy和cupy的where都返回元组，取第一个元素得到索引数组
+        valid_indices = arrlib_where(ys_values > 1e-12)[0]
+        
+        # 将数组索引转换为Python列表，确保在迭代时使用Python int类型
+        # cupy时,valid_indices里的元素是cupy.ndarray类型，不能作为列表索引,需要转换为int列表
+        valid_indices = valid_indices.tolist()
         
         # 初始化搜索方向
-        search_dir = np.zeros_like(grad_vector)
+        search_dir = arrlib_zeros_like(grad_vector)
         
         if len(valid_indices) == 0:
             # 没有有效历史，使用最陡下降
@@ -888,37 +918,37 @@ class LBFGS(Optimizer):
         else:
             # 反向循环 - 使用向量化操作和原地操作
             q = grad_vector.copy()
-            alphas = np.zeros(len(valid_indices))
+            alphas = arrlib_zeros(len(valid_indices))
             
             # 向量化计算alphas（不能预计算点积，因为q在循环中会改变）
             for idx, i in enumerate(reversed(valid_indices)):
                 s_k = old_dirs[i]
                 ys = ys_values[i]
-                alpha_k = np_dot(s_k, q) / ys
+                alpha_k = arrlib_dot(s_k, q) / ys
                 alphas[idx] = alpha_k
                 # 使用原地操作减少内存分配
-                np.subtract(q, alpha_k * old_stps[i], out=q)
+                arrlib_subtract(q, alpha_k * old_stps[i], out=q)
             
             # 初始Hessian近似
-            np.multiply(q, H_diag, out=q)  # 原地操作，q = H_diag * q
+            arrlib_multiply(q, H_diag, out=q)  # 原地操作，q = H_diag * q
             
             # 正向循环 - 使用向量化操作和原地操作
             for idx, i in enumerate(valid_indices):
                 s_k = old_dirs[i]
                 y_k = old_stps[i]
                 ys = ys_values[i]
-                beta_k = np_dot(y_k, q) / ys
+                beta_k = arrlib_dot(y_k, q) / ys
                 # 使用原地操作减少内存分配
-                np.add(q, s_k * (alphas[len(valid_indices) - 1 - idx] - beta_k), out=q)
+                arrlib_add(q, s_k * (alphas[len(valid_indices) - 1 - idx] - beta_k), out=q)
             
             # 搜索方向为负梯度方向
-            np.negative(q, out=search_dir)  # 原地操作，search_dir = -q
+            arrlib_negative(q, out=search_dir)  # 原地操作，search_dir = -q
         
         return search_dir, H_diag
     
     def _line_search(self, closure, params, current_params_vec, search_dir, grad_vector, 
                      loss_val, gtd, lr, vector_to_params, grads_to_vector, 
-                     np_dot, np_isfinite, c1=1e-4, c2=0.9, max_backtracks=10):
+                     arrlib, c1=1e-4, c2=0.9, max_backtracks=10):
         """
         执行回溯线搜索，寻找满足Wolfe条件的步长
         
@@ -933,8 +963,7 @@ class LBFGS(Optimizer):
             lr: 学习率（初始步长）
             vector_to_params: 向量到参数的转换函数
             grads_to_vector: 梯度到向量的转换函数
-            np_dot: numpy点积函数引用
-            np_isfinite: numpy有限值检查函数引用
+            arrlib: 数组库（numpy或cupy）
             c1: Armijo条件常数
             c2: 曲率条件常数
             max_backtracks: 最大回溯次数
@@ -942,6 +971,9 @@ class LBFGS(Optimizer):
         Returns:
             tuple: (line_search_success, s, y, func_evals) 线搜索结果
         """
+        arrlib_dot = arrlib.dot
+        arrlib_isfinite = arrlib.isfinite
+        
         old_loss = loss_val
         eta = lr  # 使用学习率作为初始步长，而不是固定的1.0
         func_evals = 0
@@ -969,7 +1001,7 @@ class LBFGS(Optimizer):
                 new_grad_vector = grads_to_vector()
                 
                 # 曲率条件检查
-                new_gtd = np_dot(new_grad_vector, search_dir)
+                new_gtd = arrlib_dot(new_grad_vector, search_dir)
                 if new_gtd >= c2 * gtd:
                     # 满足强Wolfe条件，线搜索成功
                     line_search_success = True
@@ -985,7 +1017,7 @@ class LBFGS(Optimizer):
             
         return line_search_success, s, y, func_evals
     
-    def _update_history(self, old_dirs, old_stps, s, y, n_old, history_size):
+    def _update_history(self, old_dirs, old_stps, s, y, n_old, history_size, arrlib):
         """
         更新L-BFGS历史记录
         
@@ -996,16 +1028,20 @@ class LBFGS(Optimizer):
             y: 当前梯度变化
             n_old: 当前历史记录数量
             history_size: 最大历史记录大小
+            arrlib: 数组库（numpy或cupy）
             
         Returns:
             int: 更新后的历史记录数量
         """
+        arrlib_dot = arrlib.dot
+        arrlib_isfinite = arrlib.isfinite
+        
         # 计算内积，用于稳定性检查
-        ys = np.dot(y, s)
-        yy = np.dot(y, y)
+        ys = arrlib_dot(y, s)
+        yy = arrlib_dot(y, y)
         
         # 只有在满足稳定性条件时才更新历史记录
-        if ys > 1e-10 and yy > 1e-10 and np.isfinite(ys) and np.isfinite(yy):
+        if ys > 1e-10 and yy > 1e-10 and arrlib_isfinite(ys) and arrlib_isfinite(yy):
             # 更新历史记录
             if n_old == history_size:
                 # 移除最旧的历史记录
@@ -1018,7 +1054,7 @@ class LBFGS(Optimizer):
         
         return n_old
     
-    def _check_convergence(self, grad_norm, tolerance_grad, old_dirs, tolerance_change):
+    def _check_convergence(self, grad_norm, tolerance_grad, old_dirs, tolerance_change, arrlib):
         """
         检查收敛条件
         
@@ -1027,10 +1063,15 @@ class LBFGS(Optimizer):
             tolerance_grad: 梯度收敛阈值
             old_dirs: 历史参数变化列表
             tolerance_change: 参数变化收敛阈值
+            arrlib: 数组库（numpy或cupy）
             
         Returns:
             bool: 是否收敛
         """
+        arrlib_linalg_norm = arrlib.linalg.norm
+        arrlib_array = arrlib.array
+        arrlib_max = arrlib.max
+        
         # 检查梯度收敛条件
         if grad_norm < tolerance_grad:
             return True
@@ -1038,8 +1079,8 @@ class LBFGS(Optimizer):
         # 检查参数变化收敛条件（如果有历史记录）
         if len(old_dirs) > 0:
             # 优化：使用向量化操作计算所有范数，避免循环
-            param_norms = np.array([float(np.linalg.norm(s)) for s in old_dirs])
-            max_param_change = np.max(param_norms)  # 使用numpy的max函数，更高效
+            param_norms = arrlib_array([float(arrlib_linalg_norm(s)) for s in old_dirs])
+            max_param_change = arrlib_max(param_norms)  # 使用数组库的max函数，更高效
             if max_param_change < tolerance_change:
                 return True
                 
@@ -1109,10 +1150,10 @@ class LBFGS(Optimizer):
         Returns:
             Tensor: 最终损失值
         """
-        np_isfinite = np.isfinite
+        arrlib_isfinite = self.arrlib.isfinite
         # 优化：只有在需要时才重新计算损失
         # 如果最佳损失是有限的，则直接返回，避免重复计算
-        if np_isfinite(best_loss):
+        if arrlib_isfinite(best_loss):
             # closure()总是返回TN张量，直接返回
             return tensor(best_loss)
         else:
@@ -1134,10 +1175,11 @@ class LBFGS(Optimizer):
         if closure is None:
             raise RuntimeError('LBFGS optimizer requires a closure function')
         
-        # 预先获取内置函数引用，提高性能
-        np_dot = np.dot
-        np_isfinite = np.isfinite
-        np_linalg_norm = np.linalg.norm
+        # 使用优化器的arrlib属性
+        arrlib = self.arrlib
+        arrlib_dot = arrlib.dot
+        arrlib_isfinite = arrlib.isfinite
+        arrlib_linalg_norm = arrlib.linalg.norm
         
         # 回溯线搜索常量
         c1 = 1e-4  # Armijo条件常数
@@ -1198,10 +1240,10 @@ class LBFGS(Optimizer):
                 
                 # 3. 获取梯度向量并检查收敛条件
                 grad_vector = grads_to_vector()
-                grad_norm = np_linalg_norm(grad_vector)
+                grad_norm = arrlib_linalg_norm(grad_vector)
                 
                 # 保存最佳状态（使用已获取的参数向量，避免重复转换）
-                if loss_val < best_loss and np_isfinite(loss_val):
+                if loss_val < best_loss and arrlib_isfinite(loss_val):
                     best_loss = loss_val
                     best_params_vec = current_params_vec.copy()  # 使用已获取的参数向量
 
@@ -1210,26 +1252,26 @@ class LBFGS(Optimizer):
                     break
                 
                 # 检查收敛条件
-                if self._check_convergence(grad_norm, tolerance_grad, old_dirs, tolerance_change):
+                if self._check_convergence(grad_norm, tolerance_grad, old_dirs, tolerance_change, arrlib):
                     break
                 
                 # 4. 计算L-BFGS搜索方向（双循环算法）
                 search_dir, H_diag = self._compute_lbfgs_direction(
-                    grad_vector, old_dirs, old_stps, n_old, H_diag, np_dot)
+                    grad_vector, old_dirs, old_stps, n_old, H_diag, arrlib)
                 
                 # 5. 检查是否为下降方向
-                gtd = np_dot(grad_vector, search_dir)
+                gtd = arrlib_dot(grad_vector, search_dir)
                 if gtd >= 0:
                     # 非下降方向，使用最陡下降
                     search_dir = -grad_vector.copy()
                     H_diag = 1.0  # 重置Hessian对角线估计
-                    gtd = -np_dot(grad_vector, grad_vector)
+                    gtd = -arrlib_dot(grad_vector, grad_vector)
                 
                 # 6. 执行回溯线搜索
                 line_search_success, s, y, line_search_func_evals = self._line_search(
                     closure, params, current_params_vec, search_dir, grad_vector, 
                     loss_val, gtd, lr, vector_to_params, grads_to_vector, 
-                    np_dot, np_isfinite, c1, c2, max_backtracks)
+                    arrlib, c1, c2, max_backtracks)
                 
                 # 更新函数评估计数
                 func_evals += line_search_func_evals
@@ -1242,12 +1284,12 @@ class LBFGS(Optimizer):
                 if line_search_success:
                     # 线搜索成功，更新历史记录
                     # 计算Hessian对角线估计
-                    ys = np_dot(y, s)
-                    yy = np_dot(y, y)
-                    if ys > 1e-10 and yy > 1e-10 and np_isfinite(ys) and np_isfinite(yy):
+                    ys = arrlib_dot(y, s)
+                    yy = arrlib_dot(y, y)
+                    if ys > 1e-10 and yy > 1e-10 and arrlib_isfinite(ys) and arrlib_isfinite(yy):
                         H_diag = ys / yy
                     
-                    n_old = self._update_history(old_dirs, old_stps, s, y, n_old, history_size)
+                    n_old = self._update_history(old_dirs, old_stps, s, y, n_old, history_size, arrlib)
                 else:
                     # 线搜索失败，恢复参数并使用小步长
                     vector_to_params(current_params_vec, params)
@@ -1267,7 +1309,7 @@ class LBFGS(Optimizer):
                     
                     # 保存最佳状态
                     new_loss = loss.item()
-                    if new_loss < best_loss and np_isfinite(new_loss):
+                    if new_loss < best_loss and arrlib_isfinite(new_loss):
                         best_loss = new_loss
                         best_params_vec = current_params_vec - safe_eta * grad_vector  # 使用已知的新参数向量，避免重复转换
             
