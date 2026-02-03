@@ -51,7 +51,7 @@ between Riemann and PyTorch frameworks.
 from typing import Any, Dict
 import copy
 from ..tensordef import *
-from ..cuda import cp
+from ..cuda import cp, Device
 from .functional import *
 
                         
@@ -259,30 +259,77 @@ class Module:
         # 移动所有参数
         for name, param in self._parameters.items():
             if param is not None:
-                # 直接对参数张量调用to方法,清除计算图依赖，确保新参数不会向旧参数传递梯度
-                requires_grad = param.requires_grad
-                new_param = param.to(device).detach()
-                new_param.requires_grad = requires_grad
-                # 更新参数
-                self._parameters[name] = new_param
-                # 更新实例属性引用
-                setattr(self, name, new_param)
+                # 对参数张量调用to方法,跨设备时要清除计算图依赖，确保新参数不会向旧参数传递梯度
+                new_param = param.to(device)
+                if new_param is not param:
+                    new_param = new_param.detach()
+                    new_param.requires_grad = param.requires_grad
+                
+                    # 更新参数
+                    self._parameters[name] = new_param
+                    # 更新实例属性引用
+                    setattr(self, name, new_param)
         
         # 移动所有缓冲区
         for name, buffer in self._buffers.items():
             if buffer is not None:
-                # 直接对缓冲区张量调用to方法,并清除计算图依赖
-                new_buffer = buffer.to(device).detach()
-                # 更新缓冲区
-                self._buffers[name] = new_buffer
-                # 更新实例属性引用
-                setattr(self, name, new_buffer)
+                # 对缓冲区张量调用to方法,跨设备时要清除计算图依赖，确保新缓冲区不会向旧缓冲区传递梯度
+                new_buffer = buffer.to(device)
+                if new_buffer is not buffer:
+                    new_buffer = new_buffer.detach()
+                    new_buffer.requires_grad = buffer.requires_grad
+                    # 更新缓冲区
+                    self._buffers[name] = new_buffer
+                    # 更新实例属性引用
+                    setattr(self, name, new_buffer)
         
         # 递归移动所有子模块
         for name, module in self._modules.items():
             module.to(device)
         
         return self
+
+    def cuda(self, device=None):
+        """
+        将模块的所有参数和缓冲区移动到CUDA设备
+        
+        参数:
+            device: 目标CUDA设备，可以是整数（设备ID）、字符串（如'cuda:0'）或Device对象
+                   如果为None，则使用当前默认CUDA设备
+        
+        返回:
+            Module: 移动到CUDA设备后的模块本身（原地操作）
+        
+        Examples:
+            >>> model = MyModule()
+            >>> model.cuda()  # 移动到默认CUDA设备
+            >>> model.cuda(0)  # 移动到cuda:0
+            >>> model.cuda('cuda:1')  # 移动到cuda:1
+        """
+        if device == 'cpu':
+            raise ValueError("cuda() method is not supported for 'cpu'")
+        
+        if device is None:
+            device = 'cuda'
+        device = Device(device)
+        return self.to(device)
+    
+    def cpu(self):
+        """
+        将模块的所有参数和缓冲区移动到CPU设备
+        
+        返回:
+            Module: 移动到CPU设备后的模块本身（原地操作）
+        
+        Examples:
+            >>> model = MyModule()
+            >>> model.cuda()  # 移动到CUDA
+            >>> model.cpu()  # 移回CPU
+        """
+        from ..cuda import Device
+        
+        return self.to(Device('cpu'))
+      
 
     def _get_name(self):
         """
@@ -336,7 +383,7 @@ class Module:
             raise TypeError(f"Cannot assign '{type(param)}' as parameter '{name}'")
         self._parameters[name] = param
 
-    def register_buffer(self, name: str, tensor: Any) -> None:
+    def register_buffer(self, name: str, a_tensor: Any) -> None:
         """注册缓冲区 (Register Buffer)
         
         向模块添加一个持久化的缓冲区。缓冲区是模型状态的一部分，
@@ -348,7 +395,7 @@ class Module:
         
         Args:
             name (str): 缓冲区名称
-            tensor (Tensor): 要注册的张量。如果为None，则删除该缓冲区
+            a_tensor (Tensor): 要注册的张量。如果为None，则删除该缓冲区
             
         Examples::
         
@@ -378,9 +425,9 @@ class Module:
             - 在模型评估时保持稳定，提供一致性
             - 支持None值，用于删除已注册的缓冲区
         """
-        if tensor is not None and not isinstance(tensor, TN):
-            raise TypeError(f"Cannot assign '{type(tensor)}' as buffer '{name}'. Expected TN tensor or None.")
-        self._buffers[name] = tensor
+        if a_tensor is not None and not isinstance(a_tensor, TN):
+            raise TypeError(f"Cannot assign '{type(a_tensor)}' as buffer '{name}'. Expected TN tensor or None.")
+        self._buffers[name] = a_tensor
 
     def register_parameters_batch(self, **parameters) -> None:
         """批量注册参数 (Batch Register Parameters)
@@ -423,10 +470,10 @@ class Module:
             ...             scale=rm.tensor([1.0, 2.0, 3.0])
             ...         )
         """
-        for name, tensor in buffers.items():
-            if tensor is not None and not isinstance(tensor, TN):
-                raise TypeError(f"Cannot assign '{type(tensor)}' as buffer '{name}'. Expected TN tensor or None.")
-            self._buffers[name] = tensor
+        for name, tensor_obj in buffers.items():
+            if tensor_obj is not None and not isinstance(tensor_obj, TN):
+                raise TypeError(f"Cannot assign '{type(tensor_obj)}' as buffer '{name}'. Expected TN tensor or None.")
+            self._buffers[name] = tensor_obj
 
     def clear_cache(self) -> None:
         """清除属性访问缓存 (Clear Attribute Cache)
@@ -1628,61 +1675,69 @@ class Module:
             # 本地缓冲区
             self.register_buffer(name, tensor)
 
-    def type(self, dtype):
-        """转换模块的数据类型 (Type Cast)
-        
-        将模块的所有参数和缓冲区转换为指定的数据类型。这是一个递归操作，
-        会影响当前模块及其所有子模块的参数和缓冲区。
-        
-        Args:
-            dtype (str or dtype): 目标数据类型，如 'float32', 'float64', 'float16' 等
-                或者使用 numpy.dtype 对象
-                
-        Returns:
-            Module: 返回自身，支持链式调用
-                
-        Examples::
-            
-            >>> class Net(Module):
-            ...     def __init__(self):
-            ...         super().__init__()
-            ...         self.conv1 = Conv2d(3, 64, 3)
-            ...         self.bn1 = BatchNorm2d(64)
-            ...
-            >>> net = Net()
-            >>> # 转换为float64类型
-            >>> net.type('float64')
-            >>> # 转换为float16类型
-            >>> net.type('float16')
-            >>> # 使用numpy.dtype
-            >>> import numpy as np
-            >>> net.type(np.float32)
-            
-        Note:
-            type()方法的特点：
-                - 递归转换所有子模块的参数和缓冲区
-                - 返回自身，支持链式调用
-                - 常用于精度调整和内存优化
-                - 影响所有可训练参数和持久化缓冲区
-                - 不会改变模型结构，只改变数据类型
-                - 在混合精度训练中很有用
-                - 可以用于模型压缩和加速
-                - 转换后所有计算将使用新的数据类型
-                - 确保目标类型与硬件兼容性
-                - 在推理时可以降低精度以提高速度
+    def type(self, dtype=None):
         """
-        # 转换当前模块的参数
+        返回或转换模块所有参数和缓冲区的数据类型
+        
+        行为：
+        - 如果不传入参数，返回模块中第一个参数的数据类型
+        - 如果传入数据类型参数，将模块的所有参数和缓冲区转换为指定数据类型
+        
+        参数:
+            dtype: 数据类型，可以是Python类型、NumPy dtype、字符串或Riemann dtype
+                   如果为None，则返回模块中第一个参数的数据类型
+                   如果模块没有参数，则返回None
+        
+        返回:
+            如果dtype为None，返回模块中第一个参数的数据类型，或None（如果没有参数）
+            否则返回转换后的数据类型的模块本身（原地操作）
+        
+        Examples:
+            >>> model = MyModule()
+            >>> model.type()  # 返回第一个参数的数据类型
+            >>> model.type(float32)  # 将所有参数转换为float32
+            >>> model.type('float64')  # 将所有参数转换为float64
+        """
+        # 如果不传入参数，返回模块中第一个参数的数据类型
+        if dtype is None:
+            for name, param in self._parameters.items():
+                if param is not None:
+                    return param.dtype
+            return None
+        
+        # 转换所有参数
         for name, param in self._parameters.items():
             if param is not None:
-                self._parameters[name] = param.type(dtype)
+                # 对参数张量调用type方法
+                new_param = param.type(dtype)
+                if new_param is not param:
+                    # 清除计算图依赖，确保新参数不会向旧参数传递梯度
+                    new_param = new_param.detach()
+                    # 确保新参数保持梯度要求
+                    new_param.requires_grad = param.requires_grad
+                
+                    # 更新参数
+                    self._parameters[name] = new_param
+                    # 更新实例属性引用
+                    setattr(self, name, new_param)
         
-        # 转换当前模块的缓冲区
+        # 转换所有缓冲区
         for name, buffer in self._buffers.items():
             if buffer is not None:
-                self._buffers[name] = buffer.type(dtype)
+                # 对缓冲区张量调用type方法
+                new_buffer = buffer.type(dtype)
+                if new_buffer is not buffer:
+                    # 清除计算图依赖
+                    new_buffer = new_buffer.detach()
+                    # 确保缓冲区保持梯度要求
+                    new_buffer.requires_grad = buffer.requires_grad
+                    # 更新缓冲区
+                    self._buffers[name] = new_buffer
+                    # 更新实例属性引用
+                    setattr(self, name, new_buffer)
         
-        # 递归转换子模块
-        for module in self.children():
+        # 递归转换所有子模块
+        for name, module in self._modules.items():
             module.type(dtype)
         
         return self
