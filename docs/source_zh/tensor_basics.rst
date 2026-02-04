@@ -601,7 +601,7 @@ Riemann 提供了广泛的数学函数，以下是常用的数学函数列表：
   * - 函数名
     - 功能描述
     - 示例
-  * - ``abs`` / ``absolute``
+  * - ``abs``
     - 计算绝对值
     - ``rm.abs(x)``
   * - ``sqrt``
@@ -659,18 +659,18 @@ Riemann 提供了广泛的数学函数，以下是常用的数学函数列表：
   * - ``tan``
     - 计算正切值
     - ``rm.tan(x)``
-  * - ``asin``
+  * - ``arcsin``
     - 计算反正弦值
-    - ``rm.asin(x)``
-  * - ``acos``
+    - ``rm.arcsin(x)``
+  * - ``arccos``
     - 计算反余弦值
-    - ``rm.acos(x)``
-  * - ``atan``
+    - ``rm.arccos(x)``
+  * - ``arctan``
     - 计算反正切值
     - ``rm.atan(x)``
-  * - ``atan2``
+  * - ``arctan2``
     - 计算两个张量的反正切值
-    - ``rm.atan2(y, x)``
+    - ``rm.arctan2(y, x)``
 
 **双曲函数**
 
@@ -690,37 +690,15 @@ Riemann 提供了广泛的数学函数，以下是常用的数学函数列表：
   * - ``tanh``
     - 计算双曲正切值
     - ``rm.tanh(x)``
-  * - ``asinh``
+  * - ``arcsinh``
     - 计算反双曲正弦值
-    - ``rm.asinh(x)``
-  * - ``acosh``
+    - ``rm.arcsinh(x)``
+  * - ``arccosh``
     - 计算反双曲余弦值
-    - ``rm.acosh(x)``
-  * - ``atanh``
+    - ``rm.arccosh(x)``
+  * - ``arctanh``
     - 计算反双曲正切值
-    - ``rm.atanh(x)``
-
-**特殊函数**
-
-.. list-table:: 特殊函数
-  :widths: 15 45 40
-  :header-rows: 1
-
-  * - 函数名
-    - 功能描述
-    - 示例
-  * - ``erf``
-    - 计算误差函数
-    - ``rm.erf(x)``
-  * - ``erfc``
-    - 计算互补误差函数
-    - ``rm.erfc(x)``
-  * - ``gamma``
-    - 计算伽马函数
-    - ``rm.gamma(x)``
-  * - ``lgamma``
-    - 计算伽马函数的自然对数
-    - ``rm.lgamma(x)``
+    - ``rm.arctanh(x)``
 
 **数学函数示例**
 
@@ -779,6 +757,9 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
   * - ``sum``
     - 计算张量元素的和
     - ``rm.sum(x)``
+  * - ``sumall``
+    - 计算多个张量的和
+    - ``rm.sumall(x, y, z)``
   * - ``mean``
     - 计算张量元素的平均值
     - ``rm.mean(x)``
@@ -831,8 +812,10 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
     # 创建示例张量
     x = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
     y = rm.tensor([[2.0, 1.0, 4.0], [3.0, 6.0, 5.0], [8.0, 7.0, 10.0]])
+    z = rm.tensor([[1.0, 3.0, 2.0], [4.0, 2.0, 1.0], [3.0, 4.0, 5.0]])
     print("原始张量 x:", x)
     print("原始张量 y:", y)
+    print("原始张量 z:", z)
 
     # 1. sum 函数
     print("\n1. sum 函数:")
@@ -840,20 +823,24 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
     print("沿轴 0 的和:", rm.sum(x, dim=0))
     print("沿轴 1 的和:", rm.sum(x, dim=1))
 
-    # 2. mean 函数
-    print("\n2. mean 函数:")
+    # 2. sumall 函数
+    print("\n2. sumall 函数:")
+    print("多个张量的和:", rm.sumall(x, y, z))
+
+    # 3. mean 函数
+    print("\n3. mean 函数:")
     print("所有元素的平均值:", rm.mean(x))
     print("沿轴 0 的平均值:", rm.mean(x, dim=0))
 
-    # 3. max 和 min 函数
-    print("\n3. max 和 min 函数:")
+    # 4. max 和 min 函数
+    print("\n4. max 和 min 函数:")
     print("最大值:", rm.max(x))
     print("最小值:", rm.min(x))
     print("沿轴 0 的最大值:", rm.max(x, dim=0))
     print("沿轴 1 的最小值:", rm.min(x, dim=1))
 
-    # 4. where 函数
-    print("\n4. where 函数:")
+    # 5. where 函数
+    print("\n5. where 函数:")
     condition = x > 5
     result = rm.where(condition, x, y)
     print("条件 (x > 5):", condition)
@@ -933,6 +920,50 @@ where 函数有两种主要用法：
     print(x_grad.grad)
     print("y_grad 的梯度:")
     print(y_grad.grad)
+
+**sumall 函数的效率优势**
+
+`sumall` 函数比使用张量加法运算更高效，特别是在梯度跟踪方面，因为：
+
+1. **减小计算图**：使用 `sumall` 时，计算图减小到只有一层，无论有多少个张量相加。
+2. **可扩展的效率**：使用张量加法运算符 (`+`) 时，计算图会随着张量的增加而线性变大，导致图复杂度增加。
+3. **更快的梯度跟踪**：`sumall` 的简单图结构在反向传播时会产生更快的梯度计算，尤其是在对多个张量求和时。
+
+**梯度跟踪效率示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 创建带梯度跟踪的张量
+    x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+    y = rm.tensor([4.0, 5.0, 6.0], requires_grad=True)
+    z = rm.tensor([7.0, 8.0, 9.0], requires_grad=True)
+    w = rm.tensor([10.0, 11.0, 12.0], requires_grad=True)
+
+    # 使用 sumall（更高效）
+    print("\n使用 sumall:")
+    result_sumall = rm.sumall(x, y, z, w)
+    result_sumall.backward()
+    print("x.grad:", x.grad)
+    print("y.grad:", y.grad)
+    print("z.grad:", z.grad)
+    print("w.grad:", w.grad)
+
+    # 重置梯度
+    x.grad = None
+    y.grad = None
+    z.grad = None
+    w.grad = None
+
+    # 使用加法运算符（效率较低）
+    print("\n使用加法运算符:")
+    result_addition = x + y + z + w
+    result_addition.backward()
+    print("x.grad:", x.grad)
+    print("y.grad:", y.grad)
+    print("z.grad:", z.grad)
+    print("w.grad:", w.grad)
 
 **其他统计函数示例**
 
