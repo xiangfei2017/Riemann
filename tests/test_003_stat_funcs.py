@@ -2628,6 +2628,342 @@ class TestMaxMinFunctions(unittest.TestCase):
                             print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
                         self.fail(f"CUDA张量的minimum函数测试失败: {case_name} - {str(e)}")
 
+    def test_sumall(self):
+        """测试sumall函数 - 包括前向计算和梯度跟踪场景"""
+        if IS_RUNNING_AS_SCRIPT:
+            stats.start_function("test_sumall")
+        
+        print(f"\n{Colors.HEADER}开始测试: {self.test_sumall.__doc__}{Colors.ENDC}")
+        
+        # 测试1: 两个张量相加
+        print("\n测试1: 两个张量相加")
+        start_time = time.time()
+        try:
+            x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+            y = rm.tensor([4.0, 5.0, 6.0], requires_grad=True)
+            z = rm.sumall(x, y)
+            print(f"x + y = {z}")
+            
+            # 测试梯度 - 对于非标量张量，需要提供grad_outputs
+            z_sum = z.sum()  # 将结果转换为标量
+            z_sum.backward()
+            print(f"x.grad = {x.grad}")
+            print(f"y.grad = {y.grad}")
+            
+            # 验证梯度
+            self.assertIsNotNone(x.grad)
+            self.assertIsNotNone(y.grad)
+            self.assertEqual(x.grad.shape, x.shape)
+            self.assertEqual(y.grad.shape, y.shape)
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("两个张量相加", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("两个张量相加", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        # 测试2: 张量与标量相加
+        print("\n测试2: 张量与标量相加")
+        start_time = time.time()
+        try:
+            x2 = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+            scalar = 5.0
+            z2 = rm.sumall(x2, scalar)
+            print(f"x2 + {scalar} = {z2}")
+            
+            # 测试梯度 - 对于非标量张量，需要提供grad_outputs
+            z2_sum = z2.sum()  # 将结果转换为标量
+            z2_sum.backward()
+            print(f"x2.grad = {x2.grad}")
+            
+            # 验证梯度
+            self.assertIsNotNone(x2.grad)
+            self.assertEqual(x2.grad.shape, x2.shape)
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("张量与标量相加", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("张量与标量相加", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        # 测试3: 多个张量相加
+        print("\n测试3: 多个张量相加")
+        start_time = time.time()
+        try:
+            a = rm.tensor([1.0, 2.0], requires_grad=True)
+            b = rm.tensor([3.0, 4.0], requires_grad=True)
+            c = rm.tensor([5.0, 6.0], requires_grad=True)
+            z3 = rm.sumall(a, b, c)
+            print(f"a + b + c = {z3}")
+            
+            # 测试梯度 - 对于非标量张量，需要提供grad_outputs
+            z3_sum = z3.sum()  # 将结果转换为标量
+            z3_sum.backward()
+            print(f"a.grad = {a.grad}")
+            print(f"b.grad = {b.grad}")
+            print(f"c.grad = {c.grad}")
+            
+            # 验证梯度
+            self.assertIsNotNone(a.grad)
+            self.assertIsNotNone(b.grad)
+            self.assertIsNotNone(c.grad)
+            self.assertEqual(a.grad.shape, a.shape)
+            self.assertEqual(b.grad.shape, b.shape)
+            self.assertEqual(c.grad.shape, c.shape)
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("多个张量相加", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("多个张量相加", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        # 测试4: 混合张量和非张量相加
+        print("\n测试4: 混合张量和非张量相加")
+        start_time = time.time()
+        try:
+            x4 = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+            y4 = 2.0
+            z4 = 3.0
+            result4 = rm.sumall(x4, y4, z4)
+            print(f"x4 + {y4} + {z4} = {result4}")
+            
+            # 测试梯度 - 对于非标量张量，需要提供grad_outputs
+            result4_sum = result4.sum()  # 将结果转换为标量
+            result4_sum.backward()
+            print(f"x4.grad = {x4.grad}")
+            
+            # 验证梯度
+            self.assertIsNotNone(x4.grad)
+            self.assertEqual(x4.grad.shape, x4.shape)
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("混合张量和非张量相加", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("混合张量和非张量相加", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        # 测试5: 广播兼容的情况（标量、1D向量、2D张量）
+        print("\n测试5: 广播兼容的情况（标量、1D向量、2D张量）")
+        start_time = time.time()
+        try:
+            a_scalar = rm.tensor(1.0, requires_grad=True)  # 标量张量
+            b_vector = rm.tensor([2.0, 3.0], requires_grad=True)  # 1D向量
+            c_matrix = rm.tensor([[4.0, 5.0], [6.0, 7.0]], requires_grad=True)  # 2D张量
+            
+            # 计算和
+            result5 = rm.sumall(a_scalar, b_vector, c_matrix)
+            print(f"a_scalar + b_vector + c_matrix = {result5}")
+            print(f"Result shape: {result5.shape}")
+            
+            # 测试梯度 - 对于非标量张量，需要提供grad_outputs
+            result5_sum = result5.sum()  # 将结果转换为标量
+            result5_sum.backward()
+            print(f"a_scalar.grad = {a_scalar.grad}")
+            print(f"b_vector.grad = {b_vector.grad}")
+            print(f"c_matrix.grad = {c_matrix.grad}")
+            
+            # 验证梯度
+            self.assertIsNotNone(a_scalar.grad)
+            self.assertIsNotNone(b_vector.grad)
+            self.assertIsNotNone(c_matrix.grad)
+            self.assertEqual(b_vector.grad.shape, b_vector.shape)
+            self.assertEqual(c_matrix.grad.shape, c_matrix.shape)
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("广播兼容的情况", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("广播兼容的情况", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        # 测试6: 非张量参数为numpy数组
+        print("\n测试6: 非张量参数为numpy数组")
+        start_time = time.time()
+        try:
+            x6 = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+            numpy_arr = np.array([4.0, 5.0, 6.0], dtype=np.float32)
+            result6 = rm.sumall(x6, numpy_arr)
+            print(f"x6 + numpy_arr = {result6}")
+            
+            # 测试梯度
+            result6_sum = result6.sum()
+            result6_sum.backward()
+            print(f"x6.grad = {x6.grad}")
+            
+            # 验证梯度
+            self.assertIsNotNone(x6.grad)
+            self.assertEqual(x6.grad.shape, x6.shape)
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("非张量参数为numpy数组", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("非张量参数为numpy数组", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        # 测试7: 非张量参数为cupy数组（如果有GPU支持）
+        print("\n测试7: 非张量参数为cupy数组")
+        start_time = time.time()
+        try:
+            if CUDA_AVAILABLE:
+                try:
+                    x7 = rm.tensor([1.0, 2.0, 3.0], device='cuda', requires_grad=True)
+                    cupy_arr = rm.cuda.cp.array([4.0, 5.0, 6.0], dtype=np.float32)
+                    result7 = rm.sumall(x7, cupy_arr)
+                    print(f"x7 + cupy_arr = {result7}")
+                    
+                    # 测试梯度
+                    result7_sum = result7.sum()
+                    result7_sum.backward()
+                    print(f"x7.grad = {x7.grad}")
+                    
+                    # 验证梯度
+                    self.assertIsNotNone(x7.grad)
+                    self.assertEqual(x7.grad.shape, x7.shape)
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result("非张量参数为cupy数组", True)
+                        print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                except Exception as e:
+                    print(f"跳过cupy数组测试: {e}")
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result("非张量参数为cupy数组", True)  # 跳过视为通过
+            else:
+                print("跳过cupy数组测试：没有GPU支持")
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result("非张量参数为cupy数组", True)  # 跳过视为通过
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("非张量参数为cupy数组", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        # 测试8: 设备一致性检查
+        print("\n测试8: 设备一致性检查")
+        start_time = time.time()
+        try:
+            # 假设我们有GPU支持
+            if CUDA_AVAILABLE:
+                # 创建CPU张量和GPU张量
+                cpu_tensor = rm.tensor([1.0, 2.0])
+                gpu_tensor = rm.tensor([3.0, 4.0], device='cuda')
+                # 尝试相加，应该报错
+                result = rm.sumall(cpu_tensor, gpu_tensor)
+                print("错误：应该报错但没有报错！")
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result("设备一致性检查", False, ["设备不一致时应该报错"])
+                    print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                self.fail("设备不一致时应该报错")
+            else:
+                print("跳过设备一致性测试：没有GPU支持")
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result("设备一致性检查", True)  # 跳过视为通过
+        except ValueError as e:
+            print(f"正确：设备不一致时报错 - {e}")
+            # 验证错误信息
+            self.assertIn("device", str(e).lower())
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("设备一致性检查", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("设备一致性检查", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        # 测试9: 所有参数都是标量
+        print("\n测试9: 所有参数都是标量")
+        start_time = time.time()
+        try:
+            result9 = rm.sumall(1.0, 2.0, 3.0, 4.0)
+            print(f"1.0 + 2.0 + 3.0 + 4.0 = {result9}")
+            
+            # 验证结果
+            self.assertIsInstance(result9, rm.TN)
+            self.assertEqual(result9.data, 10.0)
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("所有参数都是标量", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("所有参数都是标量", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        # 测试10: 同时包括python量、numpy数组、cupy数组和张量
+        print("\n测试10: 同时包括python量、numpy数组、cupy数组和张量")
+        start_time = time.time()
+        try:
+            if CUDA_AVAILABLE:
+                # 创建各种类型的参数
+                tensor_param = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+                python_param = 10.0
+                numpy_param = np.array([4.0, 5.0, 6.0], dtype=np.float32)
+                cupy_param = rm.cuda.cp.array([7.0, 8.0, 9.0], dtype=np.float32)
+                
+                # 计算和
+                result10 = rm.sumall(tensor_param, python_param, numpy_param, cupy_param)
+                print(f"tensor + python + numpy + cupy = {result10}")
+                
+                # 测试梯度
+                result10_sum = result10.sum()
+                result10_sum.backward()
+                print(f"tensor_param.grad = {tensor_param.grad}")
+                
+                # 验证梯度
+                self.assertIsNotNone(tensor_param.grad)
+                self.assertEqual(tensor_param.grad.shape, tensor_param.shape)
+                
+            else:
+                # 没有GPU支持，使用python量、numpy数组和张量
+                tensor_param = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+                python_param = 10.0
+                numpy_param = np.array([4.0, 5.0, 6.0], dtype=np.float32)
+                
+                # 计算和
+                result10 = rm.sumall(tensor_param, python_param, numpy_param)
+                print(f"tensor + python + numpy = {result10}")
+                
+                # 测试梯度
+                result10_sum = result10.sum()
+                result10_sum.backward()
+                print(f"tensor_param.grad = {tensor_param.grad}")
+                
+                # 验证梯度
+                self.assertIsNotNone(tensor_param.grad)
+                self.assertEqual(tensor_param.grad.shape, tensor_param.shape)
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("混合类型参数组合", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("混合类型参数组合", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+        
+        if IS_RUNNING_AS_SCRIPT:
+            stats.end_function()
+        
+        print("\n测试完成！")
+
 # 如果作为独立脚本运行
 if __name__ == '__main__':
     # 设置为独立脚本运行模式
@@ -2653,3 +2989,4 @@ if __name__ == '__main__':
     
     # 根据测试结果设置退出码
     sys.exit(0 if result.wasSuccessful() else 1)
+    

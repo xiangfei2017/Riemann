@@ -78,6 +78,7 @@ import warnings
 from typing import Callable, Any, List, Tuple, TypeAlias, overload, Union, Optional
 import math
 import numpy as np
+from sympy.functions.combinatorial.numbers import nP
 from .cuda import Device, CUPY_AVAILABLE, cp, is_in_cuda_context, get_default_device, current_device
 from .dtype import *
 from .gradmode import *
@@ -375,7 +376,7 @@ class TN:
         # 根据指定的dtype转换数据
         if dtype is not None and arr.dtype != dtype:
             arr = arr.astype(dtype)
-            copy = True  # 类型转换后，默认返回新数组
+            copy = False  # 类型转换后，已创建新数组
         
         # 处理copy参数
         if copy:
@@ -5721,6 +5722,27 @@ def sqrt(x:TN)->TN:
     """
     return x ** 0.5
 
+def square(x:TN)->TN:
+    """
+    计算张量的平方。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的平方。
+    
+    Args:
+        x (TN): 输入张量
+        
+    Returns:
+        TN: 包含输入张量平方的新张量
+        
+    Examples:
+        >>> a = tensor([1, 2, 3])
+        >>> square(a)  # 返回[1, 4, 9]
+        
+        >>> b = tensor([[1, 2, 3], [4, 5, 6]])
+        >>> square(b)  # 返回[[1, 4, 9], [16, 25, 36]]
+    """
+    return x ** 2.0
+
 def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
     """创建最大值/最小值掩码数组，支持梯度分配到极值位置
 
@@ -6307,6 +6329,9 @@ def _pow_grad_right(result_tensor:TN, i:int)->TN:
 def pow(input, exponent)->TN|float:
     return input ** exponent
 
+def exp2(x:TN)->TN:
+    return 2.0 ** x
+
 def _log_derivative(x:TN)->tuple[TN]:
     return (1. / x.conj(),)
 
@@ -6355,6 +6380,34 @@ def log1p(x: TN) -> TN:
     """
     return log(x + 1.0)  # 复用现有log函数
 
+def log2(x:TN)->TN:
+    """
+    计算张量的二进制对数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的二进制对数(log2(x))。
+    
+    Args:
+        x (TN): 输入张量，元素必须为正数
+        
+    Returns:
+        TN: 包含输入张量二进制对数的新张量
+    """
+    return log(x) / log(2.0)
+
+def log10(x:TN)->TN:
+    """
+    计算张量的十进制对数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的十进制对数(log10(x))。
+    
+    Args:
+        x (TN): 输入张量，元素必须为正数
+        
+    Returns:
+        TN: 包含输入张量十进制对数的新张量
+    """
+    return log(x) / log(10.0)
+    
 def _exp_derivative(x:TN)->tuple[TN]:
     return (exp(x).conj(),)
 
@@ -8204,3 +8257,150 @@ def _triu_backward(result_tensor: TN, i: int) -> TN:
     diagonal = result_tensor.parms[i]
     # 重要：使用triu函数获取梯度的上三角部分，而不是numpy.triu
     return triu(result_tensor.grad_value, diagonal)
+
+
+def _sumall_backward(result_tensor: TN, i: int) -> TN:
+    """
+    计算sumall()函数的梯度
+    参考_add_grad_left函数的实现
+    
+    Args:
+        result_tensor: 结果张量
+        i: 输入参数在fromvars中的索引
+        
+    Returns:
+        TN: 对应输入参数的梯度
+    """
+    input_tensor = result_tensor.fromvars[i]
+    input_shape = input_tensor.shape
+    result_shape = result_tensor.shape
+
+    # 形状相同时，直接返回grad_value
+    if input_shape == result_shape:
+        grad = result_tensor.grad_value
+    else:
+        # 计算广播轴并对grad_value进行求和
+        broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
+        grad = sum(result_tensor.grad_value, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
+    return grad
+
+def sumall(*args) -> TN:
+    """
+    将多个张量或非张量相加，返回和
+        
+    Args:
+        *args: 任意数量的张量或非张量参数
+        
+    Returns:
+        TN: 所有参数的和
+    """
+    if not args:
+        raise ValueError("sumall() must have at least one argument")
+    
+    # 收集所有张量参数，确定计算设备
+    tensor_args = [arg for arg in args if isinstance(arg, TN)]
+    
+    # 确定计算设备：如果有张量参数，使用第一个张量的设备；否则使用CPU
+    if tensor_args:
+        # 使用第一个张量的设备作为目标设备
+        first_tensor = tensor_args[0]
+        target_device = first_tensor.device
+        # 确保所有张量都在同一设备上
+        for arg in tensor_args[1:]:
+            if arg.device != target_device:
+                raise ValueError(f"All tensor arguments must be on the same device, but found {arg.device} and {target_device}")
+        # 确定使用的数组库        
+        arrlib = np if isinstance(first_tensor.data, np.ndarray) else cp
+    else:
+        # 没有张量参数，使用默认设备和对应数组库
+        target_device = get_default_device()
+        arrlib = np if target_device.type =='cpu' else cp
+    
+    # 初始化和为0
+    sum_data = 0.0
+    arr_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)
+
+    # 遍历所有参数进行累加
+    for arg in args:
+        if isinstance(arg, TN):
+            # 如果是张量，获取其数据
+            processed_arg = arg.data        
+        else:
+            # 如果是非张量，处理不同类型
+            if not isinstance(arg, arr_type):
+                # 其他类型（python值），保持不变
+                processed_arg = arg
+            else:
+                if arrlib is np and not isinstance(arg, np.ndarray):
+                    # 从GPU转换到CPU
+                    processed_arg = cp.asnumpy(arg)
+                elif arrlib is cp and isinstance(arg, np.ndarray):
+                    # 从CPU转换到GPU
+                    processed_arg = cp.asarray(arg)
+                else:
+                    # 类型匹配，直接使用
+                    processed_arg = arg
+            
+        # 执行累加
+        sum_data = sum_data + processed_arg
+        
+    # 创建结果张量
+    result = tensor(sum_data, device=target_device)
+    
+    # 手动设置梯度函数，参考_add_grad_left的实现
+    if is_grad_enabled() and tensor_args and any(arg.requires_grad for arg in tensor_args):
+        # 只保留需要梯度的张量参数
+        grad_required_tensors = [arg for arg in tensor_args if arg.requires_grad]
+        if grad_required_tensors:
+            result.requires_grad = True
+            result.fromvars = tuple(grad_required_tensors)
+            # 为每个需要梯度的参数设置梯度函数
+            result.gradfuncs = tuple(_sumall_backward for _ in grad_required_tensors)
+    
+    return result
+
+def ceil(x:TN)->TN:
+    """
+    计算张量的上取整。
+
+    返回:
+        包含输入张量上取整的新张量
+    """
+    arrlib = x._get_array_lib()
+    ret = tensor(arrlib.ceil(x.data),device=x.device)
+    return ret
+
+def floor(x:TN)->TN:
+    """
+    计算张量的下取整。
+
+    返回:
+        包含输入张量下取整的新张量
+    """
+    arrlib = x._get_array_lib()
+    ret = tensor(arrlib.floor(x.data),device=x.device)
+    return ret
+
+def round(x:TN)->TN:
+    """
+    计算张量的四舍五入取整。
+
+    返回:
+        包含输入张量四舍五入取整的新张量
+    """
+    arrlib = x._get_array_lib()
+    ret = tensor(arrlib.round(x.data),device=x.device)
+    return ret
+
+def trunc(x:TN)->TN:
+    """
+    计算张量的截断取整。
+
+    返回:
+        包含输入张量截断取整的新张量
+    """
+    arrlib = x._get_array_lib()
+    ret = tensor(arrlib.trunc(x.data),device=x.device)
+    return ret
+
+

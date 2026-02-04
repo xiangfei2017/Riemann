@@ -601,7 +601,7 @@ Riemann provides a wide range of mathematical functions. Here are the commonly u
   * - Function
     - Description
     - Example
-  * - ``abs`` / ``absolute``
+  * - ``abs``
     - Compute absolute value
     - ``rm.abs(x)``
   * - ``sqrt``
@@ -659,18 +659,18 @@ Riemann provides a wide range of mathematical functions. Here are the commonly u
   * - ``tan``
     - Compute tangent
     - ``rm.tan(x)``
-  * - ``asin``
+  * - ``arcsin``
     - Compute arcsine
-    - ``rm.asin(x)``
-  * - ``acos``
+    - ``rm.arcsin(x)``
+  * - ``arccos``
     - Compute arccosine
-    - ``rm.acos(x)``
-  * - ``atan``
+    - ``rm.arccos(x)``
+  * - ``arctan``
     - Compute arctangent
-    - ``rm.atan(x)``
-  * - ``atan2``
+    - ``rm.arctan(x)``
+  * - ``arctan2``
     - Compute arctangent of two tensors
-    - ``rm.atan2(y, x)``
+    - ``rm.arctan2(y, x)``
 
 **Hyperbolic Functions**
 
@@ -690,37 +690,15 @@ Riemann provides a wide range of mathematical functions. Here are the commonly u
   * - ``tanh``
     - Compute hyperbolic tangent
     - ``rm.tanh(x)``
-  * - ``asinh``
+  * - ``arcsinh``
     - Compute inverse hyperbolic sine
-    - ``rm.asinh(x)``
-  * - ``acosh``
+    - ``rm.arcsinh(x)``
+  * - ``arccosh``
     - Compute inverse hyperbolic cosine
-    - ``rm.acosh(x)``
-  * - ``atanh``
+    - ``rm.arccosh(x)``
+  * - ``arctanh``
     - Compute inverse hyperbolic tangent
-    - ``rm.atanh(x)``
-
-**Special Functions**
-
-.. list-table:: Special Functions
-  :widths: 15 45 40
-  :header-rows: 1
-
-  * - Function
-    - Description
-    - Example
-  * - ``erf``
-    - Compute error function
-    - ``rm.erf(x)``
-  * - ``erfc``
-    - Compute complementary error function
-    - ``rm.erfc(x)``
-  * - ``gamma``
-    - Compute gamma function
-    - ``rm.gamma(x)``
-  * - ``lgamma``
-    - Compute natural logarithm of gamma function
-    - ``rm.lgamma(x)``
+    - ``rm.arctanh(x)``
 
 **Mathematical Functions Example**
 
@@ -778,6 +756,9 @@ Riemann provides various statistical functions for tensor analysis. Here are the
   * - ``sum``
     - Compute sum of tensor elements
     - ``rm.sum(x)``
+  * - ``sumall``
+    - Compute sum of multiple tensors
+    - ``rm.sumall(x, y, z)``
   * - ``mean``
     - Compute mean of tensor elements
     - ``rm.mean(x)``
@@ -830,8 +811,10 @@ Riemann provides various statistical functions for tensor analysis. Here are the
     # Create example tensor
     x = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
     y = rm.tensor([[2.0, 1.0, 4.0], [3.0, 6.0, 5.0], [8.0, 7.0, 10.0]])
+    z = rm.tensor([[1.0, 3.0, 2.0], [4.0, 2.0, 1.0], [3.0, 4.0, 5.0]])
     print("Original tensor x:", x)
     print("Original tensor y:", y)
+    print("Original tensor z:", z)
 
     # 1. sum function
     print("\n1. sum function:")
@@ -839,20 +822,24 @@ Riemann provides various statistical functions for tensor analysis. Here are the
     print("Sum along axis 0:", rm.sum(x, dim=0))
     print("Sum along axis 1:", rm.sum(x, dim=1))
 
-    # 2. mean function
-    print("\n2. mean function:")
+    # 2. sumall function
+    print("\n2. sumall function:")
+    print("Sum of multiple tensors:", rm.sumall(x, y, z))
+
+    # 3. mean function
+    print("\n3. mean function:")
     print("Mean of all elements:", rm.mean(x))
     print("Mean along axis 0:", rm.mean(x, dim=0))
 
-    # 3. max and min functions
-    print("\n3. max and min functions:")
+    # 4. max and min functions
+    print("\n4. max and min functions:")
     print("Maximum value:", rm.max(x))
     print("Minimum value:", rm.min(x))
     print("Maximum along axis 0:", rm.max(x, dim=0))
     print("Minimum along axis 1:", rm.min(x, dim=1))
 
-    # 4. where function
-    print("\n4. where function:")
+    # 5. where function
+    print("\n5. where function:")
     condition = x > 5
     result = rm.where(condition, x, y)
     print("Condition (x > 5):", condition)
@@ -932,6 +919,50 @@ The where function has two main use cases:
     print(x_grad.grad)
     print("Gradient of y_grad:")
     print(y_grad.grad)
+
+**sumall Function Efficiency Advantage**
+
+The `sumall` function is more efficient than using tensor addition operations, especially in gradient tracking, because:
+
+1. **Reduced Computation Graph**: When using `sumall`, the computation graph is reduced to a single layer, regardless of the number of tensors being summed.
+2. **Scalable Efficiency**: With tensor addition operators (`+`), the computation graph grows linearly with each additional tensor, leading to increased graph complexity.
+3. **Faster Gradient Tracking**: The simpler graph structure of `sumall` results in much faster gradient computation during backpropagation, especially when summing many tensors.
+
+**Gradient Tracking Efficiency Example**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # Create tensors with gradient tracking
+    x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+    y = rm.tensor([4.0, 5.0, 6.0], requires_grad=True)
+    z = rm.tensor([7.0, 8.0, 9.0], requires_grad=True)
+    w = rm.tensor([10.0, 11.0, 12.0], requires_grad=True)
+
+    # Using sumall (more efficient)
+    print("\nUsing sumall:")
+    result_sumall = rm.sumall(x, y, z, w)
+    result_sumall.backward()
+    print("x.grad:", x.grad)
+    print("y.grad:", y.grad)
+    print("z.grad:", z.grad)
+    print("w.grad:", w.grad)
+
+    # Reset gradients
+    x.grad = None
+    y.grad = None
+    z.grad = None
+    w.grad = None
+
+    # Using addition operators (less efficient)
+    print("\nUsing addition operators:")
+    result_addition = x + y + z + w
+    result_addition.backward()
+    print("x.grad:", x.grad)
+    print("y.grad:", y.grad)
+    print("z.grad:", z.grad)
+    print("w.grad:", w.grad)
 
 **Other Statistical Functions Example**
 
