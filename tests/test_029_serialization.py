@@ -14,6 +14,12 @@ except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)
 
+# 检测CUDA是否可用
+has_cuda = rm.cuda.is_available()
+
+# 从riemann.cuda获取cupy句柄
+cp = rm.cuda.cp
+
 # 定义颜色类用于美化输出
 class Colors:
     HEADER = '\033[95m'
@@ -179,30 +185,50 @@ class TestSerialization(unittest.TestCase):
         stats.start_function("张量序列化")
         try:
             test_cases = [
-            {"name": "基本浮点张量", "dtype": np.float32, "shape": (3, 4), "requires_grad": True},
-            {"name": "双精度浮点张量", "dtype": np.float64, "shape": (2, 5, 3), "requires_grad": True},
-            {"name": "整数张量", "dtype": np.int32, "shape": (6, 2), "requires_grad": False},
-            {"name": "长整数张量", "dtype": np.int64, "shape": (4, 3, 2, 1), "requires_grad": False},
-            {"name": "复数张量64", "dtype": np.complex64, "shape": (2, 3), "requires_grad": False},
-            {"name": "复数张量128", "dtype": np.complex128, "shape": (3, 2), "requires_grad": False},
-            {"name": "布尔张量", "dtype": np.bool_, "shape": (4, 5), "requires_grad": False},
+            {"name": "基本浮点张量", "dtype": np.float32, "shape": (3, 4), "requires_grad": True, "device": "cpu"},
+            {"name": "双精度浮点张量", "dtype": np.float64, "shape": (2, 5, 3), "requires_grad": True, "device": "cpu"},
+            {"name": "整数张量", "dtype": np.int32, "shape": (6, 2), "requires_grad": False, "device": "cpu"},
+            {"name": "长整数张量", "dtype": np.int64, "shape": (4, 3, 2, 1), "requires_grad": False, "device": "cpu"},
+            {"name": "复数张量64", "dtype": np.complex64, "shape": (2, 3), "requires_grad": False, "device": "cpu"},
+            {"name": "复数张量128", "dtype": np.complex128, "shape": (3, 2), "requires_grad": False, "device": "cpu"},
+            {"name": "布尔张量", "dtype": np.bool_, "shape": (4, 5), "requires_grad": False, "device": "cpu"},
             ]
+            
+            # 如果CUDA可用，添加CUDA测试用例
+            if has_cuda:
+                test_cases.extend([
+                    {"name": "CUDA基本浮点张量", "dtype": np.float32, "shape": (3, 4), "requires_grad": True, "device": "cuda"},
+                    {"name": "CUDA双精度浮点张量", "dtype": np.float64, "shape": (2, 5, 3), "requires_grad": True, "device": "cuda"},
+                    {"name": "CUDA复数张量64", "dtype": np.complex64, "shape": (2, 3), "requires_grad": False, "device": "cuda"},
+                    {"name": "CUDA复数张量128", "dtype": np.complex128, "shape": (3, 2), "requires_grad": False, "device": "cuda"},
+                ])
         
             for case in test_cases:
                 case_name = f"张量序列化 - {case['name']}"
                 start_time = time.time()
                 try:
                     # 创建测试数据
-                    if case['dtype'] == np.bool_:
-                        data = np.random.choice([True, False], case['shape']).astype(case['dtype'])
-                    elif case['dtype'] in [np.complex64, np.complex128]:
-                        data = (np.random.randn(*case['shape']) + 1j * np.random.randn(*case['shape'])).astype(case['dtype'])
-                    elif case['dtype'] in [np.int32, np.int64]:
-                        data = np.random.randint(-10, 10, case['shape']).astype(case['dtype'])
+                    if case['shape'] == ():
+                        # 处理标量情况
+                        if case['dtype'] == np.bool_:
+                            data = np.bool_(np.random.choice([True, False]))
+                        elif case['dtype'] in [np.complex64, np.complex128]:
+                            data = np.array(np.random.randn() + 1j * np.random.randn(), dtype=case['dtype'])
+                        elif case['dtype'] in [np.int32, np.int64]:
+                            data = np.array(np.random.randint(-10, 10), dtype=case['dtype'])
+                        else:
+                            data = np.array(np.random.randn(), dtype=case['dtype'])
                     else:
-                        data = np.random.randn(*case['shape']).astype(case['dtype'])
+                        if case['dtype'] == np.bool_:
+                            data = np.random.choice([True, False], case['shape']).astype(case['dtype'])
+                        elif case['dtype'] in [np.complex64, np.complex128]:
+                            data = (np.random.randn(*case['shape']) + 1j * np.random.randn(*case['shape'])).astype(case['dtype'])
+                        elif case['dtype'] in [np.int32, np.int64]:
+                            data = np.random.randint(-10, 10, case['shape']).astype(case['dtype'])
+                        else:
+                            data = np.random.randn(*case['shape']).astype(case['dtype'])
                     
-                    original_tensor = rm.tensor(data, requires_grad=case['requires_grad'])
+                    original_tensor = rm.tensor(data, requires_grad=case['requires_grad'], device=case['device'])
                     
                     # 保存到临时文件
                     with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
@@ -219,7 +245,10 @@ class TestSerialization(unittest.TestCase):
                         self.assertEqual(str(loaded_tensor.dtype), str(original_tensor.dtype))
                         
                         # 验证数据内容
-                        np.testing.assert_allclose(loaded_tensor.data, original_tensor.data, rtol=1e-6)
+                        # 处理CUDA张量
+                        orig_data = original_tensor.data.get() if cp is not None and hasattr(original_tensor.data, 'get') else original_tensor.data
+                        loaded_data = loaded_tensor.data.get() if cp is not None and hasattr(loaded_tensor.data, 'get') else loaded_tensor.data
+                        np.testing.assert_allclose(loaded_data, orig_data, rtol=1e-6)
                         
                         # 验证属性
                         self.assertEqual(loaded_tensor.requires_grad, original_tensor.requires_grad)
@@ -246,9 +275,16 @@ class TestSerialization(unittest.TestCase):
         stats.start_function("参数序列化")
         try:
             test_cases = [
-            {"name": "基本参数", "dtype": np.float32, "shape": (5, 3)},
-            {"name": "双精度参数", "dtype": np.float64, "shape": (2, 4)},
+            {"name": "基本参数", "dtype": np.float32, "shape": (5, 3), "device": "cpu"},
+            {"name": "双精度参数", "dtype": np.float64, "shape": (2, 4), "device": "cpu"},
             ]
+            
+            # 如果CUDA可用，添加CUDA测试用例
+            if has_cuda:
+                test_cases.extend([
+                    {"name": "CUDA基本参数", "dtype": np.float32, "shape": (5, 3), "device": "cuda"},
+                    {"name": "CUDA双精度参数", "dtype": np.float64, "shape": (2, 4), "device": "cuda"},
+                ])
         
             for case in test_cases:
                 case_name = f"参数序列化 - {case['name']}"
@@ -256,7 +292,7 @@ class TestSerialization(unittest.TestCase):
                 try:
                     # 创建测试数据
                     data = np.random.randn(*case['shape']).astype(case['dtype'])
-                    original_param = rm.nn.Parameter(rm.tensor(data))
+                    original_param = rm.nn.Parameter(rm.tensor(data, device=case['device']))
                     
                     # 保存到临时文件
                     with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
@@ -273,7 +309,10 @@ class TestSerialization(unittest.TestCase):
                         self.assertEqual(str(loaded_param.dtype), str(original_param.dtype))
                         
                         # 验证数据内容
-                        np.testing.assert_allclose(loaded_param.data, original_param.data, rtol=1e-6)
+                        # 处理CUDA参数
+                        orig_data = original_param.data.get() if cp is not None and hasattr(original_param.data, 'get') else original_param.data
+                        loaded_data = loaded_param.data.get() if cp is not None and hasattr(loaded_param.data, 'get') else loaded_param.data
+                        np.testing.assert_allclose(loaded_data, orig_data, rtol=1e-6)
                         
                         # 验证属性
                         self.assertEqual(loaded_param.requires_grad, original_param.requires_grad)
@@ -698,7 +737,362 @@ class TestSerialization(unittest.TestCase):
             raise
         finally:
             stats.end_function()
+    
+    def test_basic_types(self):
+        """测试基本数据类型序列化"""
+        stats.start_function("基本数据类型序列化")
+        try:
+            test_cases = [
+                {"name": "整数", "data": 42},
+                {"name": "浮点数", "data": 3.14159},
+                {"name": "复数", "data": 1 + 2j},
+                {"name": "字符串", "data": "Hello, Riemann!"},
+                {"name": "布尔值True", "data": True},
+                {"name": "布尔值False", "data": False},
+                {"name": "None值", "data": None},
+            ]
         
+            for case in test_cases:
+                case_name = f"基本数据类型 - {case['name']}"
+                start_time = time.time()
+                try:
+                    original_data = case['data']
+                    
+                    # 保存到临时文件
+                    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
+                        temp_path = f.name
+                    
+                    try:
+                        rm.save(original_data, temp_path)
+                        loaded_data = rm.load(temp_path)
+                        
+                        # 验证数据
+                        self.assertEqual(loaded_data, original_data)
+                        
+                        time_taken = time.time() - start_time
+                        stats.add_result(case_name, True)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                        
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                            
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+        finally:
+            stats.end_function()
+    
+    def test_numpy_arrays(self):
+        """测试NumPy数组序列化"""
+        stats.start_function("NumPy数组序列化")
+        try:
+            test_cases = [
+                {"name": "float32数组", "dtype": np.float32, "shape": (2, 3)},
+                {"name": "float64数组", "dtype": np.float64, "shape": (3, 2)},
+                {"name": "int32数组", "dtype": np.int32, "shape": (4,)},
+                {"name": "int64数组", "dtype": np.int64, "shape": (2, 2)},
+                {"name": "布尔数组", "dtype": np.bool_, "shape": (3, 3)},
+                {"name": "complex64数组", "dtype": np.complex64, "shape": (2, 2)},
+                {"name": "complex128数组", "dtype": np.complex128, "shape": (2, 2)},
+                {"name": "空数组", "dtype": np.float32, "shape": ()},
+            ]
+        
+            for case in test_cases:
+                case_name = f"NumPy数组 - {case['name']}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    if case['shape'] == ():
+                        # 处理标量情况
+                        if case['dtype'] == np.bool_:
+                            data = np.bool_(np.random.choice([True, False]))
+                        elif case['dtype'] in [np.complex64, np.complex128]:
+                            data = np.array(np.random.randn() + 1j * np.random.randn(), dtype=case['dtype'])
+                        elif case['dtype'] in [np.int32, np.int64]:
+                            data = np.array(np.random.randint(-10, 10), dtype=case['dtype'])
+                        else:
+                            data = np.array(np.random.randn(), dtype=case['dtype'])
+                    else:
+                        if case['dtype'] == np.bool_:
+                            data = np.random.choice([True, False], case['shape']).astype(case['dtype'])
+                        elif case['dtype'] in [np.complex64, np.complex128]:
+                            data = (np.random.randn(*case['shape']) + 1j * np.random.randn(*case['shape'])).astype(case['dtype'])
+                        elif case['dtype'] in [np.int32, np.int64]:
+                            data = np.random.randint(-10, 10, case['shape']).astype(case['dtype'])
+                        else:
+                            data = np.random.randn(*case['shape']).astype(case['dtype'])
+                    
+                    original_array = data
+                    
+                    # 保存到临时文件
+                    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
+                        temp_path = f.name
+                    
+                    try:
+                        rm.save(original_array, temp_path)
+                        loaded_array = rm.load(temp_path)
+                        
+                        # 验证数据
+                        if isinstance(loaded_array, rm.TN):
+                            # 如果加载为Riemann张量，提取其数据
+                            loaded_data = loaded_array.data
+                        else:
+                            loaded_data = loaded_array
+                        np.testing.assert_array_equal(original_array, loaded_data)
+                        
+                        time_taken = time.time() - start_time
+                        stats.add_result(case_name, True)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                        
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                            
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+        finally:
+            stats.end_function()
+    
+    def test_cupy_arrays(self):
+        """测试CuPy数组序列化"""
+        if cp is None:
+            print("CuPy not available, skipping CuPy tests")
+            return
+        
+        if not has_cuda:
+            print("CUDA not available, skipping CuPy tests")
+            return
+        
+        stats.start_function("CuPy数组序列化")
+        try:
+            
+            test_cases = [
+                {"name": "float32数组", "dtype": cp.float32, "shape": (2, 3)},
+                {"name": "float64数组", "dtype": cp.float64, "shape": (3, 2)},
+            ]
+            
+            # 尝试添加复数数组测试
+            try:
+                test_cases.extend([
+                    {"name": "complex64数组", "dtype": cp.complex64, "shape": (2, 2)},
+                    {"name": "complex128数组", "dtype": cp.complex128, "shape": (2, 2)},
+                ])
+            except Exception as e:
+                print(f"创建CuPy复数数组测试用例失败: {e}")
+                # 跳过CuPy复数数组测试
+        
+            for case in test_cases:
+                case_name = f"CuPy数组 - {case['name']}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    if case['dtype'] in [cp.complex64, cp.complex128]:
+                        # 使用更简单的方式创建复数数组
+                        data = cp.array([[1+2j, 3+4j], [5+6j, 7+8j]], dtype=case['dtype'])
+                    elif case['dtype'] in [cp.int32, cp.int64]:
+                        data = cp.random.randint(-10, 10, case['shape'], dtype=case['dtype'])
+                    else:
+                        data = cp.random.randn(*case['shape']).astype(case['dtype'])
+                    
+                    original_array = data
+                    
+                    # 保存到临时文件
+                    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
+                        temp_path = f.name
+                    
+                    try:
+                        rm.save(original_array, temp_path)
+                        loaded_array = rm.load(temp_path)
+                        
+                        # 验证数据
+                        original_np = original_array.get()
+                        if isinstance(loaded_array, rm.TN):
+                            # 如果加载为Riemann张量，提取其数据
+                            loaded_data = loaded_array.data
+                            # 确保转换为NumPy数组
+                            if cp is not None and isinstance(loaded_data, cp.ndarray):
+                                loaded_data = loaded_data.get()
+                            elif not isinstance(loaded_data, np.ndarray):
+                                loaded_data = np.asarray(loaded_data)
+                        else:
+                            # 确保加载的数据是NumPy数组
+                            if cp is not None and isinstance(loaded_array, cp.ndarray):
+                                loaded_data = loaded_array.get()
+                            else:
+                                loaded_data = np.asarray(loaded_array)
+                        np.testing.assert_array_equal(original_np, loaded_data)
+                        
+                        time_taken = time.time() - start_time
+                        stats.add_result(case_name, True)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                        
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                            
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+        finally:
+            # 确保在任何情况下都调用end_function
+            if stats.current_function == "CuPy数组序列化":
+                stats.end_function()
+    
+    def test_combination_types(self):
+        """测试组合类型序列化"""
+        stats.start_function("组合类型序列化")
+        try:
+            test_cases = [
+                {
+                    "name": "包含张量的字典", 
+                    "data": {
+                        "cpu_tensor": rm.randn(2, 3, device="cpu"),
+                        "numpy_array": np.random.randn(3, 2),
+                        "metadata": {"version": 1, "author": "Test"}
+                    }
+                },
+                {
+                    "name": "混合类型列表", 
+                    "data": [1, "string", 3.14, True, rm.randn(2, 2)]
+                },
+                {
+                    "name": "嵌套字典", 
+                    "data": {
+                        "level1": {
+                            "level2": {
+                                "tensor": rm.randn(1, 1),
+                                "array": np.array([1, 2, 3])
+                            }
+                        }
+                    }
+                },
+            ]
+            
+            if has_cuda:
+                test_cases.append({
+                    "name": "混合设备张量的字典", 
+                    "data": {
+                        "cpu": rm.randn(2, 3, device="cpu"),
+                        "cuda": rm.randn(2, 3, device="cuda")
+                    }
+                })
+        
+            for case in test_cases:
+                case_name = f"组合类型 - {case['name']}"
+                start_time = time.time()
+                try:
+                    original_data = case['data']
+                    
+                    # 保存到临时文件
+                    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
+                        temp_path = f.name
+                    
+                    try:
+                        rm.save(original_data, temp_path)
+                        loaded_data = rm.load(temp_path)
+                        
+                        # 验证数据
+                        def verify_structure(orig, loaded):
+                            if hasattr(orig, 'shape'):
+                                # 张量
+                                if isinstance(loaded, rm.TN):
+                                    self.assertEqual(loaded.shape, orig.shape)
+                                    # 处理CUDA张量
+                                    orig_data = orig.data.get() if cp is not None and hasattr(orig.data, 'get') else orig.data
+                                    loaded_data = loaded.data.get() if cp is not None and hasattr(loaded.data, 'get') else loaded.data
+                                    np.testing.assert_allclose(loaded_data, orig_data, rtol=1e-6)
+                                # 数组
+                                elif isinstance(orig, np.ndarray):
+                                    if isinstance(loaded, rm.TN):
+                                        loaded_data = loaded.data.get() if cp is not None and hasattr(loaded.data, 'get') else loaded.data
+                                        np.testing.assert_array_equal(orig, loaded_data)
+                                    else:
+                                        np.testing.assert_array_equal(orig, loaded)
+                            elif isinstance(orig, dict):
+                                self.assertEqual(set(loaded.keys()), set(orig.keys()))
+                                for key in orig:
+                                    verify_structure(orig[key], loaded[key])
+                            elif isinstance(orig, (list, tuple)):
+                                for orig_item, loaded_item in zip(orig, loaded):
+                                    verify_structure(orig_item, loaded_item)
+                            else:
+                                self.assertEqual(loaded, orig)
+                        
+                        verify_structure(original_data, loaded_data)
+                        
+                        time_taken = time.time() - start_time
+                        stats.add_result(case_name, True)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                        
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                            
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+        finally:
+            stats.end_function()
+    
+    def test_special_cases(self):
+        """测试特殊情况序列化"""
+        stats.start_function("特殊情况序列化")
+        try:
+            test_cases = [
+                {"name": "大型NumPy数组", "data": np.random.randn(100, 100)},
+                {"name": "空张量", "data": rm.tensor([])},
+            ]
+        
+            for case in test_cases:
+                case_name = f"特殊情况 - {case['name']}"
+                start_time = time.time()
+                try:
+                    original_data = case['data']
+                    
+                    # 保存到临时文件
+                    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
+                        temp_path = f.name
+                    
+                    try:
+                        rm.save(original_data, temp_path)
+                        loaded_data = rm.load(temp_path)
+                        
+                        # 验证数据
+                        if isinstance(original_data, np.ndarray):
+                            if isinstance(loaded_data, rm.TN):
+                                np.testing.assert_array_equal(original_data, loaded_data.data)
+                            else:
+                                np.testing.assert_array_equal(original_data, loaded_data)
+                        elif isinstance(original_data, rm.TN):
+                            self.assertEqual(loaded_data.shape, original_data.shape)
+                            if original_data.shape:
+                                np.testing.assert_allclose(loaded_data.data, original_data.data, rtol=1e-6)
+                        
+                        time_taken = time.time() - start_time
+                        stats.add_result(case_name, True)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                        
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                            
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+        finally:
+            stats.end_function()
 
 if __name__ == '__main__':
     # 设置为独立脚本运行模式
