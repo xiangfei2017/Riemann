@@ -78,8 +78,7 @@ import warnings
 from typing import Callable, Any, List, Tuple, TypeAlias, overload, Union, Optional
 import math
 import numpy as np
-from sympy.functions.combinatorial.numbers import nP
-from .cuda import Device, CUPY_AVAILABLE, cp, is_in_cuda_context, get_default_device, current_device
+from .cuda import Device, cp, is_in_cuda_context, get_default_device
 from .dtype import *
 from .gradmode import *
 
@@ -393,6 +392,23 @@ class TN:
             int: 基于对象id的哈希值
         """
         return id(self)
+    
+    def __reduce__(self):
+        """
+        实现对象的pickle序列化支持
+        
+        返回:
+            tuple: 包含构造函数和参数的元组
+        """
+        from .serialization import _tensor_constructor
+
+        return (_tensor_constructor, (
+            self.data,  # 直接序列化底层数据
+            self.shape,
+            str(self.dtype),
+            str(self.device),
+            self.requires_grad
+        ))
         
     # 返回张量第一维的大小
     def __len__(self):
@@ -779,7 +795,7 @@ class TN:
             device: 张量所在的设备对象
         """
         # 直接检查data是否为cp.ndarray类型
-        if CUPY_AVAILABLE and isinstance(self.data, cp.ndarray):
+        if cp and isinstance(self.data, cp.ndarray):
             # 使用CuPy数组的device属性获取设备信息
             cupy_device = self.data.device
             device_idx = cupy_device.id
@@ -1171,7 +1187,7 @@ class TN:
                 # 检查元组中是否包含数组或非基本类型
                 contains_array = any(isinstance(idx, (np.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in index)
                 # 检查是否包含CuPy数组
-                if CUPY_AVAILABLE:
+                if cp:
                     contains_array = contains_array or any(isinstance(idx, cp.ndarray) for idx in index)
                 # 只有不包含数组时才检查省略号
                 if not contains_array and Ellipsis in index:
@@ -1200,7 +1216,7 @@ class TN:
             dim_size = _get_base_dim_size(view_dim)
             
             # 根据索引类型选择合适的数组库
-            if CUPY_AVAILABLE and isinstance(base_idx, cp.ndarray):
+            if cp and isinstance(base_idx, cp.ndarray):
                 base_idx_arr = base_idx
                 is_cupy = True
             else:
@@ -1303,7 +1319,7 @@ class TN:
         # 第六步：处理布尔数组索引
         if _is_boolean_index(current_index):
             # 根据索引类型选择合适的where函数
-            if CUPY_AVAILABLE and isinstance(current_index, cp.ndarray):
+            if cp and isinstance(current_index, cp.ndarray):
                 bool_indices = cp.where(current_index)
             else:
                 bool_indices = np.where(current_index)
@@ -1320,7 +1336,7 @@ class TN:
                     norm_base = _normalize_neg_index(base_idx, _get_base_dim_size(view_dim))
                     start = norm_base.start if norm_base.start is not None else 0
                     combined_coords[view_dim] = start + bool_idx * step
-                elif isinstance(base_idx, (np.ndarray, list)) or (CUPY_AVAILABLE and isinstance(base_idx, cp.ndarray)):
+                elif isinstance(base_idx, (np.ndarray, list)) or (cp and isinstance(base_idx, cp.ndarray)):
                     # 数组 -> 布尔索引：查表
                     base_arr, _ = _process_base_array_index(base_idx, view_dim)
                     combined_coords[view_dim] = base_arr[bool_idx]
@@ -1352,7 +1368,7 @@ class TN:
             # 根据基础索引类型选择处理方式
             if isinstance(base_idx, slice):
                 base_start, base_stop, base_step, step_val, view_dim_size = _process_base_slice_index(base_idx, view_dim)
-            elif isinstance(base_idx, (np.ndarray, list)) or (CUPY_AVAILABLE and isinstance(base_idx, cp.ndarray)):
+            elif isinstance(base_idx, (np.ndarray, list)) or (cp and isinstance(base_idx, cp.ndarray)):
                 base_idx_arr, view_dim_size = _process_base_array_index(base_idx, view_dim)
             else:
                 raise NotImplementedError(f"Unsupported base index type: {type(base_idx)}")
@@ -1402,9 +1418,9 @@ class TN:
                     # 数组 -> 切片：直接索引映射数组
                     combined_coords[view_dim] = base_idx_arr[norm_curr_idx]
             
-            elif isinstance(norm_curr_idx, (np.ndarray, list)) or (CUPY_AVAILABLE and isinstance(norm_curr_idx, cp.ndarray)):
+            elif isinstance(norm_curr_idx, (np.ndarray, list)) or (cp and isinstance(norm_curr_idx, cp.ndarray)):
                 # 根据索引类型选择合适的数组库
-                if CUPY_AVAILABLE and isinstance(norm_curr_idx, cp.ndarray):
+                if cp and isinstance(norm_curr_idx, cp.ndarray):
                     curr_idx_arr = norm_curr_idx
                 else:
                     curr_idx_arr = np.asarray(norm_curr_idx)
@@ -1412,13 +1428,13 @@ class TN:
                 if np.issubdtype(curr_idx_arr.dtype, np.bool_):
                     # 布尔数组 -> 整数数组
                     # 根据数组类型选择合适的where函数
-                    if CUPY_AVAILABLE and isinstance(curr_idx_arr, cp.ndarray):
+                    if cp and isinstance(curr_idx_arr, cp.ndarray):
                         bool_indices = cp.where(curr_idx_arr)[0]
                     else:
                         bool_indices = np.where(curr_idx_arr)[0]
                     if len(bool_indices) == 0:
                         # 根据数组类型选择合适的空数组创建方式
-                        if CUPY_AVAILABLE and isinstance(curr_idx_arr, cp.ndarray):
+                        if cp and isinstance(curr_idx_arr, cp.ndarray):
                             combined_coords[view_dim] = cp.array([], dtype=int)
                         else:
                             combined_coords[view_dim] = np.array([], dtype=int)
@@ -1427,7 +1443,7 @@ class TN:
                 
                 # 确保索引在有效范围内
                 # 根据数组类型选择合适的any函数
-                if CUPY_AVAILABLE and isinstance(curr_idx_arr, cp.ndarray):
+                if cp and isinstance(curr_idx_arr, cp.ndarray):
                     out_of_bounds = cp.any(curr_idx_arr >= view_dim_size)
                 else:
                     out_of_bounds = np.any(curr_idx_arr >= view_dim_size)
@@ -3903,7 +3919,7 @@ def _get_device(device:str|int|Device=None)->Device:
             raise RuntimeError(f"Invalid device type: {type(device).__name__}")
     else:
         # device参数为None，优先级：device上下文 > 默认设备
-        if CUPY_AVAILABLE and is_in_cuda_context():
+        if cp and is_in_cuda_context():
             # 当前线程在CUDA设备上下文中，使用当前CUDA设备
             return_device = Device(cp.cuda.runtime.getDevice())
         else:
@@ -3984,7 +4000,7 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
     use_cuda, target_device_idx = (dev.type == 'cuda'), dev.index
     
     # 根据CUPY_AVAILABLE决定检查的数组类型
-    array_type = (np.ndarray, cp.ndarray) if CUPY_AVAILABLE else (np.ndarray,)  # type: ignore
+    array_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)  # type: ignore
     if isinstance(data, array_type):
         if dtype is None:
             if use_cuda:
@@ -4081,8 +4097,8 @@ def from_numpy(arr:np.ndarray)->TN:
         2. 张量与原始numpy数组共享内存，修改一方会影响另一方
         3. 输入数组必须是数值类型（整数、浮点数、复数等）
     """
-    array_type = (np.ndarray, cp.ndarray) if CUPY_AVAILABLE else (np.ndarray,)  # type: ignore
-    if not isinstance(data, array_type):
+    array_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)  # type: ignore
+    if not isinstance(arr, array_type):
         raise TypeError("array need to be numpy or cupy array")
     
     if not is_numeric_array(arr):

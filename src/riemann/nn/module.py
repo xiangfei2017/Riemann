@@ -181,6 +181,26 @@ class Parameter(TN):
             # 直接复用父类的__repr__方法，TN类已支持requires_grad属性的显示
             tensor_str = super().__repr__()
             return f'Parameter containing:\n{tensor_str}'
+    
+    def __reduce__(self):
+        """
+        实现对象的pickle序列化支持
+        
+        返回:
+            tuple: 包含构造函数和参数的元组
+        """
+        from ..serialization import _parameter_constructor
+        
+        if self.data is None:
+            return (_parameter_constructor, (None, self.requires_grad))
+        else:
+            return (_parameter_constructor, (
+                self.data,  # 直接序列化底层数据
+                self.shape,
+                str(self.dtype),
+                str(self.device),
+                self.requires_grad
+            ))
   
 #end of class Parameter
 
