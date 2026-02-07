@@ -283,11 +283,9 @@ class Module:
                 # 对参数张量调用to方法,跨设备时要清除计算图依赖，确保新参数不会向旧参数传递梯度
                 new_param = param.to(device)
                 if new_param is not param:
-                    new_param = new_param.detach()
+                    new_param = new_param.detach_()
                     new_param.requires_grad = param.requires_grad
                 
-                    # 更新参数
-                    self._parameters[name] = new_param
                     # 更新实例属性引用
                     setattr(self, name, new_param)
         
@@ -297,10 +295,8 @@ class Module:
                 # 对缓冲区张量调用to方法,跨设备时要清除计算图依赖，确保新缓冲区不会向旧缓冲区传递梯度
                 new_buffer = buffer.to(device)
                 if new_buffer is not buffer:
-                    new_buffer = new_buffer.detach()
+                    new_buffer = new_buffer.detach_()
                     new_buffer.requires_grad = buffer.requires_grad
-                    # 更新缓冲区
-                    self._buffers[name] = new_buffer
                     # 更新实例属性引用
                     setattr(self, name, new_buffer)
         
@@ -1766,12 +1762,10 @@ class Module:
                 new_param = param.type(dtype)
                 if new_param is not param:
                     # 清除计算图依赖，确保新参数不会向旧参数传递梯度
-                    new_param = new_param.detach()
+                    new_param = new_param.detach_()
                     # 确保新参数保持梯度要求
                     new_param.requires_grad = param.requires_grad
                 
-                    # 更新参数
-                    self._parameters[name] = new_param
                     # 更新实例属性引用
                     setattr(self, name, new_param)
         
@@ -1782,11 +1776,10 @@ class Module:
                 new_buffer = buffer.type(dtype)
                 if new_buffer is not buffer:
                     # 清除计算图依赖
-                    new_buffer = new_buffer.detach()
+                    new_buffer = new_buffer.detach_()
                     # 确保缓冲区保持梯度要求
                     new_buffer.requires_grad = buffer.requires_grad
-                    # 更新缓冲区
-                    self._buffers[name] = new_buffer
+                    
                     # 更新实例属性引用
                     setattr(self, name, new_buffer)
         
