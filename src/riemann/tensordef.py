@@ -977,10 +977,61 @@ class TN:
     @property
     def is_cpu(self):
         return self.device.type == 'cpu'
-    
+
     @property
     def is_leaf(self):
         return self.requires_grad == False or self.fromvars == ()
+
+    def is_contiguous(self):
+        """
+        检查张量的内存布局是否是连续的。
+        
+        在内存中，连续张量的元素是按行主序（row-major）存储的，没有间隙。
+        对于基于NumPy或CuPy数组的Riemann张量，此方法会检查底层数组的连续性。
+        
+        Returns:
+            bool: 如果张量是连续的返回True，否则返回False
+        """
+        # 检查是NumPy数组还是CuPy数组
+        if isinstance(self.data, np.ndarray):
+            return self.data.flags.contiguous
+        elif cp and isinstance(self.data, cp.ndarray):
+            return self.data.flags.c_contiguous
+        else:
+            # 对于其他类型，默认返回True
+            return True
+
+    def contiguous(self):
+        """
+        如果张量不是连续的，返回一个具有相同数据但连续内存布局的新张量。
+        如果张量已经是连续的，返回张量本身。
+        
+        连续张量的元素在内存中是按行主序（row-major）存储的，没有间隙，
+        这可以提高某些操作的性能。
+        
+        Returns:
+            TN: 连续内存布局的张量
+        """
+        if self.is_contiguous():
+            return self
+        
+        # 创建新张量
+        ret = type(self)()
+        
+        # 获取数组库（NumPy或CuPy）
+        arrlib = self._get_array_lib()
+        
+        # 创建连续数组
+        ret.data = arrlib.ascontiguousarray(self.data)
+        
+        # 设置其他属性
+        ret.requires_grad = (is_grad_enabled() and self.requires_grad)
+        
+        if ret.requires_grad:
+            ret.fromvars = (self,)
+            ret.gradfuncs = (lambda result, i: result.grad_value,)
+        
+        return ret
 
     def __getitem__(self, index):
         # 类型转换：TN索引转为NumPy数组
@@ -2664,9 +2715,19 @@ class TN:
         return self
 
     def clone(self):
-        '''返回一个新张量，与self共享内存，依赖self'''
-        ret=tensor(self.data.copy(),device=self.device,
-                    requires_grad=(is_grad_enabled() and self.requires_grad))
+        """
+        Returns a copy of the tensor.
+        
+        返回一个张量的副本，与原始张量共享相同的数据类型、形状和设备，
+        但具有独立的内存。如果原始张量需要梯度，则副本也会需要梯度，
+        并且会跟踪对原始张量的依赖关系。
+        
+        Returns:
+            TN: A copy of the tensor.
+        """
+        ret = TN()
+        ret.data = self.data.copy()
+        ret.requires_grad=(is_grad_enabled() and self.requires_grad)
         if ret.requires_grad:
             ret.fromvars=(self,)
             fn = lambda result,i: result.grad_value
@@ -2675,7 +2736,8 @@ class TN:
     
     def copy(self):
         '''返回一个新张量，复制self数据，不共享内存，也不依赖self'''
-        ret = tensor(self.data.copy(),device=self.device)
+        ret = TN()
+        ret.data = self.data.copy()
         return ret
 
     def copy_(self,src):
@@ -3708,7 +3770,7 @@ class TN:
                 
         return
 
-    def _addto_grad_value(self:TN, target:TN, create_graph:bool):  # type: ignore
+    def _addto_grad_value(self:TN, target:TN):  # type: ignore
         '''将self添加到target的grad_value中
         '''
 
@@ -3803,7 +3865,7 @@ class TN:
                 if var.requires_grad == True:
                     #调用来源节点对应的梯度函数，向该节点传播梯度值,每接收一次梯度传递，计数减1
                     tobe_add_grad:TN = fn(item,i)
-                    tobe_add_grad._addto_grad_value(var,create_graph)
+                    tobe_add_grad._addto_grad_value(var)
 
                     var.rcv_grad_count -= 1   # 收到一次梯度，计数-1
                     
