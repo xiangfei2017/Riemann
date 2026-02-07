@@ -2980,22 +2980,58 @@ class Dropout(Module):
         self.inplace = inplace
     
     def forward(self, x):
-        # 评估模式下不应用dropout
-        if not self.training:
-            return x
-        
-        # 训练模式下应用dropout
-        # 生成dropout掩码，保留概率为(1-p)
-        scale = 1.0 / (1.0 - self.p)
-        # 使用rand生成[0,1)之间均匀分布的随机数，保留小于(1-p)的元素
-        mask = (rand(*x.shape, dtype=x.dtype, device=x.device) < (1 - self.p)) * scale
-        
-        if self.inplace:
-            x.mul_(mask)
-        else:
-            x = x * mask
-            
-        return x
+        # 调用dropout函数
+        return dropout(x, self.p, self.training, self.inplace)
+
+# end of class
+
+class Dropout2d(Module):
+    """2D dropout模块 (Dropout2d Layer)
+    
+    在训练期间，以概率p随机将输入张量的整个通道置为0，并对剩余通道乘以1/(1-p)进行缩放。
+    在评估期间，不执行任何操作。
+    
+    接口与torch.nn.Dropout2d完全一致
+    
+    Args:
+        p (float, optional): dropout概率，默认为0.5
+        inplace (bool, optional): 是否原地操作，默认为False
+    """
+    def __init__(self, p=0.5, inplace=False):
+        super().__init__()
+        if p < 0 or p > 1:
+            raise ValueError(f"dropout probability p must be between 0 and 1, got {p}")
+        self.p = p
+        self.inplace = inplace
+    
+    def forward(self, x):
+        # 调用dropout2d函数
+        return dropout2d(x, self.p, self.training, self.inplace)
+
+# end of class
+
+class Dropout3d(Module):
+    """3D dropout模块 (Dropout3d Layer)
+    
+    在训练期间，以概率p随机将输入张量的整个通道置为0，并对剩余通道乘以1/(1-p)进行缩放。
+    在评估期间，不执行任何操作。
+    
+    接口与torch.nn.Dropout3d完全一致
+    
+    Args:
+        p (float, optional): dropout概率，默认为0.5
+        inplace (bool, optional): 是否原地操作，默认为False
+    """
+    def __init__(self, p=0.5, inplace=False):
+        super().__init__()
+        if p < 0 or p > 1:
+            raise ValueError(f"dropout probability p must be between 0 and 1, got {p}")
+        self.p = p
+        self.inplace = inplace
+    
+    def forward(self, x):
+        # 调用dropout3d函数
+        return dropout3d(x, self.p, self.training, self.inplace)
 
 # end of class
 

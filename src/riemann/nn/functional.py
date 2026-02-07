@@ -154,7 +154,9 @@ def linear(input: TN, weight: TN, bias: Optional[TN] = None) -> TN:
         raise ValueError(f"bias.shape[0] ({bias.shape[0]}) must equal weight.shape[0] ({out_features})")
     
     # 执行线性变换：input @ weight.T
-    output = input @ weight.mT
+    # 为避免对矩阵转置影响矩阵乘法性能，使用unsqueeze(-1)将input最后一个维度转换为列向量
+    # 然后使用squeeze(-1)将结果转换为原始形状
+    output = (weight @ input.unsqueeze(-1)).squeeze(-1)
     
     # 添加偏置（如果提供）
     if bias is not None:
@@ -2872,3 +2874,138 @@ def embedding2(
     # 因此这里不做额外处理，保持与PyTorch行为一致
     
     return output
+
+
+def dropout(input: TN, p: float = 0.5, training: bool = True, inplace: bool = False) -> TN:
+    """
+    在训练期间，以概率p随机将输入张量的元素置为0，并对剩余元素乘以1/(1-p)进行缩放。
+    在评估期间，不执行任何操作。
+    
+    接口与torch.nn.functional.dropout完全一致
+    
+    参数:
+        input (TN): 输入张量
+        p (float): dropout概率，默认为0.5
+        training (bool): 是否在训练模式，默认为True
+        inplace (bool): 是否原地操作，默认为False
+        
+    返回:
+        TN: 应用dropout后的张量
+    """
+    # 验证参数
+    if p < 0 or p >= 1:
+        raise ValueError(f"dropout probability has to be between 0 and 1, but got {p}")
+    
+    # 评估模式下，不执行任何操作
+    if not training or p == 0:
+        return input
+    
+    # 训练模式下应用dropout
+    # 生成dropout掩码，保留概率为(1-p)
+    scale = 1.0 / (1.0 - p)
+    # 使用rand生成[0,1)之间均匀分布的随机数，保留小于(1-p)的元素
+    mask = (rand(*input.shape, dtype=input.dtype, device=input.device) < (1 - p)) * scale
+    
+    if inplace:
+        # 原地操作
+        input.mul_(mask)
+    else:
+        # 创建新张量
+        input = input * mask
+        
+    return input
+# end of dropout()
+
+def dropout2d(input: TN, p: float = 0.5, training: bool = True, inplace: bool = False) -> TN:
+    """
+    在训练期间，以概率p随机将输入张量的整个通道置为0，并对剩余通道乘以1/(1-p)进行缩放。
+    在评估期间，不执行任何操作。
+    
+    接口与torch.nn.functional.dropout2d完全一致
+    
+    参数:
+        input (TN): 输入张量，形状为 (N, C, H, W)
+        p (float): dropout概率，默认为0.5
+        training (bool): 是否在训练模式，默认为True
+        inplace (bool): 是否原地操作，默认为False
+        
+    返回:
+        TN: 应用dropout后的张量
+    """
+    # 验证参数
+    if p < 0 or p >= 1:
+        raise ValueError(f"dropout probability has to be between 0 and 1, but got {p}")
+    
+    # 评估模式下，不执行任何操作
+    if not training or p == 0:
+        return input
+    
+    # 验证输入形状是否为4D
+    if input.ndim != 4:
+        raise ValueError(f"Expected 4D tensor as input, got {input.ndim}D tensor instead")
+    
+    # 训练模式下应用dropout
+    # 生成通道级别的dropout掩码，保留概率为(1-p)
+    scale = 1.0 / (1.0 - p)
+    
+    # 对于2D dropout，掩码的形状为 (N, C, 1, 1)，这样可以对整个通道进行dropout
+    mask_shape = (input.shape[0], input.shape[1], 1, 1)
+    mask = (rand(*mask_shape, dtype=input.dtype, device=input.device) < (1 - p)) * scale
+    
+    if inplace:
+        # 原地操作
+        input.mul_(mask)
+    else:
+        # 创建新张量
+        input = input * mask
+    
+    return input
+# end of dropout2d()
+
+def dropout3d(input: TN, p: float = 0.5, training: bool = True, inplace: bool = False) -> TN:
+    """
+    在训练期间，以概率p随机将输入张量的整个通道置为0，并对剩余通道乘以1/(1-p)进行缩放。
+    在评估期间，不执行任何操作。
+    
+    接口与torch.nn.functional.dropout3d完全一致
+    
+    参数:
+        input (TN): 输入张量，形状为 (N, C, D, H, W)
+        p (float): dropout概率，默认为0.5
+        training (bool): 是否在训练模式，默认为True
+        inplace (bool): 是否原地操作，默认为False
+        
+    返回:
+        TN: 应用dropout后的张量
+    """
+    # 验证参数
+    if p < 0 or p >= 1:
+        raise ValueError(f"dropout probability has to be between 0 and 1, but got {p}")
+    
+    # 评估模式下，不执行任何操作
+    if not training or p == 0:
+        return input
+    
+    # 验证输入形状是否为5D
+    if input.ndim != 5:
+        raise ValueError(f"Expected 5D tensor as input, got {input.ndim}D tensor instead")
+    
+    # 训练模式下应用dropout
+    # 生成通道级别的dropout掩码，保留概率为(1-p)
+    scale = 1.0 / (1.0 - p)
+    
+    # 对于3D dropout，掩码的形状为 (N, C, 1, 1, 1)，这样可以对整个通道进行dropout
+    mask_shape = (input.shape[0], input.shape[1], 1, 1, 1)
+    mask = (rand(*mask_shape, dtype=input.dtype, device=input.device) < (1 - p)) * scale
+    
+    if inplace:
+        # 原地操作
+        input.mul_(mask)
+    else:
+        # 创建新张量
+        input = input * mask
+    
+    return input
+# end of dropout3d()
+
+
