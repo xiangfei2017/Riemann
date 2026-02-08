@@ -315,14 +315,16 @@ Parameter groups are a powerful feature of Riemann optimizers that allow you to 
 - Applying different hyperparameters to weight and bias parameters
 - Using different learning rates when fine-tuning pre-trained models
 
-### Basic Structure of Parameter Groups
+Basic Structure of Parameter Groups
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Parameter groups are defined through a list of dictionaries, where each dictionary contains:
 
 - `params`：The set of parameters to optimize
 - Other key-value pairs：Hyperparameters specific to this parameter group (e.g., `lr`, `weight_decay`)
 
-### Basic Usage Example
+Basic Usage Example
+~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -355,7 +357,8 @@ In the example above:
 - The second parameter group contains all parameters from the third layer (`model[2]`) with a learning rate of 0.001
 - Both parameter groups share the `momentum=0.9` hyperparameter
 
-### Setting Different Hyperparameters for Weights and Biases
+Setting Different Hyperparameters for Weights and Biases
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -379,7 +382,8 @@ In this example:
 - Weight parameters use a smaller learning rate (0.01) and weight decay (1e-4)
 - Bias parameters use a larger learning rate (0.02) and no weight decay
 
-### Using Parameter Groups in Pre-trained Models
+Using Parameter Groups in Pre-trained Models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -417,7 +421,8 @@ In this example:
 - The pre-trained feature extractor uses a smaller learning rate (0.001) to avoid disrupting learned features
 - The newly added classifier uses a larger learning rate (0.01) to speed up its convergence
 
-### How Parameter Groups Work
+How Parameter Groups Work
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 When you create an optimizer with parameter groups:
 
@@ -425,7 +430,8 @@ When you create an optimizer with parameter groups:
 2. During each `step()` call, the optimizer updates parameters according to the hyperparameters of their respective groups
 3. If a hyperparameter is not specified in a parameter group, the optimizer uses the default value provided in the constructor
 
-### Best Practices
+Best Practices
+~~~~~~~~~~~~~~
 
 1. **Clear Naming**：Use `named_parameters()` to create parameter groups based on parameter names for better code readability
 2. **Logical Grouping**：Group parameters based on their nature and importance, such as:
