@@ -53,6 +53,7 @@ goto end
 
 :clean_all
 if exist %BUILDDIR% rmdir /s /q %BUILDDIR%
+if exist %BUILDDIR_ZH% rmdir /s /q %BUILDDIR_ZH%
 echo All build files cleaned
 goto end
 
