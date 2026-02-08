@@ -518,4 +518,99 @@ class DataLoader:
         方法清理工作进程和队列，防止资源泄漏。
         """
         self._shutdown_workers()
+
+
+def clip_grad_norm_(parameters, max_norm, norm_type=2.0, error_if_nonfinite=False):
+    """
+    按范数裁剪梯度。
+    
+    计算参数梯度的范数，然后将其裁剪到不超过指定的最大值。
+    此操作会原地修改梯度值。
+    
+    参数:
+        parameters (Iterable[TN]): 需要裁剪梯度的参数集合
+        max_norm (float or int): 梯度的最大范数
+        norm_type (float or int, optional): 范数类型，默认为2（L2范数）
+        error_if_nonfinite (bool, optional): 如果梯度包含非有限值（如NaN或inf），是否抛出错误，默认为False
+        
+    返回:
+        float: 裁剪前的梯度范数
+        
+    异常:
+        RuntimeError: 如果error_if_nonfinite为True且梯度包含非有限值
+    """
+    if isinstance(parameters, TN):
+        parameters = [parameters]
+    
+    # 过滤出有梯度的参数
+    parameters = [p for p in parameters if p.grad is not None]
+    
+    if len(parameters) == 0:
+        return 0.0
+    
+    # 计算梯度范数
+    norm_type = float(norm_type)
+    if norm_type == float('inf'):
+        # 无穷范数：取所有梯度元素的绝对值的最大值
+        total_norm = max(p.grad.abs().max().item() for p in parameters)
+    else:
+        # 其他范数：计算所有梯度的范数之和的1/norm_type次方
+        total_norm = 0.0
+        for p in parameters:
+            param_norm = p.grad.norm(norm_type).item()
+            total_norm += param_norm ** norm_type
+        total_norm = total_norm ** (1.0 / norm_type)
+    
+    # 检查是否包含非有限值
+    if error_if_nonfinite and not (total_norm == total_norm):  # 检查NaN
+        raise RuntimeError("梯度包含非有限值")
+    
+    # 裁剪梯度
+    clip_coef = max_norm / (total_norm + 1e-6)
+    if clip_coef < 1:
+        for p in parameters:
+            p.grad.mul_(clip_coef)
+    
+    return total_norm
+
+
+def clip_grad_value_(parameters, clip_value, error_if_nonfinite=False):
+    """
+    按值裁剪梯度。
+    
+    将参数梯度的每个元素裁剪到指定的范围内。
+    此操作会原地修改梯度值。
+    
+    参数:
+        parameters (Iterable[TN]): 需要裁剪梯度的参数集合
+        clip_value (float or int): 梯度裁剪的阈值
+        error_if_nonfinite (bool, optional): 如果梯度包含非有限值（如NaN或inf），是否抛出错误，默认为False
+        
+    返回:
+        None
+        
+    异常:
+        RuntimeError: 如果error_if_nonfinite为True且梯度包含非有限值
+    """
+    if isinstance(parameters, TN):
+        parameters = [parameters]
+    
+    # 过滤出有梯度的参数
+    parameters = [p for p in parameters if p.grad is not None]
+    
+    if len(parameters) == 0:
+        return
+    
+    clip_value = float(clip_value)
+    
+    for p in parameters:
+        grad = p.grad
+        
+        # 检查是否包含非有限值
+        if error_if_nonfinite:
+            if not grad.allclose(grad):  # 检查NaN
+                raise RuntimeError("梯度包含非有限值")
+        
+        # 裁剪梯度
+        grad.clamp_(-clip_value, clip_value)
         

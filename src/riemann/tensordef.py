@@ -2811,6 +2811,51 @@ class TN:
         
         # 返回自身以支持链式调用
         return self
+    
+    def clamp_(self, min=None, max=None):
+        """
+        将张量的每个元素限制在指定的范围内，原地操作。
+        
+        参数:
+            min: 最小值，可以是标量或0D张量。如果为None，则不限制最小值
+            max: 最大值，可以是标量或0D张量。如果为None，则不限制最大值
+        
+        返回:
+            self: 裁剪后的张量
+            
+        注意:
+            - 这是原地操作，会直接修改张量数据
+            - 如果张量是需要梯度的叶子节点，会抛出运行时错误
+        """
+        # 检查是否是需要梯度的叶子节点
+        if self.requires_grad and self.is_leaf:
+            raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
+        
+        # 处理不同类型的min和max参数
+        if isinstance(min, TN):
+            if min.ndim != 0:
+                raise RuntimeError(f'clamp_ only supports 0-dimension min tensor but got tensor with {min.ndim} dimensions.')
+            min = min.item()
+        
+        if isinstance(max, TN):
+            if max.ndim != 0:
+                raise RuntimeError(f'clamp_ only supports 0-dimension max tensor but got tensor with {max.ndim} dimensions.')
+            max = max.item()
+        
+        # 执行原地裁剪操作
+        arrlib = self._get_array_lib()
+        if isinstance(self.data, arrlib.ndarray):
+            self.data = arrlib.clip(self.data, a_min=min, a_max=max)
+        elif isinstance(self.data, arrlib.number):
+            if min is not None and self.data < min:
+                self.data = type(self.data)(min)
+            elif max is not None and self.data > max:
+                self.data = type(self.data)(max)
+        else:
+            raise ValueError(f'clamp_ only supports numpy/cupy ndarray or number object but got {type(self.data)}')
+        
+        # 返回自身以支持链式调用
+        return self
 
     def masked_fill_(self, mask: TN, value: any):  # type: ignore
         """
