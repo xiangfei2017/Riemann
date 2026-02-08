@@ -53,7 +53,14 @@ All functions are designed to provide consistent type handling across the Rieman
 """
 
 import numpy as np
+import math
 
+# 预定义常量
+inf = float('inf')
+ninf = float('-inf')
+nan = float('nan')
+e = math.e
+pi = math.pi
 
 # 预定义dtype对象
 float16 = np.dtype('float16')
