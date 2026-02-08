@@ -50,9 +50,9 @@ All optimizers support parameter groups, weight decay (L2 regularization), and s
 import numpy as np
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Union, Callable, Iterable, Generator
-from .tensordef import *
-from .nn import *
-from .cuda import cp
+from ..tensordef import *
+from ..nn import *
+from ..cuda import cp
 
 class Optimizer:
     """
