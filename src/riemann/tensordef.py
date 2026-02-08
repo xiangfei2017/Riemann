@@ -2690,7 +2690,7 @@ class TN:
         Returns:
             TN: 与原张量共享数据但断开计算图的新张量
         """
-        ret = type(self)()
+        ret = TN()
         ret.data = self.data
         return ret
     
@@ -4624,7 +4624,39 @@ def normal(mean:float,std:float,size:int|tuple,dtype:np.dtype|None = None,device
             data = cp.random.normal(mean,std,size,dtype=dt)
     return tensor(data,device=dev, requires_grad=requires_grad)
 
-# 添加arange函数
+def manual_seed(seed: int) -> int:
+    """
+    设置全局随机种子，用于NumPy和CuPy（如果可用）的随机数生成器。
+    
+    此函数用于确保随机数生成的可重复性。
+    设置种子后，后续的随机数生成操作（如rand、randn等）将产生可预测的结果。
+    
+    Args:
+        seed (int): 随机种子值，必须是整数
+        
+    Returns:
+        int: 设置的种子值
+        
+    Examples:
+        >>> manual_seed(42)  # 设置随机种子为42
+        42
+        >>> x = rand(2, 2)  # 基于种子42生成的随机数
+        >>> y = rand(2, 2)  # 基于种子42生成的下一批随机数
+        
+    Note:
+        1. 此函数会同时设置NumPy的随机种子
+        2. 如果CuPy可用，也会设置CuPy的随机种子
+        3. 为了确保完全的可重复性，应在所有随机操作之前调用此函数
+    """
+    # 设置NumPy的随机种子
+    np.random.seed(seed)
+    
+    # 如果CuPy可用，也设置CuPy的随机种子
+    if cp is not None:
+        cp.random.seed(seed)
+    
+    return seed
+
 def arange(start: float, end: float | None = None, step: float = 1.0, dtype: np.dtype | None = None, device: str|int|Device|None = None, requires_grad: bool = False) -> TN:
     """
     创建一个一维张量，包含从start到end（不包括end）的等差序列。
