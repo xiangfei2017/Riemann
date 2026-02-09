@@ -4,246 +4,246 @@ API Reference
 This section provides a comprehensive reference for all functions, classes, and modules in the Riemann library.
 
 Tensor Operations
-~~~~~~~~~~~~~~~~~
+-----------------
 
 Tensor Creation Functions
---------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. function:: riemann.tensor(data, dtype=None, requires_grad=False)
 
-   Creates a tensor from data.
+   Create a tensor from data.
 
    :param data: Data to initialize the tensor
    :type data: array_like
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A tensor containing the given data
+   :return: Tensor containing the given data
    :rtype: riemann.TN
 
 .. function:: riemann.zeros(*shape, dtype=None, requires_grad=False)
 
-   Creates a tensor filled with zeros.
+   Create a tensor filled with zeros.
 
    :param shape: Shape of the tensor
-   :type shape: int or tuple of ints
-   :param dtype: Desired data type of the tensor
+   :type shape: int or tuple of integers
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A tensor filled with zeros
+   :return: Tensor filled with zeros
    :rtype: riemann.TN
 
 .. function:: riemann.ones(*shape, dtype=None, requires_grad=False)
 
-   Creates a tensor filled with ones.
+   Create a tensor filled with ones.
 
    :param shape: Shape of the tensor
-   :type shape: int or tuple of ints
-   :param dtype: Desired data type of the tensor
+   :type shape: int or tuple of integers
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A tensor filled with ones
+   :return: Tensor filled with ones
    :rtype: riemann.TN
 
 .. function:: riemann.empty(*shape, dtype=None, requires_grad=False)
 
-   Creates an uninitialized tensor.
+   Create an uninitialized tensor.
 
    :param shape: Shape of the tensor
-   :type shape: int or tuple of ints
-   :param dtype: Desired data type of the tensor
+   :type shape: int or tuple of integers
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: An uninitialized tensor
+   :return: Uninitialized tensor
    :rtype: riemann.TN
 
 .. function:: riemann.full(*shape, fill_value, dtype=None, requires_grad=False)
 
-   Creates a tensor filled with a specific value.
+   Create a tensor filled with a specific value.
 
    :param shape: Shape of the tensor
-   :type shape: int or tuple of ints
+   :type shape: int or tuple of integers
    :param fill_value: Value to fill the tensor with
    :type fill_value: scalar
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A tensor filled with the specified value
+   :return: Tensor filled with the specified value
    :rtype: riemann.TN
 
 .. function:: riemann.eye(n, m=None, dtype=None, requires_grad=False)
 
-   Creates a 2-D tensor with ones on the diagonal and zeros elsewhere.
+   Create a 2D tensor with ones on the diagonal and zeros elsewhere.
 
    :param n: Number of rows
    :type n: int
-   :param m: Number of columns (default is n)
+   :param m: Number of columns (default: n)
    :type m: int, optional
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A 2-D tensor with ones on the diagonal
+   :return: 2D tensor with ones on the diagonal
    :rtype: riemann.TN
 
 .. function:: riemann.zeros_like(tsr, dtype=None, requires_grad=False)
 
-   Creates a tensor of zeros with the same shape as the input tensor.
+   Create a zero tensor with the same shape as the input tensor.
 
    :param tsr: Reference tensor
    :type tsr: riemann.TN
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A tensor of zeros with the same shape
+   :return: Zero tensor with the same shape as the input tensor
    :rtype: riemann.TN
 
 .. function:: riemann.ones_like(tsr, dtype=None, requires_grad=False)
 
-   Creates a tensor of ones with the same shape as the input tensor.
+   Create a one tensor with the same shape as the input tensor.
 
    :param tsr: Reference tensor
    :type tsr: riemann.TN
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A tensor of ones with the same shape
+   :return: One tensor with the same shape as the input tensor
    :rtype: riemann.TN
 
 .. function:: riemann.empty_like(tsr, dtype=None, requires_grad=False)
 
-   Creates an uninitialized tensor with the same shape as the input tensor.
+   Create an uninitialized tensor with the same shape as the input tensor.
 
    :param tsr: Reference tensor
    :type tsr: riemann.TN
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: An uninitialized tensor with the same shape
+   :return: Uninitialized tensor with the same shape as the input tensor
    :rtype: riemann.TN
 
 .. function:: riemann.full_like(tsr, fill_value, dtype=None, requires_grad=False)
 
-   Creates a tensor filled with a value with the same shape as the input tensor.
+   Create a tensor with the same shape as the input tensor, filled with a specific value.
 
    :param tsr: Reference tensor
    :type tsr: riemann.TN
    :param fill_value: Value to fill the tensor with
    :type fill_value: scalar
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A tensor filled with the specified value
+   :return: Tensor with the same shape as the input tensor, filled with the specified value
    :rtype: riemann.TN
 
 Random Number Generation
-------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. function:: riemann.rand(*size, requires_grad=False, dtype=None)
 
-   Creates a tensor filled with random numbers from a uniform distribution on [0, 1).
+   Create a tensor filled with random numbers from a uniform distribution over [0, 1).
 
    :param size: Shape of the tensor
-   :type size: int or tuple of ints
+   :type size: int or tuple of integers
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
-   :return: A tensor filled with random values
+   :return: Tensor filled with random values
    :rtype: riemann.TN
 
 .. function:: riemann.randn(*size, requires_grad=False, dtype=None)
 
-   Creates a tensor filled with random numbers from a standard normal distribution.
+   Create a tensor filled with random numbers from a standard normal distribution.
 
    :param size: Shape of the tensor
-   :type size: int or tuple of ints
+   :type size: int or tuple of integers
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
-   :return: A tensor filled with random values
+   :return: Tensor filled with random values
    :rtype: riemann.TN
 
 .. function:: riemann.randint(low, high, size, requires_grad=False, dtype=int64)
 
-   Creates a tensor filled with random integers from low (inclusive) to high (exclusive).
+   Create a tensor filled with random integers from low (inclusive) to high (exclusive).
 
-   :param low: Lowest integer to be drawn
+   :param low: Minimum integer to draw
    :type low: int
-   :param high: One above the highest integer to be drawn
+   :param high: Maximum integer plus one to draw
    :type high: int
    :param size: Shape of the tensor
-   :type size: int or tuple of ints
+   :type size: int or tuple of integers
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
-   :return: A tensor filled with random integers
+   :return: Tensor filled with random integers
    :rtype: riemann.TN
 
 .. function:: riemann.randperm(n, requires_grad=False, dtype=int64)
 
-   Creates a tensor containing the numbers 0 to n-1 in random order.
+   Create a tensor containing numbers from 0 to n-1 in random order.
 
    :param n: Upper bound (exclusive)
    :type n: int
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
-   :return: A tensor with random permutation of integers
+   :return: Tensor containing randomly permuted integers
    :rtype: riemann.TN
 
 .. function:: riemann.normal(mean, std, size, dtype=None)
 
-   Creates a tensor filled with random numbers from a normal distribution.
+   Create a tensor filled with random numbers from a normal distribution.
 
    :param mean: Mean of the normal distribution
    :type mean: float
    :param std: Standard deviation of the normal distribution
    :type std: float
    :param size: Shape of the tensor
-   :type size: int or tuple of ints
-   :param dtype: Desired data type of the tensor
+   :type size: int or tuple of integers
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
-   :return: A tensor filled with random values
+   :return: Tensor filled with random values
    :rtype: riemann.TN
 
-Sequential and Range Functions
-------------------------------
+Sequence and Range Functions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. function:: riemann.arange(start, end=None, step=1.0, dtype=None, requires_grad=False)
 
-   Creates a 1-D tensor with values from start to end with step.
+   Create a 1-D tensor of evenly spaced values from start to end with step.
 
-   :param start: Starting value
+   :param start: Start value
    :type start: float
    :param end: End value (exclusive)
    :type end: float, optional
    :param step: Spacing between values
    :type step: float, optional
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A 1-D tensor with evenly spaced values
+   :return: 1-D tensor containing evenly spaced values
    :rtype: riemann.TN
 
 .. function:: riemann.linspace(start, end, steps=100, endpoint=True, dtype=None, requires_grad=False)
 
-   Creates a 1-D tensor with evenly spaced values over a given interval.
+   Create a 1-D tensor of evenly spaced values within a given interval.
 
-   :param start: Starting value
+   :param start: Start value
    :type start: float
    :param end: End value
    :type end: float
@@ -251,30 +251,161 @@ Sequential and Range Functions
    :type steps: int, optional
    :param endpoint: Whether to include the end value
    :type endpoint: bool, optional
-   :param dtype: Desired data type of the tensor
+   :param dtype: Expected data type of the tensor
    :type dtype: numpy.dtype, optional
    :param requires_grad: Whether to track operations on this tensor
    :type requires_grad: bool, optional
-   :return: A 1-D tensor with evenly spaced values
+   :return: 1-D tensor containing evenly spaced values
    :rtype: riemann.TN
 
+Tensor Attributes
+~~~~~~~~~~~~~~~~~
+
+.. method:: riemann.TN.dtype
+
+   Return the data type of the tensor.
+
+   :return: Data type of the tensor
+   :rtype: numpy.dtype
+
+.. method:: riemann.TN.real
+
+   Return the real part of a complex tensor.
+
+   :return: Tensor containing the real parts
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.imag
+
+   Return the imaginary part of a complex tensor.
+
+   :return: Tensor containing the imaginary parts
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.shape
+
+   Return the shape of the tensor.
+
+   :return: Tuple of tensor dimensions
+   :rtype: tuple
+
+.. method:: riemann.TN.ndim
+
+   Return the number of dimensions of the tensor.
+
+   :return: Number of dimensions of the tensor
+   :rtype: int
+
+.. method:: riemann.TN.device
+
+   Return the device where the tensor is located.
+
+   :return: Device object where the tensor is located
+   :rtype: Device
+
+.. method:: riemann.TN.is_cuda
+
+   Check if the tensor is on a CUDA device.
+
+   :return: True if the tensor is on a CUDA device, False otherwise
+   :rtype: bool
+
+.. method:: riemann.TN.is_cpu
+
+   Check if the tensor is on a CPU device.
+
+   :return: True if the tensor is on a CPU device, False otherwise
+   :rtype: bool
+
+.. method:: riemann.TN.is_leaf
+
+   Check if the tensor is a leaf node.
+
+   :return: True if the tensor is a leaf node, False otherwise
+   :rtype: bool
+
+.. method:: riemann.TN.is_floating_point()
+
+   Check if the tensor is of floating point type.
+
+   :return: True if the tensor is of floating point type, False otherwise
+   :rtype: bool
+
+.. method:: riemann.TN.is_complex()
+
+   Check if the tensor is of complex type.
+
+   :return: True if the tensor is of complex type, False otherwise
+   :rtype: bool
+
+.. method:: riemann.TN.isreal()
+
+   Determine if tensor elements are real numbers.
+
+   :return: Boolean tensor, True indicates the corresponding element is real
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.isinf()
+
+   Determine if tensor elements are infinity.
+
+   :return: Boolean tensor, True indicates the corresponding element is infinity
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.isnan()
+
+   Determine if tensor elements are NaN (Not a Number).
+
+   :return: Boolean tensor, True indicates the corresponding element is NaN
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.conj()
+
+   Return the complex conjugate of the tensor.
+
+   :return: Tensor containing conjugate elements
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.size(dim=None)
+
+   Return the size of the tensor.
+
+   :param dim: Dimension index to query, if None return the entire shape
+   :type dim: int, optional
+   :return: Shape tuple if dim is None, otherwise size of the specified dimension
+   :rtype: tuple or int
+
+.. method:: riemann.TN.numel()
+
+   Return the total number of elements in the tensor.
+
+   :return: Number of elements in the tensor
+   :rtype: int
+
+.. method:: riemann.TN.is_contiguous()
+
+   Check if the memory layout of the tensor is contiguous.
+
+   :return: True if the tensor is contiguous, False otherwise
+   :rtype: bool
+
 Tensor Shape Operations
------------------------
+~~~~~~~~~~~~~~~~~~~~~~~
 
 .. function:: riemann.reshape(input, shape)
 
-   Returns a tensor with the same data but a different shape.
+   Return a tensor with the same data but different shape.
 
    :param input: Input tensor
    :type input: riemann.TN
    :param shape: New shape
-   :type shape: tuple of ints
-   :return: Tensor with new shape
+   :type shape: tuple of integers
+   :return: Tensor with the new shape
    :rtype: riemann.TN
 
 .. function:: riemann.squeeze(input, dim=None)
 
-   Removes dimensions of size 1 from the shape of a tensor.
+   Remove dimensions of size 1 from the tensor shape.
 
    :param input: Input tensor
    :type input: riemann.TN
@@ -285,18 +416,18 @@ Tensor Shape Operations
 
 .. function:: riemann.unsqueeze(input, dim)
 
-   Inserts a dimension of size 1 at the specified position.
+   Insert a dimension of size 1 at the specified position.
 
    :param input: Input tensor
    :type input: riemann.TN
-   :param dim: Dimension to unsqueeze
+   :param dim: Dimension to expand
    :type dim: int
-   :return: Tensor with unsqueezed dimension
+   :return: Tensor with expanded dimensions
    :rtype: riemann.TN
 
 .. function:: riemann.transpose(input, dim0, dim1)
 
-   Swaps two dimensions of a tensor.
+   Swap two dimensions of the tensor.
 
    :param input: Input tensor
    :type input: riemann.TN
@@ -307,14 +438,69 @@ Tensor Shape Operations
    :return: Tensor with swapped dimensions
    :rtype: riemann.TN
 
+.. attribute:: riemann.TN.mT
+
+   Matrix transpose, i.e., transpose between the last two dimensions of the tensor.
+
+   For a row vector (1, n), transpose to column vector (n, 1); for a column vector (n, 1), transpose to row vector (1, n).
+
+   :return: Transposed tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.is_contiguous(input)
+
+   Check if the tensor memory is contiguous.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: Whether the memory is contiguous
+   :rtype: bool
+
+.. function:: riemann.contiguous(input)
+
+   Return a tensor with contiguous memory.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: Tensor with contiguous memory
+   :rtype: riemann.TN
+
+.. function:: riemann.gather(input, dim, index)
+
+   Gather elements from the tensor along a specified dimension.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param dim: Dimension to gather
+   :type dim: int
+   :param index: Index tensor
+   :type index: riemann.TN
+   :return: Gathered tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.scatter(input, dim, index, src)
+
+   Scatter elements from the source tensor into the target tensor along a specified dimension.
+
+   :param input: Target tensor
+   :type input: riemann.TN
+   :param dim: Dimension to scatter
+   :type dim: int
+   :param index: Index tensor
+   :type index: riemann.TN
+   :param src: Source tensor
+   :type src: riemann.TN
+   :return: Scattered tensor
+   :rtype: riemann.TN
+
 .. function:: riemann.broadcast_to(input, size)
 
-   Broadcasts a tensor to a new shape.
+   Broadcast the tensor to a new shape.
 
    :param input: Input tensor
    :type input: riemann.TN
    :param size: Target shape
-   :type size: tuple of ints
+   :type size: tuple of integers
    :return: Broadcasted tensor
    :rtype: riemann.TN
 
@@ -331,23 +517,23 @@ Tensor Shape Operations
 
 .. function:: riemann.split(ts, split_indices, dim=0)
 
-   Splits a tensor into multiple sub-tensors.
+   Split a tensor into multiple sub-tensors.
 
    :param ts: Input tensor
    :type ts: riemann.TN
-   :param split_indices: Indices at which to split
-   :type split_indices: int or list of ints
+   :param split_indices: Indices to split
+   :type split_indices: int or list of integers
    :param dim: Dimension along which to split
    :type dim: int, optional
    :return: List of tensors
-   :rtype: list of riemann.TN
+   :rtype: List of riemann.TN
 
 .. function:: riemann.stack(tensors, dim=0)
 
-   Stacks tensors along a new dimension.
+   Stack tensors along a new dimension.
 
    :param tensors: Sequence of tensors to stack
-   :type tensors: sequence of riemann.TN
+   :type tensors: Sequence of riemann.TN
    :param dim: Dimension to insert
    :type dim: int, optional
    :return: Stacked tensor
@@ -355,10 +541,10 @@ Tensor Shape Operations
 
 .. function:: riemann.cat(tensors, dim=0)
 
-   Concatenates tensors along an existing dimension.
+   Concatenate tensors along an existing dimension.
 
    :param tensors: Sequence of tensors to concatenate
-   :type tensors: sequence of riemann.TN
+   :type tensors: Sequence of riemann.TN
    :param dim: Dimension along which to concatenate
    :type dim: int, optional
    :return: Concatenated tensor
@@ -366,10 +552,10 @@ Tensor Shape Operations
 
 .. function:: riemann.concatenate(tensors, dim=0)
 
-   Concatenates tensors along an existing dimension.
+   Concatenate tensors along an existing dimension.
 
    :param tensors: Sequence of tensors to concatenate
-   :type tensors: sequence of riemann.TN
+   :type tensors: Sequence of riemann.TN
    :param dim: Dimension along which to concatenate
    :type dim: int, optional
    :return: Concatenated tensor
@@ -377,24 +563,324 @@ Tensor Shape Operations
 
 .. function:: riemann.vstack(tensors)
 
-   Stacks tensors vertically (row-wise).
+   Stack tensors vertically (row-wise).
 
    :param tensors: Sequence of tensors to stack
-   :type tensors: sequence of riemann.TN
+   :type tensors: Sequence of riemann.TN
    :return: Vertically stacked tensor
    :rtype: riemann.TN
 
 .. function:: riemann.hstack(tensors)
 
-   Stacks tensors horizontally (column-wise).
+   Stack tensors horizontally (column-wise).
 
    :param tensors: Sequence of tensors to stack
-   :type tensors: sequence of riemann.TN
+   :type tensors: Sequence of riemann.TN
    :return: Horizontally stacked tensor
    :rtype: riemann.TN
 
+Tensor Operators
+~~~~~~~~~~~~~~~~
+
+The Riemann framework supports a rich set of tensor operators, including arithmetic operators, comparison operators, bitwise operators, and in-place operators. These operators can directly act on tensor objects, support automatic differentiation, and follow Python's operator precedence rules.
+
+Arithmetic Operators
+````````````````````
+
+.. method:: __add__(other)
+
+   Tensor addition operator, equivalent to `+`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Addition result tensor
+   :rtype: riemann.TN
+
+.. method:: __radd__(other)
+
+   Reverse tensor addition operator, used when the left operand is not a tensor.
+
+   :param other: Non-tensor left operand
+   :type other: int or float or complex
+   :return: Addition result tensor
+   :rtype: riemann.TN
+
+.. method:: __sub__(other)
+
+   Tensor subtraction operator, equivalent to `-`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Subtraction result tensor
+   :rtype: riemann.TN
+
+.. method:: __rsub__(other)
+
+   Reverse tensor subtraction operator, used when the left operand is not a tensor.
+
+   :param other: Non-tensor left operand
+   :type other: int or float or complex
+   :return: Subtraction result tensor
+   :rtype: riemann.TN
+
+.. method:: __mul__(other)
+
+   Tensor multiplication operator, equivalent to `*`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Multiplication result tensor
+   :rtype: riemann.TN
+
+.. method:: __rmul__(other)
+
+   Reverse tensor multiplication operator, used when the left operand is not a tensor.
+
+   :param other: Non-tensor left operand
+   :type other: int or float or complex
+   :return: Multiplication result tensor
+   :rtype: riemann.TN
+
+.. method:: __matmul__(other)
+
+   Tensor matrix multiplication operator, equivalent to `@`.
+
+   :param other: Another tensor
+   :type other: riemann.TN
+   :return: Matrix multiplication result tensor
+   :rtype: riemann.TN
+   :raises RuntimeError: If either operand is a scalar
+
+.. method:: __rmatmul__(other)
+
+   Reverse tensor matrix multiplication operator, used when the left operand is not a tensor.
+
+   :param other: Non-tensor left operand
+   :type other: int or float or complex
+   :return: Matrix multiplication result tensor
+   :rtype: riemann.TN
+
+.. method:: __truediv__(other)
+
+   Tensor division operator, equivalent to `/`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Division result tensor
+   :rtype: riemann.TN
+
+.. method:: __rtruediv__(other)
+
+   Reverse tensor division operator, used when the left operand is not a tensor.
+
+   :param other: Non-tensor left operand
+   :type other: int or float or complex
+   :return: Division result tensor
+   :rtype: riemann.TN
+
+.. method:: __pow__(other)
+
+   Tensor power operator, equivalent to `**`.
+
+   :param other: Exponent tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Power operation result tensor
+   :rtype: riemann.TN
+
+.. method:: __rpow__(other)
+
+   Reverse tensor power operator, used when the left operand is not a tensor.
+
+   :param other: Non-tensor left operand
+   :type other: int or float or complex
+   :return: Power operation result tensor
+   :rtype: riemann.TN
+
+.. method:: __pos__()
+
+   Tensor unary plus operator, equivalent to `+`.
+
+   :return: Original tensor
+   :rtype: riemann.TN
+
+.. method:: __neg__()
+
+   Tensor unary minus operator, equivalent to `-`.
+
+   :return: Negated result tensor
+   :rtype: riemann.TN
+
+Comparison Operators
+````````````````````
+
+.. method:: __lt__(other)
+
+   Tensor less than operator, equivalent to `<`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Boolean result tensor
+   :rtype: riemann.TN
+   :raises TypeError: If other is None
+
+.. method:: __le__(other)
+
+   Tensor less than or equal operator, equivalent to `<=`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Boolean result tensor
+   :rtype: riemann.TN
+   :raises TypeError: If other is None
+
+.. method:: __gt__(other)
+
+   Tensor greater than operator, equivalent to `>`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Boolean result tensor
+   :rtype: riemann.TN
+   :raises TypeError: If other is None
+
+.. method:: __ge__(other)
+
+   Tensor greater than or equal operator, equivalent to `>=`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Boolean result tensor
+   :rtype: riemann.TN
+   :raises TypeError: If other is None
+
+.. method:: __eq__(other)
+
+   Tensor equality operator, equivalent to `==`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Boolean result tensor
+   :rtype: riemann.TN
+
+.. method:: __ne__(other)
+
+   Tensor inequality operator, equivalent to `!=`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: Boolean result tensor
+   :rtype: riemann.TN
+
+Bitwise Operators
+`````````````````
+
+.. method:: __and__(other)
+
+   Tensor bitwise AND operator, equivalent to `&`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int
+   :return: Bitwise AND result tensor
+   :rtype: riemann.TN
+
+.. method:: __or__(other)
+
+   Tensor bitwise OR operator, equivalent to `|`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int
+   :return: Bitwise OR result tensor
+   :rtype: riemann.TN
+
+.. method:: __xor__(other)
+
+   Tensor bitwise XOR operator, equivalent to `^`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int
+   :return: Bitwise XOR result tensor
+   :rtype: riemann.TN
+
+.. method:: __invert__()
+
+   Tensor bitwise NOT operator, equivalent to `~`.
+
+   :return: Bitwise NOT result tensor
+   :rtype: riemann.TN
+
+.. method:: __lshift__(other)
+
+   Tensor left shift operator, equivalent to `<<`.
+
+   :param other: Number of bits to shift
+   :type other: riemann.TN or int
+   :return: Left shift result tensor
+   :rtype: riemann.TN
+
+.. method:: __rshift__(other)
+
+   Tensor right shift operator, equivalent to `>>`.
+
+   :param other: Number of bits to shift
+   :type other: riemann.TN or int
+   :return: Right shift result tensor
+   :rtype: riemann.TN
+
+In-place Operators
+``````````````````
+
+.. method:: __iadd__(other)
+
+   Tensor in-place addition operator, equivalent to `+=`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+   :raises RuntimeError: If the tensor is a leaf node that requires gradients
+
+.. method:: __isub__(other)
+
+   Tensor in-place subtraction operator, equivalent to `-=`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+   :raises RuntimeError: If the tensor is a leaf node that requires gradients
+
+.. method:: __imul__(other)
+
+   Tensor in-place multiplication operator, equivalent to `*=`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+   :raises RuntimeError: If the tensor is a leaf node that requires gradients
+
+.. method:: __itruediv__(other)
+
+   Tensor in-place division operator, equivalent to `/=`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+   :raises RuntimeError: If the tensor is a leaf node that requires gradients
+
+.. method:: __ipow__(other)
+
+   Tensor in-place power operator, equivalent to `**=`.
+
+   :param other: Exponent tensor or scalar value
+   :type other: riemann.TN or int or float or complex
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+   :raises RuntimeError: If the tensor is a leaf node that requires gradients
+
 Mathematical Operations
------------------------
+~~~~~~~~~~~~~~~~~~~~~~~
 
 .. function:: riemann.matmul(input, other)
 
@@ -409,7 +895,7 @@ Mathematical Operations
 
 .. function:: riemann.dot(x, y)
 
-   Computes the dot product of two tensors.
+   Calculate the dot product of two tensors.
 
    :param x: First tensor
    :type x: riemann.TN
@@ -420,12 +906,12 @@ Mathematical Operations
 
 .. function:: riemann.sum(x, dim=None, keepdim=False)
 
-   Computes the sum of elements across dimensions.
+   Calculate the sum of elements across dimensions.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :param dim: Dimension(s) to sum over
-   :type dim: int or tuple of ints, optional
+   :param dim: Dimensions to sum
+   :type dim: int or tuple of integers, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
    :return: Sum of elements
@@ -433,12 +919,12 @@ Mathematical Operations
 
 .. function:: riemann.prod(x, dim=None, keepdim=False)
 
-   Computes the product of elements across dimensions.
+   Calculate the product of elements across dimensions.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :param dim: Dimension(s) to multiply over
-   :type dim: int or tuple of ints, optional
+   :param dim: Dimensions to multiply
+   :type dim: int or tuple of integers, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
    :return: Product of elements
@@ -446,12 +932,12 @@ Mathematical Operations
 
 .. function:: riemann.mean(x, dim=None, keepdim=False)
 
-   Computes the mean of elements across dimensions.
+   Calculate the mean of elements across dimensions.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :param dim: Dimension(s) to average over
-   :type dim: int or tuple of ints, optional
+   :param dim: Dimensions to average
+   :type dim: int or tuple of integers, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
    :return: Mean of elements
@@ -459,12 +945,12 @@ Mathematical Operations
 
 .. function:: riemann.var(x, dim=None, unbiased=True, keepdim=False)
 
-   Computes the variance of elements across dimensions.
+   Calculate the variance of elements across dimensions.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :param dim: Dimension(s) to compute variance over
-   :type dim: int or tuple of ints, optional
+   :param dim: Dimensions to calculate variance
+   :type dim: int or tuple of integers, optional
    :param unbiased: Whether to use unbiased estimation
    :type unbiased: bool, optional
    :param keepdim: Whether to keep the reduced dimensions
@@ -474,12 +960,12 @@ Mathematical Operations
 
 .. function:: riemann.std(x, dim=None, unbiased=True, keepdim=False)
 
-   Computes the standard deviation of elements across dimensions.
+   Calculate the standard deviation of elements across dimensions.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :param dim: Dimension(s) to compute standard deviation over
-   :type dim: int or tuple of ints, optional
+   :param dim: Dimensions to calculate standard deviation
+   :type dim: int or tuple of integers, optional
    :param unbiased: Whether to use unbiased estimation
    :type unbiased: bool, optional
    :param keepdim: Whether to keep the reduced dimensions
@@ -489,14 +975,14 @@ Mathematical Operations
 
 .. function:: riemann.norm(x, p="fro", dim=None, keepdim=False)
 
-   Computes the norm of a tensor.
+   Calculate the norm of the tensor.
 
    :param x: Input tensor
    :type x: riemann.TN
    :param p: Norm order
    :type p: int, float, str, optional
-   :param dim: Dimension(s) to compute norm over
-   :type dim: int or tuple of ints, optional
+   :param dim: Dimensions to calculate norm
+   :type dim: int or tuple of integers, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
    :return: Norm of the tensor
@@ -504,11 +990,11 @@ Mathematical Operations
 
 .. function:: riemann.max(x, dim=None, keepdim=False, *, out=None)
 
-   Computes the maximum value of elements across dimensions.
+   Calculate the maximum value of elements across dimensions.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :param dim: Dimension(s) to find maximum over
+   :param dim: Dimension to find maximum
    :type dim: int, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
@@ -519,11 +1005,11 @@ Mathematical Operations
 
 .. function:: riemann.min(x, dim=None, keepdim=False, *, out=None)
 
-   Computes the minimum value of elements across dimensions.
+   Calculate the minimum value of elements across dimensions.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :param dim: Dimension(s) to find minimum over
+   :param dim: Dimension to find minimum
    :type dim: int, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
@@ -532,9 +1018,39 @@ Mathematical Operations
    :return: Minimum value
    :rtype: riemann.TN
 
+.. function:: riemann.argmax(x, dim=None, keepdim=False, *, out=None)
+
+   Calculate the indices of maximum values across dimensions.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :param dim: Dimension to find maximum indices
+   :type dim: int, optional
+   :param keepdim: Whether to keep the reduced dimensions
+   :type keepdim: bool, optional
+   :param out: Output tensor
+   :type out: riemann.TN, optional
+   :return: Indices of maximum values
+   :rtype: riemann.TN
+
+.. function:: riemann.argmin(x, dim=None, keepdim=False, *, out=None)
+
+   Calculate the indices of minimum values across dimensions.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :param dim: Dimension to find minimum indices
+   :type dim: int, optional
+   :param keepdim: Whether to keep the reduced dimensions
+   :type keepdim: bool, optional
+   :param out: Output tensor
+   :type out: riemann.TN, optional
+   :return: Indices of minimum values
+   :rtype: riemann.TN
+
 .. function:: riemann.abs(x)
 
-   Computes the absolute value of each element.
+   Calculate the absolute value of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -543,7 +1059,7 @@ Mathematical Operations
 
 .. function:: riemann.sqrt(x)
 
-   Computes the square root of each element.
+   Calculate the square root of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -552,18 +1068,18 @@ Mathematical Operations
 
 .. function:: riemann.pow(input, exponent)
 
-   Raises each element to a power.
+   Raise each element to a power.
 
    :param input: Input tensor
    :type input: riemann.TN
    :param exponent: Exponent value
    :type exponent: riemann.TN or scalar
-   :return: Input tensor raised to the power
+   :return: Power of the input tensor
    :rtype: riemann.TN
 
 .. function:: riemann.log(x)
 
-   Computes the natural logarithm of each element.
+   Calculate the natural logarithm of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -572,16 +1088,16 @@ Mathematical Operations
 
 .. function:: riemann.log1p(x)
 
-   Computes the natural logarithm of one plus each element.
+   Calculate the natural logarithm of each element plus one.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :return: Natural logarithm of one plus each element
+   :return: Natural logarithm of each element plus one
    :rtype: riemann.TN
 
 .. function:: riemann.exp(x)
 
-   Computes the exponential of each element.
+   Calculate the exponential of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -590,7 +1106,7 @@ Mathematical Operations
 
 .. function:: riemann.sin(x)
 
-   Computes the sine of each element.
+   Calculate the sine of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -599,7 +1115,7 @@ Mathematical Operations
 
 .. function:: riemann.cos(x)
 
-   Computes the cosine of each element.
+   Calculate the cosine of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -608,7 +1124,7 @@ Mathematical Operations
 
 .. function:: riemann.tan(x)
 
-   Computes the tangent of each element.
+   Calculate the tangent of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -617,7 +1133,7 @@ Mathematical Operations
 
 .. function:: riemann.cot(x)
 
-   Computes the cotangent of each element.
+   Calculate the cotangent of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -626,7 +1142,7 @@ Mathematical Operations
 
 .. function:: riemann.sec(x)
 
-   Computes the secant of each element.
+   Calculate the secant of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -635,7 +1151,7 @@ Mathematical Operations
 
 .. function:: riemann.csc(x)
 
-   Computes the cosecant of each element.
+   Calculate the cosecant of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -644,34 +1160,34 @@ Mathematical Operations
 
 .. function:: riemann.asin(x)
 
-   Computes the inverse sine of each element.
+   Calculate the arcsine of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :return: Inverse sine of each element
+   :return: Arcsine of each element
    :rtype: riemann.TN
 
 .. function:: riemann.acos(x)
 
-   Computes the inverse cosine of each element.
+   Calculate the arccosine of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :return: Inverse cosine of each element
+   :return: Arccosine of each element
    :rtype: riemann.TN
 
 .. function:: riemann.atan(x)
 
-   Computes the inverse tangent of each element.
+   Calculate the arctangent of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :return: Inverse tangent of each element
+   :return: Arctangent of each element
    :rtype: riemann.TN
 
 .. function:: riemann.sinh(x)
 
-   Computes the hyperbolic sine of each element.
+   Calculate the hyperbolic sine of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -680,7 +1196,7 @@ Mathematical Operations
 
 .. function:: riemann.cosh(x)
 
-   Computes the hyperbolic cosine of each element.
+   Calculate the hyperbolic cosine of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -689,7 +1205,7 @@ Mathematical Operations
 
 .. function:: riemann.tanh(x)
 
-   Computes the hyperbolic tangent of each element.
+   Calculate the hyperbolic tangent of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -698,7 +1214,7 @@ Mathematical Operations
 
 .. function:: riemann.coth(x)
 
-   Computes the hyperbolic cotangent of each element.
+   Calculate the hyperbolic cotangent of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -707,7 +1223,7 @@ Mathematical Operations
 
 .. function:: riemann.sech(x)
 
-   Computes the hyperbolic secant of each element.
+   Calculate the hyperbolic secant of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -716,7 +1232,7 @@ Mathematical Operations
 
 .. function:: riemann.csch(x)
 
-   Computes the hyperbolic cosecant of each element.
+   Calculate the hyperbolic cosecant of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -725,7 +1241,7 @@ Mathematical Operations
 
 .. function:: riemann.arcsinh(x)
 
-   Computes the inverse hyperbolic sine of each element.
+   Calculate the inverse hyperbolic sine of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -734,7 +1250,7 @@ Mathematical Operations
 
 .. function:: riemann.arccosh(x)
 
-   Computes the inverse hyperbolic cosine of each element.
+   Calculate the inverse hyperbolic cosine of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -743,7 +1259,7 @@ Mathematical Operations
 
 .. function:: riemann.arctanh(x)
 
-   Computes the inverse hyperbolic tangent of each element.
+   Calculate the inverse hyperbolic tangent of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -752,7 +1268,7 @@ Mathematical Operations
 
 .. function:: riemann.sign(x)
 
-   Computes the sign of each element.
+   Calculate the sign of each element.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -761,20 +1277,20 @@ Mathematical Operations
 
 .. function:: riemann.where(cond, x=None, y=None)
 
-   Returns elements from x or y depending on cond.
+   Select elements from x or y based on condition.
 
    :param cond: Condition tensor
    :type cond: riemann.TN
-   :param x: Tensor to select from where condition is True
+   :param x: Tensor to select when condition is True
    :type x: riemann.TN, optional
-   :param y: Tensor to select from where condition is False
+   :param y: Tensor to select when condition is False
    :type y: riemann.TN, optional
-   :return: Tensor with elements from x or y
+   :return: Tensor composed of elements selected from x or y
    :rtype: riemann.TN
 
 .. function:: riemann.clamp(x, min=None, max=None, out=None)
 
-   Clamps all elements to a specified range.
+   Clamp all elements within a specified range.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -784,34 +1300,47 @@ Mathematical Operations
    :type max: float, optional
    :param out: Output tensor
    :type out: riemann.TN, optional
-   :return: Tensor with elements clamped to the range
+   :return: Tensor with elements clamped within the specified range
+   :rtype: riemann.TN
+
+.. function:: riemann.masked_fill(input, mask, value)
+
+   Fill values into the tensor according to a mask.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param mask: Mask tensor, same shape as input tensor
+   :type mask: riemann.TN
+   :param value: Value to fill
+   :type value: scalar
+   :return: Filled tensor
    :rtype: riemann.TN
 
 .. function:: riemann.maximum(input, other)
 
-   Computes the element-wise maximum of two tensors.
+   Calculate the element-wise maximum of two tensors.
 
    :param input: First input tensor
    :type input: riemann.TN
    :param other: Second input tensor
    :type other: riemann.TN
-   :return: Tensor with element-wise maximum values
+   :return: Tensor composed of element-wise maximum values
    :rtype: riemann.TN
 
 .. function:: riemann.minimum(input, other)
 
-   Computes the element-wise minimum of two tensors.
+   Calculate the element-wise minimum of two tensors.
 
    :param input: First input tensor
    :type input: riemann.TN
    :param other: Second input tensor
    :type other: riemann.TN
-   :return: Tensor with element-wise minimum values
+   :return: Tensor composed of element-wise minimum values
    :rtype: riemann.TN
 
 .. function:: riemann.diagonal(input, offset=0, dim1=-2, dim2=-1)
 
-   Returns the diagonal of a tensor.
+   Return the diagonal of the tensor.
 
    :param input: Input tensor
    :type input: riemann.TN
@@ -826,7 +1355,7 @@ Mathematical Operations
 
 .. function:: riemann.diag(input, offset=0)
 
-   Returns the diagonal of a 2-D tensor or constructs a diagonal matrix.
+   Return the diagonal of a 2D tensor or construct a diagonal matrix.
 
    :param input: Input tensor
    :type input: riemann.TN
@@ -837,11 +1366,11 @@ Mathematical Operations
 
 .. function:: riemann.fill_diagonal(input, value, offset=0, dim1=-2, dim2=-1)
 
-   Fills the diagonal of a tensor with a specified value.
+   Fill the diagonal of the tensor with a specified value.
 
    :param input: Input tensor
    :type input: riemann.TN
-   :param value: Value to fill the diagonal with
+   :param value: Value to fill the diagonal
    :type value: scalar
    :param offset: Offset of the diagonal
    :type offset: int, optional
@@ -852,35 +1381,18 @@ Mathematical Operations
    :return: Tensor with filled diagonal
    :rtype: riemann.TN
 
-.. function:: riemann.fill_diagonal_(input, value, offset=0, dim1=-2, dim2=-1)
-
-   In-place version of fill_diagonal.
-
-   :param input: Input tensor
-   :type input: riemann.TN
-   :param value: Value to fill the diagonal with
-   :type value: scalar
-   :param offset: Offset of the diagonal
-   :type offset: int, optional
-   :param dim1: First dimension of the diagonal
-   :type dim1: int, optional
-   :param dim2: Second dimension of the diagonal
-   :type dim2: int, optional
-   :return: Input tensor with filled diagonal
-   :rtype: riemann.TN
-
 .. function:: riemann.batch_diag(v)
 
-   Returns the batched diagonal of a tensor.
+   Return the batch diagonal of the tensor.
 
    :param v: Input tensor
    :type v: riemann.TN
-   :return: Batched diagonal of the tensor
+   :return: Batch diagonal of the tensor
    :rtype: riemann.TN
 
 .. function:: riemann.nonzero(input, *, as_tuple=False)
 
-   Returns the indices of non-zero elements.
+   Return the indices of non-zero elements.
 
    :param input: Input tensor
    :type input: riemann.TN
@@ -891,7 +1403,7 @@ Mathematical Operations
 
 .. function:: riemann.tril(input_tensor, diagonal=0)
 
-   Returns the lower triangular part of a matrix.
+   Return the lower triangular part of the matrix.
 
    :param input_tensor: Input tensor
    :type input_tensor: riemann.TN
@@ -902,7 +1414,7 @@ Mathematical Operations
 
 .. function:: riemann.triu(input_tensor, diagonal=0)
 
-   Returns the upper triangular part of a matrix.
+   Return the upper triangular part of the matrix.
 
    :param input_tensor: Input tensor
    :type input_tensor: riemann.TN
@@ -912,11 +1424,11 @@ Mathematical Operations
    :rtype: riemann.TN
 
 Comparison Operations
----------------------
+~~~~~~~~~~~~~~~~~~~~~
 
 .. function:: riemann.equal(a, b)
 
-   Computes element-wise equality.
+   Calculate element-wise equality.
 
    :param a: First tensor
    :type a: riemann.TN
@@ -927,7 +1439,7 @@ Comparison Operations
 
 .. function:: riemann.not_equal(a, b)
 
-   Computes element-wise inequality.
+   Calculate element-wise inequality.
 
    :param a: First tensor
    :type a: riemann.TN
@@ -938,7 +1450,7 @@ Comparison Operations
 
 .. function:: riemann.allclose(a, b, rtol=1e-5, atol=1e-8, equal_nan=False)
 
-   Returns True if two tensors are element-wise equal within a tolerance.
+   Return True if two tensors are element-wise equal within a tolerance.
 
    :param a: First tensor
    :type a: riemann.TN
@@ -948,14 +1460,14 @@ Comparison Operations
    :type rtol: float, optional
    :param atol: Absolute tolerance
    :type atol: float, optional
-   :param equal_nan: Whether to compare NaN values as equal
+   :param equal_nan: Whether to treat NaN values as equal
    :type equal_nan: bool, optional
-   :return: Whether tensors are close
+   :return: Whether the tensors are close
    :rtype: bool
 
 .. function:: riemann.isinf(x)
 
-   Tests element-wise for infinity.
+   Element-wise test for infinity.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -964,7 +1476,7 @@ Comparison Operations
 
 .. function:: riemann.isnan(x)
 
-   Tests element-wise for NaN.
+   Element-wise test for NaN.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -973,7 +1485,7 @@ Comparison Operations
 
 .. function:: riemann.isreal(x)
 
-   Tests element-wise for real numbers.
+   Element-wise test for real numbers.
 
    :param x: Input tensor
    :type x: riemann.TN
@@ -981,15 +1493,15 @@ Comparison Operations
    :rtype: riemann.TN
 
 Sorting Operations
-------------------
+~~~~~~~~~~~~~~~~~~
 
 .. function:: riemann.sort(input, dim=-1, descending=False, stable=False, *, out=None)
 
-   Sorts the elements of a tensor along a given dimension.
+   Sort tensor elements along a given dimension.
 
    :param input: Input tensor
    :type input: riemann.TN
-   :param dim: Dimension to sort along
+   :param dim: Dimension to sort
    :type dim: int, optional
    :param descending: Whether to sort in descending order
    :type descending: bool, optional
@@ -998,15 +1510,15 @@ Sorting Operations
    :param out: Output tensor
    :type out: riemann.TN, optional
    :return: Sorted tensor and indices
-   :rtype: tuple of (riemann.TN, riemann.TN)
+   :rtype: riemann.TN, riemann.TN
 
 .. function:: riemann.argsort(input, dim=-1, descending=False, stable=False, *, out=None)
 
-   Returns the indices that sort a tensor along a given dimension.
+   Return indices that would sort the tensor along a given dimension.
 
    :param input: Input tensor
    :type input: riemann.TN
-   :param dim: Dimension to sort along
+   :param dim: Dimension to sort
    :type dim: int, optional
    :param descending: Whether to sort in descending order
    :type descending: bool, optional
@@ -1014,239 +1526,1083 @@ Sorting Operations
    :type stable: bool, optional
    :param out: Output tensor
    :type out: riemann.TN, optional
-   :return: Indices that sort the tensor
+   :return: Sorting indices
    :rtype: riemann.TN
 
-.. function:: riemann.unique(input, sorted=True, return_inverse=False, return_counts=False, dim=None)
+In-place Operations
+~~~~~~~~~~~~~~~~~~~
 
-   Returns the unique elements of a tensor.
+.. method:: riemann.TN.setat_(index, val)
 
-   :param input: Input tensor
-   :type input: riemann.TN
-   :param sorted: Whether to return unique elements in sorted order
-   :type sorted: bool, optional
-   :param return_inverse: Whether to return indices to reconstruct input
-   :type return_inverse: bool, optional
-   :param return_counts: Whether to return counts of each unique element
-   :type return_counts: bool, optional
-   :param dim: Dimension to apply unique to
-   :type dim: int, optional
-   :return: Unique elements and optionally indices and counts
-   :rtype: riemann.TN or tuple of riemann.TN
+   In-place set values at specified positions in the tensor.
 
-Utility Functions
-------------------
-
-.. function:: riemann.from_numpy(arr)
-
-   Creates a tensor from a NumPy array.
-
-   :param arr: NumPy array
-   :type arr: numpy.ndarray
-   :return: Tensor with the same data as the NumPy array
+   :param index: Index specifying positions to set values
+   :type index: int, slice, tuple, or array
+   :param val: Values to set
+   :type val: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
    :rtype: riemann.TN
 
-.. function:: riemann.cumsum(input, dim, *, dtype=None, out=None)
+.. method:: riemann.TN.addat_(index, val)
 
-   Computes the cumulative sum of elements along a dimension.
+   In-place add values to specified positions in the tensor.
 
-   :param input: Input tensor
-   :type input: riemann.TN
-   :param dim: Dimension to cumsum over
+   :param index: Index specifying positions to operate
+   :type index: int, slice, tuple, or array
+   :param val: Values to add
+   :type val: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.subat_(index, val)
+
+   In-place subtract values from specified positions in the tensor.
+
+   :param index: Index specifying positions to operate
+   :type index: int, slice, tuple, or array
+   :param val: Values to subtract
+   :type val: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.mulat_(index, val)
+
+   In-place multiply specified positions in the tensor by given values.
+
+   :param index: Index specifying positions to operate
+   :type index: int, slice, tuple, or array
+   :param val: Values to multiply
+   :type val: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.divat_(index, val)
+
+   In-place divide specified positions in the tensor by given values.
+
+   :param index: Index specifying positions to operate
+   :type index: int, slice, tuple, or array
+   :param val: Divisor
+   :type val: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.powat_(index, val)
+
+   In-place exponentiate specified positions in the tensor.
+
+   :param index: Index specifying positions to operate
+   :type index: int, slice, tuple, or array
+   :param val: Exponent
+   :type val: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.scatter_(dim, index, src=None, *, value=None)
+   :no-index:
+
+   In-place fill values into the tensor according to indices.
+
+   :param dim: Dimension along which to index
    :type dim: int
-   :param dtype: Desired data type of the output
-   :type dtype: numpy.dtype, optional
-   :param out: Output tensor
-   :type out: riemann.TN, optional
-   :return: Cumulative sum of elements
+   :param index: Index tensor
+   :type index: riemann.TN
+   :param src: Source tensor providing values to fill
+   :type src: riemann.TN, optional
+   :param value: Scalar value providing values to fill
+   :type value: int, float, complex, optional
+   :return: In-place modified tensor
    :rtype: riemann.TN
+
+.. method:: riemann.TN.scatter_add_(dim, index, src)
+   :no-index:
+
+   In-place accumulate values into the tensor according to indices.
+
+   :param dim: Dimension along which to index
+   :type dim: int
+   :param index: Index tensor
+   :type index: riemann.TN
+   :param src: Source tensor providing values to accumulate
+   :type src: riemann.TN
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.requires_grad_(requires_grad=True)
+
+   In-place set whether the tensor requires gradient calculation.
+
+   :param requires_grad: Whether to require gradient calculation
+   :type requires_grad: bool, optional
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.add_(other)
+
+   In-place addition operation.
+
+   :param other: Value to add to the current tensor
+   :type other: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.sub_(other)
+
+   In-place subtraction operation.
+
+   :param other: Value to subtract from the current tensor
+   :type other: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.mul_(other)
+
+   In-place multiplication operation.
+
+   :param other: Value to multiply with the current tensor
+   :type other: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.div_(other)
+
+   In-place division operation.
+
+   :param other: Divisor
+   :type other: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.pow_(other)
+
+   In-place power operation.
+
+   :param other: Exponent
+   :type other: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.detach_()
+
+   In-place detach the tensor from the computation graph.
+
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.copy_(src)
+
+   In-place copy source tensor to current tensor.
+
+   :param src: Source tensor
+   :type src: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.zero_()
+
+   In-place set all elements of the tensor to 0.
+
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.fill_(value)
+
+   In-place fill all elements of the tensor with a specified value.
+
+   :param value: Fill value
+   :type value: riemann.TN, numpy.ndarray, list, or scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.clamp_(min=None, max=None)
+
+   In-place clamp tensor elements within a specified range.
+
+   :param min: Minimum value
+   :type min: float, optional
+   :param max: Maximum value
+   :type max: float, optional
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.masked_fill_(input, mask, value)
+
+   In-place version of masked_fill function, fill values into the tensor according to a mask.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param mask: Mask tensor, same shape as input tensor
+   :type mask: riemann.TN
+   :param value: Value to fill
+   :type value: scalar
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.fill_diagonal_(input, value, offset=0, dim1=-2, dim2=-1)
+
+   In-place version of fill_diagonal.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param value: Value to fill the diagonal
+   :type value: scalar
+   :param offset: Offset of the diagonal
+   :type offset: int, optional
+   :param dim1: First dimension of the diagonal
+   :type dim1: int, optional
+   :param dim2: Second dimension of the diagonal
+   :type dim2: int, optional
+   :return: Input tensor with filled diagonal
+   :rtype: riemann.TN
+
+Gather and Scatter Functions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. method:: riemann.TN.gather(dim, index)
+
+   Gather elements according to specified dimension and indices.
+
+   :param dim: Gathering dimension
+   :type dim: int
+   :param index: Index tensor
+   :type index: riemann.TN
+   :return: Gathered tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.scatter(dim, index, src=None, *, value=None)
+
+   Fill values into a new tensor according to indices.
+
+   :param dim: Dimension along which to index
+   :type dim: int
+   :param index: Index tensor
+   :type index: riemann.TN
+   :param src: Source tensor providing values to fill
+   :type src: riemann.TN, optional
+   :param value: Scalar value providing values to fill
+   :type value: int, float, complex, optional
+   :return: New tensor with filled values
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.scatter_(dim, index, src=None, *, value=None)
+
+   In-place fill values into the tensor according to indices.
+
+   :param dim: Dimension along which to index
+   :type dim: int
+   :param index: Index tensor
+   :type index: riemann.TN
+   :param src: Source tensor providing values to fill
+   :type src: riemann.TN, optional
+   :param value: Scalar value providing values to fill
+   :type value: int, float, complex, optional
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.scatter_add(dim, index, src)
+
+   Accumulate values into a new tensor according to indices.
+
+   :param dim: Dimension along which to index
+   :type dim: int
+   :param index: Index tensor
+   :type index: riemann.TN
+   :param src: Source tensor providing values to accumulate
+   :type src: riemann.TN
+   :return: New tensor with accumulated values
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.scatter_add_(dim, index, src)
+
+   In-place accumulate values into the tensor according to indices.
+
+   :param dim: Dimension along which to index
+   :type dim: int
+   :param index: Index tensor
+   :type index: riemann.TN
+   :param src: Source tensor providing values to accumulate
+   :type src: riemann.TN
+   :return: In-place modified tensor
+   :rtype: riemann.TN
+
+Data Conversion
+~~~~~~~~~~~~~~~
+
+.. function:: riemann.from_numpy(arr, requires_grad=False)
+
+   Convert a NumPy array to a Riemann tensor.
+
+   :param arr: Input NumPy array
+   :type arr: numpy.ndarray
+   :param requires_grad: Whether to track operations on this tensor
+   :type requires_grad: bool, optional
+   :return: Riemann tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.item(tensor)
+
+   Convert a single-element tensor to a Python scalar.
+
+   :param tensor: Input tensor
+   :type tensor: riemann.TN
+   :return: Python scalar
+   :rtype: int, float, etc.
+
+.. method:: riemann.TN.tolist()
+
+   Convert the tensor to a Python list.
+
+   :return: Python list or scalar
+   :rtype: list, int, float, complex
+
+.. method:: riemann.TN.to(*args, **kwargs)
+
+   Convert the tensor to a specified data type and/or device.
+
+   :param dtype: Target data type
+   :type dtype: dtype, optional
+   :param device: Target device
+   :type device: str, Device, optional
+   :return: Converted tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.type(dtype=None)
+
+   Return or convert the data type of the tensor.
+
+   :param dtype: Data type, if None return current data type
+   :type dtype: dtype, optional
+   :return: Current data type if dtype is None, otherwise converted data type
+   :rtype: dtype or riemann.TN
+
+.. method:: riemann.TN.type_as(other)
+
+   Convert the tensor to the same data type as another tensor.
+
+   :param other: Reference tensor for target data type
+   :type other: riemann.TN
+   :return: Converted data type
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.bool()
+
+   Convert the tensor to boolean type.
+
+   :return: Boolean type tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.float()
+
+   Convert the tensor to single-precision floating point type (float32).
+
+   :return: float32 type tensor
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.double()
+
+   Convert the tensor to double-precision floating point type (float64).
+
+   :return: float64 type tensor
+   :rtype: riemann.TN
+
+Copy Functions
+~~~~~~~~~~~~~~
+
+.. function:: riemann.clone(tensor)
+
+   Return a copy of the tensor.
+
+   :param tensor: Input tensor
+   :type tensor: riemann.TN
+   :return: Tensor copy
+   :rtype: riemann.TN
+
+.. method:: riemann.TN.copy()
+
+   Return a copy of the tensor, not sharing memory and not dependent on the original tensor.
+
+   :return: Tensor copy
+   :rtype: riemann.TN
+
+.. function:: riemann.detach(tensor)
+
+   Detach the tensor from the computation graph, stopping gradient tracking.
+
+   :param tensor: Input tensor
+   :type tensor: riemann.TN
+   :return: Detached tensor
+   :rtype: riemann.TN
+
+Data Types
+----------
+
+.. module:: riemann.dtype
+
+Predefined Data Types
+~~~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.is_numeric_array(numpy_arr)
+
+   Check if a NumPy array has a numeric data type
+
+   :param numpy_arr: The NumPy array to check
+   :type numpy_arr: numpy.ndarray
+   :return: Whether the array has a numeric data type
+   :rtype: bool
+
+.. function:: riemann.is_number(v)
+
+   Check if a value is a numeric type
+
+   :param v: The value to check
+   :type v: Any
+   :return: Whether the value is a numeric type
+   :rtype: bool
+
+.. function:: riemann.is_float_or_complex(dtype)
+
+   Check if a data type is a floating point or complex number type
+
+   :param dtype: The data type to check
+   :type dtype: numpy.dtype
+   :return: Whether the data type is a floating point or complex number type
+   :rtype: bool
+
+.. function:: riemann.is_scalar(value)
+
+   Check if a value is a scalar (including Riemann tensor scalars)
+
+   :param value: The value to check
+   :type value: Any
+   :return: Whether the value is a scalar
+   :rtype: bool
+
+Data Type Inference
+~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.infer_data_type(v)
+
+   Infer an appropriate data type from Python values, NumPy arrays, or collections of values
+
+   :param v: The value or collection of values from which to infer the data type
+   :type v: Any
+   :return: The inferred data type
+   :rtype: numpy.dtype
+
+Gradient Mode Control
+---------------------
+
+.. module:: riemann.gradmode
+
+.. function:: riemann.is_grad_enabled()
+
+   Get the gradient computation state for the current thread
+
+   :return: The current gradient computation mode (True for enabled, False for disabled)
+   :rtype: bool
+
+.. function:: riemann.no_grad(func=None)
+
+   Context manager to temporarily disable gradient computation
+
+   Can also be used as a function decorator, disabling gradient tracking for all computations within the decorated function.
+
+   :param func: Optional, if provided, applies no_grad as a decorator to the function
+   :type func: callable, optional
+   :return: If func is not provided, returns a context manager instance; if func is provided, returns the decorated function
+
+   Example:
+   
+   .. code-block:: python
+      
+      # Used as a context manager
+      with riemann.no_grad():
+          # Computations within this block will not track gradients
+          output = model(input_data)
+      
+      # Used as a decorator
+      @riemann.no_grad
+      def inference(x):
+          # Computations within this function will not track gradients
+          return model(x)
+
+.. function:: riemann.enable_grad(func=None)
+
+   Context manager to temporarily enable gradient computation
+
+   Can also be used as a function decorator, ensuring that computations within the decorated function track gradients.
+
+   :param func: Optional, if provided, applies enable_grad as a decorator to the function
+   :type func: callable, optional
+   :return: If func is not provided, returns a context manager instance; if func is provided, returns the decorated function
+
+   Example:
+   
+   .. code-block:: python
+      
+      # Used as a context manager
+      with riemann.enable_grad():
+          # Computations within this block will track gradients
+          output = model(input_data)
+          loss = loss_fn(output, target)
+          loss.backward()
+      
+      # Used as a decorator
+      @riemann.enable_grad
+      def train_step(x, y):
+          # Computations within this function will track gradients
+          pred = model(x)
+          loss = loss_fn(pred, y)
+          loss.backward()
+          return loss
+
+.. function:: riemann.set_grad_enabled(mode=True, func=None)
+
+   Context manager to set the gradient computation mode
+
+   Similar to PyTorch's set_grad_enabled(), it can explicitly enable or disable gradient computation.
+   Supports usage as both a context manager and a decorator, providing the most flexible way to control gradients.
+
+   :param mode: If True, enables gradient computation; if False, disables gradient computation
+   :type mode: bool
+   :param func: Optional, the function passed when used as a decorator
+   :type func: callable, optional
+   :return: If func is None, returns a context manager instance; if the func parameter is provided, returns the wrapped function
+
+   Example:
+   
+   .. code-block:: python
+      
+      # Used as a context manager
+      with riemann.set_grad_enabled(False):
+          # Computations within this block will not track gradients
+          output = model(input_data)
+      
+      with riemann.set_grad_enabled(True):
+          # Computations within this block will track gradients
+          output = model(input_data)
+          loss = loss_fn(output, target)
+          loss.backward()
+      
+      # Used as a decorator
+      @riemann.set_grad_enabled(False)
+      def inference(x):
+          return model(x)
+      
+      @riemann.set_grad_enabled(True)
+      def train(x, y):
+          pred = model(x)
+          loss = loss_fn(pred, y)
+          loss.backward()
+          return loss
+
+
+Serialization
+-------------
+
+.. module:: riemann.serialization
+
+.. function:: riemann.save(obj, f, pickle_module=None, pickle_protocol=2, use_new_zipfile_serialization=True)
+
+   Save an object to a disk file.
+
+   This function uses pickle serialization to save Riemann tensors, parameters, modules, or any Python objects to a disk file.
+
+   :param obj: The object to save. Can be a tensor, parameter, module, or any picklable object
+   :type obj: Any
+   :param f: File path or file-like object to write to
+   :type f: str, os.PathLike, or file-like object
+   :param pickle_module: Module to use for pickling (default: pickle)
+   :type pickle_module: Any, optional
+   :param pickle_protocol: Pickle protocol version (default: 2)
+   :type pickle_protocol: int, optional
+   :param use_new_zipfile_serialization: Whether to use zip-based serialization (default: True)
+   :type use_new_zipfile_serialization: bool, optional
+
+   Example:
+       >>> import riemann as rm
+       >>> # Save a tensor
+       >>> tensor = rm.randn(3, 4)
+       >>> rm.save(tensor, 'tensor.pt')
+       >>> 
+       >>> # Save a module
+       >>> model = rm.nn.Linear(10, 5)
+       >>> rm.save(model.state_dict(), 'model_weights.pt')
+       >>> 
+       >>> # Save multiple objects
+       >>> rm.save({
+       ...     'model': model.state_dict(),
+       ...     'optimizer_state': optimizer.state_dict(),
+       ...     'epoch': 10
+       ... }, 'checkpoint.pt')
+
+.. function:: riemann.load(f, map_location=None, pickle_module=None, **pickle_load_args)
+
+   Load an object from a disk file.
+
+   This function uses pickle deserialization to load Riemann tensors, parameters, modules, or any Python objects from a disk file.
+
+   :param f: File path or file-like object to read from
+   :type f: str, os.PathLike, or file-like object
+   :param map_location: Function or dictionary for remapping storage locations
+   :type map_location: Any, optional
+   :param pickle_module: Module to use for unpickling (default: pickle)
+   :type pickle_module: Any, optional
+   :param \**pickle_load_args: Additional arguments passed to pickle.load
+   :return: The loaded object
+
+   Example:
+       >>> import riemann as rm
+       >>> # Load a tensor
+       >>> tensor = rm.load('tensor.pt')
+       >>> 
+       >>> # Load model weights
+       >>> state_dict = rm.load('model_weights.pt')
+       >>> model.load_state_dict(state_dict)
+       >>> 
+       >>> # Load a checkpoint
+       >>> checkpoint = rm.load('checkpoint.pt')
+       >>> model.load_state_dict(checkpoint['model'])
+       >>> optimizer.load_state_dict(checkpoint['optimizer_state'])
+       >>> epoch = checkpoint['epoch']
+
+CUDA Support
+------------
+
+.. module:: riemann.cuda
+
+.. class:: riemann.cuda.Device(device='cpu')
+
+   Represents a device (CPU or CUDA GPU).
+
+   :param device: Device type or index. Can be:
+       - String: 'cpu', 'cuda' or 'cuda:0', 'cuda:1'
+       - Integer: CUDA device index
+   :type device: str or int
+
+   Example:
+       >>> import riemann as rm
+       >>> # Create a CPU device
+       >>> cpu_device = rm.Device('cpu')
+       >>> # Create a CUDA device
+       >>> cuda_device = rm.Device('cuda')
+       >>> # Create a specific CUDA device
+       >>> cuda_device_1 = rm.Device('cuda:1')
+       >>> # Create a CUDA device by index
+       >>> cuda_device_2 = rm.Device(2)
+
+   .. method:: __enter__()
+
+      Enter the device context.
+
+   .. method:: __exit__(exc_type, exc_val, exc_tb)
+
+      Exit the device context.
+
+   .. method:: __eq__(other)
+
+      Compare with another device.
+
+   .. method:: __str__()
+
+      Return the string representation of the device.
+
+   .. method:: __repr__()
+
+      Return the official string representation of the device.
+
+.. function:: riemann.is_available()
+
+   Check if CUDA is available.
+
+   :return: True if CUDA is available, False otherwise
+   :rtype: bool
+
+.. function:: riemann.device_count()
+
+   Return the number of available CUDA devices.
+
+   :return: Number of available CUDA devices
+   :rtype: int
+
+.. function:: riemann.current_device()
+
+   Return the index of the current CUDA device.
+
+   :return: Index of the current CUDA device
+   :rtype: int
+
+.. function:: riemann.get_device_name(device_idx)
+
+   Return the name of the CUDA device at the given index.
+
+   :param device_idx: Index of the CUDA device
+   :type device_idx: int
+   :return: Name of the CUDA device
+   :rtype: str
+
+.. function:: riemann.set_device(device_idx)
+
+   Set the current CUDA device.
+
+   :param device_idx: CUDA device index to set as current
+   :type device_idx: int
+
+.. function:: riemann.empty_cache()
+
+   Clear the CUDA cache.
+
+.. function:: riemann.is_in_cuda_context()
+
+   Check if the current thread is in a CUDA device context.
+
+   :return: True if in a CUDA device context, False otherwise
+   :rtype: bool
+
+.. function:: riemann.memory_allocated(device_idx=None)
+
+   Return the amount of memory allocated on the given CUDA device.
+
+   :param device_idx: Index of the CUDA device. If None, use the current device
+   :type device_idx: int, optional
+   :return: Amount of allocated memory (bytes)
+   :rtype: int
+
+.. function:: riemann.get_default_device()
+
+   Get the default device for tensor creation.
+
+   :return: The default device
+   :rtype: Device
+
+.. function:: riemann.set_default_device(device)
+
+   Set the default device for tensor creation.
+
+   :param device: The device to set as default. Can be:
+       - String: 'cpu', 'cuda' or 'cuda:0', 'cuda:1'
+       - Integer: CUDA device index
+       - Device object
+   :type device: str, int, or Device
+
+   Example:
+       >>> import riemann as rm
+       >>> rm.get_default_device()
+       device(type='cpu', index=None)
+       >>> rm.set_default_device('cuda')
+       >>> rm.get_default_device()
+       device(type='cuda', index=0)
+       >>> rm.set_default_device('cuda:1')
+       >>> rm.get_default_device()
+       device(type='cuda', index=1)
 
 Automatic Differentiation
 -------------------------
 
+.. module:: riemann.autograd
+
 Gradient Computation
 ~~~~~~~~~~~~~~~~~~~~
 
-.. function:: riemann.autograd.backward(tensors, grad_tensors=None, retain_graph=None, create_graph=False)
+.. function:: riemann.autograd.backward(self, gradient=None, retain_graph=False, create_graph=False)
 
-   Computes gradients of tensors with respect to graph leaves.
+   Perform reverse-mode automatic differentiation (backpropagation).
 
-   :param tensors: Tensors to compute gradients for
-   :type tensors: riemann.TN or sequence of riemann.TN
-   :param grad_tensors: Gradients with respect to tensors
-   :type grad_tensors: riemann.TN or sequence of riemann.TN, optional
-   :param retain_graph: Whether to retain the computation graph
+   Starting from the current tensor, propagate gradients backward through the computation graph, 
+   computing and storing gradients for all leaf nodes or intermediate nodes with retains_grad=True.
+
+   :param self: The tensor that triggers backpropagation
+   :type self: riemann.TN
+   :param gradient: Gradient of the output tensor, defaults to None
+   :type gradient: riemann.TN or None, optional
+   :param retain_graph: This parameter is for PyTorch compatibility, Riemann backpropagation does not rely on it
    :type retain_graph: bool, optional
-   :param create_graph: Whether to create a graph of the gradient computation
+   :param create_graph: Whether to create a computation graph during gradient computation, set to True for higher-order derivative calculations
    :type create_graph: bool, optional
 
-.. function:: riemann.autograd.grad(outputs, inputs, grad_outputs=None, retain_graph=None, create_graph=False, only_inputs=True, allow_unused=False)
+.. function:: riemann.autograd.grad(outputs, inputs, grad_outputs=None, retain_graph=False, create_graph=False, allow_unused=False)
 
-   Computes and returns the gradient of outputs with respect to inputs.
+   Compute and return the gradients of outputs with respect to inputs.
 
-   :param outputs: Outputs of the differentiated function
-   :type outputs: riemann.TN or sequence of riemann.TN
-   :param inputs: Inputs with respect to which to compute gradients
-   :type inputs: riemann.TN or sequence of riemann.TN
-   :param grad_outputs: Gradients with respect to outputs
-   :type grad_outputs: riemann.TN or sequence of riemann.TN, optional
-   :param retain_graph: Whether to retain the computation graph
+   This is the core gradient computation function in the Riemann framework. Similar to the backward() method,
+   but it directly returns the computed gradient tensors instead of storing them in the .grad attribute of input tensors.
+   This makes it more suitable for advanced gradient computation scenarios, such as calculating Jacobian matrices,
+   Hessian matrices, etc.
+
+   :param outputs: Output tensor(s) for which to compute gradients
+   :type outputs: riemann.TN
+   :param inputs: Input tensor(s) or list/tuple of input tensors for which to compute gradients
+   :type inputs: riemann.TN or list/tuple of riemann.TN
+   :param grad_outputs: Gradient(s) of the output tensor(s), defaults to None
+   :type grad_outputs: riemann.TN or None, optional
+   :param retain_graph: This parameter is for PyTorch compatibility, Riemann backpropagation does not rely on it
    :type retain_graph: bool, optional
-   :param create_graph: Whether to create a graph of the gradient computation
+   :param create_graph: Whether to create a computation graph during gradient computation
    :type create_graph: bool, optional
-   :param only_inputs: Whether to compute gradients only with respect to inputs
-   :type only_inputs: bool, optional
    :param allow_unused: Whether to allow unused inputs
    :type allow_unused: bool, optional
-   :return: Gradients with respect to inputs
+   :return: Tuple of gradient tensors corresponding to the inputs
    :rtype: tuple of riemann.TN
 
+.. function:: riemann.autograd.higher_order_grad(outputs, inputs, n, create_graph=False)
 
-Derivative Functions
-~~~~~~~~~~~~~~~~~~~~
+   Compute the n-th order derivative of a scalar tensor output with respect to each tensor in inputs.
 
-.. function:: riemann.autograd.functional.jacobian(func, inputs, create_graph=False, strict=False)
+   This function computes higher-order derivatives by recursively calling grad(). For each input tensor,
+   it computes the n-th order derivative and returns a tuple of derivatives corresponding to the input list.
 
-   Computes the Jacobian matrix of a function.
-
-   The Jacobian matrix represents the first-order partial derivatives of a function mapping a vector to a vector.
-
-   :param func: Function that takes tensor or tensor list and returns tensor or tensor list
-   :type func: callable
-   :param inputs: Input tensor(s)
-   :type inputs: riemann.TN or sequence of riemann.TN
-   :param create_graph: Whether to create a graph of the computation for higher-order derivatives
+   :param outputs: Scalar tensor output for which to compute higher-order derivatives
+   :type outputs: riemann.TN
+   :param inputs: Input tensor(s) or list/tuple of input tensors for which to compute higher-order derivatives
+   :type inputs: riemann.TN or list/tuple of riemann.TN
+   :param n: Order of the derivative, must be a non-negative integer
+   :type n: int
+   :param create_graph: Whether to create a computation graph during gradient computation
    :type create_graph: bool, optional
-   :param strict: Whether to raise errors on unused inputs
-   :type strict: bool, optional
-   :return: Jacobian matrix representation
-   :rtype: riemann.TN or sequence of riemann.TN
+   :return: Tuple of n-th order derivative tensors corresponding to the inputs
+   :rtype: tuple of riemann.TN
 
-.. function:: riemann.autograd.functional.hessian(func, inputs, create_graph=False, strict=False)
+.. function:: riemann.autograd.gradcheck(func, inputs, eps=1e-6, atol=1e-5, rtol=1e-3, raise_exception=True, check_sparse_nnz=False, fast_mode=False)
 
-   Computes the Hessian matrix of a scalar-valued function.
+   Verify the correctness of gradient computation for a given function by comparing numerical and analytical gradients.
 
-   The Hessian matrix represents the second-order partial derivatives of a scalar function.
+   This function computes numerical gradients using finite differences by adding small perturbations to input parameters,
+   and compares them with analytical gradients computed using automatic differentiation.
 
-   :param func: Function that takes tensor or tensor list and returns scalar tensor
+   :param func: Function for which to verify gradients
    :type func: callable
-   :param inputs: Input tensor(s)
-   :type inputs: riemann.TN or sequence of riemann.TN
-   :param create_graph: Whether to create a graph of the computation for higher-order derivatives
-   :type create_graph: bool, optional
-   :param strict: Whether to raise errors on unused inputs
-   :type strict: bool, optional
-   :return: Hessian matrix representation
-   :rtype: riemann.TN or sequence of riemann.TN
+   :param inputs: Tuple of input tensors for testing
+   :type inputs: tuple of riemann.TN
+   :param eps: Small perturbation for numerical gradient computation
+   :type eps: float, optional
+   :param atol: Absolute error tolerance
+   :type atol: float, optional
+   :param rtol: Relative error tolerance
+   :type rtol: float, optional
+   :param raise_exception: Whether to raise an exception if gradient check fails
+   :type raise_exception: bool, optional
+   :param check_sparse_nnz: Whether to check sparse tensor non-zero elements (not supported in current version)
+   :type check_sparse_nnz: bool, optional
+   :param fast_mode: Whether to use fast mode (only check the first element)
+   :type fast_mode: bool, optional
+   :return: True if gradient check passes, False otherwise
+   :rtype: bool
 
-.. function:: riemann.autograd.functional.jvp(func, inputs, v, create_graph=False, strict=False)
+.. function:: riemann.track_grad(grad_func)
 
-   Computes Jacobian-vector product (JVP).
+   Create a gradient tracking decorator for adding automatic differentiation support to functions.
 
-   :param func: Function that takes tensor or tensor list and returns tensor or tensor list
+   This decorator factory receives a gradient function and returns a decorator that can convert ordinary tensor operation functions
+   into functions that support automatic differentiation. It automatically creates backpropagation functions and manages gradient computation graph construction.
+
+   :param grad_func: Gradient computation function that receives the same input parameters as the forward function,
+                    returns a tuple containing gradients (partial derivatives) for each input tensor.
+                    Elements in the tuple must correspond one-to-one with the input tensors of the forward function. For tensors that don't require gradients, the corresponding gradient value should be None.
+   :type grad_func: callable
+   :return: A decorator function for wrapping forward computation functions to support automatic differentiation
+   :rtype: callable
+
+   Example:
+   
+   .. code-block:: python
+      
+      # Define single-input derivative function (d/dx log(x) = 1/x)
+      def _log_derivative(x):
+          return (1. / x.conj(),)
+      
+      # Use track_grad decorator to create automatic differentiation-supported log function
+      @track_grad(_log_derivative)
+      def mylog(x):
+          return tensor(np.log(x.data))
+      
+      # Use automatic differentiation-supported log function
+      x = tensor(2., requires_grad=True)
+      y = mylog(x)
+      y.backward()
+      print(f'x.grad = {x.grad}')  # Output: x.grad = 0.5
+      
+      # Define multi-input derivative function (d/dx (x + y) = 1, d/dy (x + y) = 1)
+      def _add_derivative(x, y):
+          return (tensor(1.), tensor(1.))
+      
+      # Use track_grad decorator to create automatic differentiation-supported addition function
+      @track_grad(_add_derivative)
+      def myadd(x, y):
+          return tensor(x.data + y.data)
+      
+      # Use automatic differentiation-supported addition function
+      x = tensor(2., requires_grad=True)
+      y = tensor(3., requires_grad=True)
+      z = myadd(x, y)
+      z.backward()
+      print(f'x.grad = {x.grad}')  # Output: x.grad = 1.0
+      print(f'y.grad = {y.grad}')  # Output: y.grad = 1.0
+
+.. class:: riemann.autograd.Function
+
+   Base class for custom gradient implementations in the Riemann framework, designed with an interface similar to PyTorch's torch.autograd.Function.
+
+   To use this class, inherit from it and implement the forward and backward static methods:
+   - forward: Perform forward computation, return output tensor(s)
+   - backward: Receive output gradient(s), return input gradient(s)
+
+   Example:
+   
+   .. code-block:: python
+      
+      class MyFunction(Function):
+          @staticmethod
+          def forward(ctx, input1, input2):
+              ctx.save_for_backward(input1, input2)
+              output = input1 * input2
+              return output
+          
+          @staticmethod
+          def backward(ctx, grad_output):
+              input1, input2 = ctx.saved_tensors
+              grad_input1 = grad_output * input2
+              grad_input2 = grad_output * input1
+              return grad_input1, grad_input2
+
+Functional Differentiation
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.autograd.functional.jacobian(func, inputs, create_graph=False, strict=True)
+
+   Compute the Jacobian matrix of a function.
+
+   This function computes the Jacobian matrix of a given function at the input point, supporting single or multiple inputs,
+   single or multiple outputs, and maintains compatibility with PyTorch's jacobian function behavior.
+
+   :param func: Function for which to compute the Jacobian matrix
    :type func: callable
-   :param inputs: Input tensor(s)
-   :type inputs: riemann.TN or sequence of riemann.TN
-   :param v: Vector to multiply with Jacobian
-   :type v: riemann.TN or sequence of riemann.TN
-   :param create_graph: Whether to create a graph of the computation for higher-order derivatives
+   :param inputs: Input tensor(s) or list/tuple of input tensors for the function
+   :type inputs: riemann.TN or list/tuple of riemann.TN
+   :param create_graph: Whether to create a computation graph during gradient computation
    :type create_graph: bool, optional
-   :param strict: Whether to raise errors on unused inputs
+   :param strict: Whether to strictly follow PyTorch's behavior specifications
    :type strict: bool, optional
-   :return: Tuple of function output and JVP result
-   :rtype: tuple
+   :return: Jacobian matrix representation corresponding to the input/output types
+   :rtype: riemann.TN or list/tuple of riemann.TN
+
+.. function:: riemann.autograd.functional.hessian(func, inputs, create_graph=False, strict=True)
+
+   Compute the Hessian matrix of a function.
+
+   This function computes the Hessian matrix of a given function at the input point, which is the Jacobian matrix of the gradient.
+   It supports single or multiple inputs and maintains compatibility with PyTorch's hessian function behavior.
+
+   :param func: Scalar-valued function for which to compute the Hessian matrix
+   :type func: callable
+   :param inputs: Input tensor(s) or list/tuple of input tensors for the function
+   :type inputs: riemann.TN or list/tuple of riemann.TN
+   :param create_graph: Whether to create a computation graph during gradient computation
+   :type create_graph: bool, optional
+   :param strict: If True, raises an error when output is detected to be independent of input
+   :type strict: bool, optional
+   :return: Hessian matrix representation corresponding to the input types
+   :rtype: riemann.TN or list/tuple of riemann.TN
+
+.. function:: riemann.autograd.functional.jvp(func, inputs, v=None, create_graph=False, strict=False)
+
+   Compute the Jacobian-Vector Product (JVP).
+
+   :param func: Function for which to compute JVP
+   :type func: callable
+   :param inputs: Input tensor(s) or list/tuple of input tensors for the function
+   :type inputs: riemann.TN or list/tuple of riemann.TN
+   :param v: Vector to multiply with the Jacobian matrix
+   :type v: riemann.TN or list/tuple of riemann.TN, optional
+   :param create_graph: Whether to create a computation graph during gradient computation, for higher-order derivative calculations
+   :type create_graph: bool, optional
+   :param strict: Whether to raise an error for unused inputs
+   :type strict: bool, optional
+   :return: Function output and JVP value
+   :rtype: tuple of (riemann.TN, riemann.TN or list/tuple of riemann.TN)
 
 .. function:: riemann.autograd.functional.vjp(func, inputs, v=None, create_graph=False, strict=False)
 
-   Computes vector-Jacobian product (VJP).
+   Compute the Vector-Jacobian Product (VJP).
 
-   :param func: Function that takes tensor or tensor list and returns tensor or tensor list
+   :param func: Function for which to compute VJP
    :type func: callable
-   :param inputs: Input tensor(s)
-   :type inputs: riemann.TN or sequence of riemann.TN
-   :param v: Vector to multiply with Jacobian
-   :type v: riemann.TN or sequence of riemann.TN, optional
-   :param create_graph: Whether to create a graph of the computation for higher-order derivatives
+   :param inputs: Input tensor(s) or list/tuple of input tensors for the function
+   :type inputs: riemann.TN or list/tuple of riemann.TN
+   :param v: Vector to multiply with the Jacobian matrix
+   :type v: riemann.TN or list/tuple of riemann.TN, optional
+   :param create_graph: Whether to create a computation graph during gradient computation, for higher-order derivative calculations
    :type create_graph: bool, optional
-   :param strict: Whether to raise errors on unused inputs
+   :param strict: Whether to raise an error for unused inputs
    :type strict: bool, optional
-   :return: Tuple of function output and VJP result
-   :rtype: tuple
+   :return: Function output and VJP value
+   :rtype: tuple of (riemann.TN, riemann.TN or list/tuple of riemann.TN)
 
 .. function:: riemann.autograd.functional.hvp(func, inputs, v, create_graph=False, strict=False)
 
-   Computes Hessian-vector product (HVP).
+   Compute the Hessian-Vector Product (HVP).
 
-   :param func: Function that takes tensor or tensor list and returns scalar tensor
+   :param func: Scalar-valued function for which to compute HVP
    :type func: callable
-   :param inputs: Input tensor(s)
-   :type inputs: riemann.TN or sequence of riemann.TN
-   :param v: Vector to multiply with Hessian
-   :type v: riemann.TN or sequence of riemann.TN
-   :param create_graph: Whether to create a graph of the computation for higher-order derivatives
+   :param inputs: Input tensor(s) or list/tuple of input tensors for the function
+   :type inputs: riemann.TN or list/tuple of riemann.TN
+   :param v: Vector to multiply with the Hessian matrix
+   :type v: riemann.TN or list/tuple of riemann.TN
+   :param create_graph: Whether to create a computation graph during gradient computation, for higher-order derivative calculations
    :type create_graph: bool, optional
-   :param strict: Whether to raise errors on unused inputs
+   :param strict: Whether to raise an error for unused inputs
    :type strict: bool, optional
-   :return: Tuple of function output and HVP result
-   :rtype: tuple
+   :return: Function output and HVP value
+   :rtype: tuple of (riemann.TN, riemann.TN or list/tuple of riemann.TN)
 
 .. function:: riemann.autograd.functional.vhp(func, inputs, v, create_graph=False, strict=False)
 
-   Computes vector-Hessian product (VHP).
+   Compute the Vector-Hessian Product (VHP).
 
-   :param func: Function that takes tensor or tensor list and returns scalar tensor
+   :param func: Scalar-valued function for which to compute VHP
    :type func: callable
-   :param inputs: Input tensor(s)
-   :type inputs: riemann.TN or sequence of riemann.TN
-   :param v: Vector to multiply with Hessian
-   :type v: riemann.TN or sequence of riemann.TN
-   :param create_graph: Whether to create a graph of the computation for higher-order derivatives
+   :param inputs: Input tensor(s) or list/tuple of input tensors for the function
+   :type inputs: riemann.TN or list/tuple of riemann.TN
+   :param v: Vector to multiply with the Hessian matrix
+   :type v: riemann.TN or list/tuple of riemann.TN
+   :param create_graph: Whether to create a computation graph during gradient computation, for higher-order derivative calculations
    :type create_graph: bool, optional
-   :param strict: Whether to raise errors on unused inputs
+   :param strict: Whether to raise an error for unused inputs
    :type strict: bool, optional
-   :return: Tuple of function output and VHP result
+   :return: Function output and VHP value
+   :rtype: tuple of (riemann.TN, riemann.TN or list/tuple of riemann.TN)
 
 .. function:: riemann.autograd.functional.derivative(func, create_graph=False)
 
-   Computes the derivative of a function.
+   Compute the derivative function of a function.
 
-   Returns a new function that computes the derivative of the original function func at the input point when called.
-   Supports func with single or multiple tensor inputs and single/multiple tensor or scalar outputs.
-   Internally implemented based on jacobian function.
+   This function returns a new function that, when called, computes the derivative of the original function func at the input point.
+   Supports func with single or multiple tensor inputs, returning single or multiple tensors or scalars.
+   Internally implements derivative computation based on the jacobian function.
 
-   :param func: Function to compute derivative for
+   :param func: Function to differentiate
    :type func: callable
-   :param create_graph: Whether to create a computation graph for higher-order derivatives
+   :param create_graph: Whether to create a computation graph during gradient computation, defaults to False
    :type create_graph: bool, optional
-   :return: Derivative function with the same input arguments as original func
+   :return: Derivative function that accepts the same inputs as the original function
    :rtype: callable
 
 Context Managers
-~~~~~~~~~~~~~~~~~
+----------------
 
-.. class:: riemann.no_grad
+.. function:: riemann.no_grad()
 
-   Context manager that disables gradient calculation.
+   Context manager to disable gradient computation. Operations within this context will not be recorded in the computation graph.
 
-   .. code-block:: python
+.. function:: riemann.enable_grad()
 
-      with riemann.no_grad():
-          # Operations inside this block won't track gradients
-          x = riemann.tensor([1., 2., 3.], requires_grad=True)
-          y = x * 2
-          print(y.requires_grad)  # False
+   Context manager to enable gradient computation.
 
-.. class:: riemann.enable_grad
+.. function:: riemann.set_grad_enabled(mode)
 
-   Context manager that enables gradient calculation.
+   Context manager that enables or disables gradient computation based on the mode parameter.
 
-   .. code-block:: python
-
-      with riemann.enable_grad():
-          # Operations inside this block will track gradients
-          x = riemann.tensor([1., 2., 3.])
-          y = x * 2
-          print(y.requires_grad)  # True
+   :param mode: True to enable gradient computation, False to disable
+   :type mode: bool
 
 Neural Network Modules
 ----------------------
@@ -1254,262 +2610,269 @@ Neural Network Modules
 Base Classes
 ~~~~~~~~~~~~
 
-.. class:: riemann.nn.Module
+.. class:: riemann.nn.Module()
 
    Base class for all neural network modules.
 
-   Methods:
+   .. method:: __init__()
 
-   .. method:: forward(*input)
+      Initialize the module.
 
-      Defines the computation performed at every call.
+   .. method:: forward(*args, **kwargs)
 
-      :param input: Input tensors
-      :type input: riemann.TN
-      :return: Output tensor
-      :rtype: riemann.TN
+      Define the forward pass of the module.
 
-   .. method:: parameters(recurse=True)
+      :param args: Input arguments
+      :param kwargs: Keyword arguments
+      :return: Output of the forward pass
 
-      Returns an iterator over module parameters.
+   .. method:: parameters()
 
-      :param recurse: Whether to include parameters of submodules
-      :type recurse: bool
-      :return: Iterator over parameters
-      :rtype: iterator
+      Get all trainable parameters.
 
-   .. method:: zero_grad()
+      :return: List of parameters
+      :rtype: list of riemann.TN
 
-      Sets gradients of all model parameters to zero.
+.. class:: riemann.nn.Parameter(data=None, requires_grad=True)
 
-   .. method:: train(mode=True)
+   Trainable parameter class for storing model parameters.
 
-      Sets the module in training mode.
-
-      :param mode: Whether to set training mode
-      :type mode: bool
-
-   .. method:: eval()
-
-      Sets the module in evaluation mode.
-
-
-.. class:: riemann.Parameter(data=None, requires_grad=True)
-
-   Parameter class for trainable parameters in neural networks.
-
-   Wrapper around tensor objects that marks them as trainable parameters, ensuring they are registered and appear in the model's parameter list.
-
-   :param data: Initial tensor data
-   :type data: riemann.Tensor, optional
-   :param requires_grad: Whether this parameter requires gradient computation
+   :param data: Parameter data
+   :type data: array_like, optional
+   :param requires_grad: Whether to track gradients
    :type requires_grad: bool, optional
 
 Container Modules
-~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~
 
-.. class:: riemann.nn.Sequential(*args)
+.. class:: riemann.nn.Sequential(*modules)
 
-   A sequential container that passes data through a sequence of modules.
+   Container that applies a sequence of modules in order.
 
-   :param args: Modules to add to the container
-   :type args: riemann.nn.Module
+   :param modules: List of modules
+   :type modules: list of riemann.Module
 
 .. class:: riemann.nn.ModuleList(modules=None)
 
-   Holds submodules in a list.
+   Container class for storing a list of modules.
 
-   :param modules: Modules to add to the list
-   :type modules: iterable, optional
+   This container allows storing multiple modules in list form and provides convenient access and iteration methods. All submodules are properly registered to appear in the parameter list.
+
+   :param modules: List of modules for initialization
+   :type modules: list of riemann.Module, optional
 
 .. class:: riemann.nn.ModuleDict(modules=None)
 
-   Holds submodules in a dictionary.
+   Container class for storing a dictionary of modules.
 
-   :param modules: Modules to add to the dictionary
-   :type modules: dict, optional
+   This container allows storing modules using string keys and provides dictionary-like access methods. All submodules are properly registered.
+
+   :param modules: Dictionary of modules for initialization
+   :type modules: dict of {str: riemann.Module}, optional
 
 Linear Layers
 ~~~~~~~~~~~~~
 
 .. class:: riemann.nn.Linear(in_features, out_features, bias=True)
 
-   Applies a linear transformation to the incoming data.
+   Fully connected linear layer.
 
-   :param in_features: Size of each input sample
+   :param in_features: Number of input features
    :type in_features: int
-   :param out_features: Size of each output sample
+   :param out_features: Number of output features
    :type out_features: int
-   :param bias: Whether to include an additive bias
-   :type bias: bool
+   :param bias: Whether to include bias term
+   :type bias: bool, optional
 
 Convolutional Layers
 ~~~~~~~~~~~~~~~~~~~~
 
-.. class:: riemann.nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
+.. class:: riemann.nn.Conv1d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros')
 
-   Applies a 1D convolution over an input signal.
+   1D convolutional layer.
 
-   :param in_channels: Number of channels in the input image
+   Applies convolution operations to 1D inputs, extracting features and generating new feature maps.
+
+   :param in_channels: Number of input channels
    :type in_channels: int
-   :param out_channels: Number of channels produced by the convolution
+   :param out_channels: Number of output channels
    :type out_channels: int
-   :param kernel_size: Size of the convolving kernel
+   :param kernel_size: Kernel size
    :type kernel_size: int or tuple
-   :param stride: Stride of the convolution
+   :param stride: Stride
    :type stride: int or tuple, optional
-   :param padding: Zero-padding added to both sides of the input
+   :param padding: Zero-padding added to all sides of the input
    :type padding: int or tuple, optional
    :param dilation: Spacing between kernel elements
    :type dilation: int or tuple, optional
-   :param groups: Number of blocked connections from input to output channels
+   :param groups: Grouping between input and output channels
    :type groups: int, optional
-   :param bias: Whether to include a bias term
+   :param bias: Whether to use bias term
    :type bias: bool, optional
+   :param padding_mode: Padding mode
+   :type padding_mode: str, optional
 
-.. class:: riemann.nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
+.. class:: riemann.nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros')
 
-   Applies a 2D convolution over an input image.
+   2D convolutional layer.
 
-   :param in_channels: Number of channels in the input image
+   Applies convolution operations to 2D inputs, extracting image features and generating new feature maps.
+
+   :param in_channels: Number of input channels
    :type in_channels: int
-   :param out_channels: Number of channels produced by the convolution
+   :param out_channels: Number of output channels
    :type out_channels: int
-   :param kernel_size: Size of the convolving kernel
+   :param kernel_size: Kernel size
    :type kernel_size: int or tuple
-   :param stride: Stride of the convolution
+   :param stride: Stride
    :type stride: int or tuple, optional
-   :param padding: Zero-padding added to both sides of the input
+   :param padding: Zero-padding added to all sides of the input
    :type padding: int or tuple, optional
    :param dilation: Spacing between kernel elements
    :type dilation: int or tuple, optional
-   :param groups: Number of blocked connections from input to output channels
+   :param groups: Grouping between input and output channels
    :type groups: int, optional
-   :param bias: Whether to include a bias term
+   :param bias: Whether to use bias term
    :type bias: bool, optional
+   :param padding_mode: Padding mode
+   :type padding_mode: str, optional
 
-.. class:: riemann.nn.Conv3d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
+.. class:: riemann.nn.Conv3d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros')
 
-   Applies a 3D convolution over an input volume.
+   3D convolutional layer.
 
-   :param in_channels: Number of channels in the input image
+   Applies convolution operations to 3D inputs, commonly used for feature extraction in video, volumetric data, etc.
+
+   :param in_channels: Number of input channels
    :type in_channels: int
-   :param out_channels: Number of channels produced by the convolution
+   :param out_channels: Number of output channels
    :type out_channels: int
-   :param kernel_size: Size of the convolving kernel
+   :param kernel_size: Kernel size
    :type kernel_size: int or tuple
-   :param stride: Stride of the convolution
+   :param stride: Stride
    :type stride: int or tuple, optional
-   :param padding: Zero-padding added to both sides of the input
+   :param padding: Zero-padding added to all sides of the input
    :type padding: int or tuple, optional
    :param dilation: Spacing between kernel elements
    :type dilation: int or tuple, optional
-   :param groups: Number of blocked connections from input to output channels
-   :type groups: int, optional
-   :param bias: Whether to include a bias term
-   :type bias: bool, optional
+   :param padding_mode: Padding mode
+   :type padding_mode: str, optional
 
 Pooling Layers
-~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
 
 .. class:: riemann.nn.MaxPool1d(kernel_size, stride=None, padding=0, dilation=1, return_indices=False, ceil_mode=False)
 
-   Applies a 1D max pooling over an input signal.
+   1D max pooling layer.
 
-   :param kernel_size: Size of the window
+   Applies max pooling to 1D inputs, used for extracting key features from sequence data and reducing data dimensions.
+
+   :param kernel_size: Pooling window size
    :type kernel_size: int or tuple
-   :param stride: Stride of the window
+   :param stride: Stride of the pooling window
    :type stride: int or tuple, optional
-   :param padding: Zero-padding added to both sides of the input
+   :param padding: Zero-padding added to all sides of the input
    :type padding: int or tuple, optional
-   :param dilation: Spacing between kernel elements
+   :param dilation: Spacing between pooling window elements
    :type dilation: int or tuple, optional
-   :param return_indices: Whether to return the indices of the max values
+   :param return_indices: Whether to return indices of maximum values
    :type return_indices: bool, optional
-   :param ceil_mode: Whether to use ceil instead of floor to compute output shape
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
    :type ceil_mode: bool, optional
 
 .. class:: riemann.nn.MaxPool2d(kernel_size, stride=None, padding=0, dilation=1, return_indices=False, ceil_mode=False)
 
-   Applies a 2D max pooling over an input image.
+   2D max pooling layer.
 
-   :param kernel_size: Size of the window
+   Applies max pooling to 2D inputs, commonly used for feature extraction and dimension reduction in image data.
+
+   :param kernel_size: Pooling window size
    :type kernel_size: int or tuple
-   :param stride: Stride of the window
+   :param stride: Stride of the pooling window
    :type stride: int or tuple, optional
-   :param padding: Zero-padding added to both sides of the input
+   :param padding: Zero-padding added to all sides of the input
    :type padding: int or tuple, optional
-   :param dilation: Spacing between kernel elements
+   :param dilation: Spacing between pooling window elements
    :type dilation: int or tuple, optional
-   :param return_indices: Whether to return the indices of the max values
+   :param return_indices: Whether to return indices of maximum values
    :type return_indices: bool, optional
-   :param ceil_mode: Whether to use ceil instead of floor to compute output shape
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
    :type ceil_mode: bool, optional
-
-.. class:: riemann.nn.AvgPool1d(kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True)
-
-   Applies a 1D average pooling over an input signal.
-
-   :param kernel_size: Size of the window
-   :type kernel_size: int or tuple
-   :param stride: Stride of the window
-   :type stride: int or tuple, optional
-   :param padding: Zero-padding added to both sides of the input
-   :type padding: int or tuple, optional
-   :param ceil_mode: Whether to use ceil instead of floor to compute output shape
-   :type ceil_mode: bool, optional
-   :param count_include_pad: Whether to include zero-padding in the averaging calculation
-   :type count_include_pad: bool, optional
-
-.. class:: riemann.nn.AvgPool2d(kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True, divisor_override=None)
-
-   Applies a 2D average pooling over an input image.
-
-   :param kernel_size: Size of the window
-   :type kernel_size: int or tuple
-   :param stride: Stride of the window
-   :type stride: int or tuple, optional
-   :param padding: Zero-padding added to both sides of the input
-   :type padding: int or tuple, optional
-   :param ceil_mode: Whether to use ceil instead of floor to compute output shape
-   :type ceil_mode: bool, optional
-   :param count_include_pad: Whether to include zero-padding in the averaging calculation
-   :type count_include_pad: bool, optional
-   :param divisor_override: If specified, it will be used as divisor
-   :type divisor_override: int, optional
 
 .. class:: riemann.nn.MaxPool3d(kernel_size, stride=None, padding=0, dilation=1, return_indices=False, ceil_mode=False)
 
-   Applies a 3D max pooling over an input volumetric data.
+   3D max pooling layer.
 
-   :param kernel_size: Size of the window
+   Applies max pooling to 3D inputs, commonly used for feature extraction in video, volumetric data, etc.
+
+   :param kernel_size: Pooling window size
    :type kernel_size: int or tuple
-   :param stride: Stride of the window
+   :param stride: Stride of the pooling window
    :type stride: int or tuple, optional
    :param padding: Zero-padding added to all sides of the input
    :type padding: int or tuple, optional
-   :param dilation: Spacing between kernel elements
+   :param dilation: Spacing between pooling window elements
    :type dilation: int or tuple, optional
-   :param return_indices: Whether to return the indices of the max values
+   :param return_indices: Whether to return indices of maximum values
    :type return_indices: bool, optional
-   :param ceil_mode: Whether to use ceil instead of floor to compute output shape
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
    :type ceil_mode: bool, optional
+
+.. class:: riemann.nn.AvgPool1d(kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True, divisor_override=None)
+
+   1D average pooling layer.
+
+   Applies average pooling to 1D inputs, used for smoothing sequence data features and reducing data dimensions.
+
+   :param kernel_size: Pooling window size
+   :type kernel_size: int or tuple
+   :param stride: Stride of the pooling window
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to all sides of the input
+   :type padding: int or tuple, optional
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
+   :type ceil_mode: bool, optional
+   :param count_include_pad: Whether to include zero-padding when calculating average
+   :type count_include_pad: bool, optional
+   :param divisor_override: If specified, will be used as denominator
+   :type divisor_override: int, optional
+
+.. class:: riemann.nn.AvgPool2d(kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True, divisor_override=None)
+
+   2D average pooling layer.
+
+   Applies average pooling to 2D inputs, commonly used for feature smoothing and dimension reduction in image data.
+
+   :param kernel_size: Pooling window size
+   :type kernel_size: int or tuple
+   :param stride: Stride of the pooling window
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to all sides of the input
+   :type padding: int or tuple, optional
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
+   :type ceil_mode: bool, optional
+   :param count_include_pad: Whether to include zero-padding when calculating average
+   :type count_include_pad: bool, optional
+   :param divisor_override: If specified, will be used as denominator
+   :type divisor_override: int, optional
 
 .. class:: riemann.nn.AvgPool3d(kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True, divisor_override=None)
 
-   Applies a 3D average pooling over an input volumetric data.
+   3D average pooling layer.
 
-   :param kernel_size: Size of the window
+   Applies average pooling to 3D inputs, commonly used for feature smoothing and dimension reduction in video, volumetric data, etc.
+
+   :param kernel_size: Pooling window size
    :type kernel_size: int or tuple
-   :param stride: Stride of the window
+   :param stride: Stride of the pooling window
    :type stride: int or tuple, optional
    :param padding: Zero-padding added to all sides of the input
    :type padding: int or tuple, optional
-   :param ceil_mode: Whether to use ceil instead of floor to compute output shape
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
    :type ceil_mode: bool, optional
-   :param count_include_pad: Whether to include zero-padding in the averaging calculation    
+   :param count_include_pad: Whether to include zero-padding when calculating average
    :type count_include_pad: bool, optional
-   :param divisor_override: If specified, it will be used as divisor
+   :param divisor_override: If specified, will be used as denominator
    :type divisor_override: int, optional
 
 Normalization Layers
@@ -1517,40 +2880,9 @@ Normalization Layers
 
 .. class:: riemann.nn.BatchNorm1d(num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
 
-   Applies Batch Normalization over a 2D or 3D input.
+   1D batch normalization layer.
 
-   :param num_features: Number of features C from an expected input of size (N, C, L) or (N, C, L, S)
-   :type num_features: int
-   :param eps: A value added to the denominator for numerical stability
-   :type eps: float, optional
-   :param momentum: Value used for the running_mean and running_var computation
-   :type momentum: float, optional
-   :param affine: Whether to use learnable affine parameters
-   :type affine: bool, optional
-   :param track_running_stats: Whether to track the running mean and variance
-   :type track_running_stats: bool, optional
-
-.. class:: riemann.nn.BatchNorm2d(num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
-
-   Applies Batch Normalization over a 4D input.
-
-   :param num_features: Number of features C from an expected input of size (N, C, H, W)
-   :type num_features: int
-   :param eps: A value added to the denominator for numerical stability
-   :type eps: float, optional
-   :param momentum: Value used for the running_mean and running_var computation
-   :type momentum: float, optional
-   :param affine: Whether to use learnable affine parameters
-   :type affine: bool, optional
-   :param track_running_stats: Whether to track the running mean and variance
-   :type track_running_stats: bool, optional
-
-.. class:: riemann.nn.BatchNorm3d(num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
-
-   Three-dimensional batch normalization layer.
-
-   Normalizes the channel dimension of a 5D input tensor (N, C, D, H, W) to have zero mean and unit variance,
-   improving training convergence and model generalization capabilities.
+   Normalizes the channel dimension of 2D or 3D input tensors to have zero mean and unit variance, improving training convergence and model generalization.
 
    :param num_features: Number of features (channel dimension)
    :type num_features: int
@@ -1563,125 +2895,196 @@ Normalization Layers
    :param track_running_stats: Whether to track running mean and variance
    :type track_running_stats: bool, optional
 
-Note: LayerNorm is not yet implemented in Riemann.
+.. class:: riemann.nn.BatchNorm2d(num_features, eps=1e-05, momentum=0.1)
+
+   2D batch normalization layer.
+
+   :param num_features: Number of features
+   :type num_features: int
+   :param eps: Small value to avoid division by zero
+   :type eps: float, optional
+   :param momentum: Momentum for running statistics
+   :type momentum: float, optional
+
+.. class:: riemann.nn.BatchNorm3d(num_features, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+
+   3D batch normalization layer.
+
+   Normalizes the channel dimension of 5D input tensors (N, C, D, H, W) to have zero mean and unit variance, improving training convergence and model generalization.
+
+   :param num_features: Number of features (channel dimension)
+   :type num_features: int
+   :param eps: Small value to avoid division by zero
+   :type eps: float, optional
+   :param momentum: Momentum for running statistics
+   :type momentum: float, optional
+   :param affine: Whether to include learnable affine parameters
+   :type affine: bool, optional
+   :param track_running_stats: Whether to track running mean and variance
+   :type track_running_stats: bool, optional
+
+.. class:: riemann.nn.LayerNorm(normalized_shape, eps=1e-05, affine=True, device=None, dtype=None)
+
+   Layer normalization layer, normalizes specified dimensions.
+
+   Compatible with torch.nn.LayerNorm, normalizes specified dimensions of input tensors to have zero mean and unit variance.
+
+   :param normalized_shape: Integer or tuple specifying dimensions to normalize
+   :type normalized_shape: int or tuple
+   :param eps: Small value added to variance to avoid division by zero
+   :type eps: float, optional
+   :param affine: Whether to include learnable affine parameters (gamma and beta)
+   :type affine: bool, optional
+   :param device: Device for parameters and buffers
+   :type device: optional
+   :param dtype: Data type for parameters and buffers
+   :type dtype: optional
 
 .. class:: riemann.nn.Flatten(start_dim=1, end_dim=-1)
 
-   Layer that flattens tensor dimensions by removing all dimensions from start_dim to end_dim.
+   Layer that flattens tensor dimensions, removing all dimensions from start_dim to end_dim.
 
-   Typically used after convolution layers and before fully connected layers to convert multi-dimensional convolution outputs into 1D vectors.
+   Typically used after convolutional layers and before fully connected layers to flatten multi-dimensional convolution results into 1D vectors.
 
-   :param start_dim: Starting dimension to flatten
+   :param start_dim: Dimension to start flattening from
    :type start_dim: int, optional
-   :param end_dim: Ending dimension to flatten
+   :param end_dim: Dimension to end flattening at
    :type end_dim: int, optional
 
-Activation Functions
-~~~~~~~~~~~~~~~~~~~~
+Activation Function Modules
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. class:: riemann.nn.ReLU(inplace=False)
 
-   Applies the Rectified Linear Unit activation function element-wise.
+   ReLU activation function
 
-   ReLU(x) = max(0, x)
+   Applies the rectified linear unit function element-wise: ReLU(x) = max(0, x)
 
-   :param inplace: Whether to do the operation in-place
+   :param inplace: Whether to perform operation in-place
    :type inplace: bool, optional
 
 .. class:: riemann.nn.LeakyReLU(negative_slope=0.01, inplace=False)
 
-   Applies the Leaky Rectified Linear Unit activation function element-wise.
+   Leaky ReLU activation function
 
-   LeakyReLU(x) = max(x, negative_slope * x)
+   Applies the leaky rectified linear unit function element-wise: LeakyReLU(x) = max(x, negative_slope * x)
 
    :param negative_slope: Slope of the negative region
    :type negative_slope: float, optional
-   :param inplace: Whether to do the operation in-place
+   :param inplace: Whether to perform operation in-place
    :type inplace: bool, optional
 
 .. class:: riemann.nn.RReLU(lower=0.125, upper=0.3333333333333333, inplace=False)
 
-   Applies the Randomized Leaky Rectified Linear Unit activation function element-wise.
+   Randomized Leaky ReLU activation function
 
-   RReLU(x) = max(x, a * x) where a is sampled uniformly from [lower, upper]
+   Applies the randomized leaky rectified linear unit function element-wise
 
-   :param lower: Lower bound of the uniform distribution
+   :param lower: Lower bound of uniform distribution
    :type lower: float, optional
-   :param upper: Upper bound of the uniform distribution
+   :param upper: Upper bound of uniform distribution
    :type upper: float, optional
-   :param inplace: Whether to do the operation in-place
+   :param inplace: Whether to perform operation in-place
    :type inplace: bool, optional
 
 .. class:: riemann.nn.PReLU(num_parameters=1, init=0.25)
 
-   Applies the Parametric Rectified Linear Unit activation function element-wise.
+   Parametric ReLU activation function
 
-   PReLU(x) = max(x, a * x) where a is a learnable parameter
+   Applies the parametric rectified linear unit function element-wise, where a is a learnable parameter
 
    :param num_parameters: Number of learnable parameters
    :type num_parameters: int, optional
-   :param init: Initial value of the parameter
+   :param init: Initial value of parameters
    :type init: float, optional
 
-.. class:: riemann.nn.Sigmoid
+.. class:: riemann.nn.Sigmoid()
 
-   Applies the element-wise function: sigmoid(x) = 1 / (1 + exp(-x))
+   Sigmoid activation function
 
-.. class:: riemann.nn.Tanh
+   Applies the sigmoid function element-wise, mapping values to the [0, 1] range
 
-   Applies the element-wise function: tanh(x) = (exp(x) - exp(-x)) / (exp(x) + exp(-x))
+.. class:: riemann.nn.Tanh()
+
+   Tanh activation function
+
+   Applies the hyperbolic tangent function element-wise, mapping values to the [-1, 1] range
 
 .. class:: riemann.nn.Softmax(dim=None)
 
-   Applies the Softmax function to an n-dimensional input tensor.
+   Softmax activation function
 
-   :param dim: Dimension along which Softmax will be computed
+   Applies the softmax function along the specified dimension
+
+   :param dim: Dimension to apply softmax
    :type dim: int, optional
 
 .. class:: riemann.nn.LogSoftmax(dim=None)
 
-   Applies the LogSoftmax function to an n-dimensional input tensor.
+   Log-Softmax activation function
 
-   :param dim: Dimension along which LogSoftmax will be computed
+   Applies the log-softmax function along the specified dimension
+
+   :param dim: Dimension to apply log-softmax
    :type dim: int, optional
 
-.. class:: riemann.nn.GELU
+.. class:: riemann.nn.GELU()
 
-   Applies the Gaussian Error Linear Unit activation function element-wise.
+   Gaussian Error Linear Unit activation function
 
-   GELU(x) = x * Φ(x), where Φ is the cumulative distribution function of the standard normal distribution
+   Applies the Gaussian Error Linear Unit function element-wise: GELU(x) = x * Φ(x), where Φ is the cumulative distribution function of the standard normal distribution
 
 .. class:: riemann.nn.Softplus(beta=1, threshold=20)
 
-   Applies the Softplus activation function element-wise.
+   Softplus activation function
 
-   Softplus(x) = (1 / beta) * log(1 + exp(beta * x))
+   Applies the Softplus activation function element-wise: Softplus(x) = (1 / beta) * log(1 + exp(beta * x))
 
    :param beta: Slope of the linear part
    :type beta: float, optional
-   :param threshold: Threshold value for numerical stability
+   :param threshold: Threshold for numerical stability
    :type threshold: float, optional
 
 Dropout Layers
-~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
 
-.. class:: riemann.nn.Dropout(p=0.5, inplace=False)
+.. class:: riemann.nn.Dropout(p=0.5)
 
-   Randomly zeroes some of the elements of the input tensor with probability p.
+   Dropout layer for preventing overfitting.
 
-   :param p: Probability of an element to be zeroed
+   :param p: Dropout probability
    :type p: float, optional
-   :param inplace: Whether to do the operation in-place
+
+.. class:: riemann.nn.Dropout2d(p=0.5, inplace=False)
+
+   2D dropout layer for preventing overfitting.
+
+   During training, randomly zeroes entire channels of the input tensor with probability p, and scales remaining channels by 1/(1-p).
+   During evaluation, no operation is performed.
+
+   :param p: Dropout probability
+   :type p: float, optional
+   :param inplace: Whether to perform operation in-place
    :type inplace: bool, optional
 
-Note: Dropout2d and Dropout3d are not yet implemented in Riemann.
+.. class:: riemann.nn.Dropout3d(p=0.5, inplace=False)
 
-Loss Functions
---------------
+   3D dropout layer for preventing overfitting.
+
+   During training, randomly zeroes entire channels of the input tensor with probability p, and scales remaining channels by 1/(1-p).
+   During evaluation, no operation is performed.
+
+   :param p: Dropout probability
+   :type p: float, optional
+   :param inplace: Whether to perform operation in-place
+   :type inplace: bool, optional
+
+Loss Function Modules
+~~~~~~~~~~~~~~~~~~~~~
 
 .. class:: riemann.nn.L1Loss(size_average=None, reduce=None, reduction='mean')
 
-   Creates a criterion that measures the mean absolute error between each element in the input and target.
+   Mean absolute error loss, computes absolute error between input and target values.
 
    :param size_average: Deprecated
    :type size_average: bool, optional
@@ -1692,7 +3095,7 @@ Loss Functions
 
 .. class:: riemann.nn.MSELoss(size_average=None, reduce=None, reduction='mean')
 
-   Creates a criterion that measures the mean squared error between each element in the input and target.
+   Mean squared error loss, computes squared error between input and target values.
 
    :param size_average: Deprecated
    :type size_average: bool, optional
@@ -1703,13 +3106,13 @@ Loss Functions
 
 .. class:: riemann.nn.NLLLoss(weight=None, size_average=None, ignore_index=-100, reduce=None, reduction='mean')
 
-   Creates a criterion that measures the negative log likelihood loss.
+   Negative log likelihood loss, used for probability prediction in classification tasks.
 
-   :param weight: Manual rescaling weight given to each class
+   :param weight: Manual scaling weight for each class
    :type weight: riemann.TN, optional
    :param size_average: Deprecated
    :type size_average: bool, optional
-   :param ignore_index: Specifies a target value that is ignored
+   :param ignore_index: Specifies target value to ignore
    :type ignore_index: int, optional
    :param reduce: Deprecated
    :type reduce: bool, optional
@@ -1718,13 +3121,13 @@ Loss Functions
 
 .. class:: riemann.nn.CrossEntropyLoss(weight=None, size_average=None, ignore_index=-100, reduce=None, reduction='mean')
 
-   Combines LogSoftmax and NLLLoss in one single class.
+   Cross entropy loss, combines LogSoftmax and NLLLoss in one class, commonly used for multi-class classification tasks.
 
-   :param weight: Manual rescaling weight given to each class
+   :param weight: Manual scaling weight for each class
    :type weight: riemann.TN, optional
    :param size_average: Deprecated
    :type size_average: bool, optional
-   :param ignore_index: Specifies a target value that is ignored
+   :param ignore_index: Specifies target value to ignore
    :type ignore_index: int, optional
    :param reduce: Deprecated
    :type reduce: bool, optional
@@ -1733,9 +3136,9 @@ Loss Functions
 
 .. class:: riemann.nn.BCELoss(weight=None, size_average=None, reduce=None, reduction='mean')
 
-   Creates a criterion that measures the binary cross entropy between the target and the output.
+   Binary cross entropy loss, computes binary classification error between target and output.
 
-   :param weight: Manual rescaling weight given to each batch element
+   :param weight: Manual scaling weight for each batch element
    :type weight: riemann.TN, optional
    :param size_average: Deprecated
    :type size_average: bool, optional
@@ -1746,9 +3149,9 @@ Loss Functions
 
 .. class:: riemann.nn.BCEWithLogitsLoss(weight=None, size_average=None, reduce=None, reduction='mean')
 
-   Computes binary cross entropy between the target and the input logits.
+   Binary cross entropy loss with logits, computes binary cross entropy directly on input logits.
 
-   :param weight: Manual rescaling weight given to each batch element
+   :param weight: Manual scaling weight for each batch element
    :type weight: riemann.TN, optional
    :param size_average: Deprecated
    :type size_average: bool, optional
@@ -1759,9 +3162,9 @@ Loss Functions
 
 .. class:: riemann.nn.HuberLoss(delta=1.0, size_average=None, reduce=None, reduction='mean')
 
-   Creates a criterion that uses a squared term if the absolute element-wise error is less than delta, otherwise an L1 term.
+   Huber loss function, uses squared error when error is less than delta, otherwise uses linear error.
 
-   :param delta: Threshold where the loss function changes from quadratic to linear
+   :param delta: Threshold at which the loss function changes from quadratic to linear
    :type delta: float, optional
    :param size_average: Deprecated
    :type size_average: bool, optional
@@ -1772,9 +3175,9 @@ Loss Functions
 
 .. class:: riemann.nn.SmoothL1Loss(beta=1.0, size_average=None, reduce=None, reduction='mean')
 
-   Creates a criterion that combines L1 loss and L2 loss, using quadratic loss for small errors and linear loss for large errors.
+   Smooth L1 loss, combines advantages of L1 and L2 losses, uses quadratic loss for small errors and linear loss for large errors.
 
-   :param beta: Threshold controlling the transition from quadratic to linear loss
+   :param beta: Threshold controlling transition from quadratic to linear loss
    :type beta: float, optional
    :param size_average: Deprecated
    :type size_average: bool, optional
@@ -1783,143 +3186,1395 @@ Loss Functions
    :param reduction: Specifies the reduction to apply to the output
    :type reduction: str, optional
 
-Optimizer
-=========
+Functional Interface
+~~~~~~~~~~~~~~~~~~~~
 
-.. class:: riemann.optim.Optimizer
+The ``riemann.nn.functional`` module provides functional implementations of various neural network operations.
+
+Linear Functions
+````````````````
+.. function:: riemann.nn.functional.linear(input, weight, bias=None)
+
+   Applies linear transformation: y = xA^T + b
+
+   :param input: Input tensor with shape ``(*, in_features)``
+   :type input: riemann.TN
+   :param weight: Weight tensor with shape ``(out_features, in_features)``
+   :type weight: riemann.TN
+   :param bias: Bias tensor with shape ``(out_features)``. Default: None
+   :type bias: riemann.TN, optional
+   :return: Output tensor with shape ``(*, out_features)``
+   :rtype: riemann.TN
+
+Activation Functions
+````````````````````
+.. function:: riemann.nn.functional.sigmoid(input)
+
+   Applies element-wise sigmoid function: sigmoid(x) = 1 / (1 + exp(-x))
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: Output tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.silu(input)
+
+   Applies Sigmoid Linear Unit (SiLU) activation function: silu(x) = x * sigmoid(x)
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: Output tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.tanh(input)
+
+   Applies hyperbolic tangent activation function: tanh(x) = (exp(x) - exp(-x)) / (exp(x) + exp(-x))
+
+   :param input: Input tensor
+   :type input: riemann.TN
+
+Dropout Functions
+`````````````````
+
+.. function:: riemann.nn.functional.dropout(input, p=0.5, training=True, inplace=False)
+
+   During training, randomly zeroes elements of the input tensor with probability p, and scales remaining elements by 1/(1-p).
+   During evaluation, no operation is performed.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param p: Dropout probability
+   :type p: float, optional
+   :param training: Whether in training mode
+   :type training: bool, optional
+   :param inplace: Whether to perform operation in-place
+   :type inplace: bool, optional
+   :return: Tensor after applying dropout
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.dropout2d(input, p=0.5, training=True, inplace=False)
+
+   During training, randomly zeroes entire channels of the input tensor with probability p, and scales remaining channels by 1/(1-p).
+   During evaluation, no operation is performed.
+
+   :param input: Input tensor with shape (N, C, H, W)
+   :type input: riemann.TN
+   :param p: Dropout probability
+   :type p: float, optional
+   :param training: Whether in training mode
+   :type training: bool, optional
+   :param inplace: Whether to perform operation in-place
+   :type inplace: bool, optional
+   :return: Tensor after applying dropout
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.dropout3d(input, p=0.5, training=True, inplace=False)
+
+   During training, randomly zeroes entire channels of the input tensor with probability p, and scales remaining channels by 1/(1-p).
+   During evaluation, no operation is performed.
+
+   :param input: Input tensor with shape (N, C, D, H, W)
+   :type input: riemann.TN
+   :param p: Dropout probability
+   :type p: float, optional
+   :param training: Whether in training mode
+   :type training: bool, optional
+   :param inplace: Whether to perform operation in-place
+   :type inplace: bool, optional
+   :return: Tensor after applying dropout
+   :rtype: riemann.TN
+
+Normalization Functions
+```````````````````````
+.. function:: riemann.nn.functional.batch_norm(input, running_mean=None, running_var=None, weight=None, bias=None, training=False, momentum=0.1, eps=1e-5)
+
+Applies batch normalization to the input tensor.
+
+:param input: Input tensor with shape (N, C), (N, C, L), (N, C, H, W) or (N, C, D, H, W)
+
+:type input: riemann.TN
+
+:param running_mean: Running mean with shape (C,)
+
+:type running_mean: riemann.TN, optional
+
+:param running_var: Running variance with shape (C,)
+
+:type running_var: riemann.TN, optional
+
+:param weight: Learnable scaling parameter γ with shape (C,)
+
+:type weight: riemann.TN, optional
+
+:param bias: Learnable offset parameter β with shape (C,)
+
+:type bias: riemann.TN, optional
+
+:param training: Whether in training mode
+
+:type training: bool, optional
+
+:param momentum: Momentum for running statistics
+
+:type momentum: float, optional
+
+:param eps: Small constant for numerical stability
+
+:type eps: float, optional
+
+:return: Normalized tensor with same shape as input
+
+:rtype: riemann.TN
+
+.. function:: riemann.nn.functional.layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-05)
+
+Applies layer normalization to specified dimensions of the input tensor.
+
+:param input: Input tensor
+
+:type input: riemann.TN
+
+:param normalized_shape: Integer or tuple specifying dimensions to normalize
+
+:type normalized_shape: int or tuple
+
+:param weight: Optional weight tensor (γ) for affine transformation
+
+:type weight: riemann.TN, optional
+
+:param bias: Optional bias tensor (β) for affine transformation
+
+:type bias: riemann.TN, optional
+
+:param eps: Small value added to variance to avoid division by zero
+
+:type eps: float, optional
+
+:return: Normalized tensor with same shape as input
+
+:rtype: riemann.TN
+
+Embedding Functions
+```````````````````
+.. function:: riemann.nn.functional.embedding(input, weight, padding_idx=None, max_norm=None, norm_type=2.0, scale_grad_by_freq=False, sparse=False)
+
+   Looks up embedding vectors for input indices from an embedding matrix.
+
+   :param input: Tensor containing indices with arbitrary shape
+   :type input: riemann.TN
+   :param weight: Embedding matrix with shape (num_embeddings, embedding_dim)
+   :type weight: riemann.TN
+   :param padding_idx: If specified, embedding vectors at this index do not participate in gradient computation and remain unchanged during training
+   :type padding_idx: int, optional
+   :param max_norm: If specified, all embedding vectors with norm exceeding max_norm will be renormalized to max_norm
+   :type max_norm: float, optional
+   :param norm_type: p-value for norm calculation, defaults to 2 (L2 norm)
+   :type norm_type: float, optional
+   :param scale_grad_by_freq: If True, gradients will be scaled by frequency of each word in mini-batch
+   :type scale_grad_by_freq: bool, optional
+   :param sparse: If True, gradient of weight will be a sparse tensor
+   :type sparse: bool, optional
+   :return: Output tensor with shape (``*``, embedding_dim), where ``*`` is the shape of input
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.softmax(input, dim)
+
+   Applies softmax function along the specified dimension
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param dim: Dimension to compute softmax
+   :type dim: int
+   :return: Output tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.log_softmax(input, dim=-1)
+
+   Applies log softmax function for numerical stability
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param dim: Dimension to compute log_softmax
+   :type dim: int, optional
+   :return: Output tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.relu(input)
+
+   Applies rectified linear unit activation function: relu(x) = max(0, x)
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: Output tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.leaky_relu(input, alpha=0.01)
+
+   Applies leaky rectified linear unit activation function
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param alpha: Slope of the negative region
+   :type alpha: float, optional
+   :return: Output tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.prelu(input, alpha)
+
+   Applies parametric rectified linear unit activation function
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param alpha: Learnable parameter tensor
+   :type alpha: riemann.TN
+   :return: Output tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.rrelu(input, lower=1.0/8.0, upper=1.0/3.0, training=True)
+
+   Applies randomized rectified linear unit activation function
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param lower: Lower bound of uniform distribution
+   :type lower: float, optional
+   :param upper: Upper bound of uniform distribution
+   :type upper: float, optional
+   :param training: Whether to use randomized alpha (training) or fixed alpha (evaluation)
+   :type training: bool, optional
+   :return: Output tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.gelu(input)
+
+   Applies Gaussian Error Linear Unit activation function
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: Output tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.softplus(input, beta=1.0, threshold=20.0)
+
+   Applies Softplus activation function: softplus(x) = (1 / beta) * log(1 + exp(beta * x))
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param beta: Slope of the linear part
+   :type beta: float, optional
+   :param threshold: Threshold for numerical stability
+   :type threshold: float, optional
+   :return: Output tensor
+   :rtype: riemann.TN
+
+Loss Functions
+``````````````
+
+.. function:: riemann.nn.functional.l1_loss(input, target, size_average=None, reduce=None, reduction='mean')
+
+Compute L1 (absolute error) loss
+
+:param input: Input tensor
+
+:type input: riemann.TN
+
+:param target: Target tensor
+
+:type target: riemann.TN
+
+:param size_average: Deprecated
+
+:type size_average: bool, optional
+
+:param reduce: Deprecated
+
+:type reduce: bool, optional
+
+:param reduction: Specifies the reduction to apply to the output
+
+:type reduction: str, optional
+
+:return: Loss value
+
+:rtype: riemann.TN
+
+.. function:: riemann.nn.functional.smooth_l1_loss(input, target, size_average=None, reduce=None, reduction='mean', beta=1.0)
+
+Compute smooth L1 loss
+
+:param input: Input tensor
+
+:type input: riemann.TN
+
+:param target: Target tensor
+
+:type target: riemann.TN
+
+:param size_average: Deprecated
+
+:type size_average: bool, optional
+
+:param reduce: Deprecated
+
+:type reduce: bool, optional
+
+:param reduction: Specifies the reduction to apply to the output
+
+:type reduction: str, optional
+
+:param beta: Threshold at which the loss function changes from quadratic to linear
+
+:type beta: float, optional
+
+:return: Loss value
+
+:rtype: riemann.TN
+
+.. function:: riemann.nn.functional.cross_entropy(input, target, weight=None, size_average=None, ignore_index=-100, reduce=None, reduction='mean', label_smoothing=0.0)
+
+Compute cross entropy loss
+
+:param input: Input tensor
+
+:type input: riemann.TN
+
+:param target: Target tensor
+
+:type target: riemann.TN
+
+:param weight: Manual scaling weight for each class
+
+:type weight: riemann.TN, optional
+
+:param size_average: Deprecated
+
+:type size_average: bool, optional
+
+:param ignore_index: Specifies target value to ignore
+
+:type ignore_index: int, optional
+
+:param reduce: Deprecated
+
+:type reduce: bool, optional
+
+:param reduction: Specifies the reduction to apply to the output
+
+:type reduction: str, optional
+
+:param label_smoothing: Amount of label smoothing
+
+:type label_smoothing: float, optional
+
+:return: Loss value
+
+:rtype: riemann.TN
+
+.. function:: riemann.nn.functional.binary_cross_entropy_with_logits(input, target, weight=None, size_average=None, reduce=None, reduction='mean', pos_weight=None)
+
+Compute binary cross entropy loss with logits
+
+:param input: Input tensor
+
+:type input: riemann.TN
+
+:param target: Target tensor
+
+:type target: riemann.TN
+
+:param weight: Manual scaling weight for each batch element
+
+:type weight: riemann.TN, optional
+
+:param size_average: Deprecated
+
+:type size_average: bool, optional
+
+:param reduce: Deprecated
+
+:type reduce: bool, optional
+
+:param reduction: Specifies the reduction to apply to the output
+
+:type reduction: str, optional
+
+:param pos_weight: Weight of positive class
+
+:type pos_weight: riemann.TN, optional
+
+:return: Loss value
+
+:rtype: riemann.TN
+
+.. function:: riemann.nn.functional.huber_loss(input, target, delta=1.0, size_average=None, reduce=None, reduction='mean')
+
+Compute Huber loss
+
+:param input: Input tensor
+
+:type input: riemann.TN
+
+:param target: Target tensor
+
+:type target: riemann.TN
+
+:param delta: Threshold at which the loss function changes from quadratic to linear
+
+:type delta: float, optional
+
+:param size_average: Deprecated
+
+:type size_average: bool, optional
+
+:param reduce: Deprecated
+
+:type reduce: bool, optional
+
+:param reduction: Specifies the reduction to apply to the output
+
+:type reduction: str, optional
+
+:return: Loss value
+
+:rtype: riemann.TN
+
+.. function:: riemann.nn.functional.nll_loss(input, target, weight=None, ignore_index=-100, reduction='mean')
+
+Compute negative log likelihood loss
+
+:param input: Input tensor
+
+:type input: riemann.TN
+
+:param target: Target tensor
+
+:type target: riemann.TN
+
+:param weight: Manual scaling weight for each class
+
+:type weight: riemann.TN, optional
+
+:param ignore_index: Specifies target value to ignore
+
+:type ignore_index: int, optional
+
+:param reduction: Specifies the reduction to apply to the output
+
+:type reduction: str, optional
+
+:return: Loss value
+
+:rtype: riemann.TN
+
+Convolution Functions
+`````````````````````
+
+.. function:: riemann.nn.functional.conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1)
+
+   Apply 1D convolution to input signals
+
+   :param input: Input tensor with shape (N, C_in, L_in)
+   :type input: riemann.TN
+   :param weight: Weight tensor with shape (C_out, C_in/groups, K)
+   :type weight: riemann.TN
+   :param bias: Bias tensor with shape (C_out). Default: None
+   :type bias: riemann.TN, optional
+   :param stride: Convolution stride
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to both sides of the input
+   :type padding: int or tuple, optional
+   :param dilation: Spacing between kernel elements
+   :type dilation: int or tuple, optional
+   :param groups: Number of blocked connections from input channels to output channels
+   :type groups: int, optional
+   :return: Output tensor with shape (N, C_out, L_out)
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1)
+
+   Apply 2D convolution to input images
+
+   :param input: Input tensor with shape (N, C_in, H_in, W_in)
+   :type input: riemann.TN
+   :param weight: Weight tensor with shape (C_out, C_in/groups, K_h, K_w)
+   :type weight: riemann.TN
+   :param bias: Bias tensor with shape (C_out). Default: None
+   :type bias: riemann.TN, optional
+   :param stride: Convolution stride
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to both sides of the input
+   :type padding: int or tuple, optional
+   :param dilation: Spacing between kernel elements
+   :type dilation: int or tuple, optional
+   :param groups: Number of blocked connections from input channels to output channels
+   :type groups: int, optional
+   :return: Output tensor with shape (N, C_out, H_out, W_out)
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.conv3d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1)
+
+   Apply 3D convolution to input volumes
+
+   :param input: Input tensor with shape (N, C_in, D_in, H_in, W_in)
+   :type input: riemann.TN
+   :param weight: Weight tensor with shape (C_out, C_in/groups, K_d, K_h, K_w)
+   :type weight: riemann.TN
+   :param bias: Bias tensor with shape (C_out). Default: None
+   :type bias: riemann.TN, optional
+   :param stride: Convolution stride
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to all sides of the input
+   :type padding: int or tuple, optional
+   :param dilation: Spacing between kernel elements
+   :type dilation: int or tuple, optional
+   :param groups: Number of blocked connections from input channels to output channels
+   :type groups: int, optional
+   :return: Output tensor with shape (N, C_out, D_out, H_out, W_out)
+   :rtype: riemann.TN
+
+Pooling Functions
+`````````````````
+
+.. function:: riemann.nn.functional.max_pool1d(input, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False)
+
+   Apply 1D max pooling to input signals
+
+   :param input: Input tensor with shape (N, C, L_in)
+   :type input: riemann.TN
+   :param kernel_size: Pooling window size
+   :type kernel_size: int or tuple
+   :param stride: Stride of the pooling window. Default: kernel_size
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to both sides of the input
+   :type padding: int or tuple, optional
+   :param dilation: Spacing between pooling window elements
+   :type dilation: int or tuple, optional
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
+   :type ceil_mode: bool, optional
+   :param return_indices: Whether to return indices of maximum values
+   :type return_indices: bool, optional
+   :return: Output tensor with shape (N, C, L_out), or tuple (TN, TN) if return_indices is True
+   :rtype: riemann.TN or tuple
+
+.. function:: riemann.nn.functional.max_pool2d(input, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False)
+
+   Apply 2D max pooling to input images
+
+   :param input: Input tensor with shape (N, C, H_in, W_in)
+   :type input: riemann.TN
+   :param kernel_size: Pooling window size
+   :type kernel_size: int or tuple
+   :param stride: Stride of the pooling window. Default: kernel_size
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to both sides of the input
+   :type padding: int or tuple, optional
+   :param dilation: Spacing between pooling window elements
+   :type dilation: int or tuple, optional
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
+   :type ceil_mode: bool, optional
+   :param return_indices: Whether to return indices of maximum values
+   :type return_indices: bool, optional
+   :return: Output tensor with shape (N, C, H_out, W_out), or tuple (TN, TN) if return_indices is True
+   :rtype: riemann.TN or tuple
+
+.. function:: riemann.nn.functional.max_pool3d(input, kernel_size, stride=None, padding=0, dilation=1, ceil_mode=False, return_indices=False)
+
+   Apply 3D max pooling to input volume data
+
+   :param input: Input tensor with shape (N, C, D_in, H_in, W_in)
+   :type input: riemann.TN
+   :param kernel_size: Pooling window size
+   :type kernel_size: int or tuple
+   :param stride: Stride of the pooling window. Default: kernel_size
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to all sides of the input
+   :type padding: int or tuple, optional
+   :param dilation: Spacing between pooling window elements
+   :type dilation: int or tuple, optional
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
+   :type ceil_mode: bool, optional
+   :param return_indices: Whether to return indices of maximum values
+   :type return_indices: bool, optional
+   :return: Output tensor with shape (N, C, D_out, H_out, W_out), or tuple (TN, TN) if return_indices is True
+   :rtype: riemann.TN or tuple
+
+.. function:: riemann.nn.functional.avg_pool1d(input, kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True, divisor_override=None)
+
+   Apply 1D average pooling to input signals
+
+   :param input: Input tensor with shape (N, C, L_in)
+   :type input: riemann.TN
+   :param kernel_size: Pooling window size
+   :type kernel_size: int or tuple
+   :param stride: Stride of the pooling window. Default: kernel_size
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to both sides of the input
+   :type padding: int or tuple, optional
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
+   :type ceil_mode: bool, optional
+   :param count_include_pad: Whether to include zero-padding when calculating average
+   :type count_include_pad: bool, optional
+   :param divisor_override: If specified, will be used as denominator
+   :type divisor_override: int, optional
+   :return: Output tensor with shape (N, C, L_out)
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.avg_pool2d(input, kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True, divisor_override=None)
+
+   Apply 2D average pooling to input images
+
+   :param input: Input tensor with shape (N, C, H_in, W_in)
+   :type input: riemann.TN
+   :param kernel_size: Pooling window size
+   :type kernel_size: int or tuple
+   :param stride: Stride of the pooling window. Default: kernel_size
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to both sides of the input
+   :type padding: int or tuple, optional
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
+   :type ceil_mode: bool, optional
+   :param count_include_pad: Whether to include zero-padding when calculating average
+   :type count_include_pad: bool, optional
+   :param divisor_override: If specified, will be used as denominator
+   :type divisor_override: int, optional
+   :return: Output tensor with shape (N, C, H_out, W_out)
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.avg_pool3d(input, kernel_size, stride=None, padding=0, ceil_mode=False, count_include_pad=True, divisor_override=None)
+
+   Apply 3D average pooling to input volume data
+
+   :param input: Input tensor with shape (N, C, D_in, H_in, W_in)
+   :type input: riemann.TN
+   :param kernel_size: Pooling window size
+   :type kernel_size: int or tuple
+   :param stride: Stride of the pooling window. Default: kernel_size
+   :type stride: int or tuple, optional
+   :param padding: Zero-padding added to all sides of the input
+   :type padding: int or tuple, optional
+   :param ceil_mode: Whether to use ceiling instead of floor to compute output shape
+   :type ceil_mode: bool, optional
+   :param count_include_pad: Whether to include zero-padding when calculating average
+   :type count_include_pad: bool, optional
+   :param divisor_override: If specified, will be used as denominator
+   :type divisor_override: int, optional
+   :return: Output tensor with shape (N, C, D_out, H_out, W_out)
+   :rtype: riemann.TN
+
+Utility Functions
+`````````````````
+.. function:: riemann.nn.functional.one_hot(target, num_classes)
+
+   Convert category indices to one-hot encoded tensors
+
+   :param target: Target tensor with shape ``(N, *)``
+   :type target: riemann.TN
+   :param num_classes: Number of classes
+   :type num_classes: int
+   :return: One-hot encoded tensor with shape ``(N, *, num_classes)``
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.unfold(input, kernel_size, dilation=1, padding=0, stride=1)
+
+   Extract sliding local blocks from batched input tensor
+
+   :param input: Input tensor with shape (N, C, H, W)
+   :type input: riemann.TN
+   :param kernel_size: Sliding block size
+   :type kernel_size: int or tuple
+   :param dilation: Spacing between kernel elements
+   :type dilation: int or tuple, optional
+   :param padding: Zero-padding added to both sides of the input
+   :type padding: int or tuple, optional
+   :param stride: Stride of the sliding block
+   :type stride: int or tuple, optional
+   :return: Unfolded tensor with shape (N, C * kernel_size[0] * kernel_size[1], L)
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.fold(input, output_size, kernel_size, dilation=1, padding=0, stride=1)
+
+Fold the unfolded tensor back to its original shape
+
+:param input: Input tensor with shape (N, C * kernel_size[0] * kernel_size[1], L)
+
+:type input: riemann.TN
+
+:param output_size: Output tensor size (H, W)
+
+:type output_size: int or tuple
+
+:param kernel_size: Sliding block size
+
+:type kernel_size: int or tuple
+
+:param dilation: Spacing between kernel elements
+
+:type dilation: int or tuple, optional
+
+:param padding: Zero-padding added to both sides of the input
+
+:type padding: int or tuple, optional
+
+:param stride: Stride of the sliding block
+
+:type stride: int or tuple, optional
+
+:return: Folded tensor with shape (N, C, H, W)
+
+:rtype: riemann.TN
+
+Datasets
+--------
+
+Dataset Classes
+~~~~~~~~~~~~~~~
+
+.. class:: riemann.utils.Dataset
+
+   Abstract base class for datasets, defining the standard interface that all datasets must implement.
+
+   .. method:: __len__()
+
+      Return the number of samples in the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get a single sample from the dataset at the given index.
+
+.. class:: riemann.utils.TensorDataset(*tensors)
+
+   Simple tensor dataset implementation that uses the first dimension of multiple tensors as the dataset dimension.
+
+   :param \*tensors: Variable number of tensors, all tensors must have the same size in the first dimension
+   :type \*tensors: riemann.TN
+
+   .. method:: __len__()
+
+      Return the size of the dataset, which is the size of the first dimension of the tensors.
+
+   .. method:: __getitem__(index)
+
+      Get sample data at the specified index.
+
+Data Loaders
+~~~~~~~~~~~~
+
+.. class:: riemann.utils.DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=None, drop_last=False)
+
+   Efficient data loader supporting batch processing, data shuffling, and multi-process loading.
+
+   :param dataset: Dataset to load data from
+   :type dataset: riemann.utils.Dataset
+   :param batch_size: Size of each batch, defaults to 1
+   :type batch_size: int, optional
+   :param shuffle: Whether to shuffle the data at the beginning of each epoch, defaults to False
+   :type shuffle: bool, optional
+   :param num_workers: Number of worker processes for data loading, 0 means loading in the main process, defaults to 0
+   :type num_workers: int, optional
+   :param collate_fn: Batch processing function for combining samples into batches, defaults to default_collate
+   :type collate_fn: callable, optional
+   :param drop_last: Whether to drop the last incomplete batch if dataset size is not divisible by batch size, defaults to False
+   :type drop_last: bool, optional
+
+   .. method:: __len__()
+
+      Return the number of batches in the data loader.
+
+   .. method:: __iter__()
+
+      Return an iterator for the data loader.
+
+Dataset Utility Functions
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.utils.default_collate(batch)
+
+Default batch processing function that converts a batch of sample data into tensor format suitable for model input.
+
+:param batch: List of samples in a batch, each sample can be various data types
+
+:type batch: list
+
+:return: Batch data combined according to input type
+
+.. function:: riemann.utils.clip_grad_norm_(parameters, max_norm, norm_type=2.0, error_if_nonfinite=False)
+
+Clip gradients by norm.
+
+:param parameters: Collection of parameters whose gradients need to be clipped
+
+:type parameters: Iterable[riemann.TN]
+
+:param max_norm: Maximum norm of gradients
+
+:type max_norm: float or int
+
+:param norm_type: Type of norm, defaults to 2 (L2 norm)
+
+:type norm_type: float or int, optional
+
+:param error_if_nonfinite: Whether to throw an error if gradients contain non-finite values (such as NaN or inf), defaults to False
+
+:type error_if_nonfinite: bool, optional
+
+:return: Gradient norm before clipping
+
+:rtype: float
+
+.. function:: riemann.utils.clip_grad_value_(parameters, clip_value, error_if_nonfinite=False)
+
+Clip gradients by value.
+
+:param parameters: Collection of parameters whose gradients need to be clipped
+
+:type parameters: Iterable[riemann.TN]
+
+:param clip_value: Threshold value for gradient clipping
+
+:type clip_value: float or int
+
+:param error_if_nonfinite: Whether to throw an error if gradients contain non-finite values (such as NaN or inf), defaults to False
+
+:type error_if_nonfinite: bool, optional
+
+Vision
+------
+
+.. module:: riemann.vision
+
+Datasets
+~~~~~~~~
+
+.. class:: riemann.vision.datasets.MNIST(root, train=True, transform=None, target_transform=None)
+
+   MNIST dataset class for loading and processing the MNIST handwritten digit dataset.
+
+   :param root: Root directory of the dataset
+   :type root: str
+   :param train: Whether to load the training set, defaults to True
+   :type train: bool
+   :param transform: Transformation function applied to images
+   :type transform: callable, optional
+   :param target_transform: Transformation function applied to targets
+   :type target_transform: callable, optional
+
+   .. method:: __len__()
+
+      Return the number of samples in the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get a single sample from the dataset at the given index.
+
+.. class:: riemann.vision.datasets.EasyMNIST(root, train=True, onehot_label=True)
+
+   Subclass inherited from MNIST, applies normalization, standardization, and flattening transformations to image data during initialization, and performs one-hot encoding or conversion to scalar tensors for labels.
+
+   :param root: Root directory of the dataset
+   :type root: str
+   :param train: Whether to load the training set, defaults to True
+   :type train: bool
+   :param onehot_label: Whether to use one-hot encoded labels, defaults to True
+   :type onehot_label: bool
+
+   .. method:: __len__()
+
+      Return the size of the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get sample data at the specified index.
+
+.. class:: riemann.vision.datasets.CIFAR10(root, train=True, transform=None, target_transform=None)
+
+   CIFAR-10 dataset class for loading and processing the CIFAR-10 image dataset.
+
+   :param root: Root directory of the dataset
+   :type root: str
+   :param train: Whether to load the training set, defaults to True
+   :type train: bool
+   :param transform: Transformation function applied to images
+   :type transform: callable, optional
+   :param target_transform: Transformation function applied to targets
+   :type target_transform: callable, optional
+
+   .. method:: __len__()
+
+      Return the size of the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get sample data at the specified index.
+
+Image Transforms
+~~~~~~~~~~~~~~~~
+
+.. module:: riemann.vision.transforms
+
+.. class:: riemann.vision.transforms.Transform
+
+   Base class for all transformation classes.
+
+   .. method:: __call__(img)
+
+      Execute the transformation.
+
+.. class:: riemann.vision.transforms.Compose(transforms)
+
+   Combine multiple transformations into a single transformation.
+
+   :param transforms: List of transformations to combine
+   :type transforms: list of Transform objects
+
+.. class:: riemann.vision.transforms.ToTensor
+
+   Convert PIL image or NumPy array to TN tensor.
+
+.. class:: riemann.vision.transforms.ToPILImage
+
+   Convert TN tensor or NumPy array to PIL image.
+
+.. class:: riemann.vision.transforms.Normalize(mean, std, inplace=False)
+
+   Normalize tensor using mean and standard deviation.
+
+   :param mean: Mean for each channel
+   :type mean: sequence
+   :param std: Standard deviation for each channel
+   :type std: sequence
+   :param inplace: Whether to perform operation in-place, defaults to False
+   :type inplace: bool, optional
+
+.. class:: riemann.vision.transforms.Resize(size, interpolation=BILINEAR)
+
+   Resize PIL image.
+
+   :param size: Target size. If int, the smaller edge will be resized to this size while maintaining aspect ratio. If (h, w), resize directly to this size.
+   :type size: int or tuple
+   :param interpolation: Interpolation method, defaults to BILINEAR
+   :type interpolation: int, optional
+
+.. class:: riemann.vision.transforms.CenterCrop(size)
+
+   Center crop.
+
+   :param size: Crop size. If int, crop to square (size, size). If (h, w), crop to this size.
+   :type size: int or tuple
+
+.. class:: riemann.vision.transforms.RandomHorizontalFlip(p=0.5)
+
+   Random horizontal flip.
+
+   :param p: Flip probability, defaults to 0.5
+   :type p: float, optional
+
+.. class:: riemann.vision.transforms.RandomVerticalFlip(p=0.5)
+
+   Random vertical flip.
+
+   :param p: Flip probability, defaults to 0.5
+   :type p: float, optional
+
+.. class:: riemann.vision.transforms.RandomRotation(degrees, resample=NEAREST, expand=False, center=None)
+
+   Random rotation.
+
+   :param degrees: Rotation angle range. If int, select from (-degrees, degrees). If (min, max), select from (min, max).
+   :type degrees: int or tuple
+   :param resample: Resampling method, defaults to NEAREST
+   :type resample: int, optional
+   :param expand: Whether to expand image to accommodate rotation, defaults to False
+   :type expand: bool, optional
+   :param center: Rotation center, defaults to image center
+   :type center: tuple, optional
+
+.. class:: riemann.vision.transforms.ColorJitter(brightness=0, contrast=0, saturation=0, hue=0)
+
+   Random color transformation.
+
+   :param brightness: Brightness adjustment factor
+   :type brightness: float or tuple
+   :param contrast: Contrast adjustment factor
+   :type contrast: float or tuple
+   :param saturation: Saturation adjustment factor
+   :type saturation: float or tuple
+   :param hue: Hue adjustment factor
+   :type hue: float or tuple
+
+.. class:: riemann.vision.transforms.Grayscale(num_output_channels=1)
+
+   Convert image to grayscale.
+
+   :param num_output_channels: Number of output channels, 1 or 3, defaults to 1
+   :type num_output_channels: int
+
+.. class:: riemann.vision.transforms.RandomGrayscale(p=0.1)
+
+   Randomly convert to grayscale.
+
+   :param p: Probability of converting to grayscale, defaults to 0.1
+   :type p: float, optional
+
+.. class:: riemann.vision.transforms.RandomCrop(size, padding=None)
+
+   Crop image at random position.
+
+   :param size: Crop size. If int, crop to square (size, size). If (h, w), crop to this size.
+   :type size: int or tuple
+   :param padding: Padding size, defaults to None
+   :type padding: int or tuple, optional
+
+.. class:: riemann.vision.transforms.RandomResizedCrop(size, scale=(0.08, 1.0), ratio=(3/4, 4/3), interpolation=BILINEAR)
+
+   Random crop and resize.
+
+   :param size: Target size. If int, resize to square (size, size). If (h, w), resize to this size.
+   :type size: int or tuple
+   :param scale: Crop area ratio range relative to original image, defaults to (0.08, 1.0)
+   :type scale: tuple, optional
+   :param ratio: Crop aspect ratio range, defaults to (3/4, 4/3)
+   :type ratio: tuple, optional
+   :param interpolation: Interpolation method, defaults to BILINEAR
+   :type interpolation: int, optional
+
+.. class:: riemann.vision.transforms.FiveCrop(size)
+
+   Five crop.
+
+   :param size: Crop size. If int, crop to square (size, size). If (h, w), crop to this size.
+   :type size: int or tuple
+
+.. class:: riemann.vision.transforms.TenCrop(size, vertical_flip=False)
+
+   Ten crop.
+
+   :param size: Crop size. If int, crop to square (size, size). If (h, w), crop to this size.
+   :type size: int or tuple
+   :param vertical_flip: Whether to include vertical flip version, defaults to False
+   :type vertical_flip: bool, optional
+
+.. class:: riemann.vision.transforms.Pad(padding, fill=0, padding_mode='constant')
+
+   Padding.
+
+   :param padding: Padding size. If int, pad all sides equally. If (pad_l, pad_r, pad_t, pad_b), specify left, right, top, bottom padding respectively. If (pad_h, pad_w), specify height and width padding respectively.
+   :type padding: int or tuple
+   :param fill: Fill value, defaults to 0
+   :type fill: int or tuple
+   :param padding_mode: Padding mode, defaults to 'constant'
+   :type padding_mode: str, optional
+
+.. class:: riemann.vision.transforms.Lambda(lambd)
+
+   Use user-defined lambda function as transformation.
+
+   :param lambd: Lambda function
+   :type lambd: function
+
+Optimization
+------------
+
+Optimizers
+~~~~~~~~~~
+
+.. class:: riemann.optim.Optimizer(params, defaults)
 
    Base class for all optimizers.
 
+   :param params: Iterator of parameters to optimize or list of dictionaries defining parameter groups
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param defaults: Default hyperparameters for the optimizer
+   :type defaults: Dict[str, Any]
 
-.. class:: riemann.optim.Adagrad(params, lr=0.01, lr_decay=0.0, weight_decay=0.0, initial_accumulator_value=0.0, eps=1e-10)
+   .. method:: step(closure=None)
 
-   Adagrad (Adaptive Gradient Algorithm) optimizer
-   
-   An adaptive learning rate optimization algorithm that adjusts learning rates based on the frequency of each parameter's updates.
-   Parameters that are updated infrequently (sparse features) get larger learning rates, and vice versa.
-   
-   Parameter update formula: θ_i = θ_i - (η / (√G_ii + ε)) * ∇θ_i L(θ)
-   where G_ii is the sum of squares of gradients for parameter i
-   
-   Application scenarios:
-       - Training with sparse data
-       - Problems where some features are infrequently updated
-       - Online learning tasks
+      Perform a single optimization step
 
-   Initialize Adagrad optimizer
-   
-   Parameters:
-       params: Parameter group to be optimized
-       lr: Learning rate (default: 0.01)
-       eps: Epsilon value to prevent division by zero (default: 1e-10)
-       weight_decay: L2 regularization coefficient (default: 0)
-   
-   Exceptions:
-       ValueError: Thrown when learning rate, weight decay, or epsilon is negative
+      :param closure: A closure that reevaluates the model and returns the loss
+      :type closure: callable, optional
+      :return: Loss value if closure is provided, otherwise None
+      :rtype: float or None
 
+   .. method:: zero_grad(set_to_none=False)
 
-.. class:: riemann.optim.Adam(params, lr=0.001, betas=(0.9, 0.999), eps=1e-08, weight_decay=0, amsgrad=False)
+      Set the gradients of all optimized parameters to zero
 
-   Adam (Adaptive Moment Estimation) optimizer
-   
-   An adaptive learning rate optimization algorithm that computes individual learning rates for different parameters based on first and second moment estimates.
-   Combines the advantages of AdaGrad (handling sparse gradients) and RMSProp (handling non-stationary objectives).
-   
-   Parameter update formula: θ = θ - η * m̂ / (√v̂ + ε)
-   where m̂ and v̂ are the bias-corrected first and second moment estimates
-   
-   Application scenarios:
-       - Most deep learning tasks
-       - Training neural networks with large, sparse datasets
-       - Situations where adaptive learning rates are beneficial
+      :param set_to_none: Whether to set gradients to None instead of zero
+      :type set_to_none: bool, optional
 
-   Initialize Adam optimizer
-   
-   Parameters:
-       params: Parameter group to be optimized
-       lr: Learning rate (default: 0.001)
-       betas: Tuple of (beta1, beta2) for first and second moment estimates (default: (0.9, 0.999))
-       eps: Epsilon value to prevent division by zero (default: 1e-08)
-       weight_decay: L2 regularization coefficient (default: 0)
-   
-   Exceptions:
-       ValueError: Thrown when learning rate, weight decay, or epsilon is negative
-       ValueError: Thrown when beta parameters are not between 0 and 1 (exclusive)
+   .. method:: add_param_group(param_group)
 
+      Add a parameter group to the optimizer
+
+      :param param_group: Parameter group to add
+      :type param_group: Dict[str, Any]
+
+   .. method:: state_dict()
+
+      Return the optimizer's state dictionary
+
+      :return: Optimizer state
+      :rtype: Dict[str, Any]
+
+   .. method:: load_state_dict(state_dict)
+
+      Load the optimizer state
+
+      :param state_dict: State dictionary to load
+      :type state_dict: Dict[str, Any]
 
 .. class:: riemann.optim.GD(params, lr=0.01, weight_decay=0.0)
 
    Gradient Descent optimizer
-   
-   A basic optimization algorithm that updates parameters in the direction of the negative gradient.
-   Supports L2 regularization (weight decay) to prevent overfitting.
-   
-   Parameter update formula: θ = θ - η * ∇θL(θ)
-   where θ is the parameter, η is learning rate, and ∇θL(θ) is the gradient of loss function with respect to the parameter
-   
-   Application scenarios:
-       - Small datasets and simple models
-       - As a baseline for comparison with more complex optimization algorithms
 
-   Initialize Gradient Descent optimizer
-   
-   Parameters:
-       params: Parameter group to be optimized (must contain TN objects with requires_grad=True)
-       lr: Learning rate (default 0.01)
-       weight_decay: L2 regularization coefficient (default 0.0)
-   
-   Exceptions:
-       ValueError: Thrown when learning rate or weight decay coefficient is negative
+   :param params: Iterator of parameters to optimize or list of dictionaries defining parameter groups
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param lr: Learning rate
+   :type lr: float, optional
+   :param weight_decay: Weight decay (L2 regularization) coefficient
+   :type weight_decay: float, optional
 
+   .. method:: step()
+
+      Perform a single optimization step
+
+.. class:: riemann.optim.SGD(params, lr=0.01, momentum=0.0, weight_decay=0.0, dampening=0.0, nesterov=False)
+
+   Stochastic Gradient Descent optimizer
+
+   :param params: Iterator of parameters to optimize or list of dictionaries defining parameter groups
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param lr: Learning rate
+   :type lr: float, optional
+   :param momentum: Momentum factor
+   :type momentum: float, optional
+   :param weight_decay: Weight decay (L2 regularization) coefficient
+   :type weight_decay: float, optional
+   :param dampening: Dampening for momentum
+   :type dampening: float, optional
+   :param nesterov: Whether to enable Nesterov momentum
+   :type nesterov: bool, optional
+
+   .. method:: step(closure=None)
+
+      Perform a single optimization step
+
+      :param closure: A closure that reevaluates the model and returns the loss
+      :type closure: callable, optional
+      :return: Loss value if closure is provided, otherwise None
+      :rtype: float or None
+
+.. class:: riemann.optim.Adam(params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False)
+
+   Adam (Adaptive Moment Estimation) optimizer
+
+   :param params: Iterator of parameters to optimize or list of dictionaries defining parameter groups
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param lr: Learning rate
+   :type lr: float, optional
+   :param betas: Coefficients used for computing running averages of gradient and its square
+   :type betas: Tuple[float, float], optional
+   :param eps: Term added to the denominator to improve numerical stability
+   :type eps: float, optional
+   :param weight_decay: Weight decay (L2 regularization) coefficient
+   :type weight_decay: float, optional
+   :param amsgrad: Whether to use the AMSGrad variant
+   :type amsgrad: bool, optional
+
+   .. method:: step()
+
+      Perform a single optimization step
+
+.. class:: riemann.optim.Adagrad(params, lr=0.01, lr_decay=0.0, weight_decay=0.0, initial_accumulator_value=0.0, eps=1e-10)
+
+   Adagrad (Adaptive Gradient Algorithm) optimizer
+
+   :param params: Iterator of parameters to optimize or list of dictionaries defining parameter groups
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param lr: Learning rate
+   :type lr: float, optional
+   :param lr_decay: Learning rate decay
+   :type lr_decay: float, optional
+   :param weight_decay: Weight decay (L2 regularization) coefficient
+   :type weight_decay: float, optional
+   :param initial_accumulator_value: Initial value for the accumulator
+   :type initial_accumulator_value: float, optional
+   :param eps: Term added to the denominator to improve numerical stability
+   :type eps: float, optional
+
+   .. method:: step()
+
+      Perform a single optimization step
 
 .. class:: riemann.optim.LBFGS(params, lr=1.0, max_iter=20, max_eval=None, tolerance_grad=1e-05, tolerance_change=1e-09, history_size=100, line_search_fn=None)
 
-   L-BFGS (Limited-memory Broyden–Fletcher–Goldfarb–Shanno) optimizer
-   
-   A quasi-Newton optimization algorithm that approximates the inverse of Hessian matrix by maintaining a limited number of historical gradients and parameter changes.
-   Compared to standard BFGS, it uses less memory and is suitable for large-scale optimization problems.
-   
-   Note: Unlike other optimizers, LBFGS requires a closure function to recompute loss and gradients.
+   L-BFGS (Limited-memory Broyden-Fletcher-Goldfarb-Shanno) optimizer
 
-   Initialize LBFGS optimizer
-   
-   Parameters:
-       params: Parameter group to be optimized
-       lr: Learning rate (default: 1.0)
-       max_iter: Maximum number of iterations per optimization step (default: 20)
-       max_eval: Maximum number of function evaluations per optimization step (default: None, i.e., max_iter * 1.25)
-       tolerance_grad: Gradient convergence threshold (default: 1e-5)
-       tolerance_change: Parameter change convergence threshold (default: 1e-9)
-       history_size: History record size (default: 100)
-       line_search_fn: Line search function (default: None, using built-in strong Wolfe conditions line search)
+   :param params: Iterator of parameters to optimize or list of dictionaries defining parameter groups
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param lr: Learning rate
+   :type lr: float, optional
+   :param max_iter: Maximum number of iterations per optimization step
+   :type max_iter: int, optional
+   :param max_eval: Maximum number of function evaluations per optimization step
+   :type max_eval: int, optional
+   :param tolerance_grad: Gradient tolerance for convergence
+   :type tolerance_grad: float, optional
+   :param tolerance_change: Parameter change tolerance for convergence
+   :type tolerance_change: float, optional
+   :param history_size: Update history size
+   :type history_size: int, optional
+   :param line_search_fn: Line search function
+   :type line_search_fn: callable, optional
 
-.. class:: riemann.optim.SGD(params: Union[Iterable[Union[riemann.tensordef.TN, riemann.nn.module.Parameter]], List[Dict[str, Any]]], lr: float = 0.01, momentum: float = 0.0, weight_decay: float = 0.0, dampening: float = 0.0, nesterov: bool = False) -> None
+   .. method:: step(closure)
 
-   Stochastic Gradient Descent (SGD) optimizer
-   
-   A stochastic version of Gradient Descent that computes gradients using one batch of data per iteration.
-   Supports momentum to accelerate convergence and reduce oscillations, and supports Nesterov momentum.
-   
-   Parameter update formulas:
-       - Standard momentum: v = μ*v + ∇θL(θ), θ = θ - η*v
-       - Nesterov momentum: v = μ*v + ∇θL(θ) + μ*η*∇θL(θ), θ = θ - η*v
-   
-   Application scenarios:
-       - Training on large-scale datasets
-       - Complex optimization problems that need to escape local minima
-       - Default choice for most deep learning tasks
+      Perform a single optimization step
 
-   Initialize Stochastic Gradient Descent optimizer
-   
-   Parameters:
-       params: Parameter group to be optimized (must contain TN objects with requires_grad=True)
-       lr: Learning rate (default 0.01)
-       momentum: Momentum coefficient (default 0.0)
-       weight_decay: L2 regularization coefficient (default 0.0)
-       dampening: Momentum dampening coefficient (default 0.0)
-       nesterov: Whether to enable Nesterov momentum (default False)
-   
-   Exceptions:
-       ValueError: Thrown when learning rate, momentum coefficient, weight decay coefficient or dampening coefficient is negative
-       ValueError: Thrown when nesterov is enabled but momentum is 0
+      :param closure: A closure that reevaluates the model and returns the loss
+      :type closure: callable
+      :return: Loss value
+      :rtype: float
+
+Learning Rate Schedulers
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. class:: riemann.optim.lr_scheduler.LRScheduler(optimizer, last_epoch=-1, verbose=False)
+
+   Base class for all learning rate schedulers
+
+   :param optimizer: Optimizer whose learning rate will be adjusted
+   :type optimizer: riemann.optim.Optimizer
+   :param last_epoch: The index of last epoch
+   :type last_epoch: int, optional
+   :param verbose: Whether to print learning rate updates
+   :type verbose: bool, optional
+
+   .. method:: step(epoch=None)
+
+      Perform a single scheduler step
+
+      :param epoch: Current epoch index
+      :type epoch: int, optional
+
+   .. method:: get_lr()
+
+      Get the current learning rate for the current epoch
+
+      :return: Learning rate for each parameter group
+      :rtype: List[float]
+
+   .. method:: get_last_lr()
+
+      Return the last computed learning rate
+
+      :return: Learning rate for each parameter group
+      :rtype: List[float]
+
+   .. method:: state_dict()
+
+      Return the scheduler's state dictionary
+
+      :return: Scheduler state
+      :rtype: Dict[str, Any]
+
+   .. method:: load_state_dict(state_dict)
+
+      Load the scheduler state
+
+      :param state_dict: State dictionary to load
+      :type state_dict: Dict[str, Any]
+
+.. class:: riemann.optim.lr_scheduler.StepLR(optimizer, step_size, gamma=0.1, last_epoch=-1, verbose=False)
+
+   Decays the learning rate by gamma every step_size epochs
+
+   :param optimizer: Optimizer whose learning rate will be adjusted
+   :type optimizer: riemann.optim.Optimizer
+   :param step_size: Period of learning rate decay
+   :type step_size: int
+   :param gamma: Multiplicative factor of learning rate decay
+   :type gamma: float, optional
+   :param last_epoch: The index of last epoch
+   :type last_epoch: int, optional
+   :param verbose: Whether to print learning rate updates
+   :type verbose: bool, optional
+
+.. class:: riemann.optim.lr_scheduler.MultiStepLR(optimizer, milestones, gamma=0.1, last_epoch=-1, verbose=False)
+
+   Decays the learning rate by gamma at specified milestones
+
+   :param optimizer: Optimizer whose learning rate will be adjusted
+   :type optimizer: riemann.optim.Optimizer
+   :param milestones: List of epoch indices
+   :type milestones: List[int]
+   :param gamma: Multiplicative factor of learning rate decay
+   :type gamma: float, optional
+   :param last_epoch: The index of last epoch
+   :type last_epoch: int, optional
+   :param verbose: Whether to print learning rate updates
+   :type verbose: bool, optional
+
+.. class:: riemann.optim.lr_scheduler.ExponentialLR(optimizer, gamma, last_epoch=-1, verbose=False)
+
+   Exponentially decays the learning rate
+
+   :param optimizer: Optimizer whose learning rate will be adjusted
+   :type optimizer: riemann.optim.Optimizer
+   :param gamma: Multiplicative factor of learning rate decay
+   :type gamma: float
+   :param last_epoch: The index of last epoch
+   :type last_epoch: int, optional
+   :param verbose: Whether to print learning rate updates
+   :type verbose: bool, optional
+
+.. class:: riemann.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max, eta_min=0, last_epoch=-1, verbose=False)
+
+   Anneals the learning rate using cosine function
+
+   :param optimizer: Optimizer whose learning rate will be adjusted
+   :type optimizer: riemann.optim.Optimizer
+   :param T_max: Maximum number of iterations
+   :type T_max: int
+   :param eta_min: Minimum learning rate
+   :type eta_min: float, optional
+   :param last_epoch: The index of last epoch
+   :type last_epoch: int, optional
+   :param verbose: Whether to print learning rate updates
+   :type verbose: bool, optional
+
+.. class:: riemann.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, verbose=False, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-8)
+
+   Reduces learning rate when a metric has stopped improving
+
+   :param optimizer: Optimizer whose learning rate will be adjusted
+   :type optimizer: riemann.optim.Optimizer
+   :param mode: One of 'min' or 'max'
+   :type mode: str, optional
+   :param factor: Multiplicative factor of learning rate reduction
+   :type factor: float, optional
+   :param patience: Number of epochs with no improvement after which learning rate will be reduced
+   :type patience: int, optional
+   :param verbose: Whether to print learning rate updates
+   :type verbose: bool, optional
+   :param threshold: Threshold for measuring the new optimum
+   :type threshold: float, optional
+   :param threshold_mode: One of 'rel' or 'abs'
+   :type threshold_mode: str, optional
+   :param cooldown: Number of epochs to wait before resuming normal operation after learning rate has been reduced
+   :type cooldown: int, optional
+   :param min_lr: Minimum learning rate
+   :type min_lr: float or List[float], optional
+   :param eps: Minimal decay applied to lr
+   :type eps: float, optional
+
+   .. method:: step(metrics, epoch=None)
+
+      Perform a single scheduler step
+
+      :param metrics: Metric value to check
+      :type metrics: float
+      :param epoch: Current epoch index
+      :type epoch: int, optional
+
 

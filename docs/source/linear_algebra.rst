@@ -4,7 +4,7 @@ Linear Algebra
 Riemann provides comprehensive linear algebra operations through the ``riemann.linalg`` module. These operations are essential for many machine learning and scientific computing applications.
 
 Matrix Operations
-~~~~~~~~~~~~~~~~~
+-----------------
 
 Matrix Multiplication
 ~~~~~~~~~~~~~~~~~~~~~
@@ -107,8 +107,8 @@ Singular Value Decomposition (SVD)
     U, S, Vh = linalg.svd(A, full_matrices=False)
     print(U.shape, S.shape, Vh.shape)  # (4, 3), (3,), (3, 3)
 
-Eigendecomposition
-~~~~~~~~~~~~~~~~~~
+Eigen Value Decomposition(EVD)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -168,7 +168,7 @@ LU Decomposition
     # P, L, U = linalg.lu(A, pivot=False)  # Throws NotImplementedError
 
 Norms and Metrics
-~~~~~~~~~~~~~~~~~
+-----------------
 
 Vector Norms
 ~~~~~~~~~~~~
