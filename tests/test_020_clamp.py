@@ -224,300 +224,236 @@ class TestClampFunctions(unittest.TestCase):
             stats.end_function()
             print(f"{Colors.OKBLUE}测试完成: {self.current_test_name}{Colors.ENDC}")
     
-    def test_clamp_basic(self):
-        """测试基本的clamp功能（同时设置min和max）"""
-        case_name = "基本clamp功能"
-        grad_case_name = "基本clamp功能 - 梯度跟踪"
-        start_time = time.time()
+    def run_clamp_test(self, test_case, is_inplace=False):
+        """运行单个clamp测试用例"""
+        name = test_case['name']
+        x_data = test_case['x_data']
+        min_val = test_case.get('min', None)
+        max_val = test_case.get('max', None)
+        
         try:
-            # 创建测试数据
-            x_data = np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32)
-            min_val = 2.0
-            max_val = 8.0
-            
-            # 使用riemann
+            # 准备输入数据
             rm_x = rm.tensor(x_data)
-            rm_result = rm.clamp(rm_x, min_val, max_val)
             
-            # 使用PyTorch
+            # 执行clamp操作
+            if is_inplace:
+                rm_result = rm_x.clamp_(min_val, max_val) if min_val is not None and max_val is not None else \
+                           rm_x.clamp_(min=min_val) if min_val is not None else \
+                           rm_x.clamp_(max=max_val)
+                # 对于原地操作，结果就是输入张量
+                rm_result_data = rm_x
+            else:
+                # 处理out参数
+                if 'out' in test_case:
+                    out_shape = x_data.shape
+                    rm_out = rm.zeros(out_shape)
+                    rm_result = rm.clamp(rm_x, min_val, max_val, out=rm_out) if min_val is not None and max_val is not None else \
+                               rm.clamp(rm_x, min=min_val, out=rm_out) if min_val is not None else \
+                               rm.clamp(rm_x, max=max_val, out=rm_out)
+                    rm_result_data = rm_out
+                else:
+                    rm_result = rm.clamp(rm_x, min_val, max_val) if min_val is not None and max_val is not None else \
+                               rm.clamp(rm_x, min=min_val) if min_val is not None else \
+                               rm.clamp(rm_x, max=max_val)
+                    rm_result_data = rm_result
+            
+            # 使用PyTorch进行比较
             if TORCH_AVAILABLE:
                 t_x = torch.tensor(x_data)
-                t_result = torch.clamp(t_x, min_val, max_val)
+                if is_inplace:
+                    t_result = t_x.clamp_(min_val, max_val) if min_val is not None and max_val is not None else \
+                               t_x.clamp_(min=min_val) if min_val is not None else \
+                               t_x.clamp_(max=max_val)
+                    t_result_data = t_x
+                else:
+                    if 'out' in test_case:
+                        out_shape = x_data.shape
+                        t_out = torch.zeros(out_shape)
+                        t_result = torch.clamp(t_x, min_val, max_val, out=t_out) if min_val is not None and max_val is not None else \
+                                   torch.clamp(t_x, min=min_val, out=t_out) if min_val is not None else \
+                                   torch.clamp(t_x, max=max_val, out=t_out)
+                        t_result_data = t_out
+                    else:
+                        t_result = torch.clamp(t_x, min_val, max_val) if min_val is not None and max_val is not None else \
+                                   torch.clamp(t_x, min=min_val) if min_val is not None else \
+                                   torch.clamp(t_x, max=max_val)
+                        t_result_data = t_result
             else:
-                t_result = None
+                t_result_data = None
             
             # 比较结果
-            passed = compare_values(rm_result, t_result)
-            passed_forward = passed
+            passed = compare_values(rm_result_data, t_result_data)
             
             # 梯度测试
-            passed_grad = True
-            if TORCH_AVAILABLE:
+            grad_passed = True
+            if TORCH_AVAILABLE and test_case.get('grad_test', True):
+                # 确保数据类型是浮点型
+                if x_data.dtype not in [np.float32, np.float64]:
+                    x_data_float = x_data.astype(np.float32)
+                else:
+                    x_data_float = x_data
+                
                 # Riemann梯度计算
-                rm_x_grad = rm.tensor(x_data, requires_grad=True)
-                rm_result_grad = rm.clamp(rm_x_grad, min_val, max_val)
-                rm_sum = rm.sum(rm_result_grad)
-                rm_sum.backward()
+                if is_inplace:
+                    # 原地操作不能对需要梯度的叶子节点张量执行
+                    rm_x_leaf = rm.tensor(x_data_float, requires_grad=True)
+                    rm_x_non_leaf = rm_x_leaf * 1.0  # 生成非叶子节点张量
+                    if min_val is not None and max_val is not None:
+                        rm_x_non_leaf.clamp_(min_val, max_val)
+                    elif min_val is not None:
+                        rm_x_non_leaf.clamp_(min=min_val)
+                    else:
+                        rm_x_non_leaf.clamp_(max=max_val)
+                    rm_sum = rm.sum(rm_x_non_leaf)
+                    rm_sum.backward()
+                    rm_grad = rm_x_leaf.grad
+                else:
+                    rm_x_grad = rm.tensor(x_data_float, requires_grad=True)
+                    if min_val is not None and max_val is not None:
+                        rm_result_grad = rm.clamp(rm_x_grad, min_val, max_val)
+                    elif min_val is not None:
+                        rm_result_grad = rm.clamp(rm_x_grad, min=min_val)
+                    else:
+                        rm_result_grad = rm.clamp(rm_x_grad, max=max_val)
+                    rm_sum = rm.sum(rm_result_grad)
+                    rm_sum.backward()
+                    rm_grad = rm_x_grad.grad
                 
                 # PyTorch梯度计算
-                t_x_grad = torch.tensor(x_data, requires_grad=True)
-                t_result_grad = torch.clamp(t_x_grad, min_val, max_val)
-                t_sum = torch.sum(t_result_grad)
-                t_sum.backward()
+                if is_inplace:
+                    t_x_leaf = torch.tensor(x_data_float, requires_grad=True)
+                    t_x_non_leaf = t_x_leaf * 1.0  # 生成非叶子节点张量
+                    if min_val is not None and max_val is not None:
+                        t_x_non_leaf.clamp_(min_val, max_val)
+                    elif min_val is not None:
+                        t_x_non_leaf.clamp_(min=min_val)
+                    else:
+                        t_x_non_leaf.clamp_(max=max_val)
+                    t_sum = torch.sum(t_x_non_leaf)
+                    t_sum.backward()
+                    t_grad = t_x_leaf.grad
+                else:
+                    t_x_grad = torch.tensor(x_data_float, requires_grad=True)
+                    if min_val is not None and max_val is not None:
+                        t_result_grad = torch.clamp(t_x_grad, min_val, max_val)
+                    elif min_val is not None:
+                        t_result_grad = torch.clamp(t_x_grad, min=min_val)
+                    else:
+                        t_result_grad = torch.clamp(t_x_grad, max=max_val)
+                    t_sum = torch.sum(t_result_grad)
+                    t_sum.backward()
+                    t_grad = t_x_grad.grad
                 
-                # 比较梯度
-                passed_grad = compare_values(rm_x_grad.grad, t_x_grad.grad)
+                grad_passed = compare_values(rm_grad, t_grad)
             
-            passed = passed_forward and passed_grad
+            # 特殊测试：out参数返回值验证
+            if not is_inplace and 'out' in test_case:
+                out_passed = (rm_result is rm_out)
+                if IS_RUNNING_AS_SCRIPT:
+                    print(f"  子用例: {name} - out返回值验证 - {Colors.OKGREEN if out_passed else Colors.FAIL}{'通过' if out_passed else '失败'}{Colors.ENDC}")
+                return passed and out_passed, grad_passed
             
-            time_taken = time.time() - start_time
+            # 特殊测试：原地操作返回值验证
+            if is_inplace:
+                return_passed = (rm_result is rm_x)
+                if IS_RUNNING_AS_SCRIPT:
+                    print(f"  子用例: {name} - 返回值验证 - {Colors.OKGREEN if return_passed else Colors.FAIL}{'通过' if return_passed else '失败'}{Colors.ENDC}")
+                return passed and return_passed, grad_passed
             
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed_forward)
-                stats.add_result(grad_case_name, passed_grad)
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
-                print(f"测试用例: {grad_case_name} - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed_forward, f"基本clamp测试失败: {case_name}")
-            self.assertTrue(passed_grad, f"基本clamp梯度测试失败: {grad_case_name}")
+            return passed, grad_passed
             
         except Exception as e:
-            time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
-    
-    def test_clamp_only_min(self):
-        """测试只设置min参数的情况"""
-        case_name = "只设置min参数"
-        grad_case_name = "只设置min参数 - 梯度跟踪"
+                print(f"  子用例: {name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
+            return False, False
+
+    def test_clamp_non_inplace(self):
+        """测试非原地函数clamp()的所有场景"""
+        case_name = "clamp非原地函数测试组"
         start_time = time.time()
         try:
-            # 创建测试数据
-            x_data = np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32)
-            min_val = 2.0
+            # 定义测试用例列表
+            test_cases = [
+                {
+                    "name": "基本clamp功能",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": 2.0,
+                    "max": 8.0
+                },
+                {
+                    "name": "只设置min参数",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": 2.0
+                },
+                {
+                    "name": "只设置max参数",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "max": 6.0
+                },
+                {
+                    "name": "边界值情况 - 所有值在范围内",
+                    "x_data": np.array([[3.0, 4.0], [5.0, 6.0]], dtype=np.float32),
+                    "min": 2.0,
+                    "max": 7.0
+                },
+                {
+                    "name": "边界值情况 - 所有值小于min",
+                    "x_data": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+                    "min": 5.0
+                },
+                {
+                    "name": "边界值情况 - 所有值大于max",
+                    "x_data": np.array([[8.0, 9.0], [10.0, 11.0]], dtype=np.float32),
+                    "max": 7.0
+                },
+                {
+                    "name": "标量输入",
+                    "x_data": np.array(5.0, dtype=np.float32),
+                    "min": 2.0,
+                    "max": 8.0
+                },
+                {
+                    "name": "不同形状输入",
+                    "x_data": np.random.randn(2, 3, 4).astype(np.float32),
+                    "min": -1.0,
+                    "max": 1.0
+                },
+                {
+                    "name": "out参数测试",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": 2.0,
+                    "max": 8.0,
+                    "out": True
+                },
+                {
+                    "name": "混合数据类型",
+                    "x_data": np.array([[-3, 0, 3], [5, 7, 9]], dtype=np.int32),
+                    "min": 2,
+                    "max": 8,
+                    "grad_test": False  # 整数类型不支持梯度测试
+                }
+            ]
             
-            # 使用riemann
-            rm_x = rm.tensor(x_data)
-            rm_result = rm.clamp(rm_x, min=min_val)
-            
-            # 使用PyTorch
-            if TORCH_AVAILABLE:
-                t_x = torch.tensor(x_data)
-                t_result = torch.clamp(t_x, min=min_val)
-            else:
-                t_result = None
-            
-            # 比较结果
-            passed = compare_values(rm_result, t_result)
-            passed_forward = passed
-            
-            # 梯度测试
-            passed_grad = True
-            if TORCH_AVAILABLE:
-                # Riemann梯度计算
-                rm_x_grad = rm.tensor(x_data, requires_grad=True)
-                rm_result_grad = rm.clamp(rm_x_grad, min=min_val)
-                rm_sum = rm.sum(rm_result_grad)
-                rm_sum.backward()
-                
-                # PyTorch梯度计算
-                t_x_grad = torch.tensor(x_data, requires_grad=True)
-                t_result_grad = torch.clamp(t_x_grad, min=min_val)
-                t_sum = torch.sum(t_result_grad)
-                t_sum.backward()
-                
-                # 比较梯度
-                passed_grad = compare_values(rm_x_grad.grad, t_x_grad.grad)
-            
-            passed = passed_forward and passed_grad
-            
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed_forward)
-                stats.add_result(grad_case_name, passed_grad)
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
-                print(f"测试用例: {grad_case_name} - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed_forward, f"只设置min参数测试失败: {case_name}")
-            self.assertTrue(passed_grad, f"只设置min参数梯度测试失败: {grad_case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
-    
-    def test_clamp_only_max(self):
-        """测试只设置max参数的情况"""
-        case_name = "只设置max参数"
-        grad_case_name = "只设置max参数 - 梯度跟踪"
-        start_time = time.time()
-        try:
-            # 创建测试数据
-            x_data = np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32)
-            max_val = 6.0
-            
-            # 使用riemann
-            rm_x = rm.tensor(x_data)
-            rm_result = rm.clamp(rm_x, max=max_val)
-            
-            # 使用PyTorch
-            if TORCH_AVAILABLE:
-                t_x = torch.tensor(x_data)
-                t_result = torch.clamp(t_x, max=max_val)
-            else:
-                t_result = None
-            
-            # 比较结果
-            passed = compare_values(rm_result, t_result)
-            passed_forward = passed
-            
-            # 梯度测试
-            passed_grad = True
-            if TORCH_AVAILABLE:
-                # Riemann梯度计算
-                rm_x_grad = rm.tensor(x_data, requires_grad=True)
-                rm_result_grad = rm.clamp(rm_x_grad, max=max_val)
-                rm_sum = rm.sum(rm_result_grad)
-                rm_sum.backward()
-                
-                # PyTorch梯度计算
-                t_x_grad = torch.tensor(x_data, requires_grad=True)
-                t_result_grad = torch.clamp(t_x_grad, max=max_val)
-                t_sum = torch.sum(t_result_grad)
-                t_sum.backward()
-                
-                # 比较梯度
-                passed_grad = compare_values(rm_x_grad.grad, t_x_grad.grad)
-            
-            passed = passed_forward and passed_grad
-            
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed_forward)
-                stats.add_result(grad_case_name, passed_grad)
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
-                print(f"测试用例: {grad_case_name} - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed_forward, f"只设置max参数测试失败: {case_name}")
-            self.assertTrue(passed_grad, f"只设置max参数梯度测试失败: {grad_case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
-    
-    def test_clamp_edge_cases(self):
-        """测试边界值情况"""
-        case_name = "边界值情况"
-        grad_case_name = "边界值情况 - 梯度跟踪"
-        start_time = time.time()
-        try:
             passed_cases = []
             grad_passed_cases = []
             
-            # 测试1: 所有值都在范围内
-            x_data1 = np.array([[3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
-            min_val1, max_val1 = 2.0, 7.0
-            
-            rm_x1 = rm.tensor(x_data1)
-            rm_result1 = rm.clamp(rm_x1, min_val1, max_val1)
-            
-            if TORCH_AVAILABLE:
-                t_x1 = torch.tensor(x_data1)
-                t_result1 = torch.clamp(t_x1, min_val1, max_val1)
-            else:
-                t_result1 = None
-            
-            passed1 = compare_values(rm_result1, t_result1)
-            passed_cases.append(passed1)
-            
-            # 测试2: 所有值都小于min
-            x_data2 = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-            min_val2 = 5.0
-            
-            rm_x2 = rm.tensor(x_data2)
-            rm_result2 = rm.clamp(rm_x2, min=min_val2)
-            
-            if TORCH_AVAILABLE:
-                t_x2 = torch.tensor(x_data2)
-                t_result2 = torch.clamp(t_x2, min=min_val2)
-            else:
-                t_result2 = None
-            
-            passed2 = compare_values(rm_result2, t_result2)
-            passed_cases.append(passed2)
-            
-            # 测试3: 所有值都大于max
-            x_data3 = np.array([[8.0, 9.0], [10.0, 11.0]], dtype=np.float32)
-            max_val3 = 7.0
-            
-            rm_x3 = rm.tensor(x_data3)
-            rm_result3 = rm.clamp(rm_x3, max=max_val3)
-            
-            if TORCH_AVAILABLE:
-                t_x3 = torch.tensor(x_data3)
-                t_result3 = torch.clamp(t_x3, max=max_val3)
-            else:
-                t_result3 = None
-            
-            passed3 = compare_values(rm_result3, t_result3)
-            passed_cases.append(passed3)
-            
-            # 梯度测试
-            if TORCH_AVAILABLE:
-                # 测试所有值在范围内的梯度
-                rm_x_grad1 = rm.tensor(x_data1, requires_grad=True)
-                rm_result_grad1 = rm.clamp(rm_x_grad1, min_val1, max_val1)
-                rm_sum1 = rm.sum(rm_result_grad1)
-                rm_sum1.backward()
+            # 执行所有测试用例
+            for test_case in test_cases:
+                passed, grad_passed = self.run_clamp_test(test_case, is_inplace=False)
+                passed_cases.append(passed)
+                if grad_passed is not None:
+                    grad_passed_cases.append(grad_passed)
                 
-                t_x_grad1 = torch.tensor(x_data1, requires_grad=True)
-                t_result_grad1 = torch.clamp(t_x_grad1, min_val1, max_val1)
-                t_sum1 = torch.sum(t_result_grad1)
-                t_sum1.backward()
-                
-                passed_grad1 = compare_values(rm_x_grad1.grad, t_x_grad1.grad)
-                grad_passed_cases.append(passed_grad1)
-                
-                # 测试所有值小于min的梯度
-                rm_x_grad2 = rm.tensor(x_data2, requires_grad=True)
-                rm_result_grad2 = rm.clamp(rm_x_grad2, min=min_val2)
-                rm_sum2 = rm.sum(rm_result_grad2)
-                rm_sum2.backward()
-                
-                t_x_grad2 = torch.tensor(x_data2, requires_grad=True)
-                t_result_grad2 = torch.clamp(t_x_grad2, min=min_val2)
-                t_sum2 = torch.sum(t_result_grad2)
-                t_sum2.backward()
-                
-                passed_grad2 = compare_values(rm_x_grad2.grad, t_x_grad2.grad)
-                grad_passed_cases.append(passed_grad2)
-                
-                # 测试所有值大于max的梯度
-                rm_x_grad3 = rm.tensor(x_data3, requires_grad=True)
-                rm_result_grad3 = rm.clamp(rm_x_grad3, max=max_val3)
-                rm_sum3 = rm.sum(rm_result_grad3)
-                rm_sum3.backward()
-                
-                t_x_grad3 = torch.tensor(x_data3, requires_grad=True)
-                t_result_grad3 = torch.clamp(t_x_grad3, max=max_val3)
-                t_sum3 = torch.sum(t_result_grad3)
-                t_sum3.backward()
-                
-                passed_grad3 = compare_values(rm_x_grad3.grad, t_x_grad3.grad)
-                grad_passed_cases.append(passed_grad3)
+                # 记录测试结果
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(test_case['name'], passed)
+                    if TORCH_AVAILABLE and test_case.get('grad_test', True):
+                        stats.add_result(f"{test_case['name']} - 梯度跟踪", grad_passed)
+                    print(f"  子用例: {test_case['name']} - {Colors.OKGREEN if passed else Colors.FAIL}{'通过' if passed else '失败'}{Colors.ENDC}")
+                    if TORCH_AVAILABLE and test_case.get('grad_test', True):
+                        print(f"  子用例: {test_case['name']} - 梯度跟踪 - {Colors.OKGREEN if grad_passed else Colors.FAIL}{'通过' if grad_passed else '失败'}{Colors.ENDC}")
             
+            # 计算总结果
             passed_forward = all(passed_cases)
             passed_grad = all(grad_passed_cases) if grad_passed_cases else True
             passed = passed_forward and passed_grad
@@ -525,286 +461,104 @@ class TestClampFunctions(unittest.TestCase):
             time_taken = time.time() - start_time
             
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(f"{case_name} - 所有值在范围内", passed1)
-                stats.add_result(f"{case_name} - 所有值小于min", passed2)
-                stats.add_result(f"{case_name} - 所有值大于max", passed3)
-                if grad_passed_cases:
-                    stats.add_result(f"{grad_case_name} - 所有值在范围内", passed_grad1)
-                    stats.add_result(f"{grad_case_name} - 所有值小于min", passed_grad2)
-                    stats.add_result(f"{grad_case_name} - 所有值大于max", passed_grad3)
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
-                if grad_passed_cases:
-                    print(f"测试用例: {grad_case_name} - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC}")
+                print(f"测试用例组: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
+                if TORCH_AVAILABLE:
+                    print(f"梯度测试 - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC}")
                 print(f" ({time_taken:.4f}秒)")
             
             # 断言确保测试通过
-            self.assertTrue(passed_forward, f"边界值测试失败: {case_name}")
-            self.assertTrue(passed_grad, f"边界值梯度测试失败: {grad_case_name}")
+            self.assertTrue(passed_forward, f"clamp非原地函数测试组失败")
+            self.assertTrue(passed_grad, f"clamp非原地函数梯度测试失败")
             
         except Exception as e:
             time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                print(f"测试用例组: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
-    
-    def test_clamp_scalar_input(self):
-        """测试标量输入"""
-        case_name = "标量输入"
-        grad_case_name = "标量输入 - 梯度跟踪"
+
+    def test_clamp_inplace(self):
+        """测试原地修剪函数clamp_()"""
+        case_name = "clamp原地函数测试组"
         start_time = time.time()
         try:
-            # 创建标量测试数据
-            x_scalar = np.array(5.0, dtype=np.float32)
-            min_val = 2.0
-            max_val = 8.0
+            # 定义测试用例列表
+            test_cases = [
+                {
+                    "name": "基本clamp_功能",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": 2.0,
+                    "max": 8.0
+                },
+                {
+                    "name": "只设置min参数",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": 2.0
+                },
+                {
+                    "name": "只设置max参数",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "max": 6.0
+                },
+                {
+                    "name": "边界值情况 - 所有值在范围内",
+                    "x_data": np.array([[3.0, 4.0], [5.0, 6.0]], dtype=np.float32),
+                    "min": 2.0,
+                    "max": 7.0
+                },
+                {
+                    "name": "边界值情况 - 所有值小于min",
+                    "x_data": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+                    "min": 5.0
+                },
+                {
+                    "name": "边界值情况 - 所有值大于max",
+                    "x_data": np.array([[8.0, 9.0], [10.0, 11.0]], dtype=np.float32),
+                    "max": 7.0
+                }
+            ]
             
-            # 使用riemann
-            rm_x = rm.tensor(x_scalar)
-            rm_result = rm.clamp(rm_x, min_val, max_val)
+            passed_cases = []
+            grad_passed_cases = []
             
-            # 使用PyTorch
-            if TORCH_AVAILABLE:
-                t_x = torch.tensor(x_scalar)
-                t_result = torch.clamp(t_x, min_val, max_val)
-            else:
-                t_result = None
-            
-            # 比较结果
-            passed = compare_values(rm_result, t_result)
-            passed_forward = passed
-            
-            # 梯度测试
-            passed_grad = True
-            if TORCH_AVAILABLE:
-                # Riemann梯度计算
-                rm_x_grad = rm.tensor(x_scalar, requires_grad=True)
-                rm_result_grad = rm.clamp(rm_x_grad, min_val, max_val)
-                rm_result_grad.backward()
+            # 执行所有测试用例
+            for test_case in test_cases:
+                passed, grad_passed = self.run_clamp_test(test_case, is_inplace=True)
+                passed_cases.append(passed)
+                if grad_passed is not None:
+                    grad_passed_cases.append(grad_passed)
                 
-                # PyTorch梯度计算
-                t_x_grad = torch.tensor(x_scalar, requires_grad=True)
-                t_result_grad = torch.clamp(t_x_grad, min_val, max_val)
-                t_result_grad.backward()
-                
-                # 比较梯度
-                passed_grad = compare_values(rm_x_grad.grad, t_x_grad.grad)
+                # 记录测试结果
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(test_case['name'], passed)
+                    if TORCH_AVAILABLE and test_case.get('grad_test', True):
+                        stats.add_result(f"{test_case['name']} - 梯度跟踪", grad_passed)
+                    print(f"  子用例: {test_case['name']} - {Colors.OKGREEN if passed else Colors.FAIL}{'通过' if passed else '失败'}{Colors.ENDC}")
+                    if TORCH_AVAILABLE and test_case.get('grad_test', True):
+                        print(f"  子用例: {test_case['name']} - 梯度跟踪 - {Colors.OKGREEN if grad_passed else Colors.FAIL}{'通过' if grad_passed else '失败'}{Colors.ENDC}")
             
+            # 计算总结果
+            passed_forward = all(passed_cases)
+            passed_grad = all(grad_passed_cases) if grad_passed_cases else True
             passed = passed_forward and passed_grad
             
             time_taken = time.time() - start_time
             
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed_forward)
-                stats.add_result(grad_case_name, passed_grad)
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
-                print(f"测试用例: {grad_case_name} - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed_forward, f"标量输入测试失败: {case_name}")
-            self.assertTrue(passed_grad, f"标量输入梯度测试失败: {grad_case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
-    
-    def test_clamp_different_shapes(self):
-        """测试不同形状的输入"""
-        case_name = "不同形状输入"
-        grad_case_name = "不同形状输入 - 梯度跟踪"
-        start_time = time.time()
-        try:
-            # 测试多维张量
-            x_data_3d = np.random.randn(2, 3, 4).astype(np.float32)
-            min_val = -1.0
-            max_val = 1.0
-            
-            # 使用riemann
-            rm_x_3d = rm.tensor(x_data_3d)
-            rm_result_3d = rm.clamp(rm_x_3d, min_val, max_val)
-            
-            # 使用PyTorch
-            if TORCH_AVAILABLE:
-                t_x_3d = torch.tensor(x_data_3d)
-                t_result_3d = torch.clamp(t_x_3d, min_val, max_val)
-            else:
-                t_result_3d = None
-            
-            # 比较结果
-            passed_3d = compare_values(rm_result_3d, t_result_3d)
-            passed_forward = passed_3d
-            
-            # 梯度测试
-            passed_grad = True
-            if TORCH_AVAILABLE:
-                # Riemann梯度计算
-                rm_x_grad_3d = rm.tensor(x_data_3d, requires_grad=True)
-                rm_result_grad_3d = rm.clamp(rm_x_grad_3d, min_val, max_val)
-                rm_sum_3d = rm.sum(rm_result_grad_3d)
-                rm_sum_3d.backward()
-                
-                # PyTorch梯度计算
-                t_x_grad_3d = torch.tensor(x_data_3d, requires_grad=True)
-                t_result_grad_3d = torch.clamp(t_x_grad_3d, min_val, max_val)
-                t_sum_3d = torch.sum(t_result_grad_3d)
-                t_sum_3d.backward()
-                
-                # 比较梯度
-                passed_grad = compare_values(rm_x_grad_3d.grad, t_x_grad_3d.grad)
-            
-            passed = passed_forward and passed_grad
-            
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed_forward)
-                stats.add_result(grad_case_name, passed_grad)
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
-                print(f"测试用例: {grad_case_name} - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
-                print(f"  输入形状: {x_data_3d.shape}")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed_forward, f"不同形状输入测试失败: {case_name}")
-            self.assertTrue(passed_grad, f"不同形状输入梯度测试失败: {grad_case_name}")
-            
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
-    
-    def test_clamp_out_parameter(self):
-        """测试out参数"""
-        case_name = "out参数测试"
-        start_time = time.time()
-        try:
-            # 创建测试数据
-            x_data = np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32)
-            min_val = 2.0
-            max_val = 8.0
-            
-            # 创建out参数张量
-            out_shape = x_data.shape
-            
-            # 使用riemann
-            rm_x = rm.tensor(x_data)
-            rm_out = rm.zeros(out_shape)
-            rm_result = rm.clamp(rm_x, min_val, max_val, out=rm_out)
-            
-            # 验证out参数是否被正确修改
-            # 再次调用不使用out参数的版本进行比较
-            rm_result_normal = rm.clamp(rm_x, min_val, max_val)
-            passed_out = compare_values(rm_out, rm_result_normal)
-            passed_forward = passed_out
-            
-            # 验证返回值是否是out参数
-            passed_return = (rm_result is rm_out)
-            passed_forward = passed_forward and passed_return
-            
-            # 使用PyTorch进行比较
-            if TORCH_AVAILABLE:
-                t_x = torch.tensor(x_data)
-                t_out = torch.zeros(out_shape)
-                t_result = torch.clamp(t_x, min_val, max_val, out=t_out)
-                
-                # 比较PyTorch的out结果和riemann的out结果
-                passed_pytorch_compare = compare_values(rm_out, t_out)
-                passed_forward = passed_forward and passed_pytorch_compare
-            
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(f"{case_name} - out内容正确", passed_out)
-                stats.add_result(f"{case_name} - 返回值是out", passed_return)
+                print(f"测试用例组: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
                 if TORCH_AVAILABLE:
-                    stats.add_result(f"{case_name} - 与PyTorch一致", passed_pytorch_compare)
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    print(f"梯度测试 - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC}")
+                print(f" ({time_taken:.4f}秒)")
             
             # 断言确保测试通过
-            self.assertTrue(passed_out, f"out参数内容不正确: {case_name}")
-            self.assertTrue(passed_return, f"返回值不是out参数: {case_name}")
-            if TORCH_AVAILABLE:
-                self.assertTrue(passed_pytorch_compare, f"与PyTorch结果不一致: {case_name}")
-                
-        except Exception as e:
-            time_taken = time.time() - start_time
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-            raise
-    
-    def test_clamp_mixed_dtypes(self):
-        """测试混合数据类型"""
-        case_name = "混合数据类型"
-        grad_case_name = "混合数据类型 - 梯度跟踪"
-        start_time = time.time()
-        try:
-            # 创建不同数据类型的测试数据
-            # 注意：整数类型通常不支持梯度，所以我们先测试前向计算
-            x_data_int = np.array([[-3, 0, 3], [5, 7, 9]], dtype=np.int32)
-            min_val = 2
-            max_val = 8
-            
-            # 使用riemann
-            rm_x_int = rm.tensor(x_data_int)
-            rm_result_int = rm.clamp(rm_x_int, min_val, max_val)
-            
-            # 使用PyTorch
-            if TORCH_AVAILABLE:
-                t_x_int = torch.tensor(x_data_int)
-                t_result_int = torch.clamp(t_x_int, min_val, max_val)
-            else:
-                t_result_int = None
-            
-            # 比较结果
-            passed = compare_values(rm_result_int, t_result_int)
-            passed_forward = passed
-            
-            # 梯度测试 - 使用浮点型数据进行梯度测试
-            passed_grad = True
-            if TORCH_AVAILABLE:
-                x_data_float = x_data_int.astype(np.float32)
-                
-                # Riemann梯度计算
-                rm_x_float = rm.tensor(x_data_float, requires_grad=True)
-                rm_result_float = rm.clamp(rm_x_float, min_val, max_val)
-                rm_sum = rm.sum(rm_result_float)
-                rm_sum.backward()
-                
-                # PyTorch梯度计算
-                t_x_float = torch.tensor(x_data_float, requires_grad=True)
-                t_result_float = torch.clamp(t_x_float, min_val, max_val)
-                t_sum = torch.sum(t_result_float)
-                t_sum.backward()
-                
-                # 比较梯度
-                passed_grad = compare_values(rm_x_float.grad, t_x_float.grad)
-            
-            passed = passed_forward and passed_grad
-            
-            time_taken = time.time() - start_time
-            
-            if IS_RUNNING_AS_SCRIPT:
-                stats.add_result(case_name, passed_forward)
-                stats.add_result(grad_case_name, passed_grad)
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
-                print(f"测试用例: {grad_case_name} - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
-                if passed_forward:
-                    print(f"  结果数据类型: {rm_result_int.data.dtype}")
-            
-            # 断言确保测试通过
-            self.assertTrue(passed_forward, f"混合数据类型测试失败: {case_name}")
-            self.assertTrue(passed_grad, f"混合数据类型梯度测试失败: {grad_case_name}")
+            self.assertTrue(passed_forward, f"clamp原地函数测试组失败")
+            self.assertTrue(passed_grad, f"clamp原地函数梯度测试失败")
             
         except Exception as e:
             time_taken = time.time() - start_time
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result(case_name, False, [str(e)])
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                print(f"测试用例组: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
             raise
 
 if __name__ == '__main__':

@@ -2826,6 +2826,7 @@ class TN:
         注意:
             - 这是原地操作，会直接修改张量数据
             - 如果张量是需要梯度的叶子节点，会抛出运行时错误
+            - 支持对min和max参数的梯度跟踪
         """
         # 检查是否是需要梯度的叶子节点
         if self.requires_grad and self.is_leaf:
@@ -2835,24 +2836,18 @@ class TN:
         if isinstance(min, TN):
             if min.ndim != 0:
                 raise RuntimeError(f'clamp_ only supports 0-dimension min tensor but got tensor with {min.ndim} dimensions.')
-            min = min.item()
         
         if isinstance(max, TN):
             if max.ndim != 0:
                 raise RuntimeError(f'clamp_ only supports 0-dimension max tensor but got tensor with {max.ndim} dimensions.')
-            max = max.item()
         
-        # 执行原地裁剪操作
-        arrlib = self._get_array_lib()
-        if isinstance(self.data, arrlib.ndarray):
-            self.data = arrlib.clip(self.data, a_min=min, a_max=max)
-        elif isinstance(self.data, arrlib.number):
-            if min is not None and self.data < min:
-                self.data = type(self.data)(min)
-            elif max is not None and self.data > max:
-                self.data = type(self.data)(max)
-        else:
-            raise ValueError(f'clamp_ only supports numpy/cupy ndarray or number object but got {type(self.data)}')
+        # 执行原地裁剪操作，使用masked_fill_实现
+        if min is not None:
+            mask = self < min
+            self.masked_fill_(mask, min)
+        if max is not None:
+            mask = self > max
+            self.masked_fill_(mask, max)
         
         # 返回自身以支持链式调用
         return self
