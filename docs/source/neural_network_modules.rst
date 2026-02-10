@@ -1,5 +1,5 @@
-Neural Network Modules
-=======================
+How to Build a Neural Network
+===============================
 
 Riemann provides a comprehensive set of neural network modules through the ``riemann.nn`` package. These modules are building blocks for creating and training neural networks.
 
@@ -11,7 +11,20 @@ This section provides a step-by-step guide on how to build, train, and evaluate 
 Dataset Preparation
 ~~~~~~~~~~~~~~~~~~~
 
-Before building a neural network with Riemann, you first need to prepare your dataset. Riemann supports data processing similar to PyTorch:
+Before building a neural network with Riemann, you first need to prepare your dataset. Riemann provides a `Dataset` interface for defining standard methods for data loading and processing.
+
+Dataset Interface Introduction
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+`Dataset` is an abstract base class used to represent a dataset. To create a custom dataset, you need to inherit from the `Dataset` class and implement the following two core methods:
+
+- ``__len__()``: Returns the number of samples in the dataset
+- ``__getitem__(idx)``: Returns a sample based on the index
+
+Building Custom Datasets
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Here's a detailed example of creating a custom dataset:
 
 .. code-block:: python
 
@@ -22,6 +35,11 @@ Before building a neural network with Riemann, you first need to prepare your da
     # Custom dataset class
     class SimpleDataset(Dataset):
         def __init__(self, num_samples=1000):
+            """
+            Initialize the dataset
+            
+            :param num_samples: Number of samples in the dataset
+            """
             # Generate random input data
             self.inputs = rm.randn(num_samples, 10)
             # Generate corresponding target values (simple linear mapping)
@@ -30,19 +48,90 @@ Before building a neural network with Riemann, you first need to prepare your da
             self.targets = self.inputs @ weights + biases
             
         def __len__(self):
+            """
+            Return the number of samples in the dataset
+            """
             return len(self.inputs)
         
         def __getitem__(self, idx):
+            """
+            Return a sample based on the index
+            
+            :param idx: Sample index
+            :return: Tuple of input data and target value
+            """
             return self.inputs[idx], self.targets[idx]
 
     # Create dataset instances
     train_dataset = SimpleDataset(1000)
     test_dataset = SimpleDataset(200)
 
+    # Check dataset information
+    print(f"Training set size: {len(train_dataset)}")
+    print(f"Test set size: {len(test_dataset)}")
+
+    # Get a single sample
+    sample_input, sample_target = train_dataset[0]
+    print(f"Sample input shape: {sample_input.shape}")
+    print(f"Sample target shape: {sample_target.shape}")
+
+Advanced Dataset Example
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Here's a more complex dataset example with data preprocessing and transformations:
+
+.. code-block:: python
+
+    class ImageDataset(Dataset):
+        def __init__(self, image_paths, labels, transform=None):
+            """
+            Image dataset
+            
+            :param image_paths: List of image paths
+            :param labels: List of labels
+            :param transform: Data transformation function (optional)
+            """
+            self.image_paths = image_paths
+            self.labels = labels
+            self.transform = transform
+        
+        def __len__(self):
+            return len(self.image_paths)
+        
+        def __getitem__(self, idx):
+            # This should be actual image loading code
+            # For example purposes, we generate random data
+            image = rm.randn(3, 32, 32)  # Simulate a 3x32x32 RGB image
+            label = self.labels[idx]
+            
+            # Apply data transformation
+            if self.transform:
+                image = self.transform(image)
+            
+            return image, label
+
 Using DataLoader
 ~~~~~~~~~~~~~~~~
 
-DataLoader is used for batch loading of data, supporting multi-threaded data loading and data shuffling:
+`DataLoader` is used for batch loading of data, supporting multi-threaded data loading, data shuffling, and automatic batching.
+
+DataLoader Parameter Description
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+`DataLoader` accepts the following main parameters:
+
+- ``dataset``: Dataset instance to load
+- ``batch_size``: Number of samples per batch, default 1
+- ``shuffle``: Whether to shuffle data at the start of each epoch, default False
+- ``num_workers``: Number of subprocesses for data loading, default 0 (main process)
+- ``drop_last``: Whether to drop the last incomplete batch if dataset size isn't divisible by batch size, default False
+- ``pin_memory``: Whether to copy loaded data to CUDA pinned memory for faster GPU transfer, default False
+- ``timeout``: Data loading timeout, default 0
+- ``worker_init_fn``: Function called when initializing each worker process, default None
+- ``multiprocessing_context``: Multiprocessing context, default None
+
+DataLoader Usage Example
+^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: python
 
@@ -51,24 +140,75 @@ DataLoader is used for batch loading of data, supporting multi-threaded data loa
         train_dataset, 
         batch_size=32, 
         shuffle=True, 
-        num_workers=2
+        num_workers=2,
+        drop_last=True
     )
 
     test_loader = DataLoader(
         test_dataset, 
         batch_size=32, 
-        shuffle=False
+        shuffle=False,
+        num_workers=1
     )
 
     # Iterate through DataLoader
+    print("Iterating through training data loader:")
     for batch_idx, (inputs, targets) in enumerate(train_loader):
         print(f"Batch {batch_idx}: Input shape {inputs.shape}, Target shape {targets.shape}")
-        break
+        if batch_idx == 2:  # Print only first 3 batches
+            break
+
+    # Using in training loop
+    print("\nUsing in training loop:")
+    num_epochs = 2
+    for epoch in range(num_epochs):
+        print(f"Epoch {epoch+1}/{num_epochs}")
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
+            # Training code here
+            if batch_idx % 10 == 0:  # Print every 10 batches
+                print(f"  Batch {batch_idx}/{len(train_loader)}")
+            # In actual training, forward pass, loss calculation, backpropagation, etc.
+            break  # For example purposes, only execute one batch
+
+Using pin_memory for Acceleration
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+If training with GPU, you can enable `pin_memory` to speed up data transfer:
+
+.. code-block:: python
+
+    # DataLoader optimized for GPU training
+    gpu_train_loader = DataLoader(
+        train_dataset, 
+        batch_size=32, 
+        shuffle=True, 
+        num_workers=2,
+        pin_memory=True  # Enable pinned memory
+    )
+
+    # In training loop
+    if rm.cuda.is_available():
+        device = rm.device('cuda')
+        for inputs, targets in gpu_train_loader:
+            # Data is already in pinned memory, faster transfer to GPU
+            inputs, targets = inputs.to(device), targets.to(device)
+            # Training steps...
 
 Building a Neural Network
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use Riemann's ``nn.Module`` class and various network layers to build a neural network:
+Neural networks are models composed of multiple layers that learn patterns in data. In Riemann, we use the ``nn.Module`` class to build neural networks.
+
+Neural Network Building Steps:
+
+1. **Import necessary modules**: Import the ``riemann.nn`` module, which contains various network layers and activation functions
+2. **Define network class**: Inherit from the ``nn.Module`` class
+3. **Initialize network layers**: Define the network's layers in the ``__init__`` method
+4. **Define forward propagation**: Define how data flows through the network in the ``forward`` method
+5. **Create network instance**: Instantiate the defined network class
+
+Basic Network Building Example
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: python
 
@@ -76,108 +216,321 @@ Use Riemann's ``nn.Module`` class and various network layers to build a neural n
 
     class SimpleNet(nn.Module):
         def __init__(self):
+            """
+            Initialize a simple fully connected neural network
+            
+            Network structure:
+            - Input layer: 10 features
+            - Hidden layer 1: 50 neurons, using ReLU activation
+            - Hidden layer 2: 20 neurons, using ReLU activation
+            - Output layer: 2 neurons (suitable for regression tasks)
+            """
             super(SimpleNet, self).__init__()
             # Define network layers
-            self.fc1 = nn.Linear(10, 50)
-            self.relu = nn.ReLU()
-            self.fc2 = nn.Linear(50, 20)
-            self.fc3 = nn.Linear(20, 2)
+            self.fc1 = nn.Linear(10, 50)  # Input layer to first hidden layer
+            self.relu = nn.ReLU()          # Activation function
+            self.fc2 = nn.Linear(50, 20)   # First hidden layer to second hidden layer
+            self.fc3 = nn.Linear(20, 2)    # Second hidden layer to output layer
         
         def forward(self, x):
-            # Define forward propagation
+            """
+            Define the forward propagation process
+            
+            :param x: Input data, shape [batch_size, 10]
+            :return: Output data, shape [batch_size, 2]
+            """
+            # Forward propagation
+            x = self.fc1(x)  # Through first fully connected layer
+            x = self.relu(x) # Apply ReLU activation function
+            x = self.fc2(x)  # Through second fully connected layer
+            x = self.relu(x) # Apply ReLU activation function
+            x = self.fc3(x)  # Through output layer
+            return x
+
+    # Create network instance
+    model = SimpleNet()
+    print(model)  # Print network structure
+
+Classification Network Example
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For classification tasks, we need to adjust the output layer and activation function:
+
+.. code-block:: python
+
+    class ClassificationNet(nn.Module):
+        def __init__(self, num_classes=10):
+            """
+            Initialize a classification neural network
+            
+            :param num_classes: Number of classes for the classification task
+            """
+            super(ClassificationNet, self).__init__()
+            self.fc1 = nn.Linear(10, 64)
+            self.relu = nn.ReLU()
+            self.fc2 = nn.Linear(64, 32)
+            self.fc3 = nn.Linear(32, num_classes)  # Output layer size equals number of classes
+        
+        def forward(self, x):
             x = self.fc1(x)
             x = self.relu(x)
             x = self.fc2(x)
             x = self.relu(x)
             x = self.fc3(x)
+            # Note: For classification tasks, we typically handle activation in the loss function
+            # When using CrossEntropyLoss, no need to apply softmax here
             return x
-
-    # Create network instance
-    model = SimpleNet()
-    print(model)
 
 Using Optimizers
 ~~~~~~~~~~~~~~~~
 
-Riemann provides various optimizers to update network parameters:
+Optimizers are used to update network parameters based on the gradients of the loss function, allowing the model to gradually learn better representations.
+
+Common Optimizers
+^^^^^^^^^^^^^^^^^
+
+Riemann provides multiple optimizers, each with its own characteristics and suitable scenarios:
+
+- **SGD**: Stochastic Gradient Descent, the basic optimizer
+- **Adam**: Adaptive Moment Estimation, combines momentum and adaptive learning rate
+- **RMSprop**: Root Mean Square Propagation, suitable for recurrent neural networks
+- **Adagrad**: Adaptive Gradient Algorithm, suitable for sparse data
+
+Optimizer Usage Example
+^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: python
 
-    from riemann.optim import SGD
+    from riemann.optim import SGD, Adam, RMSprop
 
-    # Create optimizer
+    # Create SGD optimizer
+    # lr: Learning rate, controls the step size of parameter updates
+    # momentum: Momentum, accelerates the optimization process
     optimizer = SGD(model.parameters(), lr=0.01, momentum=0.9)
 
     # Or use Adam optimizer
-    # from riemann.optim import Adam
-    # optimizer = Adam(model.parameters(), lr=0.001)
+    # betas: Coefficients for computing moving averages of gradient and its square
+    # weight_decay: Weight decay, used for regularization
+    # optimizer = Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), weight_decay=0.0001)
+
+    # Or use RMSprop optimizer
+    # optimizer = RMSprop(model.parameters(), lr=0.001, alpha=0.99, eps=1e-08)
+
+Learning Rate Scheduling
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Learning rate is an important hyperparameter that often needs adjustment during training:
+
+.. code-block:: python
+
+    # Simple learning rate scheduling example
+    initial_lr = 0.01
+    optimizer = SGD(model.parameters(), lr=initial_lr, momentum=0.9)
+
+    # Adjust learning rate during training
+    for epoch in range(num_epochs):
+        # Halve the learning rate every 5 epochs
+        if epoch % 5 == 0 and epoch > 0:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] *= 0.5
+        
+        # Training code...
+        print(f"Current learning rate: {optimizer.param_groups[0]['lr']}")
 
 Defining Loss Functions
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Choose the appropriate loss function based on the task type:
+Loss functions measure the difference between model predictions and ground truth, serving as the optimization target for the model.
+
+Loss Function Selection Guide
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table:: Loss Function Selection Guide
+   :widths: 20 30 50
+   :header-rows: 1
+
+   * - Task Type
+     - Recommended Loss Function
+     - Application Scenarios
+   * - Regression
+     - MSELoss
+     - Predicting continuous values, such as house prices, temperature, etc.
+   * - Regression
+     - L1Loss
+     - Regression tasks insensitive to outliers
+   * - Regression
+     - HuberLoss
+     - Combines advantages of MSE and L1, robust to outliers
+   * - Classification
+     - CrossEntropyLoss
+     - Multi-class classification tasks, outputs class probabilities
+   * - Classification
+     - BCEWithLogitsLoss
+     - Binary classification tasks, outputs probability of 0 or 1
+
+Loss Function Usage Example
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: python
 
+    import riemann.nn as nn
+
     # For regression tasks
+    # MSELoss: Mean Squared Error loss, calculates the average of squared differences
     criterion = nn.MSELoss()
 
     # For classification tasks
+    # CrossEntropyLoss: Cross entropy loss, combines log_softmax and nll_loss
     # criterion = nn.CrossEntropyLoss()
 
-Training the Network
----------------------
+    # For binary classification tasks
+    # BCEWithLogitsLoss: Binary cross entropy loss with logits
+    # criterion = nn.BCEWithLogitsLoss()
 
-Complete training loop:
+    # For regression tasks sensitive to outliers
+    # HuberLoss: Huber loss, uses MSE for small errors and L1 for large errors
+    # criterion = nn.HuberLoss(delta=1.0)
+
+Training the Network
+~~~~~~~~~~~~~~~~~~~~
+
+Training a network is an iterative process consisting of four main steps: forward propagation, loss calculation, backward propagation, and parameter update.
+
+Complete Training Loop Explained
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. code-block:: python
 
-    num_epochs = 10
-
+    num_epochs = 10  # Number of training epochs
+    
     for epoch in range(num_epochs):
-        model.train()  # Set to training mode
-        running_loss = 0.0
+        # Set model to training mode
+        # This enables dropout and batch normalization behaviors specific to training
+        model.train()
         
-        for inputs, targets in train_loader:
-            # Zero gradients
+        running_loss = 0.0  # Accumulated loss
+        
+        # Iterate through data loader
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
+            # 1. Zero gradients
+            # Gradients must be zeroed before each iteration to prevent accumulation
             optimizer.zero_grad()
             
+            # 2. Forward pass
+            # Pass input data through the network to get predictions
+            outputs = model(inputs)
+            
+            # 3. Calculate loss
+            # Measure the difference between predictions and ground truth
+            loss = criterion(outputs, targets)
+            
+            # 4. Backward pass
+            # Calculate gradients of the loss with respect to all learnable parameters
+            loss.backward()
+            
+            # 5. Update parameters
+            # Update network parameters based on the calculated gradients
+            optimizer.step()
+            
+            # Accumulate loss
+            running_loss += loss.item()
+            
+            # Print batch information
+            if batch_idx % 10 == 0:
+                print(f"Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
+        
+        # Calculate and print average loss for each epoch
+        avg_loss = running_loss / len(train_loader)
+        print(f"Epoch [{epoch+1}/{num_epochs}], Average Loss: {avg_loss:.4f}")
+
+Training Tips
+^^^^^^^^^^^^^
+
+1. **Early stopping**: Stop training when validation loss no longer improves to prevent overfitting
+2. **Regularization**: Use weight decay, dropout, etc. to prevent overfitting
+3. **Batch normalization**: Accelerates training and improves model stability
+4. **Gradient clipping**: Prevents gradient explosion, especially in recurrent neural networks
+5. **Mixed precision training**: Uses half-precision floating points to speed up training
+
+Inference and Evaluation
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+After model training is complete, it's necessary to evaluate its performance on a test set to ensure the model can generalize to unseen data.
+
+Model Evaluation Steps
+^^^^^^^^^^^^^^^^^^^^^^
+
+1. **Set model to evaluation mode**: Disables dropout and batch normalization training behaviors
+2. **Use no_grad context**: Disables gradient calculation to save memory and computational resources
+3. **Iterate through test data**: Calculate performance metrics on the test set
+4. **Calculate evaluation metrics**: Choose appropriate metrics based on task type
+
+Evaluation Example
+^^^^^^^^^^^^^^^^^^
+
+.. code-block:: python
+
+    # Set model to evaluation mode
+    model.eval()
+    
+    # Evaluation metrics
+    test_loss = 0.0
+    correct = 0
+    total = 0
+    
+    # Use no_grad context to disable gradient calculation
+    with rm.no_grad():
+        for inputs, targets in test_loader:
             # Forward pass
             outputs = model(inputs)
             
             # Calculate loss
             loss = criterion(outputs, targets)
+            test_loss += loss.item()
             
-            # Backward pass
-            loss.backward()
-            
-            # Update parameters
-            optimizer.step()
-            
-            running_loss += loss.item()
-        
-        # Calculate average loss
-        avg_loss = running_loss / len(train_loader)
-        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.4f}")
+            # For classification tasks, calculate accuracy
+            # _, predicted = rm.max(outputs, dim=1)
+            # total += targets.size(0)
+            # correct += (predicted == targets).sum().item()
+    
+    # Calculate average loss
+    avg_test_loss = test_loss / len(test_loader)
+    print(f"Test Loss: {avg_test_loss:.4f}")
+    
+    # For classification tasks, calculate accuracy
+    # accuracy = 100 * correct / total
+    # print(f"Test Accuracy: {accuracy:.2f}%")
 
-Inference and Evaluation
-~~~~~~~~~~~~~~~~~~~~~~~~
+Saving and Loading Models
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Evaluate model performance on the test set:
+Trained models can be saved to disk for later use:
 
 .. code-block:: python
 
-    model.eval()  # Set to evaluation mode
-    test_loss = 0.0
+    # Save model
+    rm.save(model.state_dict(), 'model.pth')
+    print("Model saved successfully!")
 
+    # Load model
+    # Create model instance
+    loaded_model = SimpleNet()
+    # Load saved parameters
+    loaded_model.load_state_dict(rm.load('model.pth'))
+    # Set to evaluation mode
+    loaded_model.eval()
+    print("Model loaded successfully!")
+
+    # Use loaded model for inference
     with rm.no_grad():
-        for inputs, targets in test_loader:
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            test_loss += loss.item()
+        # Sample input
+        sample_input = rm.randn(1, 10)
+        # Model prediction
+        prediction = loaded_model(sample_input)
+        print(f"Sample prediction: {prediction}")
 
-    avg_test_loss = test_loss / len(test_loader)
-    print(f"Test Loss: {avg_test_loss:.4f}")
+Other Notes
+-----------
 
 Using CUDA
 ~~~~~~~~~~

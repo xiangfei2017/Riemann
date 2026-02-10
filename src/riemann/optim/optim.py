@@ -49,7 +49,7 @@ All optimizers support parameter groups, weight decay (L2 regularization), and s
 """
 import numpy as np
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Union, Callable, Iterable, Generator
+from typing import Any, Dict, List, Optional, Union, Callable, Iterable
 from ..tensordef import *
 from ..nn import *
 from ..cuda import cp
@@ -622,6 +622,247 @@ class Adam(Optimizer):
                 # 计算更新量
                 step_size = lr * arrlib.sqrt(bias_correction2) / bias_correction1
                 p.data -= step_size * (state['exp_avg'] / denom)
+
+class AdamW(Optimizer):
+    """
+    AdamW（Adam with Weight Decay）优化器
+    
+    Adam的改进版本，将权重衰减作为独立的正则化项处理，而非Adam中的梯度修改。
+    这使得权重衰减能够更有效地作为L2正则化，避免了Adam中原有的权重衰减副作用。
+    
+    参数更新公式:
+        m = β1*m + (1-β1)*∇θL(θ)  # 一阶矩估计
+        v = β2*v + (1-β2)*(∇θL(θ))²  # 二阶矩估计
+        m̂ = m/(1-β1^t)  # 偏差校正的一阶矩估计
+        v̂ = v/(1-β2^t)  # 偏差校正的二阶矩估计
+        θ = θ * (1 - η * weight_decay)  # 权重衰减
+        θ = θ - η*m̂/(√v̂ + ε)  # 参数更新
+    
+    适用场景:
+        - Transformer等大型模型的训练
+        - 需要更强正则化的深度学习任务
+        - 对权重衰减敏感的模型架构
+    """
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01, amsgrad=False):
+        """
+        初始化AdamW优化器
+        
+        参数:
+            params: 待优化参数组 (需包含requires_grad=True的TN对象)
+            lr: 学习率 (默认1e-3)
+            betas: 用于计算一阶和二阶矩估计的系数，格式为(beta1, beta2) (默认(0.9, 0.999))
+            eps: 数值稳定性参数，防止除零错误 (默认1e-8)
+            weight_decay: 权重衰减系数 (默认0.01，AdamW通常使用较大的权重衰减)
+            amsgrad: 是否使用AMSGrad变体 (默认False)
+        
+        异常:
+            ValueError: 当学习率、betas、eps或权重衰减系数为负数时抛出
+        """
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if eps < 0.0:
+            raise ValueError(f"Invalid epsilon value: {eps}")
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 0: {betas[0]}")
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError(f"Invalid beta parameter at index 1: {betas[1]}")
+        if weight_decay < 0.0:
+            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
+        super().__init__(params, defaults)
+        # 移除state初始化，采用延迟初始化策略
+
+    def step(self):
+        """
+        执行单个优化步骤（参数更新）
+        
+        1. 更新一阶和二阶矩估计
+        2. 执行偏差校正
+        3. 应用权重衰减（作为独立的L2正则化项）
+        4. 根据Adam更新规则调整参数
+        """
+        arrlib = self.arrlib
+
+        # 延迟初始化state
+        if not hasattr(self, 'state'):
+            self.state = {}
+        
+        for group in self.param_groups:
+            beta1, beta2 = group['betas']
+            eps = group['eps']
+            lr = group['lr']
+            weight_decay = group.get('weight_decay', 0.01)
+            amsgrad = group.get('amsgrad', False)
+            
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                
+                grad = p.grad.data
+                param_id = id(p)
+                
+                # 初始化状态
+                if param_id not in self.state:
+                    self.state[param_id] = {
+                        'step': 0,
+                        'exp_avg': arrlib.zeros_like(p.data),
+                        'exp_avg_sq': arrlib.zeros_like(p.data)
+                    }
+                    if amsgrad:
+                        self.state[param_id]['max_exp_avg_sq'] = arrlib.zeros_like(p.data)
+                
+                state = self.state[param_id]
+                state['step'] += 1  # 先递增步数
+                
+                # 优化更新计算，使用原地操作减少内存分配
+                arrlib.multiply(beta1, state['exp_avg'], out=state['exp_avg'])
+                arrlib.add(state['exp_avg'], (1.0 - beta1) * grad, out=state['exp_avg'])
+                
+                arrlib.multiply(beta2, state['exp_avg_sq'], out=state['exp_avg_sq'])
+                arrlib.add(state['exp_avg_sq'], (1.0 - beta2) * arrlib.square(grad), out=state['exp_avg_sq'])
+                
+                # 偏差校正
+                bias_correction1 = 1.0 - beta1 ** state['step']
+                bias_correction2 = 1.0 - beta2 ** state['step']
+                
+                # AMSGrad处理
+                if amsgrad:
+                    arrlib.maximum(state['max_exp_avg_sq'], state['exp_avg_sq'], out=state['max_exp_avg_sq'])
+                    denom = arrlib.sqrt(state['max_exp_avg_sq']) + eps
+                else:
+                    denom = arrlib.sqrt(state['exp_avg_sq']) + eps
+                
+                # 计算更新量
+                step_size = lr * arrlib.sqrt(bias_correction2) / bias_correction1
+                
+                # 应用权重衰减（作为独立的L2正则化项）
+                if weight_decay > 0:
+                    p.data *= (1 - lr * weight_decay)
+                
+                # 根据Adam更新规则调整参数
+                p.data -= step_size * (state['exp_avg'] / denom)
+
+class RMSprop(Optimizer):
+    """
+    RMSprop（Root Mean Square Propagation）优化器
+    
+    Adagrad的改进版本，通过指数移动平均调整学习率，解决了Adagrad学习率衰减过快的问题。
+    适用于递归神经网络（RNN）等序列模型的训练。
+    
+    参数更新公式:
+        v = α*v + (1-α)*(∇θL(θ))²  # 二阶矩的指数移动平均
+        θ = θ - η*∇θL(θ)/(√v + ε)  # 参数更新
+    
+    适用场景:
+        - 递归神经网络（RNN）训练
+        - 长序列数据处理
+        - 需要稳定学习率的优化问题
+    """
+    def __init__(self, params, lr=0.01, alpha=0.99, eps=1e-8, weight_decay=0.0, momentum=0.0, centered=False):
+        """
+        初始化RMSprop优化器
+        
+        参数:
+            params: 待优化参数组 (需包含requires_grad=True的TN对象)
+            lr: 学习率 (默认0.01)
+            alpha: 平滑常数，用于计算二阶矩的指数移动平均 (默认0.99)
+            eps: 数值稳定性参数，防止除零错误 (默认1e-8)
+            weight_decay: 权重衰减系数 (默认0.0)
+            momentum: 动量系数 (默认0.0)
+            centered: 是否使用中心化的RMSprop (默认False)
+        
+        异常:
+            ValueError: 当学习率、alpha、eps或权重衰减系数为负数时抛出
+        """
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if alpha < 0.0:
+            raise ValueError(f"Invalid alpha value: {alpha}")
+        if eps < 0.0:
+            raise ValueError(f"Invalid epsilon value: {eps}")
+        if weight_decay < 0.0:
+            raise ValueError(f"Invalid weight_decay value: {weight_decay}")
+        if momentum < 0.0:
+            raise ValueError(f"Invalid momentum value: {momentum}")
+        
+        defaults = dict(lr=lr, alpha=alpha, eps=eps, weight_decay=weight_decay, momentum=momentum, centered=centered)
+        super().__init__(params, defaults)
+        # 移除state初始化，采用延迟初始化策略
+
+    def step(self):
+        """
+        执行单个优化步骤（参数更新）
+        
+        1. 应用权重衰减（如果启用）
+        2. 更新二阶矩的指数移动平均
+        3. 如果启用中心化，计算中心化的二阶矩
+        4. 如果启用动量，更新动量项
+        5. 根据RMSprop更新规则调整参数
+        """
+        arrlib = self.arrlib
+
+        # 延迟初始化state
+        if not hasattr(self, 'state'):
+            self.state = {}
+        
+        for group in self.param_groups:
+            alpha = group['alpha']
+            eps = group['eps']
+            lr = group['lr']
+            weight_decay = group.get('weight_decay', 0.0)
+            momentum = group.get('momentum', 0.0)
+            centered = group.get('centered', False)
+            
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                
+                grad = p.grad.data
+                
+                # 应用权重衰减
+                if weight_decay > 0:
+                    grad = grad + weight_decay * p.data
+                
+                param_id = id(p)
+                
+                # 初始化状态
+                if param_id not in self.state:
+                    self.state[param_id] = {
+                        'step': 0,
+                        'square_avg': arrlib.zeros_like(p.data)
+                    }
+                    if momentum > 0:
+                        self.state[param_id]['momentum_buffer'] = arrlib.zeros_like(p.data)
+                    if centered:
+                        self.state[param_id]['grad_avg'] = arrlib.zeros_like(p.data)
+                
+                state = self.state[param_id]
+                state['step'] += 1
+                
+                # 更新二阶矩的指数移动平均
+                square_avg = state['square_avg']
+                arrlib.multiply(alpha, square_avg, out=square_avg)
+                arrlib.add(square_avg, (1.0 - alpha) * arrlib.square(grad), out=square_avg)
+                
+                # 计算分母
+                if centered:
+                    grad_avg = state['grad_avg']
+                    arrlib.multiply(alpha, grad_avg, out=grad_avg)
+                    arrlib.add(grad_avg, (1.0 - alpha) * grad, out=grad_avg)
+                    denom = arrlib.sqrt(square_avg - arrlib.square(grad_avg)) + eps
+                else:
+                    denom = arrlib.sqrt(square_avg) + eps
+                
+                # 应用动量
+                if momentum > 0:
+                    momentum_buffer = state['momentum_buffer']
+                    arrlib.multiply(momentum, momentum_buffer, out=momentum_buffer)
+                    arrlib.add(momentum_buffer, lr * grad / denom, out=momentum_buffer)
+                    p.data -= momentum_buffer
+                else:
+                    # 直接更新参数
+                    p.data -= lr * grad / denom
 
 class Adagrad(Optimizer):
     """
