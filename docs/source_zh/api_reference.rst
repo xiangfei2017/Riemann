@@ -4429,6 +4429,56 @@ Dropout函数
       :return: 损失值
       :rtype: float
 
+.. class:: riemann.optim.AdamW(params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01, amsgrad=False)
+
+   AdamW（Adam with Weight Decay）优化器
+
+   Adam的改进版本，将权重衰减作为独立的正则化项处理，而非Adam中的梯度修改。
+   这使得权重衰减能够更有效地作为L2正则化，避免了Adam中原有的权重衰减副作用。
+
+   :param params: 待优化参数的迭代器或定义参数组的字典列表
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param lr: 学习率
+   :type lr: float, optional
+   :param betas: 用于计算梯度及其平方的运行平均值的系数
+   :type betas: Tuple[float, float], optional
+   :param eps: 添加到分母以提高数值稳定性的项
+   :type eps: float, optional
+   :param weight_decay: 权重衰减（L2正则化）系数
+   :type weight_decay: float, optional
+   :param amsgrad: 是否使用AMSGrad变体
+   :type amsgrad: bool, optional
+
+   .. method:: step()
+
+      执行单个优化步骤
+
+.. class:: riemann.optim.RMSprop(params, lr=1e-2, alpha=0.99, eps=1e-8, weight_decay=0, momentum=0, centered=False)
+
+   RMSprop（Root Mean Square Propagation）优化器
+
+   自适应学习率优化器，特别适用于递归神经网络（RNN）。
+   它通过维护梯度平方的移动平均值来调整每个参数的学习率。
+
+   :param params: 待优化参数的迭代器或定义参数组的字典列表
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param lr: 学习率
+   :type lr: float, optional
+   :param alpha: 平滑常数，用于计算梯度平方的指数移动平均值
+   :type alpha: float, optional
+   :param eps: 添加到分母以提高数值稳定性的项
+   :type eps: float, optional
+   :param weight_decay: 权重衰减（L2正则化）系数
+   :type weight_decay: float, optional
+   :param momentum: 动量因子
+   :type momentum: float, optional
+   :param centered: 是否使用中心化的RMSprop（使用梯度的移动平均值）
+   :type centered: bool, optional
+
+   .. method:: step()
+
+      执行单个优化步骤
+
 学习率调度器
 ~~~~~~~~~~~~
 

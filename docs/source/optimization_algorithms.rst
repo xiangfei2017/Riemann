@@ -97,7 +97,28 @@ Weight decay (L2 regularization) can be added to prevent overfitting.
 SGD (Stochastic Gradient Descent)
 ----------------------------------
 
-SGD is a variant of gradient descent that updates parameters using a subset of data at each iteration.
+SGD is a variant of gradient descent that updates parameters using a subset of data at each iteration. It is one of the most fundamental optimization algorithms in machine learning.
+
+**Algorithm Explanation:**
+
+1. Compute gradients on a mini-batch: `∇θL(θ)`
+2. Apply weight decay: `θ = θ * (1 - η * weight_decay)`
+3. Update parameters: `θ = θ - η * ∇θL(θ)`
+4. Optional: Apply momentum and/or Nesterov momentum
+
+**Advantages:**
+
+- Simple and computationally efficient
+- Straightforward implementation
+- No hyperparameters to tune except learning rate
+- Effective for large datasets when used with momentum
+
+**Suitable Scenarios:**
+
+- Training large models with large datasets
+- When computational resources are limited
+- As a baseline for comparing other optimization algorithms
+- When fine-tuning models with careful learning rate scheduling
 
 Basic SGD
 ~~~~~~~~~
@@ -145,7 +166,7 @@ Momentum helps accelerate SGD in the relevant direction and dampens oscillations
 SGD with Nesterov Momentum
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Nesterov momentum is a variant of momentum that can provide better convergence.
+Nesterov momentum is a variant of momentum that can provide better convergence by looking ahead in the direction of the momentum vector.
 
 .. code-block:: python
 
@@ -163,10 +184,69 @@ Nesterov momentum is a variant of momentum that can provide better convergence.
         loss.backward()
         optimizer.step()
 
+SGD with Closure Parameter
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The SGD optimizer supports a ``closure`` parameter, which is a function that reevaluates the model and returns the loss. This is useful for algorithms that need to compute the loss multiple times per optimization step, or for custom optimization logic.
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+    
+    # Create SGD optimizer
+    optimizer = optim.SGD(model.parameters(), lr=0.01)
+    
+    # Define closure function
+    def closure():
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        return loss
+    
+    # Training loop using closure
+    for epoch in range(num_epochs):
+        loss = optimizer.step(closure)
+        print(f'Epoch {epoch}, Loss: {loss.item():.4f}')
+
+When to Use Closure with SGD
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The closure parameter is particularly useful in scenarios such as:
+
+- Implementing custom optimization logic that requires multiple forward/backward passes
+- Using SGD with algorithms that need to compute loss gradients multiple times
+- Creating consistent interfaces across different optimizers (e.g., LBFGS always requires a closure)
+- Debugging optimization issues by inspecting loss values at different stages
+
 Adam (Adaptive Moment Estimation)
 ---------------------------------
 
-Adam combines the best properties of AdaGrad and RMSProp algorithms to provide an optimization algorithm that can handle sparse gradients on noisy problems.
+Adam combines the best properties of AdaGrad and RMSProp algorithms to provide an optimization algorithm that can handle sparse gradients on noisy problems. It maintains both a moving average of the gradients (momentum) and a moving average of the squared gradients (adaptive learning rate).
+
+**Algorithm Explanation:**
+
+1. Compute first moment estimate: `m = β1*m + (1-β1)*∇θL(θ)`
+2. Compute second moment estimate: `v = β2*v + (1-β2)*(∇θL(θ))²`
+3. Apply bias correction: `m̂ = m/(1-β1^t)`, `v̂ = v/(1-β2^t)`
+4. Apply weight decay: `θ = θ * (1 - η * weight_decay)`
+5. Update parameters: `θ = θ - η*m̂/(√v̂ + ε)`
+
+**Advantages:**
+
+- Adaptive learning rate per parameter
+- Combines benefits of momentum and adaptive learning rates
+- Well-suited for sparse gradients and noisy problems
+- Generally works well without extensive hyperparameter tuning
+
+**Suitable Scenarios:**
+
+- Training deep neural networks with many parameters
+- Problems with sparse gradients (e.g., NLP tasks)
+- Large-scale machine learning problems
+- When quick convergence is desired
+- As a default optimizer for most deep learning tasks
 
 Basic Adam
 ~~~~~~~~~~
@@ -211,7 +291,29 @@ Weight decay (L2 regularization) can be added to prevent overfitting.
 Adagrad
 -------
 
-AdaGrad adapts the learning rate to the parameters, performing smaller updates for parameters associated with frequently occurring features.
+AdaGrad adapts the learning rate to the parameters, performing smaller updates for parameters associated with frequently occurring features. It maintains a per-parameter learning rate that is scaled based on the historical sum of squared gradients.
+
+**Algorithm Explanation:**
+
+1. Compute gradients: `∇θL(θ)`
+2. Accumulate squared gradients: `G = G + (∇θL(θ))²`
+3. Apply weight decay: `θ = θ * (1 - η * weight_decay)`
+4. Update parameters: `θ = θ - η*∇θL(θ)/(√G + ε)`
+5. Optional: Apply learning rate decay
+
+**Advantages:**
+
+- Adaptive learning rate per parameter
+- Automatically scales learning rates for different features
+- Well-suited for sparse data where some features are infrequent
+- No need to manually tune learning rate for different parameters
+
+**Suitable Scenarios:**
+
+- Training on sparse datasets (e.g., text classification)
+- Problems with features of varying frequencies
+- When you want learning rates to automatically adapt to feature importance
+- As a baseline for adaptive learning rate methods
 
 Basic Adagrad
 ~~~~~~~~~~~~~
@@ -235,7 +337,41 @@ Basic Adagrad
 LBFGS
 -----
 
-LBFGS is a quasi-Newton method that approximates the BFGS algorithm using a limited amount of memory.
+LBFGS is a quasi-Newton method that approximates the BFGS algorithm using a limited amount of memory. It maintains a history of recent gradient evaluations to approximate the Hessian matrix, allowing for more efficient optimization than full Newton methods.
+
+**Algorithm Explanation:**
+
+1. Compute gradients using the closure function
+2. Maintain a history of recent (position, gradient) pairs
+3. Approximate the inverse Hessian matrix using this history
+4. Compute search direction based on the approximate inverse Hessian
+5. Perform line search to find optimal step size
+6. Update parameters and repeat
+
+**Advantages:**
+
+- Memory efficient compared to full BFGS
+- Faster convergence than first-order methods for smooth objectives
+- Uses second-order information without explicitly computing the Hessian
+- Well-suited for small to medium-sized problems
+
+**Suitable Scenarios:**
+
+- Training small to medium-sized models
+- Problems with smooth objective functions
+- When you need faster convergence than first-order methods
+- For batch optimization where you can compute the full gradient
+- When memory is limited but you still want second-order optimization benefits
+
+**LBFGS Parameters Detailed Explanation:**
+
+- **lr**: Learning rate (default: 1.0). Unlike other optimizers, LBFGS uses this as a step size multiplier during line search.
+- **max_iter**: Maximum number of iterations per optimization step (default: 20). Controls how many times the algorithm will attempt to find an optimal step.
+- **max_eval**: Maximum number of function evaluations per optimization step (default: None). If None, defaults to max_iter * 1.25.
+- **tolerance_grad**: Gradient tolerance for convergence (default: 1e-05). The optimization stops when the gradient norm falls below this threshold.
+- **tolerance_change**: Parameter change tolerance for convergence (default: 1e-09). The optimization stops when parameter updates fall below this threshold.
+- **history_size**: Update history size (default: 100). Controls how much memory is used to approximate the Hessian matrix.
+- **line_search_fn**: Line search function (default: None). Custom line search function to use instead of the default implementation.
 
 Basic LBFGS
 ~~~~~~~~~~~
@@ -260,6 +396,198 @@ Basic LBFGS
     for epoch in range(num_epochs):
         loss = optimizer.step(closure)
         print(f'Epoch {epoch}, Loss: {loss.item():.4f}')
+
+LBFGS with Custom Parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can customize LBFGS parameters to better suit your specific optimization problem:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+    
+    # Create LBFGS optimizer with custom parameters
+    optimizer = optim.LBFGS(
+        model.parameters(),
+        lr=1.0,               # Learning rate (step size multiplier)
+        max_iter=50,          # Maximum iterations per step
+        max_eval=None,        # Maximum function evaluations (None = max_iter * 1.25)
+        tolerance_grad=1e-06,  # Gradient convergence threshold
+        tolerance_change=1e-09, # Parameter change convergence threshold
+        history_size=100,      # Hessian approximation memory
+        line_search_fn=None    # Use default line search
+    )
+    
+    # Define closure function
+    def closure():
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        return loss
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        loss = optimizer.step(closure)
+        print(f'Epoch {epoch}, Loss: {loss.item():.4f}')
+
+Parameter Tuning Tips for LBFGS
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- **lr**: Start with 1.0 and adjust based on convergence. For ill-conditioned problems, smaller values (0.1-0.5) may be more stable.
+- **max_iter**: Increase for more complex optimization problems, but be aware of increased computation time.
+- **history_size**: Larger values may improve convergence but increase memory usage. For small models, 100-200 is typically sufficient.
+- **tolerance_grad** and **tolerance_change**: Adjust based on desired precision. Smaller values lead to more precise optimization but may require more iterations.
+- **line_search_fn**: Only customize if you have specific line search requirements. The default implementation works well for most problems.
+
+AdamW (Adam with Weight Decay)
+-------------------------------
+
+AdamW is an improved version of Adam that treats weight decay as a separate regularization term instead of modifying the gradients. This allows weight decay to more effectively act as L2 regularization, avoiding the weight decay side effects present in Adam.
+
+**Algorithm Explanation:**
+
+1. Compute first moment estimate: `m = β1*m + (1-β1)*∇θL(θ)`
+2. Compute second moment estimate: `v = β2*v + (1-β2)*(∇θL(θ))²`
+3. Apply bias correction: `m̂ = m/(1-β1^t)`, `v̂ = v/(1-β2^t)`
+4. Apply weight decay: `θ = θ * (1 - η * weight_decay)`
+5. Update parameters: `θ = θ - η*m̂/(√v̂ + ε)`
+
+**Advantages:**
+
+- More effective weight decay as a regularizer
+- Better generalization performance
+- Avoids Adam's weight decay issues
+- Well-suited for modern deep learning architectures
+
+**Suitable Scenarios:**
+
+- Training deep neural networks
+- Transfer learning and fine-tuning
+- Models with many parameters prone to overfitting
+- Any scenario where Adam is used, especially with weight decay
+
+Basic AdamW
+~~~~~~~~~~~
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+    
+    # Create AdamW optimizer
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
+AdamW with Custom Betas
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+    
+    # Create AdamW optimizer with custom betas
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, betas=(0.9, 0.999), weight_decay=0.01)
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
+RMSprop (Root Mean Square Propagation)
+---------------------------------------
+
+RMSprop is an adaptive learning rate optimization algorithm that maintains a moving average of the squared gradients for each parameter. It is particularly well-suited for recurrent neural networks (RNNs) and other sequence models.
+
+**Algorithm Explanation:**
+
+1. Compute moving average of squared gradients: `v = α*v + (1-α)*(∇θL(θ))²`
+2. Update parameters: `θ = θ - η*∇θL(θ)/(√v + ε)`
+3. Optional: Apply momentum and/or use centered version
+
+**Advantages:**
+
+- Adaptive learning rate per parameter
+- Effective for non-stationary objectives
+- Well-suited for RNNs and sequence models
+- Helps with the vanishing/exploding gradient problem
+
+**Suitable Scenarios:**
+
+- Training recurrent neural networks (RNNs)
+- Training long short-term memory (LSTM) networks
+- Training gated recurrent units (GRUs)
+- Any model with sequence data
+- Models where gradients can vary significantly over time
+
+Basic RMSprop
+~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+    
+    # Create RMSprop optimizer
+    optimizer = optim.RMSprop(model.parameters(), lr=0.001, alpha=0.99)
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
+RMSprop with Momentum
+~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+    
+    # Create RMSprop optimizer with momentum
+    optimizer = optim.RMSprop(model.parameters(), lr=0.001, alpha=0.99, momentum=0.9)
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
+RMSprop with Centered Gradients
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+    
+    # Create RMSprop optimizer with centered gradients
+    optimizer = optim.RMSprop(model.parameters(), lr=0.001, alpha=0.99, centered=True)
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
 
 Optimizer Methods
 -----------------

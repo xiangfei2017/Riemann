@@ -4436,6 +4436,57 @@ Optimizers
       :return: Loss value
       :rtype: float
 
+.. class:: riemann.optim.AdamW(params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.01, amsgrad=False)
+
+   AdamW (Adam with Weight Decay) optimizer
+
+   An improved version of Adam that treats weight decay as a separate regularization term
+   instead of modifying the gradients in Adam. This allows weight decay to more effectively
+   act as L2 regularization, avoiding the weight decay side effects present in Adam.
+
+   :param params: Iterator of parameters to optimize or list of dictionaries defining parameter groups
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param lr: Learning rate
+   :type lr: float, optional
+   :param betas: Coefficients used for computing running averages of gradient and its square
+   :type betas: Tuple[float, float], optional
+   :param eps: Term added to the denominator to improve numerical stability
+   :type eps: float, optional
+   :param weight_decay: Weight decay (L2 regularization) coefficient
+   :type weight_decay: float, optional
+   :param amsgrad: Whether to use the AMSGrad variant
+   :type amsgrad: bool, optional
+
+   .. method:: step()
+
+      Perform a single optimization step
+
+.. class:: riemann.optim.RMSprop(params, lr=1e-2, alpha=0.99, eps=1e-8, weight_decay=0, momentum=0, centered=False)
+
+   RMSprop (Root Mean Square Propagation) optimizer
+
+   An adaptive learning rate optimizer particularly suitable for recurrent neural networks (RNNs).
+   It adjusts the learning rate for each parameter by maintaining a moving average of squared gradients.
+
+   :param params: Iterator of parameters to optimize or list of dictionaries defining parameter groups
+   :type params: Iterable[riemann.TN or riemann.nn.Parameter] or List[Dict[str, Any]]
+   :param lr: Learning rate
+   :type lr: float, optional
+   :param alpha: Smoothing constant used for computing the exponential moving average of squared gradients
+   :type alpha: float, optional
+   :param eps: Term added to the denominator to improve numerical stability
+   :type eps: float, optional
+   :param weight_decay: Weight decay (L2 regularization) coefficient
+   :type weight_decay: float, optional
+   :param momentum: Momentum factor
+   :type momentum: float, optional
+   :param centered: Whether to use centered RMSprop (using a moving average of gradients)
+   :type centered: bool, optional
+
+   .. method:: step()
+
+      Perform a single optimization step
+
 Learning Rate Schedulers
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
