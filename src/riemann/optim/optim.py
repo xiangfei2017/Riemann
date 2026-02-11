@@ -37,15 +37,26 @@ This module implements various optimization algorithms for training neural netwo
 Optimizers are responsible for adjusting model parameters to minimize the loss function during training.
 This file provides implementations of several widely used optimization algorithms with PyTorch-compatible interfaces.
 
-Implemented optimizers:
-- Optimizer: Base class providing common optimizer functionality
-- GD: Simple Gradient Descent optimizer
-- SGD: Stochastic Gradient Descent with momentum support
-- Adam: Adaptive Moment Estimation optimizer with bias correction
-- Adagrad: Adaptive Gradient Algorithm with per-parameter learning rates
-- LBFGS: Limited-memory BFGS algorithm for second-order optimization
+Key features:
+- PyTorch-compatible optimizer interfaces
+- Support for parameter groups with different hyperparameters
+- Weight decay (L2 regularization) support
+- State saving and restoration capabilities
+- Device-aware implementation (supports both CPU and CUDA)
+- Efficient state management using defaultdict
 
-All optimizers support parameter groups, weight decay (L2 regularization), and state saving/restoration.
+Implemented optimizers:
+- Optimizer: Base class providing common optimizer functionality and interfaces
+- GD: Simple Gradient Descent optimizer with basic parameter updates
+- SGD: Stochastic Gradient Descent with momentum and Nesterov acceleration support
+- Adam: Adaptive Moment Estimation with bias correction and adaptive learning rates
+- AdamW: Adam with weight decay decoupling for better regularization
+- RMSprop: Root Mean Square Propagation with adaptive learning rates
+- Adagrad: Adaptive Gradient Algorithm with per-parameter learning rate scaling
+- LBFGS: Limited-memory BFGS algorithm for second-order optimization with line search
+
+Each optimizer implements the standard step() method for parameter updates and supports both
+standard optimization steps and closure-based steps (required for LBFGS).
 """
 import numpy as np
 from collections import defaultdict
