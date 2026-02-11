@@ -217,6 +217,10 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         
         return all_passed
     
+    # 检查形状是否一致
+    if rm_result.shape != torch_result.shape:
+        return False
+    
     # 转换为numpy数组
     try:
         # 处理Riemann结果

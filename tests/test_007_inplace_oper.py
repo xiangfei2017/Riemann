@@ -224,6 +224,10 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         
         return all_passed
     
+    # 检查形状是否一致
+    if rm_result.shape != torch_result.shape:
+        return False
+    
     # 处理Riemann结果
     if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
         rm_data = rm_result.detach().cpu().numpy()
@@ -1568,6 +1572,111 @@ class TestInplaceOperations(unittest.TestCase):
                         stats.add_result(case_name, False, [str(e)])
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
+
+    def test_masked_fill_non_inplace_function(self):
+        """测试 masked_fill 非原地操作函数"""
+        base_tensor = np.random.randn(5, 4)
+        
+        stats.start_function("test_masked_fill_non_inplace_function")
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for test_case in [
+                {"name": "全布尔掩码", "mask_type": "full_bool"},
+                {"name": "广播布尔掩码", "mask_type": "broadcast_bool"},
+                {"name": "标量填充值", "mask_type": "full_bool", "value": 42.0},
+                {"name": "0维张量填充值", "mask_type": "full_bool", "value": None}
+            ]:
+                case_name = f"masked_fill - {test_case['name']} - {device}"
+                start_time = time.time()
+                
+                try:
+                    # 创建Riemann张量和PyTorch张量
+                    rm_tensor = rm.tensor(base_tensor, requires_grad=True, device=device)
+                    rm_tensor = rm_tensor.clone()  # 创建非叶子节点
+                    rm_tensor.retain_grad()
+                    
+                    torch_tensor = None
+                    if TORCH_AVAILABLE:
+                        torch_tensor = torch.tensor(base_tensor, requires_grad=True, device=device)
+                        torch_tensor = torch_tensor.clone()  # 创建非叶子节点
+                        torch_tensor.retain_grad()
+                    
+                    # 保存原始张量的副本，用于验证非原地操作
+                    rm_tensor_copy = rm_tensor.clone()
+                    torch_tensor_copy = torch_tensor.clone() if TORCH_AVAILABLE else None
+                    
+                    # 准备掩码和填充值
+                    if test_case['mask_type'] == "full_bool":
+                        mask_data = np.random.choice([True, False], size=base_tensor.shape)
+                        rm_mask = rm.tensor(mask_data, device=device)
+                        torch_mask = torch.tensor(mask_data, device=device) if TORCH_AVAILABLE else None
+                    elif test_case['mask_type'] == "broadcast_bool":
+                        mask_data = np.random.choice([True, False], size=(base_tensor.shape[0], 1))
+                        rm_mask = rm.tensor(mask_data, device=device)
+                        torch_mask = torch.tensor(mask_data, device=device) if TORCH_AVAILABLE else None
+                    
+                    if test_case.get('value') is None:
+                        fill_value = 0.0
+                        rm_value = rm.tensor(fill_value, requires_grad=True, device=device)
+                        torch_value = torch.tensor(fill_value, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                    else:
+                        # 如果是标量，转换为可跟踪梯度的张量
+                        if isinstance(test_case['value'], (int, float)):
+                            rm_value = rm.tensor(test_case['value'], requires_grad=True, device=device)
+                            torch_value = torch.tensor(test_case['value'], requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                        else:
+                            rm_value = test_case['value']
+                            torch_value = test_case['value'] if TORCH_AVAILABLE else None
+                    
+                    # 执行非原地操作
+                    rm_result = rm_tensor.masked_fill(rm_mask, rm_value)
+                    torch_result = torch_tensor.masked_fill(torch_mask, torch_value) if TORCH_AVAILABLE else None
+                    
+                    # 验证原张量未被修改
+                    original_tensor_unchanged = compare_values(rm_tensor, rm_tensor_copy)
+                    
+                    # 前向传播和损失计算
+                    rm_loss = rm_result.sum()
+                    rm_loss.backward()
+                    
+                    torch_loss = None
+                    if TORCH_AVAILABLE:
+                        torch_loss = torch_result.sum()
+                        torch_loss.backward()
+                    
+                    # 比较结果
+                    values_match = compare_values(rm_result, torch_result)
+                    grads_self_match = compare_grads(rm_tensor, torch_tensor) if TORCH_AVAILABLE else True
+                    grads_right_match = compare_grads(rm_value, torch_value) if TORCH_AVAILABLE else True
+                    
+                    passed = values_match and original_tensor_unchanged and grads_self_match and grads_right_match
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        
+                        if passed:
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                        else:
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                    
+                    # 单元测试断言
+                    self.assertTrue(values_match, f"{case_name} 函数值不匹配")
+                    self.assertTrue(original_tensor_unchanged, f"{case_name} 原张量被修改")
+                    self.assertTrue(grads_self_match, f"{case_name} self梯度不匹配")
+                    self.assertTrue(grads_right_match, f"{case_name} 右值梯度不匹配")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+        stats.end_function()
 
 if __name__ == '__main__':
     # 设置为独立脚本运行模式
