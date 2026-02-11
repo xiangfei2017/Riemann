@@ -2812,13 +2812,13 @@ class TN:
         # 返回自身以支持链式调用
         return self
     
-    def clamp_(self, min=None, max=None):
+    def clamp_(self, min: float | TN | None=None, max: float | TN | None=None):
         """
         将张量的每个元素限制在指定的范围内，原地操作。
         
         参数:
-            min: 最小值，可以是标量或0D张量。如果为None，则不限制最小值
-            max: 最大值，可以是标量或0D张量。如果为None，则不限制最大值
+            min: 最小值，可以是标量或张量。如果为None，则不限制最小值
+            max: 最大值，可以是标量或张量。如果为None，则不限制最大值
         
         返回:
             self: 裁剪后的张量
@@ -2832,22 +2832,13 @@ class TN:
         if self.requires_grad and self.is_leaf:
             raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
         
-        # 处理不同类型的min和max参数
-        if isinstance(min, TN):
-            if min.ndim != 0:
-                raise RuntimeError(f'clamp_ only supports 0-dimension min tensor but got tensor with {min.ndim} dimensions.')
-        
-        if isinstance(max, TN):
-            if max.ndim != 0:
-                raise RuntimeError(f'clamp_ only supports 0-dimension max tensor but got tensor with {max.ndim} dimensions.')
-        
-        # 执行原地裁剪操作，使用masked_fill_实现
+        # 执行原地裁剪操作，使用setat_实现
         if min is not None:
             mask = self < min
-            self.masked_fill_(mask, min)
+            self.setat_(mask, min)
         if max is not None:
             mask = self > max
-            self.masked_fill_(mask, max)
+            self.setat_(mask, max)
         
         # 返回自身以支持链式调用
         return self
@@ -2931,7 +2922,7 @@ class TN:
         # 返回自身以支持链式调用
         return self
     
-    def masked_fill(self, mask: 'TN', value: Any) -> 'TN':
+    def masked_fill(self, mask: TN, value: Any) -> TN:
         """
         使用标量值填充张量中对应掩码为True的位置（非原地操作）
         
