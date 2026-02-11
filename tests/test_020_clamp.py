@@ -185,18 +185,12 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     if rm_result is None or torch_result is None:
         return False
     
-    # 转换为numpy数组进行比较
-    if hasattr(rm_result, 'data'):
-        rm_data = rm_result.data
-    else:
-        rm_data = rm_result
-    
-    if hasattr(torch_result, 'numpy'):
-        torch_data = torch_result.numpy()
-    else:
-        torch_data = torch_result
-    
-    # 处理形状不匹配的情况
+    if rm_result.shape != torch_result.shape:
+        return False
+
+    rm_data = rm_result.detach().numpy()
+    torch_data = torch_result.detach().numpy()
+
     try:
         # 增加容差参数
         np.testing.assert_allclose(rm_data, torch_data, rtol=rtol, atol=atol)
@@ -235,8 +229,21 @@ class TestClampFunctions(unittest.TestCase):
             # 准备输入数据
             rm_x = rm.tensor(x_data)
             
+            # 处理min和max是张量的情况
+            rm_min = None
+            rm_max = None
+            if isinstance(min_val, dict) and 'data' in min_val:
+                # min是张量数据
+                rm_min = rm.tensor(min_val['data'], requires_grad=min_val.get('requires_grad', False))
+                min_val = rm_min
+            if isinstance(max_val, dict) and 'data' in max_val:
+                # max是张量数据
+                rm_max = rm.tensor(max_val['data'], requires_grad=max_val.get('requires_grad', False))
+                max_val = rm_max
+            
             # 执行clamp操作
             if is_inplace:
+                # 执行原地操作
                 rm_result = rm_x.clamp_(min_val, max_val) if min_val is not None and max_val is not None else \
                            rm_x.clamp_(min=min_val) if min_val is not None else \
                            rm_x.clamp_(max=max_val)
@@ -247,36 +254,52 @@ class TestClampFunctions(unittest.TestCase):
                 if 'out' in test_case:
                     out_shape = x_data.shape
                     rm_out = rm.zeros(out_shape)
-                    rm_result = rm.clamp(rm_x, min_val, max_val, out=rm_out) if min_val is not None and max_val is not None else \
-                               rm.clamp(rm_x, min=min_val, out=rm_out) if min_val is not None else \
-                               rm.clamp(rm_x, max=max_val, out=rm_out)
+                    
+                    # 处理min和max是张量的情况
+                    # 对于out参数的情况，需要使用标量
+                    scalar_min = min_val.item() if hasattr(min_val, 'item') else min_val
+                    scalar_max = max_val.item() if hasattr(max_val, 'item') else max_val
+                    
+                    # 非原地操作支持标量作为参数
+                    rm_result = rm.clamp(rm_x, scalar_min, scalar_max, out=rm_out)
                     rm_result_data = rm_out
                 else:
-                    rm_result = rm.clamp(rm_x, min_val, max_val) if min_val is not None and max_val is not None else \
-                               rm.clamp(rm_x, min=min_val) if min_val is not None else \
-                               rm.clamp(rm_x, max=max_val)
+                    # 非原地操作支持张量作为位置参数
+                    rm_result = rm_x.clamp(min_val, max_val)
                     rm_result_data = rm_result
             
             # 使用PyTorch进行比较
             if TORCH_AVAILABLE:
                 t_x = torch.tensor(x_data)
+                
+                # 处理min和max是张量的情况
+                t_min = None
+                t_max = None
+                t_min_val = test_case.get('min', None)
+                t_max_val = test_case.get('max', None)
+                if isinstance(t_min_val, dict) and 'data' in t_min_val:
+                    # min是张量数据
+                    t_min = torch.tensor(t_min_val['data'], requires_grad=t_min_val.get('requires_grad', False))
+                    t_min_val = t_min
+                if isinstance(t_max_val, dict) and 'data' in t_max_val:
+                    # max是张量数据
+                    t_max = torch.tensor(t_max_val['data'], requires_grad=t_max_val.get('requires_grad', False))
+                    t_max_val = t_max
+                
                 if is_inplace:
-                    t_result = t_x.clamp_(min_val, max_val) if min_val is not None and max_val is not None else \
-                               t_x.clamp_(min=min_val) if min_val is not None else \
-                               t_x.clamp_(max=max_val)
+                    # 执行原地操作
+                    t_result = t_x.clamp_(t_min_val, t_max_val) if t_min_val is not None and t_max_val is not None else \
+                               t_x.clamp_(min=t_min_val) if t_min_val is not None else \
+                               t_x.clamp_(max=t_max_val)
                     t_result_data = t_x
                 else:
                     if 'out' in test_case:
                         out_shape = x_data.shape
                         t_out = torch.zeros(out_shape)
-                        t_result = torch.clamp(t_x, min_val, max_val, out=t_out) if min_val is not None and max_val is not None else \
-                                   torch.clamp(t_x, min=min_val, out=t_out) if min_val is not None else \
-                                   torch.clamp(t_x, max=max_val, out=t_out)
+                        t_result = torch.clamp(t_x, t_min_val, t_max_val, out=t_out)
                         t_result_data = t_out
                     else:
-                        t_result = torch.clamp(t_x, min_val, max_val) if min_val is not None and max_val is not None else \
-                                   torch.clamp(t_x, min=min_val) if min_val is not None else \
-                                   torch.clamp(t_x, max=max_val)
+                        t_result = torch.clamp(t_x, t_min_val, t_max_val)
                         t_result_data = t_result
             else:
                 t_result_data = None
@@ -298,23 +321,49 @@ class TestClampFunctions(unittest.TestCase):
                     # 原地操作不能对需要梯度的叶子节点张量执行
                     rm_x_leaf = rm.tensor(x_data_float, requires_grad=True)
                     rm_x_non_leaf = rm_x_leaf * 1.0  # 生成非叶子节点张量
-                    if min_val is not None and max_val is not None:
-                        rm_x_non_leaf.clamp_(min_val, max_val)
-                    elif min_val is not None:
-                        rm_x_non_leaf.clamp_(min=min_val)
+                    
+                    # 处理min和max是张量的情况
+                    rm_min_grad = None
+                    rm_max_grad = None
+                    if isinstance(test_case.get('min'), dict) and 'data' in test_case.get('min'):
+                        # min是张量数据，取第一个元素作为标量
+                        min_val_grad = test_case['min']['data'].flatten()[0]
                     else:
-                        rm_x_non_leaf.clamp_(max=max_val)
+                        min_val_grad = test_case.get('min')
+                    if isinstance(test_case.get('max'), dict) and 'data' in test_case.get('max'):
+                        # max是张量数据，取第一个元素作为标量
+                        max_val_grad = test_case['max']['data'].flatten()[0]
+                    else:
+                        max_val_grad = test_case.get('max')
+                    
+                    if min_val_grad is not None and max_val_grad is not None:
+                        rm_x_non_leaf.clamp_(min_val_grad, max_val_grad)
+                    elif min_val_grad is not None:
+                        rm_x_non_leaf.clamp_(min=min_val_grad)
+                    else:
+                        rm_x_non_leaf.clamp_(max=max_val_grad)
                     rm_sum = rm.sum(rm_x_non_leaf)
                     rm_sum.backward()
                     rm_grad = rm_x_leaf.grad
                 else:
                     rm_x_grad = rm.tensor(x_data_float, requires_grad=True)
-                    if min_val is not None and max_val is not None:
-                        rm_result_grad = rm.clamp(rm_x_grad, min_val, max_val)
-                    elif min_val is not None:
-                        rm_result_grad = rm.clamp(rm_x_grad, min=min_val)
+                    
+                    # 处理min和max是张量的情况
+                    rm_min_grad = None
+                    rm_max_grad = None
+                    if isinstance(test_case.get('min'), dict) and 'data' in test_case.get('min'):
+                        # min是张量数据
+                        rm_min_grad = rm.tensor(test_case['min']['data'], requires_grad=test_case['min'].get('requires_grad', False))
                     else:
-                        rm_result_grad = rm.clamp(rm_x_grad, max=max_val)
+                        rm_min_grad = test_case.get('min')
+                    if isinstance(test_case.get('max'), dict) and 'data' in test_case.get('max'):
+                        # max是张量数据
+                        rm_max_grad = rm.tensor(test_case['max']['data'], requires_grad=test_case['max'].get('requires_grad', False))
+                    else:
+                        rm_max_grad = test_case.get('max')
+                    
+                    # 非原地操作支持张量作为位置参数
+                    rm_result_grad = rm_x_grad.clamp(rm_min_grad, rm_max_grad)
                     rm_sum = rm.sum(rm_result_grad)
                     rm_sum.backward()
                     rm_grad = rm_x_grad.grad
@@ -323,23 +372,49 @@ class TestClampFunctions(unittest.TestCase):
                 if is_inplace:
                     t_x_leaf = torch.tensor(x_data_float, requires_grad=True)
                     t_x_non_leaf = t_x_leaf * 1.0  # 生成非叶子节点张量
-                    if min_val is not None and max_val is not None:
-                        t_x_non_leaf.clamp_(min_val, max_val)
-                    elif min_val is not None:
-                        t_x_non_leaf.clamp_(min=min_val)
+                    
+                    # 处理min和max是张量的情况
+                    t_min_grad = None
+                    t_max_grad = None
+                    if isinstance(test_case.get('min'), dict) and 'data' in test_case.get('min'):
+                        # min是张量数据，取第一个元素作为标量
+                        min_val_grad = test_case['min']['data'].flatten()[0]
                     else:
-                        t_x_non_leaf.clamp_(max=max_val)
+                        min_val_grad = test_case.get('min')
+                    if isinstance(test_case.get('max'), dict) and 'data' in test_case.get('max'):
+                        # max是张量数据，取第一个元素作为标量
+                        max_val_grad = test_case['max']['data'].flatten()[0]
+                    else:
+                        max_val_grad = test_case.get('max')
+                    
+                    if min_val_grad is not None and max_val_grad is not None:
+                        t_x_non_leaf.clamp_(min_val_grad, max_val_grad)
+                    elif min_val_grad is not None:
+                        t_x_non_leaf.clamp_(min=min_val_grad)
+                    else:
+                        t_x_non_leaf.clamp_(max=max_val_grad)
                     t_sum = torch.sum(t_x_non_leaf)
                     t_sum.backward()
                     t_grad = t_x_leaf.grad
                 else:
                     t_x_grad = torch.tensor(x_data_float, requires_grad=True)
-                    if min_val is not None and max_val is not None:
-                        t_result_grad = torch.clamp(t_x_grad, min_val, max_val)
-                    elif min_val is not None:
-                        t_result_grad = torch.clamp(t_x_grad, min=min_val)
+                    
+                    # 处理min和max是张量的情况
+                    t_min_grad = None
+                    t_max_grad = None
+                    if isinstance(test_case.get('min'), dict) and 'data' in test_case.get('min'):
+                        # min是张量数据
+                        t_min_grad = torch.tensor(test_case['min']['data'], requires_grad=test_case['min'].get('requires_grad', False))
                     else:
-                        t_result_grad = torch.clamp(t_x_grad, max=max_val)
+                        t_min_grad = test_case.get('min')
+                    if isinstance(test_case.get('max'), dict) and 'data' in test_case.get('max'):
+                        # max是张量数据
+                        t_max_grad = torch.tensor(test_case['max']['data'], requires_grad=test_case['max'].get('requires_grad', False))
+                    else:
+                        t_max_grad = test_case.get('max')
+                    
+                    # 非原地操作支持张量作为位置参数
+                    t_result_grad = torch.clamp(t_x_grad, t_min_grad, t_max_grad)
                     t_sum = torch.sum(t_result_grad)
                     t_sum.backward()
                     t_grad = t_x_grad.grad
@@ -357,7 +432,7 @@ class TestClampFunctions(unittest.TestCase):
             if is_inplace:
                 return_passed = (rm_result is rm_x)
                 if IS_RUNNING_AS_SCRIPT:
-                    print(f"  子用例: {name} - 返回值验证 - {Colors.OKGREEN if return_passed else Colors.FAIL}{'通过' if return_passed else '失败'}{Colors.ENDC}")
+                    print(f"  子用例: {name} - 原地返回 - {Colors.OKGREEN if return_passed else Colors.FAIL}{'通过' if return_passed else '失败'}{Colors.ENDC}")
                 return passed and return_passed, grad_passed
             
             return passed, grad_passed
@@ -431,6 +506,22 @@ class TestClampFunctions(unittest.TestCase):
                     "min": 2,
                     "max": 8,
                     "grad_test": False  # 整数类型不支持梯度测试
+                },
+                {
+                    "name": "min是可广播张量 (形状为(1,))",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": {"data": np.array([2.0], dtype=np.float32), "requires_grad": True}
+                },
+                {
+                    "name": "max是可广播张量 (形状为(1, 1))",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "max": {"data": np.array([[6.0]], dtype=np.float32), "requires_grad": True}
+                },
+                {
+                    "name": "min和max都是可广播张量",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": {"data": np.array([2.0], dtype=np.float32), "requires_grad": True},
+                    "max": {"data": np.array([[8.0]], dtype=np.float32), "requires_grad": True}
                 }
             ]
             
@@ -449,7 +540,7 @@ class TestClampFunctions(unittest.TestCase):
                     stats.add_result(test_case['name'], passed)
                     if TORCH_AVAILABLE and test_case.get('grad_test', True):
                         stats.add_result(f"{test_case['name']} - 梯度跟踪", grad_passed)
-                    print(f"  子用例: {test_case['name']} - {Colors.OKGREEN if passed else Colors.FAIL}{'通过' if passed else '失败'}{Colors.ENDC}")
+                    print(f"  子用例: {test_case['name']} - 函数值 - {Colors.OKGREEN if passed else Colors.FAIL}{'通过' if passed else '失败'}{Colors.ENDC}")
                     if TORCH_AVAILABLE and test_case.get('grad_test', True):
                         print(f"  子用例: {test_case['name']} - 梯度跟踪 - {Colors.OKGREEN if grad_passed else Colors.FAIL}{'通过' if grad_passed else '失败'}{Colors.ENDC}")
             
@@ -515,6 +606,38 @@ class TestClampFunctions(unittest.TestCase):
                     "name": "边界值情况 - 所有值大于max",
                     "x_data": np.array([[8.0, 9.0], [10.0, 11.0]], dtype=np.float32),
                     "max": 7.0
+                },
+                {
+                    "name": "min是0D张量",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": {"data": np.array(2.0), "requires_grad": True}
+                },
+                {
+                    "name": "max是0D张量",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "max": {"data": np.array(6.0), "requires_grad": True}
+                },
+                {
+                    "name": "min和max都是0D张量",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": {"data": np.array(2.0), "requires_grad": True},
+                    "max": {"data": np.array(8.0), "requires_grad": True}
+                },
+                {
+                    "name": "min是可广播张量 (形状为(1,))",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": {"data": np.array([2.0], dtype=np.float32), "requires_grad": True}
+                },
+                {
+                    "name": "max是可广播张量 (形状为(1, 1))",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "max": {"data": np.array([[6.0]], dtype=np.float32), "requires_grad": True}
+                },
+                {
+                    "name": "min和max都是可广播张量",
+                    "x_data": np.array([[-3.0, 0.0, 3.0], [5.0, 7.0, 9.0]], dtype=np.float32),
+                    "min": {"data": np.array([2.0], dtype=np.float32), "requires_grad": True},
+                    "max": {"data": np.array([[8.0]], dtype=np.float32), "requires_grad": True}
                 }
             ]
             
@@ -533,7 +656,7 @@ class TestClampFunctions(unittest.TestCase):
                     stats.add_result(test_case['name'], passed)
                     if TORCH_AVAILABLE and test_case.get('grad_test', True):
                         stats.add_result(f"{test_case['name']} - 梯度跟踪", grad_passed)
-                    print(f"  子用例: {test_case['name']} - {Colors.OKGREEN if passed else Colors.FAIL}{'通过' if passed else '失败'}{Colors.ENDC}")
+                    print(f"  子用例: {test_case['name']} - 函数值 - {Colors.OKGREEN if passed else Colors.FAIL}{'通过' if passed else '失败'}{Colors.ENDC}")
                     if TORCH_AVAILABLE and test_case.get('grad_test', True):
                         print(f"  子用例: {test_case['name']} - 梯度跟踪 - {Colors.OKGREEN if grad_passed else Colors.FAIL}{'通过' if grad_passed else '失败'}{Colors.ENDC}")
             
