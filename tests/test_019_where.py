@@ -174,7 +174,7 @@ IS_RUNNING_AS_SCRIPT = False
 
 # 比较值的函数
 def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
-    """比较Riemann和PyTorch的值是否接近"""
+    """比较Riemann和PyTorch的值是否接近，同时检查形状是否一致"""
     # 处理None值的情况
     if not TORCH_AVAILABLE:
         # 如果没有PyTorch，只检查riemann结果是否存在
@@ -198,16 +198,13 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         
         return all_passed
     
-    # 转换为numpy数组进行比较
-    if hasattr(rm_result, 'data'):
-        rm_data = rm_result.data
-    else:
-        rm_data = rm_result
+    # 检查形状是否一致
+    if rm_result.shape != torch_result.shape:
+        return False
     
-    if hasattr(torch_result, 'numpy'):
-        torch_data = torch_result.numpy()
-    else:
-        torch_data = torch_result
+    # 转换为numpy数组进行比较
+    rm_data = rm_result.numpy()
+    torch_data = torch_result.numpy()
     
     # 处理形状不匹配的情况
     try:
@@ -464,6 +461,7 @@ class TestWhereFunctions(unittest.TestCase):
             # 创建测试数据
             cond_data = np.array([[True, False], [False, True]])
             
+            # 基础测试：x和y都是2D张量
             # 使用riemann
             rm_cond = rm.tensor(cond_data)
             rm_x = rm.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
@@ -491,15 +489,152 @@ class TestWhereFunctions(unittest.TestCase):
             # 比较梯度
             passed_x_grad = compare_values(rm_x.grad, t_x.grad if t_x is not None else None)
             passed_y_grad = compare_values(rm_y.grad, t_y.grad if t_y is not None else None)
-            passed = passed_x_grad and passed_y_grad
+            
+            # 新增测试：x是0D张量，y是2D张量
+            passed_x_0d_grad = True
+            if TORCH_AVAILABLE:
+                # Riemann测试
+                rm_x_0d = rm.tensor(10.0, requires_grad=True)  # 0D张量
+                rm_y_2d = rm.tensor([[5.0, 6.0], [7.0, 8.0]], requires_grad=True)
+                rm_result_0d = rm.where(rm_cond, rm_x_0d, rm_y_2d)
+                rm_sum_0d = rm.sum(rm_result_0d)
+                rm_sum_0d.backward()
+                
+                # PyTorch测试
+                t_x_0d = torch.tensor(10.0, requires_grad=True)  # 0D张量
+                t_y_2d = torch.tensor([[5.0, 6.0], [7.0, 8.0]], requires_grad=True)
+                t_result_0d = torch.where(t_cond, t_x_0d, t_y_2d)
+                t_sum_0d = torch.sum(t_result_0d)
+                t_sum_0d.backward()
+                
+                # 比较梯度
+                passed_x_0d_grad = compare_values(rm_x_0d.grad, t_x_0d.grad)
+                passed_y_2d_grad = compare_values(rm_y_2d.grad, t_y_2d.grad)
+                passed_x_0d_grad = passed_x_0d_grad and passed_y_2d_grad
+            
+            # 新增测试：y是0D张量，x是2D张量
+            passed_y_0d_grad = True
+            if TORCH_AVAILABLE:
+                # Riemann测试
+                rm_x_2d = rm.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+                rm_y_0d = rm.tensor(20.0, requires_grad=True)  # 0D张量
+                rm_result_0d_y = rm.where(rm_cond, rm_x_2d, rm_y_0d)
+                rm_sum_0d_y = rm.sum(rm_result_0d_y)
+                rm_sum_0d_y.backward()
+                
+                # PyTorch测试
+                t_x_2d = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+                t_y_0d = torch.tensor(20.0, requires_grad=True)  # 0D张量
+                t_result_0d_y = torch.where(t_cond, t_x_2d, t_y_0d)
+                t_sum_0d_y = torch.sum(t_result_0d_y)
+                t_sum_0d_y.backward()
+                
+                # 比较梯度
+                passed_x_2d_grad = compare_values(rm_x_2d.grad, t_x_2d.grad)
+                passed_y_0d_grad = compare_values(rm_y_0d.grad, t_y_0d.grad)
+                passed_y_0d_grad = passed_x_2d_grad and passed_y_0d_grad
+            
+            # 新增测试：x是标量，y是2D张量
+            passed_x_scalar_grad = True
+            if TORCH_AVAILABLE:
+                # Riemann测试
+                rm_y_scalar = rm.tensor([[5.0, 6.0], [7.0, 8.0]], requires_grad=True)
+                rm_result_scalar = rm.where(rm_cond, 10.0, rm_y_scalar)  # 标量
+                rm_sum_scalar = rm.sum(rm_result_scalar)
+                rm_sum_scalar.backward()
+                
+                # PyTorch测试
+                t_y_scalar = torch.tensor([[5.0, 6.0], [7.0, 8.0]], requires_grad=True)
+                t_result_scalar = torch.where(t_cond, 10.0, t_y_scalar)  # 标量
+                t_sum_scalar = torch.sum(t_result_scalar)
+                t_sum_scalar.backward()
+                
+                # 比较梯度
+                passed_x_scalar_grad = compare_values(rm_y_scalar.grad, t_y_scalar.grad)
+            
+            # 新增测试：y是标量，x是2D张量
+            passed_y_scalar_grad = True
+            if TORCH_AVAILABLE:
+                # Riemann测试
+                rm_x_scalar = rm.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+                rm_result_scalar_y = rm.where(rm_cond, rm_x_scalar, 20.0)  # 标量
+                rm_sum_scalar_y = rm.sum(rm_result_scalar_y)
+                rm_sum_scalar_y.backward()
+                
+                # PyTorch测试
+                t_x_scalar = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+                t_result_scalar_y = torch.where(t_cond, t_x_scalar, 20.0)  # 标量
+                t_sum_scalar_y = torch.sum(t_result_scalar_y)
+                t_sum_scalar_y.backward()
+                
+                # 比较梯度
+                passed_y_scalar_grad = compare_values(rm_x_scalar.grad, t_x_scalar.grad)
+            
+            # 新增测试：x是多维但只有1个元素的张量 (形状为 (1,))
+            passed_x_1d_1elem_grad = True
+            if TORCH_AVAILABLE:
+                # Riemann测试
+                rm_x_1d_1elem = rm.tensor([10.0], requires_grad=True)  # 形状为 (1,)
+                rm_y_2d = rm.tensor([[5.0, 6.0], [7.0, 8.0]], requires_grad=True)
+                rm_result_1d_1elem = rm.where(rm_cond, rm_x_1d_1elem, rm_y_2d)
+                rm_sum_1d_1elem = rm.sum(rm_result_1d_1elem)
+                rm_sum_1d_1elem.backward()
+                
+                # PyTorch测试
+                t_x_1d_1elem = torch.tensor([10.0], requires_grad=True)  # 形状为 (1,)
+                t_y_2d = torch.tensor([[5.0, 6.0], [7.0, 8.0]], requires_grad=True)
+                t_result_1d_1elem = torch.where(t_cond, t_x_1d_1elem, t_y_2d)
+                t_sum_1d_1elem = torch.sum(t_result_1d_1elem)
+                t_sum_1d_1elem.backward()
+                
+                # 比较梯度
+                passed_x_1d_1elem_grad = compare_values(rm_x_1d_1elem.grad, t_x_1d_1elem.grad)
+                passed_y_2d_grad = compare_values(rm_y_2d.grad, t_y_2d.grad)
+                passed_x_1d_1elem_grad = passed_x_1d_1elem_grad and passed_y_2d_grad
+            
+            # 新增测试：y是多维但只有1个元素的张量 (形状为 (1, 1))
+            passed_y_2d_1elem_grad = True
+            if TORCH_AVAILABLE:
+                # Riemann测试
+                rm_x_2d = rm.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+                rm_y_2d_1elem = rm.tensor([[20.0]], requires_grad=True)  # 形状为 (1, 1)
+                rm_result_2d_1elem = rm.where(rm_cond, rm_x_2d, rm_y_2d_1elem)
+                rm_sum_2d_1elem = rm.sum(rm_result_2d_1elem)
+                rm_sum_2d_1elem.backward()
+                
+                # PyTorch测试
+                t_x_2d = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+                t_y_2d_1elem = torch.tensor([[20.0]], requires_grad=True)  # 形状为 (1, 1)
+                t_result_2d_1elem = torch.where(t_cond, t_x_2d, t_y_2d_1elem)
+                t_sum_2d_1elem = torch.sum(t_result_2d_1elem)
+                t_sum_2d_1elem.backward()
+                
+                # 比较梯度
+                passed_x_2d_grad = compare_values(rm_x_2d.grad, t_x_2d.grad)
+                passed_y_2d_1elem_grad = compare_values(rm_y_2d_1elem.grad, t_y_2d_1elem.grad)
+                passed_y_2d_1elem_grad = passed_x_2d_grad and passed_y_2d_1elem_grad
+            
+            passed = passed_x_grad and passed_y_grad and passed_x_0d_grad and passed_y_0d_grad and passed_x_scalar_grad and passed_y_scalar_grad and passed_x_1d_1elem_grad and passed_y_2d_1elem_grad
             
             time_taken = time.time() - start_time
             
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result(f"{case_name} - x梯度", passed_x_grad)
                 stats.add_result(f"{case_name} - y梯度", passed_y_grad)
+                stats.add_result(f"{case_name} - x是0D张量", passed_x_0d_grad)
+                stats.add_result(f"{case_name} - y是0D张量", passed_y_0d_grad)
+                stats.add_result(f"{case_name} - x是标量", passed_x_scalar_grad)
+                stats.add_result(f"{case_name} - y是标量", passed_y_scalar_grad)
+                stats.add_result(f"{case_name} - x是形状为(1,)的张量", passed_x_1d_1elem_grad)
+                stats.add_result(f"{case_name} - y是形状为(1, 1)的张量", passed_y_2d_1elem_grad)
                 print(f"测试用例: {case_name} - x梯度 - {Colors.OKGREEN if passed_x_grad else Colors.FAIL}{'通过' if passed_x_grad else '失败'}{Colors.ENDC}")
-                print(f"测试用例: {case_name} - y梯度 - {Colors.OKGREEN if passed_y_grad else Colors.FAIL}{'通过' if passed_y_grad else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
+                print(f"测试用例: {case_name} - y梯度 - {Colors.OKGREEN if passed_y_grad else Colors.FAIL}{'通过' if passed_y_grad else '失败'}{Colors.ENDC}")
+                print(f"测试用例: {case_name} - x是0D张量 - {Colors.OKGREEN if passed_x_0d_grad else Colors.FAIL}{'通过' if passed_x_0d_grad else '失败'}{Colors.ENDC}")
+                print(f"测试用例: {case_name} - y是0D张量 - {Colors.OKGREEN if passed_y_0d_grad else Colors.FAIL}{'通过' if passed_y_0d_grad else '失败'}{Colors.ENDC}")
+                print(f"测试用例: {case_name} - x是标量 - {Colors.OKGREEN if passed_x_scalar_grad else Colors.FAIL}{'通过' if passed_x_scalar_grad else '失败'}{Colors.ENDC}")
+                print(f"测试用例: {case_name} - y是标量 - {Colors.OKGREEN if passed_y_scalar_grad else Colors.FAIL}{'通过' if passed_y_scalar_grad else '失败'}{Colors.ENDC}")
+                print(f"测试用例: {case_name} - x是形状为(1,)的张量 - {Colors.OKGREEN if passed_x_1d_1elem_grad else Colors.FAIL}{'通过' if passed_x_1d_1elem_grad else '失败'}{Colors.ENDC}")
+                print(f"测试用例: {case_name} - y是形状为(1, 1)的张量 - {Colors.OKGREEN if passed_y_2d_1elem_grad else Colors.FAIL}{'通过' if passed_y_2d_1elem_grad else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
             
             # 断言确保测试通过
             self.assertTrue(passed, f"梯度测试失败: {case_name}")

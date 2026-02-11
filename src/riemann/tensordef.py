@@ -2931,6 +2931,47 @@ class TN:
         # 返回自身以支持链式调用
         return self
     
+    def masked_fill(self, mask: 'TN', value: Any) -> 'TN':
+        """
+        使用标量值填充张量中对应掩码为True的位置（非原地操作）
+        
+        参数:
+            mask: 布尔类型的掩码张量，形状需与原张量广播兼容
+            value: 填充值，可以是标量或0维张量
+        
+        返回:
+            填充后的新张量
+        
+        示例:
+            使用标量值填充:
+                arr = tensor([1, 2, 3, 4, 5])
+                mask = tensor([False, True, False, True, False])
+                new_arr = arr.masked_fill(mask, -1)
+                print(new_arr)  # 输出: [1, -1, 3, -1, 5]
+                print(arr)      # 输出: [1, 2, 3, 4, 5] (原张量不变)
+        """
+        # 检查mask是否为布尔类型
+        if mask.dtype != np.bool_:
+            raise RuntimeError(f"masked_fill only supports boolean masks, but got mask with dtype {mask.dtype}")
+        
+        # 处理不同类型的value参数
+        if isinstance(value, TN):
+            if value.ndim != 0:  # type: ignore
+                raise RuntimeError(f'masked_fill only supports 0-dimension value tensor but got tensor with {value.ndim} dimensions.')  # type: ignore
+        
+        # 执行填充操作
+        try:
+            if mask.shape != self.shape:
+                # 如果需要广播，先广播掩码
+                broadcasted_mask = mask.broadcast_to(self.shape)
+                # 使用where执行非原地填充
+                return where(broadcasted_mask, value, self)
+            else:
+                # 使用where执行非原地填充
+                return where(mask, value, self)
+        except Exception as e:
+            raise RuntimeError(f"mask with shape {mask.shape} is not broadcastable to tensor shape {self.shape}") from e
+    
     def squeeze(self, dim: int | tuple = None):  # type: ignore
         # 当dim为None时，计算所有大小为1的维度
         if dim is None:
@@ -6951,7 +6992,6 @@ def where(cond: TN, x: TN | int | float, y: TN | int | float) -> TN:
 def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | None = None) -> TN | Tuple[TN, ...]:
     
     if not isinstance(cond,TN):
-        # cond = tensor(cond)
         raise ValueError('cond must be a tensor')
     
     arrlib = cond._get_array_lib()
@@ -6967,44 +7007,74 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
         raise RuntimeError('one of x,y is None while the other is Non None')
     
     if not isinstance(x,TN):
-        x = tensor(x,device=cond.device)
+        # 如果y是张量，使用y的数据类型创建x张量，避免类型提升
+        dt = y.dtype if isinstance(y, TN) else None
+        x = tensor(x, device=cond.device, dtype=dt)
 
     if not isinstance(y,TN):
-        y = tensor(y,device=cond.device)
+        # 如果x是张量，使用x的数据类型创建y张量，避免类型提升
+        dt = x.dtype if isinstance(x, TN) else None
+        y = tensor(y, device=cond.device, dtype=dt)
 
     # 条件选择，cond不参与梯度计算
+    # 直接使用arrlib.where处理类型转换，遵循NumPy的类型提升规则
     data = arrlib.where(cond.data, x.data, y.data)
+    # 使用计算结果的数据类型，避免强制类型转换
     ret = tensor(data, device = cond.device, requires_grad = (is_grad_enabled() and (x.requires_grad or y.requires_grad)))
     
     if ret.requires_grad:
         ret.fromvars = (x, y)
-        ret.parms = (cond,cond)  # cond存入parms而非fromvars
-        ret.gradfuncs = (
-            lambda r, i: r.grad_value * (cond.data.astype(r.dtype)),
-            lambda r, i: r.grad_value * (1.0 - cond.data.astype(r.dtype))
-        )
+        # 缓存条件掩码，避免在梯度计算中重复转换
+        cond_mask = cond.data
+        neg_cond_mask = 1.0 - cond_mask
+        ret.parms = (cond_mask, neg_cond_mask)
+        
+        # 优化梯度计算，避免重复的类型转换，支持所有可广播场景
+        def grad_func(r, i):
+            # 使用缓存的条件掩码
+            grad = r.grad_value * ret.parms[i]
+            var = r.fromvars[i]
+            var_shape = var.shape
+            grad_shape = grad.shape
+
+            # 处理广播场景
+            if var_shape != grad_shape:
+                # 获取需要广播的轴
+                broadcast_axes = _get_broadcast_axis(grad_shape, var_shape)
+                # 对广播的轴进行求和
+                grad = grad.sum(dim=broadcast_axes, keepdim=False)
+                # 确保形状与原始张量一致
+                grad = grad._reshape(var_shape)
+            
+            # 确保梯度类型与var一致
+            return grad.type(var.dtype)
+        
+        ret.gradfuncs = (grad_func, grad_func)
     
     return ret
 
-def clamp(x: TN, min: float | None = None, max: float | None = None, out: TN | None = None) -> TN:
+def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, out: TN | None = None) -> TN:
+    """
+    将张量的元素限制在指定的范围内
+    
+    参数:
+        x: 输入张量
+        min: 下限值，可以是标量或张量
+        max: 上限值，可以是标量或张量
+        out: 输出张量（可选）
+    
+    返回:
+        限制在指定范围内的张量
+    """
     # 处理参数缺省逻辑
     if min is None and max is None:
         raise ValueError("clamp()需要至少指定min或max参数")
     
-    # 处理参数边界
-    if min is not None and max is not None:
-        if min > max:
-            raise ValueError("clamp(): min不能大于max")
-    
     # 检查out参数和梯度需求的冲突
-    if out is not None and x.requires_grad:
+    if out is not None and (x.requires_grad or 
+                           (isinstance(min, TN) and min.requires_grad) or 
+                           (isinstance(max, TN) and max.requires_grad)):
         raise RuntimeError("clamp(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-    
-    arrlib = x._get_array_lib()
-
-    # 将None转换为极值
-    np_min = min if min is not None else -arrlib.inf
-    np_max = max if max is not None else arrlib.inf
     
     # 如果提供了out参数，执行原地操作
     if out is not None:
@@ -7016,44 +7086,41 @@ def clamp(x: TN, min: float | None = None, max: float | None = None, out: TN | N
         if out.shape != x.shape:
             raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible with input tensor shape ({x.shape})")
         
-        # 执行原地数值截断操作，直接修改out.data的内容
-        arrlib.clip(x.data, np_min, np_max, out=out.data)
+        # 转换为标量值
+        scalar_min = min.item() if isinstance(min, TN) else min
+        scalar_max = max.item() if isinstance(max, TN) else max
         
-        # 使用out参数时不设置梯度跟踪
+        # 处理参数边界
+        if scalar_min is not None and scalar_max is not None:
+            if scalar_min > scalar_max:
+                raise ValueError("clamp(): min不能大于max")
+        
+        # 使用现有的实现
+        arrlib = x._get_array_lib()
+        np_min = scalar_min if scalar_min is not None else -arrlib.inf
+        np_max = scalar_max if scalar_max is not None else arrlib.inf
+        arrlib.clip(x.data, np_min, np_max, out=out.data)
         return out
     
-    # 否则创建新的张量
-    data = arrlib.clip(x.data, np_min, np_max)
-    ret = tensor(data, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
+    # 处理参数边界（当min和max都是标量时）
+    if not isinstance(min, TN) and not isinstance(max, TN):
+        if min is not None and max is not None:
+            if min > max:
+                raise ValueError("clamp(): min不能大于max")
     
-    if ret.requires_grad:
-        ret.fromvars = (x,)
-        ret.parms = ((min, max),)  # 保存原始参数用于反向传播
-        ret.gradfuncs = (_clamp_backward,)
+    # 使用where实现
+    if min is not None and max is not None:
+        # 同时限制上下限
+        return where(x < min, min, where(x > max, max, x))
+    elif min is not None:
+        # 只限制下限
+        return where(x < min, min, x)
+    elif max is not None:
+        # 只限制上限
+        return where(x > max, max, x)
     else:
-        ret.detach_()
-        
-    return ret
-
-def _clamp_backward(result_tensor: TN, i: int) -> TN:
-    x = result_tensor.fromvars[i]
-    min_val, max_val = result_tensor.parms[i]
-    
-    # 梯度掩码计算
-    # grad_mask = np.ones_like(x.data)
-    grad_mask = ones_like(x)
-
-    # 下限梯度处理
-    if min_val is not None:
-        # grad_mask = np.where(x.data <= min_val, 0.0, grad_mask)
-        grad_mask = where(x<=min_val,0.0,grad_mask)  # type: ignore
-
-    # 上限梯度处理
-    if max_val is not None:
-        # grad_mask = np.where(x.data >= max_val, 0.0, grad_mask)
-        grad_mask = where(x>=max_val,0.0,grad_mask)  # type: ignore
-    
-    return result_tensor.grad_value * grad_mask
+        # 无限制，返回原张量
+        return x
 
 def split(ts: TN, split_indices, dim: int = 0) -> List[TN]:
     """
