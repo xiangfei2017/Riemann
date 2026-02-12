@@ -310,7 +310,7 @@ riemann                  # 主包
 └── cuda                 # CUDA/GPU支持
 ```
 
-#### 模块导入示例
+### 模块导入示例
 
 **整体导入riemann模块：**
 
@@ -582,7 +582,7 @@ transformed_image = transform(image)
 print(f"变换后的图像形状: {transformed_image.shape}")  # 输出: (3, 224, 224)
 ```
 
-#### 例6：GPU加速示例
+### 例6：GPU加速示例
 
 ```python
 # 例6：GPU加速示例
