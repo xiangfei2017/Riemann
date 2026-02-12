@@ -242,7 +242,6 @@ pip install -e .[cupy]
 
 Running `pip install riemann` will automatically install the following core dependencies:
 - **numpy>=1.20.0**: Core numerical computation library
-- **scipy>=1.7.0**: Linear algebra algorithm library
 - **pillow>=8.0.0**: Used for image processing functionality in computer vision
 - **tqdm>=4.0.0**: Used for progress bar display in neural network training
 
@@ -722,7 +721,6 @@ python test_010_grad.py
 | Library | Version Requirement | License Type | Notes                                     |
 |---------|---------------------|--------------|-------------------------------------------|
 | NumPy   | >=1.20.0            | BSD 3-Clause | Core numerical computation library        |
-| SciPy   | >=1.7.0             | BSD 3-Clause | Linear algebra algorithms (LU, SVD, etc.) |
 | Pillow  | >=8.0.0             | BSD 3-Clause | Image processing library                  |
 | tqdm    | >=4.0.0             | MIT          | Progress bar for training and data loading|
 

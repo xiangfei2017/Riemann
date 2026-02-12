@@ -242,7 +242,6 @@ pip install -e .[cupy]
 
 直接运行`pip install riemann`会自动安装以下核心依赖：
 - **numpy>=1.20.0**: 核心数值计算库
-- **scipy>=1.7.0**: 线性代数算法库
 - **pillow>=8.0.0**: 用于计算机视觉中的图像处理功能
 - **tqdm>=4.0.0**: 用于神经网络训练中的进度条显示
 
@@ -720,7 +719,6 @@ python test_010_grad.py
 | Library | Version Requirement | License Type | Notes                                     |
 |---------|---------------------|--------------|-------------------------------------------|
 | NumPy   | >=1.20.0            | BSD 3-Clause | Core numerical computation library        |
-| SciPy   | >=1.7.0             | BSD 3-Clause | Linear algebra algorithms (LU, SVD, etc.) |
 | Pillow  | >=8.0.0             | BSD 3-Clause | Image processing library                  |
 | tqdm    | >=4.0.0             | MIT          | Progress bar for training and data loading|
 
