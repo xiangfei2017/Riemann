@@ -79,13 +79,13 @@ Riemann/
 │   └── riemann/              # 核心源代码
 │       ├── autograd/         # 自动微分相关模块
 │       ├── nn/               # 神经网络模块
+│       ├── optim/            # 优化器模块
 │       ├── utils/            # 工具函数
 │       ├── vision/           # 计算机视觉模块
 │       ├── __init__.py       # 包配置文件
 │       ├── dtype.py          # 数据类型定义
 │       ├── gradmode.py       # 梯度模式控制
 │       ├── linalg.py         # 线性代数函数
-│       ├── optim.py          # 优化器
 │       ├── serialization.py  # 对象保存与加载
 │       └── tensordef.py      # 张量定义和核心操作
 ├── data/                     # 训练测试数据集文件目录
@@ -111,9 +111,10 @@ Riemann/
 
 - **autograd/**: 实现自动微分功能，包括反向传播算法和梯度计算
 - **nn/**: 神经网络相关组件，如各种层、激活函数和损失函数
-- **utils/**: 工具函数，包括数据处理工具
+- **optim/**: 优化器模块，如SGD、Adam等优化器，以及学习率调度器
+- **utils/**: 工具函数，包括数据集Dataset类和数据加载器Dataloader类等
 - **vision/**: 计算机视觉相关功能，包括数据集和图像变换
-- **核心文件**: 如 `tensordef.py`（张量定义）、`linalg.py`（线性代数）、`optim.py`（优化器）等
+- **核心文件**: 如 `tensordef.py`（张量定义）、`linalg.py`（线性代数）等
 
 ### tests目录
 
@@ -302,6 +303,7 @@ riemann                  # 主包
 ├── nn                   # 神经网络模块
 │   └── functional       # 神经网络函数
 ├── optim                # 优化器模块
+│   └── lr_scheduler     # 学习率调度器模块
 ├── utils                # 工具函数模块
 │   └── data             # 数据处理工具
 ├── vision               # 计算机视觉模块
