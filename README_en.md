@@ -312,7 +312,7 @@ riemann                  # Main package
 └── cuda                 # CUDA/GPU support
 ```
 
-#### Module Import Examples
+### Module Import Examples
 
 **Import the entire riemann module:**
 
@@ -584,7 +584,7 @@ transformed_image = transform(image)
 print(f"Transformed image shape: {transformed_image.shape}")  # Output: (3, 224, 224)
 ```
 
-#### Example 6: GPU Acceleration Example
+### Example 6: GPU Acceleration Example
 
 ```python
 # Example 6: GPU Acceleration Example
