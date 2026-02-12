@@ -79,13 +79,13 @@ Riemann/
 │   └── riemann/              # Core source code
 │       ├── autograd/         # Automatic differentiation related modules
 │       ├── nn/               # Neural network modules
+│       ├── optim/            # Optimizers
 │       ├── utils/            # Utility functions
 │       ├── vision/           # Computer vision modules
 │       ├── __init__.py       # Package configuration file
 │       ├── dtype.py          # Data type definitions
 │       ├── gradmode.py       # Gradient mode control
 │       ├── linalg.py         # Linear algebra functions
-│       ├── optim.py          # Optimizers
 │       ├── serialization.py  # Object saving and loading
 │       └── tensordef.py      # Tensor definition and core operations
 ├── data/                     # Training and testing dataset directory
@@ -111,9 +111,10 @@ The code directory `src/riemann/` is the location of Riemann library's core sour
 
 - **autograd/**: Implements automatic differentiation functionality, including backpropagation algorithm and gradient calculation
 - **nn/**: Neural network-related components, such as various layers, activation functions, and loss functions
-- **utils/**: Utility functions, including data processing tools
+- **optim/**: Optimizers, such as SGD, Adam, etc., and learning rate schedulers
+- **utils/**: Utility functions, including Dataset class and Dataloader class for data loading, etc.
 - **vision/**: Computer vision-related functionality, including datasets and image transforms
-- **Core files**: Such as `tensordef.py` (tensor definition), `linalg.py` (linear algebra), `optim.py` (optimizers), etc.
+- **Core files**: Such as `tensordef.py` (tensor definition), `linalg.py` (linear algebra), etc.
 
 ### tests Directory
 
@@ -304,6 +305,7 @@ riemann                  # Main package
 ├── nn                   # Neural network module
 │   └── functional       # Neural network functions
 ├── optim                # Optimizer module
+│   └── lr_scheduler     # Learning rate scheduler module
 ├── utils                # Utility function module
 │   └── data             # Data processing tools
 ├── vision               # Computer vision module
