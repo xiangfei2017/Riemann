@@ -40,7 +40,7 @@ Riemann library is designed with a focus on compatibility with PyTorch interface
 - **Automatic differentiation mechanism**: `requires_grad` and backpropagation mechanism are similar to PyTorch
 - **Computer vision**: Datasets and transforms in the `vision` module are interface-compatible with torchvision
 
-This design allows users familiar with PyTorch to easily migrate to the Riemann library for development and research work.
+This design allows users familiar with PyTorch to easily migrate to the Riemann library for development work.
 
 
 ## Project Folder Structure
