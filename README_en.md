@@ -1,52 +1,24 @@
 # Riemann
 
-Riemann is a lightweight automatic differentiation library and neural network programming framework that supports automatic gradient tracking for scalars/vectors/tensors, provides common components needed for building neural networks, has PyTorch-compatible interfaces, and is designed for neural network-related learning, education, and research purposes.
+Riemann is a neural network programming framework similar to PyTorch. It supports automatic differentiation in tensor computations, provides components for building neural networks, and is designed for learning, education, and research related to neural networks.
 
 
 ## Feature Introduction
 
-### 1. Tensor Operations
-- Provides tensor creation functions (tensor, zeros, ones, randn, normal, etc., supporting complex tensors)
-- Supports basic mathematical operations (addition, subtraction, multiplication, division, exponentiation, exponential, logarithmic, trigonometric, hyperbolic functions, and statistical functions like sum, mean, variance, standard deviation)
-- Supports vector and matrix operations (batch matrix multiplication, vector dot product, matrix determinant, matrix inverse, matrix decomposition, etc.)
-- Supports tensor shape reshaping, dimension expansion/contraction, indexing and slicing, element gathering/scattering, concatenation/splitting, etc.
-- Supports tensor serialization/deserialization for easy model training and deployment
+### 1. Tensor Computation and Automatic Differentiation
+- Supports mathematical operations on zero- to multi-dimensional tensors, including operations on complex-valued tensors and CUDA support.
+- Linear algebra module supports matrix operations, including batch matrix multiplication, matrix decomposition, eigenvalues and determinants, matrix inverse and pseudoinverse, linear system solving, norms and ranks, etc.
+- Supports tensor shape reshaping, dimension expansion/contraction, indexing and slicing, gather/scatter operations, concatenation/splitting, etc.
+- Supports automatic gradient tracking based on the backpropagation algorithm, function differentiation with respect to inputs, and user-defined gradient functions.
+- Supports tensor serialization/deserialization for convenient model training and deployment.
 
-### 2. Automatic Differentiation
-- **backward method**: Triggers backpropagation to calculate gradients
-- **grad function**: Calculates gradients of functions with respect to inputs
-- **track_grad decorator and Function class**: Supports custom gradient tracking functions
-- **Jacobian and Hessian matrices**: Supports Jacobian matrix calculation for multi-input multi-output functions, and Hessian matrix calculation for multi-input functions
-
-### 3. Linear Algebra Module
-- Provides matrix decompositions with reverse gradient tracking (SVD, PLU, QR, etc.)
-- Supports matrix inverse, pseudo-inverse, determinant, eigenvalues/eigenvectors
-- Matrix norm and condition number calculation
-- Supports linear equation solving and least squares solving
-
-### 4. Neural Network Module
+### 2. Neural Network Module
 - Basic layers (Linear, Dropout, BatchNorm, LayerNorm, Embedding, etc.)
 - Activation functions (ReLU, Sigmoid, Softmax, etc.)
 - Convolution and pooling layers (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, etc.)
 - Loss functions (MSE, CrossEntropy, etc.)
 - Optimizers (SGD, Adam, Adagrad, LBFGS, etc.)
 - Network module containers (Sequential, ModuleList, ModuleDict, etc.)
-
-### 5. Computer Vision Module
-- Dataset classes:
-  - **MNIST**: Handwritten digit recognition dataset
-  - **CIFAR10**: 10-class color image dataset
-
-- Image transforms:
-  - **Basic transforms**: ToTensor, ToPILImage, Normalize
-  - **Geometric transforms**: Resize, CenterCrop, RandomResizedCrop, FiveCrop, TenCrop, Pad
-  - **Random transforms**: RandomHorizontalFlip, RandomVerticalFlip, RandomRotation, RandomGrayscale
-  - **Color transforms**: ColorJitter, Grayscale
-  - **Composite transforms**: Compose, Lambda
-
-### 6. CUDA/GPU Support
-- Provides GPU acceleration, supports tensor and model migration between CPU and GPU
-- Optimized GPU computation performance
 
 
 ## Application Scenarios
@@ -168,45 +140,6 @@ Riemann provides rich example codes located in the `examples/` directory:
 
 ## Installation Method
 
-### Install from PyPI
-
-#### Basic Installation
-
-Run the following command to install Riemann and its core dependencies:
-
-```bash
-pip install riemann
-```
-
-#### Install CUDA Dependencies
-
-If you need GPU acceleration, you need to explicitly specify CUDA dependency options:
-
-```bash
-# Install default CUDA version (recommended CUDA 12.x)
-pip install riemann[cuda]
-
-# For users with specific CUDA versions, you can also directly install the corresponding version of dependencies
-# CUDA 13.x
-pip install riemann[cuda13]
-# CUDA 12.x
-pip install riemann[cuda12]
-# CUDA 11.x
-pip install riemann[cuda11]
-# CUDA 10.x (Linux only)
-pip install riemann[cuda10]
-```
-
-#### Install Other Optional Dependencies
-
-```bash
-# Install test dependencies (for running test code in the tests directory)
-pip install riemann[tests]
-
-# Install general CuPy dependency (for macOS, ARM64, and other platforms that don't support CUDA)
-pip install riemann[cupy]
-```
-
 ### Source Installation and Development Environment Configuration
 
 ```bash
@@ -294,6 +227,10 @@ If CUDA is installed successfully, it will display `CUDA available: True`, other
 
 
 ## Usage Method
+
+### Detailed Documentation
+
+Riemann's detailed usage guide is located in the `docs` directory, and the documentation is written in reStructuredText format. You need to build it into HTML according to the README guide in the `docs` directory before reading.
 
 ### Riemann Package Module Structure
 
@@ -561,32 +498,7 @@ print(f"Sample predicted class: {predicted_class.item()}, actual class: {sample_
 print("CNN training and inference test completed!")
 ```
 
-### Example 5: Image Transform Example
-
-```python
-# Example 5: Image Transform Example
-# This example demonstrates how to use Riemann's image transform functionality to preprocess images
-# Including operations such as resizing, center cropping, random horizontal flipping, converting to tensor, and normalization
-
-from riemann.vision.transforms import Compose, ToTensor, Normalize, Resize, CenterCrop, RandomHorizontalFlip
-from PIL import Image
-
-# Define transform sequence
-transform = Compose([
-    Resize(256),               # Resize image
-    CenterCrop(224),           # Center crop
-    RandomHorizontalFlip(),    # Random horizontal flip
-    ToTensor(),                # Convert to tensor
-    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # Normalization
-])
-
-# Load and transform image
-image = Image.open("example.jpg")
-transformed_image = transform(image)
-print(f"Transformed image shape: {transformed_image.shape}")  # Output: (3, 224, 224)
-```
-
-### Example 6: GPU Acceleration Example
+### Example 5: GPU Acceleration Example
 
 ```python
 # Example 6: GPU Acceleration Example

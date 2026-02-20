@@ -1,53 +1,24 @@
 # Riemann
 
-Riemann是一个轻量级的自动求导库及神经网络编程框架，支持标量/向量/张量的自动梯度跟踪，提供搭建神经网络所需的常用组件，接口兼容PyTorch，为神经网络相关的学习、教育和研究目的而设计。
+Riemann是一个类似PyTorch的神经网络编程框架，支持张量计算中的自动求导，提供搭建神经网络所需的组件，为神经网络相关的学习、教育和研究目的而设计。
 
 
 ## 功能介绍
 
-### 1. 张量操作
-- 提供张量创建函数（tensor, zeros, ones, randn, normal等，支持复数张量）
-- 支持基本的数学运算（加减乘除幂运算，指数、对数、三角、双曲等初等函数，求和、均值、方差、标准差等统计函数）
-- 支持向量、矩阵运算（批量矩阵乘法、向量点积、矩阵行列式、矩阵逆、矩阵分解等）
+### 1. 张量计算及自动求导
+- 支持0到多维张量的数学运算，支持复数张量运算，支持CUDA
+- 线性代数模块支持矩阵运算,包括：批量矩阵乘法、矩阵分解、特征值与行列式、矩阵逆与伪逆、线性方程组求解、范数与秩等）
 - 支持张量形状重塑、维度扩缩、索引和切片、元素收集/散射、拼接/分割等操作
+- 支持基于反向传播算法的自动梯度跟踪，支持函数对输入求导，支持用户自定义梯度函数
 - 支持张量序列化/反序列化，方便模型训练和部署
 
-### 2. 自动求导
-- **backward方法**：触发反向传播计算梯度
-- **grad函数**：计算函数相对于输入的梯度
-- **track_grad修饰器和Function类**：支持自定义梯度跟踪函数
-- **雅可比矩阵和海森矩阵**：支持多输入多输出函数的雅可比矩阵计算，支持多输入函数的海森矩阵计算
-
-### 3. 线性代数模块
-- 提供矩阵分解及其反向梯度跟踪（SVD、PLU, QR等）
-- 支持求矩阵逆、广义逆、行列式、特征值/特征向量
-- 矩阵范数、条件数计算
-- 支持线性方程组求解、最小二乘求解
-
-### 4. 神经网络模块
+### 2. 神经网络模块
 - 基本层（Linear, Dropout, BatchNorm, LayerNorm, Embedding等）
 - 激活函数（ReLU, Sigmoid, Softmax等）
 - 卷积池化层（Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d等）
 - 损失函数（MSE, CrossEntropy等）
 - 优化器（SGD, Adam, Adagrad, LBFGS等）
 - 网络模块容器（Sequential, ModuleList, ModuleDict等）
-
-### 5. 计算机视觉模块
-- 数据集类：
-  - **MNIST**：手写数字识别数据集
-  - **CIFAR10**：10类彩色图像数据集
-
-- 图像变换：
-  - **基础变换**：ToTensor, ToPILImage, Normalize
-  - **几何变换**：Resize, CenterCrop, RandomResizedCrop, FiveCrop, TenCrop, Pad
-  - **随机变换**：RandomHorizontalFlip, RandomVerticalFlip, RandomRotation, RandomGrayscale
-  - **颜色变换**：ColorJitter, Grayscale
-  - **组合变换**：Compose, Lambda
-
-### 6. CUDA/GPU支持
-- 提供GPU加速，支持张量、模型在CPU和GPU之间迁移
-- 优化的GPU计算性能
-
 
 ## 应用场景
 
@@ -168,45 +139,6 @@ Riemann提供了丰富的示例代码，位于`examples/`目录：
 
 ## 安装方法
 
-### 从PyPI安装
-
-#### 基本安装
-
-直接运行以下命令安装Riemann及其核心依赖：
-
-```bash
-pip install riemann
-```
-
-#### 安装CUDA依赖
-
-如果需要使用GPU加速，需要显式指定CUDA依赖选项：
-
-```bash
-# 安装默认CUDA版本（推荐CUDA 12.x）
-pip install riemann[cuda]
-
-# 对于特定CUDA版本的用户，也可以直接安装对应版本的依赖
-# CUDA 13.x
-pip install riemann[cuda13]
-# CUDA 12.x
-pip install riemann[cuda12]
-# CUDA 11.x
-pip install riemann[cuda11]
-# CUDA 10.x (仅Linux)
-pip install riemann[cuda10]
-```
-
-#### 安装其他可选依赖
-
-```bash
-# 安装测试依赖（用于运行tests目录下的测试代码）
-pip install riemann[tests]
-
-# 安装通用cupy依赖（适用于macOS、ARM64等不支持CUDA的平台）
-pip install riemann[cupy]
-```
-
 ### 源码安装与开发环境配置
 
 ```bash
@@ -292,6 +224,10 @@ print("使用设备:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
 
 
 ## 使用方法
+
+### 详细文档说明
+
+Riemann的详细使用指南在`docs`目录下，文档采用reStructuredText格式编写。需要根据`docs`目录下的README文档指南构建成HTML后阅读。
 
 ### riemann包的模块结构
 
@@ -559,32 +495,7 @@ print(f"样本预测类别: {predicted_class.item()}, 实际类别: {sample_targ
 print("CNN训练和推理测试完成！")
 ```
 
-### 例5：图像变换示例
-
-```python
-# 例5：图像变换示例
-# 本示例展示了如何使用Riemann的图像变换功能对图像进行预处理
-# 包括调整大小、中心裁剪、随机水平翻转、转换为张量和标准化等操作
-
-from riemann.vision.transforms import Compose, ToTensor, Normalize, Resize, CenterCrop, RandomHorizontalFlip
-from PIL import Image
-
-# 定义变换序列
-transform = Compose([
-    Resize(256),               # 调整图像大小
-    CenterCrop(224),           # 中心裁剪
-    RandomHorizontalFlip(),    # 随机水平翻转
-    ToTensor(),                # 转换为张量
-    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # 标准化
-])
-
-# 加载并变换图像
-image = Image.open("example.jpg")
-transformed_image = transform(image)
-print(f"变换后的图像形状: {transformed_image.shape}")  # 输出: (3, 224, 224)
-```
-
-### 例6：GPU加速示例
+### 例5：GPU加速示例
 
 ```python
 # 例6：GPU加速示例
