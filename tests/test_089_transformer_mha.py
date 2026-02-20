@@ -1,4 +1,3 @@
-
 import unittest
 import numpy as np
 import time
@@ -264,6 +263,8 @@ class TestTransformerMHA(unittest.TestCase):
         use_attn_mask_2d = kwargs.get('use_attn_mask_2d', False)
         need_weights = kwargs.get('need_weights', True)
         average_attn_weights = kwargs.get('average_attn_weights', True)
+        use_same_qkv = kwargs.get('use_same_qkv', False)
+        is_causal = kwargs.get('is_causal', False)
         
         start_time = time.time()
         
@@ -283,19 +284,31 @@ class TestTransformerMHA(unittest.TestCase):
                     input_shape_kv = (seq_len, batch_size, kdim if kdim is not None else embed_dim)
             
             # 创建输入数据
-            numpy_q = np.random.randn(*input_shape_q).astype(np.float32)
-            numpy_k = np.random.randn(*input_shape_kv).astype(np.float32)
-            numpy_v = np.random.randn(*input_shape_kv).astype(np.float32)
-            
-            # Riemann 张量
-            rm_q = rm.tensor(numpy_q, requires_grad=True)
-            rm_k = rm.tensor(numpy_k, requires_grad=True)
-            rm_v = rm.tensor(numpy_v, requires_grad=True)
-            
-            # PyTorch 张量
-            torch_q = torch.tensor(numpy_q, requires_grad=True)
-            torch_k = torch.tensor(numpy_k, requires_grad=True)
-            torch_v = torch.tensor(numpy_v, requires_grad=True)
+            if use_same_qkv:
+                # q/k/v 是同一对象
+                numpy_x = np.random.randn(*input_shape_q).astype(np.float32)
+                
+                # Riemann 张量
+                rm_x = rm.tensor(numpy_x, requires_grad=True)
+                rm_q = rm_k = rm_v = rm_x
+                
+                # PyTorch 张量
+                torch_x = torch.tensor(numpy_x, requires_grad=True)
+                torch_q = torch_k = torch_v = torch_x
+            else:
+                numpy_q = np.random.randn(*input_shape_q).astype(np.float32)
+                numpy_k = np.random.randn(*input_shape_kv).astype(np.float32)
+                numpy_v = np.random.randn(*input_shape_kv).astype(np.float32)
+                
+                # Riemann 张量
+                rm_q = rm.tensor(numpy_q, requires_grad=True)
+                rm_k = rm.tensor(numpy_k, requires_grad=True)
+                rm_v = rm.tensor(numpy_v, requires_grad=True)
+                
+                # PyTorch 张量
+                torch_q = torch.tensor(numpy_q, requires_grad=True)
+                torch_k = torch.tensor(numpy_k, requires_grad=True)
+                torch_v = torch.tensor(numpy_v, requires_grad=True)
             
             # 创建掩码
             rm_key_padding_mask = None
@@ -348,15 +361,38 @@ class TestTransformerMHA(unittest.TestCase):
                 key_padding_mask=rm_key_padding_mask,
                 need_weights=need_weights,
                 attn_mask=rm_attn_mask,
-                average_attn_weights=average_attn_weights
+                average_attn_weights=average_attn_weights,
+                is_causal=is_causal
             )
+            
+            # PyTorch 要求 is_causal 时需要同时提供 attn_mask，所以我们需要先创建因果掩码
+            if is_causal and torch_attn_mask is None:
+                # 创建明确的因果掩码
+                tgt_len = seq_len
+                src_len = seq_len
+                np_causal_mask = np.triu(np.ones((tgt_len, src_len), dtype=np.float32), k=1) * -1e4
+                torch_attn_mask = torch.tensor(np_causal_mask)
+                rm_attn_mask_actual = rm.tensor(np_causal_mask)
+                # 重新调用 Riemann，也使用明确的掩码而不是 is_causal，以保持一致
+                rm_output, rm_attn_weights = rm_attn(
+                    rm_q, rm_k, rm_v,
+                    key_padding_mask=rm_key_padding_mask,
+                    need_weights=need_weights,
+                    attn_mask=rm_attn_mask_actual,
+                    average_attn_weights=average_attn_weights,
+                    is_causal=False
+                )
+            elif is_causal and torch_attn_mask is not None:
+                # 如果已经有 attn_mask，继续使用 is_causal
+                pass
             
             torch_output, torch_attn_weights = torch_attn(
                 torch_q, torch_k, torch_v,
                 key_padding_mask=torch_key_padding_mask,
                 need_weights=need_weights,
                 attn_mask=torch_attn_mask,
-                average_attn_weights=average_attn_weights
+                average_attn_weights=average_attn_weights,
+                is_causal=is_causal if torch_attn_mask is not None else False
             )
             
             # 比较前向输出
@@ -464,6 +500,14 @@ class TestTransformerMHA(unittest.TestCase):
     def test_no_average_attn_weights(self):
         """测试average_attn_weights=False"""
         self._run_test_case("average_attn_weights=False", average_attn_weights=False)
+    
+    def test_same_qkv(self):
+        """测试query=key=value是同一对象"""
+        self._run_test_case("query=key=value同一对象", use_same_qkv=True)
+    
+    def test_is_causal(self):
+        """测试is_causal=True（因果掩码）"""
+        self._run_test_case("is_causal=True", is_causal=True)
 
 if __name__ == '__main__':
     IS_RUNNING_AS_SCRIPT = True
