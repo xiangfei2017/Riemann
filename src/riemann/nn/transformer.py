@@ -274,16 +274,16 @@ class MultiheadAttention(Module):
             v = concatenate([v, self.bias_v.expand(1, bsz, self.embed_dim)], dim=0)
             if key_padding_mask is not None:
                 key_padding_mask = concatenate(
-                    [key_padding_mask, zeros((bsz, 1), dtype=key_padding_mask.dtype)],
+                    [key_padding_mask, zeros((bsz, 1), dtype=key_padding_mask.dtype, device=key_padding_mask.device)],
                     dim=1
                 )
         
         if self.add_zero_attn:
-            k = concatenate([k, zeros((1, bsz, self.embed_dim))], dim=0)
-            v = concatenate([v, zeros((1, bsz, self.embed_dim))], dim=0)
+            k = concatenate([k, zeros((1, bsz, self.embed_dim), dtype=k.dtype, device=k.device)], dim=0)
+            v = concatenate([v, zeros((1, bsz, self.embed_dim), dtype=v.dtype, device=v.device)], dim=0)
             if key_padding_mask is not None:
                 key_padding_mask = concatenate(
-                    [key_padding_mask, zeros((bsz, 1), dtype=key_padding_mask.dtype)],
+                    [key_padding_mask, zeros((bsz, 1), dtype=key_padding_mask.dtype, device=key_padding_mask.device)],
                     dim=1
                 )
         
@@ -297,10 +297,8 @@ class MultiheadAttention(Module):
         
         if is_causal:
             mask_shape = (tgt_len, src_len)
-            ones_mat = ones(mask_shape)
-            upper_tri_mask = ones_mat.triu(diagonal=1)
-            causal_mask = zeros(mask_shape)
-            causal_mask.masked_fill_(upper_tri_mask == 1, float('-inf'))
+            causal_mask = full(mask_shape, fill_value=float('-inf'), dtype=q.dtype, device=q.device)
+            causal_mask = causal_mask.triu(diagonal=1)
             
             if combined_attn_mask is None:
                 combined_attn_mask = causal_mask
@@ -406,13 +404,13 @@ class TransformerEncoderLayer(Module):
     内部结构:
         - self_attn: 多头自注意力层 (MultiheadAttention)
         - linear1: 前馈网络第一层线性变换 (d_model -> dim_feedforward)
+        - activation_fn: 激活函数 (ReLU 或 GELU)
         - linear2: 前馈网络第二层线性变换 (dim_feedforward -> d_model)
-        - norm1: 第一层后的层归一化 (LayerNorm)
-        - norm2: 第二层后的层归一化 (LayerNorm)
+        - norm1: 第一层的层归一化 (LayerNorm)
+        - norm2: 第二层的层归一化 (LayerNorm)
         - dropout1: 自注意力输出的 dropout
         - dropout2: 前馈网络第一层的 dropout
         - dropout3: 前馈网络第二层的 dropout
-        - activation_fn: 激活函数 (ReLU 或 GELU)
         
     前向计算流程（两种模式）:
         Post-LN 模式（原始 Transformer 论文）:
@@ -554,15 +552,15 @@ class TransformerDecoderLayer(Module):
         - self_attn: 多头自注意力层 (MultiheadAttention)，用于目标序列内部的注意力
         - multihead_attn: 多头交叉注意力层 (MultiheadAttention)，连接解码器和编码器
         - linear1: 前馈网络第一层线性变换 (d_model -> dim_feedforward)
+        - activation_fn: 激活函数 (ReLU 或 GELU)
         - linear2: 前馈网络第二层线性变换 (dim_feedforward -> d_model)
-        - norm1: 自注意力后的层归一化 (LayerNorm)
-        - norm2: 交叉注意力后的层归一化 (LayerNorm)
-        - norm3: 前馈网络后的层归一化 (LayerNorm)
+        - norm1: 自注意力的层归一化 (LayerNorm)
+        - norm2: 交叉注意力的层归一化 (LayerNorm)
+        - norm3: 前馈网络的层归一化 (LayerNorm)
         - dropout1: 自注意力输出的 dropout
         - dropout2: 交叉注意力输出的 dropout
         - dropout3: 前馈网络第一层的 dropout
         - dropout4: 前馈网络第二层的 dropout
-        - activation_fn: 激活函数 (ReLU 或 GELU)
         
     前向计算流程（两种模式）:
         Post-LN 模式（原始 Transformer 论文）:
@@ -1065,7 +1063,7 @@ class Transformer(Module):
     @staticmethod
     def generate_square_subsequent_mask(sz: int) -> TN:
         """
-        生成方形因果掩码 (Generate Square Subsequent Mask)
+        生成后续序列的方形掩码 (Generate Square Subsequent Mask)
         
         生成一个方形掩码，用于自回归解码，防止每个位置关注后面的位置。
         
@@ -1075,7 +1073,6 @@ class Transformer(Module):
         Returns:
             TN: 形状为 (sz, sz) 的掩码矩阵，上三角为 -inf，下三角为 0
         """
-        mask = zeros((sz, sz))
-        upper_tri_mask = ones((sz, sz)).triu(diagonal=1)
-        mask.masked_fill_(upper_tri_mask == 1, float('-inf'))
+        mask = full((sz, sz), fill_value=float('-inf'))
+        mask = mask.triu(diagonal=1)
         return mask
