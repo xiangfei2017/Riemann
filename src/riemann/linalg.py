@@ -102,8 +102,123 @@ def matmul(A, B, *, out=None):
     if not isinstance(B, TN):
         raise TypeError(f"matmul: Expected B to be TN type, got {type(B)}")
     
+    # 检查 device 是否一致
+    if A.device != B.device:
+        raise RuntimeError(f"Expected all tensors to be on the same device, but found at least two devices, {A.device} and {B.device}!")
+    
     # 执行矩阵乘法
     result = A @ B
+    
+    # 处理out参数
+    if out is not None:
+        if not isinstance(out, TN):
+            raise TypeError("out must be TN type")
+        if out.shape != result.shape:
+            raise ValueError(f"out has wrong shape: expected {result.shape}, got {out.shape}")
+        
+        # 将计算结果复制到out中
+        return out.copy_(result)
+    
+    return result
+
+def cross(input, other, *, dim=-1, out=None):
+    """计算两个3D向量的叉积
+    
+    计算两个3D向量的叉积，支持批量向量和广播。与PyTorch的torch.linalg.cross()行为一致。
+    
+    叉积公式：
+        result[i] = input[j] * other[k] - input[k] * other[j]
+        其中 (i, j, k) 是 (0, 1, 2) 的循环排列
+    
+    参数:
+        input: 第一个输入张量，最后一个维度必须是3
+        type input: TN
+        other: 第二个输入张量，最后一个维度必须是3
+        type other: TN
+        dim: 计算叉积的维度，默认为-1（最后一个维度）
+        type dim: int
+        out: 输出张量（可选）
+        type out: TN, optional
+        
+    返回:
+        叉积结果，形状与输入张量相同
+        rtype: TN
+        
+    异常:
+        RuntimeError: 如果指定维度的长度不是3
+        TypeError: 如果输入不是TN类型
+        
+    示例:
+        >>> a = tensor([1, 2, 3])
+        >>> b = tensor([4, 5, 6])
+        >>> cross(a, b)  # 返回 [-3, 6, -3]
+        
+        >>> a_batch = tensor([[1, 2, 3], [4, 5, 6]])
+        >>> b_batch = tensor([[7, 8, 9], [10, 11, 12]])
+        >>> cross(a_batch, b_batch)  # 返回 [[-6, 12, -6], [-6, 12, -6]]
+    """
+    # 输入验证
+    if not isinstance(input, TN):
+        raise TypeError(f"cross: Expected input to be TN type, got {type(input)}")
+    if not isinstance(other, TN):
+        raise TypeError(f"cross: Expected other to be TN type, got {type(other)}")
+    
+    # 检查 device 是否一致
+    if input.device != other.device:
+        raise RuntimeError(f"Expected all tensors to be on the same device, but found at least two devices, {input.device} and {other.device}!")
+    
+    # 处理负维度
+    input_dim = dim if dim >= 0 else input.ndim + dim
+    other_dim = dim if dim >= 0 else other.ndim + dim
+    
+    # 检查维度是否有效
+    if input_dim < 0 or input_dim >= input.ndim:
+        raise IndexError(f"Dimension out of range (expected to be in range of [{-input.ndim}, {input.ndim-1}], but got {dim})")
+    if other_dim < 0 or other_dim >= other.ndim:
+        raise IndexError(f"Dimension out of range (expected to be in range of [{-other.ndim}, {other.ndim-1}], but got {dim})")
+    
+    # 检查指定维度的长度是否为3
+    if input.shape[input_dim] != 3:
+        raise RuntimeError(f"cross() only supports 3D vectors, but got dimension {input_dim} with size {input.shape[input_dim]}")
+    if other.shape[other_dim] != 3:
+        raise RuntimeError(f"cross() only supports 3D vectors, but got dimension {other_dim} with size {other.shape[other_dim]}")
+    
+    # 广播输入张量到相同的形状
+    input, other = broadcast_tensors(input, other)
+    
+    # 广播后重新计算 dim
+    if dim < 0:
+        dim = input.ndim + dim
+    
+    # 提取三个分量
+    # 使用索引操作提取指定维度的三个分量
+    # 对于维度 dim，我们需要提取 dim=0,1,2 的分量
+    
+    # 创建索引元组
+    def get_component(t, comp_idx):
+        """提取指定维度的某个分量"""
+        # 构建索引元组，在指定维度上使用 comp_idx
+        indices = [slice(None)] * t.ndim
+        indices[dim] = comp_idx
+        return t[tuple(indices)]
+    
+    # 提取三个分量
+    input_0 = get_component(input, 0)
+    input_1 = get_component(input, 1)
+    input_2 = get_component(input, 2)
+    
+    other_0 = get_component(other, 0)
+    other_1 = get_component(other, 1)
+    other_2 = get_component(other, 2)
+    
+    # 计算叉积: (a1*b2 - a2*b1, a2*b0 - a0*b2, a0*b1 - a1*b0)
+    result_0 = input_1 * other_2 - input_2 * other_1
+    result_1 = input_2 * other_0 - input_0 * other_2
+    result_2 = input_0 * other_1 - input_1 * other_0
+    
+    # 将结果合并到指定维度
+    # 使用 stack 在指定维度上堆叠三个分量
+    result = stack([result_0, result_1, result_2], dim=dim)
     
     # 处理out参数
     if out is not None:
@@ -2763,4 +2878,142 @@ def _qr_backward_r(result_tensor: TN, i: int) -> TN:
     # grad_A = Q @ (H + skew_part.tril(diagonal = -1) @ R_inv_T)
     grad_A = Q @ (H + skew_part @ R_inv_T)
 
+    return grad_A
+
+def cholesky(input: TN, upper: bool = False, *, out: TN = None) -> TN:
+    """计算对称正定矩阵的 Cholesky 分解。
+    
+    该函数计算对称正定矩阵的 Cholesky 分解，返回下三角矩阵 L，满足 L @ L.T = input。
+        
+    参数:
+        input (TN): 输入张量，形状为(*, n, n)，必须是对称正定矩阵
+        upper (bool, optional): 控制是否返回上三角矩阵，默认为False（返回下三角矩阵）
+        out (TN, optional): 输出张量，默认为None
+        
+    返回:
+        TN: Cholesky 分解结果，形状为(*, n, n)的下三角矩阵（或上三角矩阵如果upper=True）
+        
+    注意:
+        - 输入矩阵必须是对称正定的，否则会抛出异常
+        - 支持批量输入
+        - 支持梯度计算
+    """
+    # 输入验证
+    if not isinstance(input, TN):
+        raise TypeError(f"Input must be TN type, got {type(input)}")
+    
+    arrlib = input._get_array_lib()
+    dev = input.device
+    
+    # 验证输入维度至少为2
+    if input.ndim < 2:
+        raise ValueError(f"Input matrix must be at least 2-dimensional, got dimension {input.ndim}")
+    
+    # 验证输入是否为方阵
+    last_dim = input.shape[-1]
+    second_last_dim = input.shape[-2]
+    if last_dim != second_last_dim:
+        raise ValueError(f"Input matrix must be square, got shape {input.shape[-2:]} at last two dimensions")
+    
+    # 处理out参数
+    if out is not None:
+        if not isinstance(out, TN):
+            raise TypeError("out must be TN type")
+        if out.shape != input.shape:
+            raise ValueError(f"out has wrong shape: expected {input.shape}, got {out.shape}")
+        if out.requires_grad or input.requires_grad:
+            raise RuntimeError(f"cholesky(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
+    
+    # 使用arrlib.linalg.cholesky计算Cholesky分解
+    try:
+        L_data = arrlib.linalg.cholesky(input.data)
+    except arrlib.linalg.LinAlgError as e:
+        raise RuntimeError(f"Cholesky decomposition failed: {str(e)}. The input matrix must be symmetric positive definite.")
+    
+    # 处理upper参数
+    if upper:
+        # 如果需要上三角矩阵，返回转置
+        L_data = L_data.transpose(-1, -2)
+    
+    # 创建结果张量
+    requires_grad = is_grad_enabled() and input.requires_grad
+    result = tensor(L_data, device=dev, requires_grad=requires_grad)
+    
+    # 如果需要梯度，设置fromvars和gradfuncs
+    if requires_grad:
+        result.fromvars = (input,)
+        result.gradfuncs = (_cholesky_backward,)
+        result.parms = (upper,)  # 保存upper参数供梯度计算使用
+    
+    # 处理out参数
+    if out is not None:
+        return out.copy_(result)
+    
+    return result
+
+def _cholesky_backward(result_tensor: TN, i: int) -> TN:
+    """Cholesky 分解的反向梯度计算函数。
+    
+    数学背景：
+    对于 Cholesky 分解 A = L L^T，其中 L 是下三角矩阵。
+    给定损失函数 ℓ，我们需要计算梯度 ∂ℓ/∂A。
+    
+    设 G = ∂ℓ/∂L 是上游传来的梯度（与 L 形状相同）。
+    
+    梯度计算公式：
+    
+    步骤1：计算中间矩阵 P
+    P = L^T @ G
+    
+    步骤2：处理 P 的下三角部分
+    由于 L 是下三角矩阵，梯度计算只需要 P 的下三角部分。
+    对于下三角部分（不包括对角线）：P_lower(i,j) = P(i,j), i > j
+    对于对角线：P_lower(i,i) = P(i,i) / 2
+    
+    数学表示：
+    P_lower = tril(P, diagonal=-1) + diag(diag(P) * 0.5)
+    
+    步骤3：计算输入矩阵的梯度
+    ∂ℓ/∂A = L^{-T} @ P_lower @ L^{-1}
+    
+    其中：
+    - L^{-T} = (L^{-1})^T 表示 L 逆的转置
+    - L^{-1} 表示 L 的逆矩阵
+    
+    步骤4：对称化
+    由于 A 是对称矩阵，最终梯度也必须是对称的：
+    ∂ℓ/∂A = (∂ℓ/∂A + (∂ℓ/∂A)^T) / 2
+    
+    参数:
+        result_tensor: Cholesky 分解的结果张量 L
+        i: 输入张量的索引
+        
+    返回:
+        TN: 输入矩阵 A 的梯度 ∂ℓ/∂A
+    """
+    upper = result_tensor.parms[i]
+    grad_L = result_tensor.grad_value
+    
+    L = result_tensor
+    if upper:
+        L = L.mH
+        grad_L = grad_L.mH
+    
+    # 因为 L 是下三角矩阵，所以 grad_L 也应该只有下三角部分非零
+    grad_L = grad_L.tril()
+    
+    # 1. 计算 P = L^T @ grad_L
+    P = L.mH @ grad_L
+    
+    # 2. 处理 P：取下三角，对角线减半
+    # 对于批量矩阵，需要从最后两个维度提取对角线
+    P_lower = P.tril(diagonal = -1) + batch_diag(P.diagonal(dim1=-2, dim2=-1) * 0.5)
+
+    # 3. 计算 grad_A = L^{-T} @ P_lower @ L^{-1}
+    L_inv = pinv(L)
+    grad_A = L_inv.mH @ P_lower @ L_inv
+            
+    # 4. 对称化
+    grad_A = (grad_A + grad_A.mH) * 0.5
+    
     return grad_A
