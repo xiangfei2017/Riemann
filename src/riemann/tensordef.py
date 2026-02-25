@@ -4969,6 +4969,72 @@ def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
     
     return result
 
+def broadcast_tensors(*tensors: TN) -> Tuple[TN, ...]:
+    """
+    将多个张量广播到相同的形状
+    
+    按照NumPy的广播规则，将多个输入张量广播到相同的形状。
+    如果张量的形状已经兼容，则返回原始张量；否则返回广播后的张量。
+    
+    Args:
+        *tensors: 要广播的张量，至少需要两个张量
+        type *tensors: TN
+        
+    Returns:
+        广播后的张量元组，所有张量具有相同的形状
+        rtype: Tuple[TN, ...]
+        
+    Raises:
+        TypeError: 如果输入不是TN张量
+        RuntimeError: 如果广播失败
+        
+    Examples:
+        >>> a = tensor([1, 2, 3])  # 形状(3,)
+        >>> b = tensor([[4], [5]])  # 形状(2, 1)
+        >>> a_broadcast, b_broadcast = broadcast_tensors(a, b)
+        >>> a_broadcast.shape  # (2, 3)
+        >>> b_broadcast.shape  # (2, 3)
+        
+        >>> c = tensor([1, 2, 3])  # 形状(3,)
+        >>> d = tensor([[4], [5]])  # 形状(2, 1)
+        >>> e = tensor([[[6]]])  # 形状(1, 1, 1)
+        >>> c_broadcast, d_broadcast, e_broadcast = broadcast_tensors(c, d, e)
+        >>> c_broadcast.shape  # (1, 2, 3)
+        >>> d_broadcast.shape  # (1, 2, 3)
+        >>> e_broadcast.shape  # (1, 2, 3)
+    """
+    if len(tensors) < 2:
+        raise ValueError(f"broadcast_tensors requires at least 2 tensors, got {len(tensors)}")
+    
+    # 验证所有输入都是TN类型
+    for i, t in enumerate(tensors):
+        if not isinstance(t, TN):
+            raise TypeError(f"Expected tensor {i} to be TN type, got {type(t)}")
+    
+    # 使用对应的数组库计算广播后的形状
+    # 获取第一个张量的数组库（所有张量应该在同一个库中）
+    arrlib = tensors[0]._get_array_lib()
+    
+    try:
+        # 使用对应数组库的 broadcast 函数获取广播后的形状
+        broadcast_obj = arrlib.broadcast(*[t.data for t in tensors])
+        broadcast_shape = broadcast_obj.shape
+    except ValueError as e:
+        # 广播失败，抛出更清晰的错误信息
+        raise RuntimeError(f"Cannot broadcast tensors with incompatible shapes: {[t.shape for t in tensors]}") from e
+    
+    # 广播所有张量
+    broadcasted_tensors = []
+    for t in tensors:
+        if t.shape == broadcast_shape:
+            # 形状已经匹配，直接返回
+            broadcasted_tensors.append(t)
+        else:
+            # 需要广播
+            broadcasted_tensors.append(broadcast_to(t, broadcast_shape))
+    
+    return tuple(broadcasted_tensors)
+
 def repeat(input: TN, repeats: Tuple[int, ...]) -> TN:
     """
     沿着指定的维度重复张量的元素。
@@ -5128,6 +5194,38 @@ def dot(x:TN,y:TN)->TN:
     
     # 使用x@y进行计算，利用现有的__matmul__方法的梯度跟踪能力
     return x @ y
+
+def outer(x:TN,y:TN)->TN:
+    """
+    计算两个一维张量的外积。
+    
+    这个函数与PyTorch的torch.outer()行为一致，只接受1D张量，并计算它们的外积。
+    外积结果是一个形状为(len(x), len(y))的2D张量，其中result[i][j] = x[i] * y[j]。
+    
+    Args:
+        x (TN): 第一个一维张量
+        y (TN): 第二个一维张量
+        
+    Returns:
+        TN: 外积结果，是一个形状为(len(x), len(y))的2D张量
+        
+    Raises:
+        RuntimeError: 如果输入张量不是一维的
+        
+    Examples:
+        >>> a = tensor([1, 2, 3])
+        >>> b = tensor([4, 5, 6])
+        >>> outer(a, b)  # 返回[[4, 5, 6], [8, 10, 12], [12, 15, 18]]
+    """
+    if x.data.ndim != 1:
+        raise RuntimeError(f"1D tensors expected, got {x.data.ndim}D tensor")
+    if y.data.ndim != 1:
+        raise RuntimeError(f"1D tensors expected, got {y.data.ndim}D tensor")
+    if x.device != y.device:
+        raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
+    
+    # 通过广播实现外积：(n,1) * (1,m) = (n,m)
+    return (x.unsqueeze(1) * y.unsqueeze(0))
 
 def _convert_TNindex_to_numpy(index):
         if isinstance(index,TN):
