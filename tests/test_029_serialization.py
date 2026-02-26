@@ -14,6 +14,14 @@ except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)
 
+# 尝试导入torch
+try:
+    import torch
+    has_torch = True
+except ImportError:
+    has_torch = False
+    print("警告: 无法导入torch模块，将跳过PyTorch兼容性测试")
+
 # 检测CUDA是否可用
 has_cuda = rm.cuda.is_available()
 
@@ -851,6 +859,91 @@ class TestSerialization(unittest.TestCase):
                         if os.path.exists(temp_path):
                             os.unlink(temp_path)
                             
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+        finally:
+            stats.end_function()
+            
+    def test_pytorch_compatibility(self):
+        """测试Riemann与PyTorch序列化兼容性"""
+        if not has_torch:
+            return
+        
+        stats.start_function("PyTorch兼容性")
+        try:
+            test_cases = [
+                {"name": "Riemann加载PyTorch文件", "test_type": "riemann_load_torch"},
+                {"name": "PyTorch加载Riemann文件", "test_type": "torch_load_riemann"},
+            ]
+        
+            for case in test_cases:
+                case_name = f"PyTorch兼容性 - {case['name']}"
+                start_time = time.time()
+                try:
+                    if case['test_type'] == 'riemann_load_torch':
+                        # 测试Riemann加载PyTorch保存的文件
+                        # 创建PyTorch张量
+                        t1 = torch.tensor([1.0, 2.0, 3.0, 4.0])
+                        t2 = torch.randn(2, 3)
+                        
+                        # PyTorch保存
+                        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
+                            filename = f.name
+                        
+                        try:
+                            torch.save({'t1': t1, 't2': t2}, filename)
+                            
+                            # Riemann加载
+                            loaded = rm.load(filename)
+                            
+                            # 验证数据（转换为numpy比较）
+                            t1_numpy = t1.detach().numpy() if t1.requires_grad else t1.numpy()
+                            loaded_t1_numpy = loaded['t1'].detach().numpy() if loaded['t1'].requires_grad else loaded['t1'].numpy()
+                            np.testing.assert_allclose(loaded_t1_numpy, t1_numpy, rtol=1e-6)
+                            
+                            t2_numpy = t2.detach().numpy() if t2.requires_grad else t2.numpy()
+                            loaded_t2_numpy = loaded['t2'].detach().numpy() if loaded['t2'].requires_grad else loaded['t2'].numpy()
+                            np.testing.assert_allclose(loaded_t2_numpy, t2_numpy, rtol=1e-6)
+                            
+                        finally:
+                            if os.path.exists(filename):
+                                os.unlink(filename)
+                                
+                        time_taken = time.time() - start_time
+                        stats.add_result(case_name, True)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                            
+                    elif case['test_type'] == 'torch_load_riemann':
+                        # 测试PyTorch加载Riemann保存的文件
+                        # 创建Riemann张量
+                        t1 = rm.tensor([1.0, 2.0, 3.0, 4.0])
+                        t2 = rm.randn(2, 3)
+                        
+                        # Riemann保存
+                        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
+                            filename = f.name
+                        
+                        try:
+                            rm.save({'t1': t1, 't2': t2}, filename)
+                            
+                            # PyTorch加载（设置weights_only=False以允许加载自定义构造函数）
+                            loaded = torch.load(filename, weights_only=False)
+                            
+                            # 验证数据（转换为numpy比较）
+                            np.testing.assert_allclose(loaded['t1'].numpy(), t1.numpy(), rtol=1e-6)
+                            np.testing.assert_allclose(loaded['t2'].numpy(), t2.numpy(), rtol=1e-6)
+                            
+                        finally:
+                            if os.path.exists(filename):
+                                os.unlink(filename)
+                                
+                        time_taken = time.time() - start_time
+                        stats.add_result(case_name, True)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                        
                 except Exception as e:
                     time_taken = time.time() - start_time
                     stats.add_result(case_name, False, [str(e)])

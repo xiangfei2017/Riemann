@@ -384,15 +384,20 @@ class TN:
     
     def __reduce__(self):
         """
-        实现对象的pickle序列化支持
+        实现对象的pickle序列化支持，兼容PyTorch格式
         
         返回:
             tuple: 包含构造函数和参数的元组
         """
         from .serialization import _tensor_constructor
 
+        data = self.data
+        if cp and isinstance(data, cp.ndarray):
+            # 使用 .get() 方法显式转换 cupy 数组为 numpy 数组
+            data = data.get()
+                    
         return (_tensor_constructor, (
-            self.data,  # 直接序列化底层数据
+            data,  # 直接序列化底层数据
             self.shape,
             str(self.dtype),
             str(self.device),

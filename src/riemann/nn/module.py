@@ -184,7 +184,7 @@ class Parameter(TN):
     
     def __reduce__(self):
         """
-        实现对象的pickle序列化支持
+        实现对象的pickle序列化支持，兼容PyTorch格式
         
         返回:
             tuple: 包含构造函数和参数的元组
@@ -194,8 +194,13 @@ class Parameter(TN):
         if self.data is None:
             return (_parameter_constructor, (None, self.requires_grad))
         else:
+            data = self.data
+            if cp and isinstance(data, cp.ndarray):
+                # 使用 .get() 方法显式转换 cupy 数组为 numpy 数组
+                data = data.get()
+            
             return (_parameter_constructor, (
-                self.data,  # 直接序列化底层数据
+                data,  # 直接序列化底层数据
                 self.shape,
                 str(self.dtype),
                 str(self.device),
@@ -602,35 +607,50 @@ class Module:
             - 查找顺序：参数 -> 缓冲区 -> 子模块
             - 支持通过属性名直接访问注册的组件
         """
-        # 直接从字典查找，避免__dict__访问开销
-        if name in self._parameters:
-            return self._parameters[name]
-        
-        if name in self._buffers:
-            return self._buffers[name]
-        
-        if name in self._modules:
-            return self._modules[name]
+        # 使用object.__getattribute__直接访问基础属性，避免递归调用
+        try:
+            _parameters = object.__getattribute__(self, '_parameters')
+            if name in _parameters:
+                return _parameters[name]
+            
+            _buffers = object.__getattribute__(self, '_buffers')
+            if name in _buffers:
+                return _buffers[name]
+            
+            _modules = object.__getattribute__(self, '_modules')
+            if name in _modules:
+                return _modules[name]
+        except AttributeError:
+            # 如果基础属性不存在，继续抛出原始属性错误
+            pass
         
         # 触发标准属性错误
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
     
     def __delattr__(self, name: str):
         """删除属性方法，支持参数、缓冲区和子模块的删除"""
-        # 从参数字典删除
-        if name in self._parameters:
-            del self._parameters[name]
-            return
-        
-        # 从缓冲区字典删除
-        if name in self._buffers:
-            del self._buffers[name]
-            return
-        
-        # 从模块字典删除
-        if name in self._modules:
-            del self._modules[name]
-            return
+        # 使用object.__getattribute__直接访问基础属性，避免递归调用
+        try:
+            # 从参数字典删除
+            _parameters = object.__getattribute__(self, '_parameters')
+            if name in _parameters:
+                del _parameters[name]
+                return
+            
+            # 从缓冲区字典删除
+            _buffers = object.__getattribute__(self, '_buffers')
+            if name in _buffers:
+                del _buffers[name]
+                return
+            
+            # 从模块字典删除
+            _modules = object.__getattribute__(self, '_modules')
+            if name in _modules:
+                del _modules[name]
+                return
+        except AttributeError:
+            # 如果基础属性不存在，继续使用父类方法
+            pass
         
         # 其他属性使用父类方法删除
         super().__delattr__(name)
