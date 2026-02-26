@@ -146,8 +146,8 @@ Riemann provides rich example codes located in the `examples/` directory:
 ### Source Installation and Development Environment Configuration
 
 ```bash
-# Get Riemann library source code from Gitee
-git clone https://gitee.com/xfcode2021/Riemann.git
+# Get Riemann library source code from GitHub
+git clone https://github.com/xiangfei2017/Riemann.git
 cd Riemann
 # Install package and its core dependencies in development mode (-e means editable mode, no need to reinstall after modifying code)
 pip install -e .
