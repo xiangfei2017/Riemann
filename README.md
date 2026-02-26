@@ -1,383 +1,389 @@
 # Riemann
 
-Riemann是一个类似PyTorch的神经网络编程框架，支持张量计算中的自动求导，提供搭建神经网络所需的组件，为神经网络相关的学习、教育和研究目的而设计。
+**Language**: [English](README.md) | [中文](README_zh.md)
+
+Riemann is a neural network programming framework similar to PyTorch. It supports automatic differentiation in tensor computations, provides components for building neural networks, and is designed for learning, education, and research related to neural networks.
 
 
-## 功能介绍
+## Feature Introduction
 
-### 1. 张量计算及自动求导
-- 支持0到多维张量的数学运算，支持复数张量运算，支持CUDA
-- 线性代数模块支持矩阵运算,包括：批量矩阵乘法、矩阵分解、特征值与行列式、矩阵逆与伪逆、线性方程组求解、范数与秩等
-- 支持张量形状重塑、维度扩缩、索引和切片、元素收集/散射、拼接/分割等操作
-- 支持基于反向传播算法的自动梯度跟踪，支持函数对输入求导，支持用户自定义梯度函数
-- 支持张量序列化/反序列化，方便模型训练和部署
+### 1. Tensor Computation and Automatic Differentiation
+- Supports mathematical operations on zero- to multi-dimensional tensors, including operations on complex-valued tensors and CUDA support.
+- Linear algebra module supports matrix operations, including batch matrix multiplication, matrix decomposition, eigenvalues and determinants, matrix inverse and pseudoinverse, linear system solving, norms and ranks, etc.
+- Supports tensor shape reshaping, dimension expansion/contraction, indexing and slicing, gather/scatter operations, concatenation/splitting, etc.
+- Supports automatic gradient tracking based on the backpropagation algorithm, function differentiation with respect to inputs, and user-defined gradient functions.
+- Supports tensor serialization/deserialization for convenient model training and deployment.
 
-### 2. 神经网络模块
-- 基本层（Linear, Dropout, BatchNorm, LayerNorm, Embedding等）
-- 激活函数（ReLU, Sigmoid, Softmax等）
-- 卷积池化层（Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d等）
-- 损失函数（MSE, CrossEntropy等）
-- 优化器（SGD, Adam, Adagrad, LBFGS等）
-- 网络模块容器（Sequential, ModuleList, ModuleDict等）
-
-## 应用场景
-
-- **深度学习研究**：自定义模型和算法开发
-- **科学计算**：复杂数学模型的梯度计算
-- **优化问题求解**：梯度下降和Adam等优化算法
-- **计算机视觉**：图像分类、目标检测等视觉任务
-- **教育教学**：自动微分和深度学习原理学习
+### 2. Neural Network Module
+- Basic layers (Linear, Dropout, BatchNorm, LayerNorm, Embedding, etc.)
+- Activation functions (ReLU, Sigmoid, Softmax, etc.)
+- Loss functions (MSE, CrossEntropy, etc.)
+- Convolution and pooling layers (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, etc.)
+- Transformer (MultiheadAttention, TransformerEncoder, TransformerDecoder, Transformer, etc.)
+- Optimizers (SGD, Adam, Adagrad, LBFGS, etc.)
+- Network module containers (Sequential, ModuleList, ModuleDict, etc.)
 
 
-## PyTorch接口兼容性
+## Application Scenarios
 
-Riemann库设计时注重与PyTorch接口的兼容性，同名的函数和类接口保持一致，方便PyTorch用户快速上手：
-
-- **张量操作**：支持与PyTorch同名的张量操作函数和方法，如`tensor()`、`grad()`、`backward()`等
-- **神经网络组件**：`nn`模块中的层、激活函数和损失函数与PyTorch保持接口兼容
-- **优化器**：`optim`模块中的优化器（如SGD、Adam等）接口与PyTorch保持一致
-- **自动微分机制**：`requires_grad`、反向传播机制与PyTorch相似
-- **计算机视觉**：`vision`模块中的数据集和变换与torchvision保持接口兼容
-
-这种设计使得熟悉PyTorch的用户可以轻松迁移到Riemann库进行开发工作。
+- **Deep learning research**: Custom model and algorithm development
+- **Scientific computing**: Gradient calculation for complex mathematical models
+- **Optimization problem solving**: Gradient descent and Adam optimization algorithms
+- **Computer vision**: Image classification, object detection and other vision tasks
+- **Education and teaching**: Learning automatic differentiation and deep learning principles
 
 
-## 项目文件夹结构
+## PyTorch Interface Compatibility
+
+Riemann library is designed with a focus on compatibility with PyTorch interfaces, with consistent interfaces for functions and classes with the same names, making it easy for PyTorch users to get started:
+
+- **Tensor operations**: Supports tensor operation functions and methods with the same names as PyTorch, such as `tensor()`, `grad()`, `backward()`, etc.
+- **Neural network components**: Layers, activation functions and loss functions in the `nn` module are interface-compatible with PyTorch
+- **Optimizers**: Optimizers (such as SGD, Adam, etc.) in the `optim` module have consistent interfaces with PyTorch
+- **Automatic differentiation mechanism**: `requires_grad` and backpropagation mechanism are similar to PyTorch
+- **Computer vision**: Datasets and transforms in the `vision` module are interface-compatible with torchvision
+
+This design allows users familiar with PyTorch to easily migrate to the Riemann library for development work.
+
+
+## Project Folder Structure
 
 ```
 Riemann/
 ├── src/
-│   └── riemann/              # 核心源代码
-│       ├── autograd/         # 自动微分相关模块
-│       ├── nn/               # 神经网络模块
-│       ├── optim/            # 优化器模块
-│       ├── utils/            # 工具函数
-│       ├── vision/           # 计算机视觉模块
-│       ├── __init__.py       # 包配置文件
-│       ├── dtype.py          # 数据类型定义
-│       ├── gradmode.py       # 梯度模式控制
-│       ├── linalg.py         # 线性代数函数
-│       ├── serialization.py  # 对象保存与加载
-│       └── tensordef.py      # 张量定义和核心操作
-├── data/                     # 训练测试数据集文件目录
-├── docs/                     # 项目文档目录
-├── tests/                    # 测试文件
-├── examples/                     # 示例代码
-│   ├── backward_demo.py          # 反向传播示例
-│   ├── grad_demo.py              # 梯度计算示例
-│   ├── custom_grad_decorator.py  # 自定义梯度跟踪函数示例
-│   ├── optimizers_comparison.py  # 优化器比较示例
-│   ├── mnist_demo.py             # MNIST手写数字识别GUI示例
-│   ├── nn_MNIST_CE_SGD.py        # 神经网络训练示例
-│   ├── cnn_CIFAR10_CE_SGD.py     # 卷积网路训练示例
+│   └── riemann/              # Core source code
+│       ├── autograd/         # Automatic differentiation related modules
+│       ├── nn/               # Neural network modules
+│       ├── optim/            # Optimizers
+│       ├── utils/            # Utility functions
+│       ├── vision/           # Computer vision modules
+│       ├── __init__.py       # Package configuration file
+│       ├── dtype.py          # Data type definitions
+│       ├── gradmode.py       # Gradient mode control
+│       ├── linalg.py         # Linear algebra functions
+│       ├── serialization.py  # Object saving and loading
+│       └── tensordef.py      # Tensor definition and core operations
+├── data/                     # Training and testing dataset directory
+├── docs/                     # Project documentation directory
+├── tests/                    # Test files
+├── examples/                     # Example code
+│   ├── backward_demo.py          # Backward propagation example
+│   ├── grad_demo.py              # Gradient calculation example
+│   ├── custom_grad_decorator.py  # Custom gradient tracking function example
+│   ├── optimizers_comparison.py  # Optimizer comparison example
+│   ├── mnist_demo.py             # MNIST handwritten digit recognition GUI example
+│   ├── nn_MNIST_CE_SGD.py        # Neural network training example
+│   ├── cnn_CIFAR10_CE_SGD.py     # Convolutional network training example
 │   └── ...
-├── README.md                 # 项目文档
-├── LICENSE                   # 许可证文件
-└── pyproject.toml            # 项目配置和依赖管理
+├── README.md                 # Project documentation
+├── LICENSE                   # License file
+└── pyproject.toml            # Project configuration and dependency management
 ```
 
-### 代码目录
+### Code Directory
 
-代码目录 `src/riemann/` 是Riemann库的核心源代码所在地，包含了所有主要功能模块：
+The code directory `src/riemann/` is the location of Riemann library's core source code, containing all major functional modules:
 
-- **autograd/**: 实现自动微分功能，包括反向传播算法和梯度计算
-- **nn/**: 神经网络相关组件，如各种层、激活函数和损失函数
-- **optim/**: 优化器模块，如SGD、Adam等优化器，以及学习率调度器
-- **utils/**: 工具函数，包括数据集Dataset类和数据加载器Dataloader类等
-- **vision/**: 计算机视觉相关功能，包括数据集和图像变换
-- **核心文件**: 如 `tensordef.py`（张量定义）、`linalg.py`（线性代数）等
+- **autograd/**: Implements automatic differentiation functionality, including backpropagation algorithm and gradient calculation
+- **nn/**: Neural network-related components, such as various layers, activation functions, and loss functions
+- **optim/**: Optimizers, such as SGD, Adam, etc., and learning rate schedulers
+- **utils/**: Utility functions, including Dataset class and Dataloader class for data loading, etc.
+- **vision/**: Computer vision-related functionality, including datasets and image transforms
+- **Core files**: Such as `tensordef.py` (tensor definition), `linalg.py` (linear algebra), etc.
 
-### tests目录
+### tests Directory
 
-`tests/` 目录包含了大量测试用例，用于验证Riemann库的各种功能是否正常工作：
+The `tests/` directory contains a large number of test cases for verifying that various functions of the Riemann library work correctly:
 
-- 测试用例按模块分类，覆盖了自动微分、张量操作、神经网络等各个功能模块
-- 测试用例既可以使用pytest批量运行，也可以作为独立脚本单独运行
-- 提供了详细的测试覆盖，确保库的稳定性和可靠性
+- Test cases are classified by module, covering various functional modules such as automatic differentiation, tensor operations, neural networks, etc.
+- Test cases can be run in batches using pytest or run individually as standalone scripts
+- Provides detailed test coverage to ensure library stability and reliability
 
-### 文档docs目录
+### docs Directory
 
-`docs/` 目录用于存放项目文档：
+The `docs/` directory is used to store project documentation:
 
-- 包含详细的API文档
-- 提供使用指南和教程
-- 记录项目架构和设计决策
-- 帮助用户和开发者更好地理解和使用Riemann库
+- Contains detailed API documentation
+- Provides usage guides and tutorials
+- Records project architecture and design decisions
+- Helps users and developers better understand and use the Riemann library
 
-### examples目录
+### examples Directory
 
-`examples/` 目录包含了各种示例代码，展示如何使用Riemann库的不同功能：
+The `examples/` directory contains various example codes that demonstrate how to use different features of the Riemann library:
 
-- **基础示例**: 如反向传播示例（backward_demo.py）、梯度计算示例（grad_demo.py）
-- **自定义梯度示例**: 如custom_grad_decorator.py，展示如何使用装饰器自定义梯度
-- **优化器示例**: 如optimizers_comparison.py，比较不同优化器的性能
-- **神经网络示例**: 如nn_MNIST_CE_SGD.py（MNIST手写数字识别）、cnn_CIFAR10_CE_SGD.py（CIFAR10图像分类）
-- **GUI应用示例**: 如mnist_demo.py，提供图形界面的MNIST手写数字识别应用
+- **Basic examples**: Such as backward propagation example (backward_demo.py), gradient calculation example (grad_demo.py)
+- **Custom gradient examples**: Such as custom_grad_decorator.py, demonstrating how to use decorators to customize gradients
+- **Optimizer examples**: Such as optimizers_comparison.py, comparing the performance of different optimizers
+- **Neural network examples**: Such as nn_MNIST_CE_SGD.py (MNIST handwritten digit recognition), cnn_CIFAR10_CE_SGD.py (CIFAR10 image classification)
+- **GUI application examples**: Such as mnist_demo.py, providing a graphical interface for MNIST handwritten digit recognition
 
-这些示例代码为用户提供了实际使用Riemann库的参考，帮助用户快速上手和理解库的功能。
+These example codes provide references for users to actually use the Riemann library, helping users quickly get started and understand the library's functionality.
 
-Riemann提供了丰富的示例代码，位于`examples/`目录：
+Riemann provides rich example codes located in the `examples/` directory:
 
-- **backward_demo.py**: backward函数使用演示
-- **grad_demo.py**: grad函数使用演示
-- **hessian.py**: 海森矩阵计算示例
-- **jacobian.py**: 雅可比矩阵计算示例
-- **mnist_demo.py**: MNIST手写数字识别GUI示例（图形界面训练与识别）
-- **nn_MNIST_CE_SGD.py**: 基于MNIST的手写数字识别神经网络示例（交叉熵损失 + SGD优化）
-- **nn_MNIST_CE_Adam.py**: 基于MNIST的手写数字识别神经网络示例（交叉熵损失 + Adam优化）
-- **nn_MNIST_CE_Adagrad.py**: 基于MNIST的手写数字识别神经网络示例（交叉熵损失 + Adagrad优化）
-- **nn_MNIST_MSE_GD.py**: 基于MNIST的手写数字识别神经网络示例（均方误差 + 梯度下降）
-- **nn_MNIST_MSE_SGD.py**: 基于MNIST的手写数字识别神经网络示例（均方误差 + SGD优化）
-- **nn_MNIST_MSE_LBFGS.py**: 基于MNIST的手写数字识别神经网络示例（均方误差 + LBFGS优化）
-- **cnn_CIFAR10_CE_SGD.py**: 基于CIFAR10的卷积神经网络示例（交叉熵损失 + SGD优化）
-- **cnn_CIFAR10_CE_Adam.py**: 基于CIFAR10的卷积神经网络示例（交叉熵损失 + Adam优化）
-- **optimizers_comparison.py**: 优化器性能比较
-- **scatter.py**: 张量散射操作示例
-- **custom_grad_decorator.py**: 使用@track_grad装饰器自定义梯度跟踪函数示例
-- **custom_grad_FunctionClass.py**: 使用Function类自定义梯度跟踪函数示例
+- **backward_demo.py**: Backward function usage demonstration
+- **grad_demo.py**: Grad function usage demonstration
+- **hessian.py**: Hessian matrix calculation example
+- **jacobian.py**: Jacobian matrix calculation example
+- **mnist_demo.py**: MNIST handwritten digit recognition GUI example (graphical interface training and recognition)
+- **nn_MNIST_CE_SGD.py**: Neural network training example based on MNIST (cross-entropy loss + SGD optimization)
+- **nn_MNIST_CE_Adam.py**: Neural network training example based on MNIST (cross-entropy loss + Adam optimization)
+- **nn_MNIST_CE_Adagrad.py**: Neural network training example based on MNIST (cross-entropy loss + Adagrad optimization)
+- **nn_MNIST_MSE_GD.py**: Neural network training example based on MNIST (mean squared error + gradient descent)
+- **nn_MNIST_MSE_SGD.py**: Neural network training example based on MNIST (mean squared error + SGD optimization)
+- **nn_MNIST_MSE_LBFGS.py**: Neural network training example based on MNIST (mean squared error + LBFGS optimization)
+- **cnn_CIFAR10_CE_SGD.py**: Convolutional neural network example based on CIFAR10 (cross-entropy loss + SGD optimization)
+- **cnn_CIFAR10_CE_Adam.py**: Convolutional neural network example based on CIFAR10 (cross-entropy loss + Adam optimization)
+- **optimizers_comparison.py**: Optimizer performance comparison
+- **scatter.py**: Tensor scatter operation example
+- **custom_grad_decorator.py**: Example of using @track_grad decorator to customize gradient tracking functions
+- **custom_grad_FunctionClass.py**: Example of using Function class to customize gradient tracking functions
 
 
-## 安装方法
+## Installation Method
 
-### 源码安装与开发环境配置
+### Source Installation and Development Environment Configuration
 
 ```bash
-# 从Gitee获取Riemann库源码
+# Get Riemann library source code from Gitee
 git clone https://gitee.com/xfcode2021/Riemann.git
 cd Riemann
-# 使用开发模式安装包及其核心依赖（-e表示可编辑模式，修改代码后无需重新安装）
+# Install package and its core dependencies in development mode (-e means editable mode, no need to reinstall after modifying code)
 pip install -e .
 
-# 安装测试依赖
+# Install test dependencies
 pip install -e .[tests]
 
-# 安装CUDA依赖
-# 注意：使用CUDA加速前，请确保已安装对应版本的CUDA驱动
+# Install CUDA dependencies
+# Note: Before using CUDA acceleration, please ensure you have installed the corresponding version of CUDA driver
 pip install -e .[cuda]
 
-# 安装特定版本的CUDA依赖
+# Install specific CUDA version dependencies
 # CUDA 13.x
 pip install -e .[cuda13]
 # CUDA 12.x
 pip install -e .[cuda12]
 # CUDA 11.x
 pip install -e .[cuda11]
-# CUDA 10.x (仅Linux)
+# CUDA 10.x (Linux only)
 pip install -e .[cuda10]
 
-# 安装通用cupy依赖（适用于macOS、ARM64等平台）
+# Install general CuPy dependency (for macOS, ARM64, etc.)
 pip install -e .[cupy]
 ```
 
-### 依赖说明
+### Dependency Description
 
-#### 核心依赖
+#### Core Dependencies
 
-直接运行`pip install riemann`会自动安装以下核心依赖：
-- **numpy>=1.20.0**: 核心数值计算库
-- **pillow>=8.0.0**: 用于计算机视觉中的图像处理功能
-- **tqdm>=4.0.0**: 用于神经网络训练中的进度条显示
+Running `pip install riemann` will automatically install the following core dependencies:
+- **numpy>=1.20.0**: Core numerical computation library
+- **pillow>=8.0.0**: Used for image processing functionality in computer vision
+- **tqdm>=4.0.0**: Used for progress bar display in neural network training
 
-#### CUDA依赖
+#### CUDA Dependencies
 
-CUDA依赖不会自动安装，需要显式指定：
-- **cupy-cuda13x**: 适用于CUDA 13.x的Linux和Windows平台
-- **cupy-cuda12x**: 适用于CUDA 12.x的Linux和Windows平台
-- **cupy-cuda11x**: 适用于CUDA 11.x的Linux和Windows平台
-- **cupy-cuda10x**: 适用于CUDA 10.x的Linux平台
-- **cupy**: 通用版本（适用于macOS、ARM64等不支持CUDA的平台）
+CUDA dependencies are not automatically installed and need to be explicitly specified:
+- **cupy-cuda13x**: For CUDA 13.x on Linux and Windows platforms
+- **cupy-cuda12x**: For CUDA 12.x on Linux and Windows platforms
+- **cupy-cuda11x**: For CUDA 11.x on Linux and Windows platforms
+- **cupy-cuda10x**: For CUDA 10.x on Linux platforms
+- **cupy**: General version (for macOS, ARM64, and other platforms that don't support CUDA)
 
-#### 平台兼容性
+#### Platform Compatibility
 
-- **CUDA支持**: 仅在Linux或Windows系统，且x86_64/AMD64架构下可用
-- **macOS系统**: 不支持NVIDIA CUDA，会自动使用CPU模式
-- **ARM架构**: 对于NVIDIA Jetson等设备可能支持CUDA，但需要安装对应ARM版本的CUDA驱动
+- **CUDA support**: Only available on Linux or Windows systems with x86_64/AMD64 architecture
+- **macOS systems**: NVIDIA CUDA is not supported, will automatically use CPU mode
+- **ARM architecture**: For devices like NVIDIA Jetson, CUDA may be supported, but you need to install the corresponding ARM version of CUDA driver
 
-### CUDA驱动安装说明
+### CUDA Driver Installation Instructions
 
-1. **检查CUDA驱动版本**
-   - Windows系统：右键点击桌面 → NVIDIA控制面板 → 帮助 → 系统信息 → 驱动程序版本
-   - Linux系统：终端运行 `nvidia-smi` 或 `nvcc --version`
+1. **Check CUDA Driver Version**
+   - Windows system: Right-click on desktop → NVIDIA Control Panel → Help → System Information → Driver Version
+   - Linux system: Run in terminal `nvidia-smi` or `nvcc --version`
 
-2. **下载并安装对应版本的CUDA驱动**
-   - 访问NVIDIA官方网站：https://developer.nvidia.com/cuda-toolkit-archive
-   - 根据你的GPU型号和操作系统选择合适的驱动版本
-   - 安装过程中请按照向导提示完成
+2. **Download and Install Corresponding CUDA Driver**
+   - Visit NVIDIA official website: https://developer.nvidia.com/cuda-toolkit-archive
+   - Select appropriate driver version based on your GPU model and operating system
+   - Follow the wizard instructions to complete the installation
 
-3. **验证CUDA驱动安装**
-   - 安装完成后，重启电脑并运行：
+3. **Verify CUDA Driver Installation**
+   - After installation, restart your computer and run:
      - Windows: `nvidia-smi`
-     - Linux: `nvidia-smi` 或 `nvcc --version`
-   - 确认输出中显示正确的CUDA版本信息
+     - Linux: `nvidia-smi` or `nvcc --version`
+   - Confirm that the output shows the correct CUDA version information
 
-### 验证安装
+### Verify Installation
 
-安装完成后，可以运行以下代码验证：
-
-```python
-import riemann as r
-print("CUDA可用:", r.cuda.is_available())
-print("使用设备:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
-```
-
-如果CUDA安装成功，会显示`CUDA可用: True`，否则会显示`CUDA可用: False`并自动使用CPU模式。
-
-
-## 使用方法
-
-### 详细文档说明
-
-Riemann的详细使用指南在`docs`目录下，文档采用reStructuredText格式编写。需要根据`docs`目录下的README文档指南构建成HTML后阅读。
-
-### riemann包的模块结构
-
-```
-riemann                  # 主包
-├── autograd             # 自动微分模块
-│   └── functional       # 自动微分函数式接口
-├── linalg               # 线性代数模块
-├── nn                   # 神经网络模块
-│   └── functional       # 神经网络函数
-├── optim                # 优化器模块
-│   └── lr_scheduler     # 学习率调度器模块
-├── utils                # 工具函数模块
-│   └── data             # 数据处理工具
-├── vision               # 计算机视觉模块
-│   ├── datasets         # 数据集类
-│   └── transforms       # 图像变换操作
-└── cuda                 # CUDA/GPU支持
-```
-
-### 模块导入示例
-
-**整体导入riemann模块：**
+After installation, you can run the following code to verify:
 
 ```python
 import riemann as r
+print("CUDA available:", r.cuda.is_available())
+print("Using device:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
+```
 
-# 使用张量创建函数
+If CUDA is installed successfully, it will display `CUDA available: True`, otherwise it will display `CUDA available: False` and automatically use CPU mode.
+
+
+
+
+## Usage Method
+
+### Detailed Documentation
+
+Riemann's detailed usage guide is located in the `docs` directory, and the documentation is written in reStructuredText format. You need to build it into HTML according to the README guide in the `docs` directory before reading.
+
+### Riemann Package Module Structure
+
+```
+riemann                  # Main package
+├── autograd             # Automatic differentiation module
+│   └── functional       # Automatic differentiation functional interface
+├── linalg               # Linear algebra module
+├── nn                   # Neural network module
+│   └── functional       # Neural network functions
+├── optim                # Optimizer module
+│   └── lr_scheduler     # Learning rate scheduler module
+├── utils                # Utility function module
+│   └── data             # Data processing tools
+├── vision               # Computer vision module
+│   ├── datasets         # Dataset classes
+│   └── transforms       # Image transform operations
+└── cuda                 # CUDA/GPU support
+```
+
+### Module Import Examples
+
+**Import the entire riemann module:**
+
+```python
+import riemann as r
+
+# Use tensor creation function
 t = r.tensor([1.0, 2.0, 3.0])
 
-# 使用自动微分功能
+# Use automatic differentiation functionality
 x = r.tensor([1.0, 2.0], requires_grad=True)
 y = x ** 2
 y.sum().backward()
-print(x.grad)  # 输出: [2. 4.]
+print(x.grad)  # Output: [2. 4.]
 ```
 
-**按模块树导入需要的函数和类：**
+**Import required functions and classes by module tree:**
 
 ```python
-# 导入张量相关功能
+# Import tensor-related functionality
 from riemann import tensor, zeros, ones, randn
 
-# 导入自动微分功能
+# Import automatic differentiation functionality
 from riemann.autograd import grad, backward
 from riemann.autograd.functional import jacobian, hessian
 
-# 导入线性代数功能
+# Import linear algebra functionality
 from riemann import linalg
 from riemann.linalg import svd, det, inv
 
-# 导入神经网络组件
+# Import neural network components
 from riemann.nn import Linear, Conv2d, ReLU, CrossEntropyLoss
 from riemann.nn.functional import relu, cross_entropy
 
-# 导入优化器
+# Import optimizers
 from riemann.optim import SGD, Adam, Adagrad
 
-# 导入计算机视觉功能
+# Import computer vision functionality
 from riemann.vision.datasets import MNIST, CIFAR10
 from riemann.vision.transforms import Compose, ToTensor, Normalize, RandomHorizontalFlip
 
-# 导入CUDA支持
+# Import CUDA support
 from riemann import cuda
 from riemann.cuda import is_available, Device
 ```
 
-### 例1：求导数（梯度）示例
+### Example 1: Derivative (Gradient) Calculation Example
 
 ```python
-# 例1：求导数（梯度）示例
-# 本示例展示了两种计算梯度的方法：
-# 1. 使用grad函数直接计算函数相对于输入的梯度
-# 2. 使用backward方法通过反向传播计算梯度
+# Example 1: Derivative (Gradient) Calculation Example
+# This example demonstrates two methods of calculating gradients:
+# 1. Using the grad function to directly calculate the gradient of a function with respect to input
+# 2. Using the backward method to calculate gradients through backpropagation
 
-# 导入riemann库
+# Import riemann library
 from riemann import tensor
 from riemann.autograd import grad
 
-# 创建张量
+# Create tensor
 t = tensor([1.0, 2.0, 3.0], requires_grad=True)
 
-# 定义函数
+# Define function
 def f(x):
     return (x ** 2.0).sum()
 
-# 计算梯度
+# Calculate gradient
 output = f(t)
 grad_f = grad(output, t)[0]
-print("梯度:", grad_f)  # 输出: 梯度: [2. 4. 6.]
+print("Gradient:", grad_f)  # Output: Gradient: [2. 4. 6.]
 
-# 反向传播示例
+# Backward propagation example
 x = tensor([1.0, 2.0], requires_grad=True)
 y = tensor([3.0, 4.0], requires_grad=True)
 z = (x * y).sum()
 z.backward()
-print("x的梯度:", x.grad)  # 输出: x的梯度: [3. 4.]
-print("y的梯度:", y.grad)  # 输出: y的梯度: [1. 2.]
+print("x's gradient:", x.grad)  # Output: x's gradient: [3. 4.]
+print("y's gradient:", y.grad)  # Output: y's gradient: [1. 2.]
 ```
 
-### 例2：计算雅可比矩阵示例
+### Example 2: Jacobian Matrix Calculation Example
 
 ```python
-# 例2：计算雅可比矩阵示例
-# 本示例展示了如何使用jacobian函数计算函数相对于输入的雅可比矩阵
-# 雅可比矩阵是函数输出对输入的偏导数矩阵，对于多输入多输出函数非常重要
+# Example 2: Jacobian Matrix Calculation Example
+# This example demonstrates how to use the jacobian function to calculate the Jacobian matrix of a function with respect to input
+# The Jacobian matrix is a matrix of partial derivatives of function outputs with respect to inputs, which is very important for multi-input multi-output functions
 
 from riemann import tensor
 from riemann.autograd.functional import jacobian
 
-# 定义函数
+# Define function
 def f(x):
     return x ** 2.0
 
-# 创建输入张量
+# Create input tensor
 x = tensor([1.0, 2.0, 3.0], requires_grad=True)
 
-# 计算雅可比矩阵
+# Calculate Jacobian matrix
 jacob = jacobian(f, x)
-print("雅可比矩阵:", jacob)
+print("Jacobian matrix:", jacob)
 ```
 
-### 例3：简单神经网络训练示例
+### Example 3: Simple Neural Network Training Example
 
 ```python
-# 例3：简单神经网络训练示例
-# 本示例展示了如何训练一个简单的神经网络（线性回归模型）来求两数之和
-# 包括模型创建、损失函数定义、优化器配置、训练循环和预测过程
+# Example 3: Simple Neural Network Training Example
+# This example demonstrates how to train a simple neural network (linear regression model) to sum two numbers
+# Including model creation, loss function definition, optimizer configuration, training loop, and prediction process
 
-# 神经网络训练示例：训练一个网络用于求两数之和，这个网络模型本质上是一个线性回归
+# Neural network training example: training a network for summing two numbers, this network model is essentially a linear regression
 from riemann import tensor
 from riemann.nn import Linear, MSELoss
 from riemann.optim import SGD
 
-# 创建模型
+# Create model
 model = Linear(2, 1)
 criterion = MSELoss()
 optimizer = SGD(model.parameters(), lr=0.01)
 
-# 训练数据
+# Training data
 inputs = tensor([[1.0, 2.0], [3.0, 4.0]])
 targets = tensor([[3.0], [7.0]])
 
-# 训练循环
+# Training loop
 for epoch in range(100):
-    # 前向传播
+    # Forward propagation
     outputs = model(inputs)
     loss = criterion(outputs, targets)
     
-    # 反向传播和优化
+    # Backward propagation and optimization
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
@@ -385,18 +391,18 @@ for epoch in range(100):
     if (epoch + 1) % 10 == 0:
         print(f'Epoch [{epoch+1}/100], Loss: {loss.item()}')
 
-# 预测
+# Prediction
 new_input = tensor([[5.0, 6.0]])
 prediction = model(new_input)
-print(f'预测结果: {prediction.item()}')
+print(f'Prediction result: {prediction.item()}')
 ```
 
-### 例4：简单卷积神经网络训练示例
+### Example 4: Simple Convolutional Neural Network Training Example
 
 ```python
-# 例4：简单卷积神经网络训练示例
-# 本示例展示了如何使用卷积神经网络（CNN）训练CIFAR10图像分类模型
-# 包括模型定义、数据加载与预处理、训练循环、模型评估和单个样本推理
+# Example 4: Simple Convolutional Neural Network Training Example
+# This example demonstrates how to use a convolutional neural network (CNN) to train a CIFAR10 image classification model
+# Including model definition, data loading and preprocessing, training loop, model evaluation, and single sample inference
 
 import riemann as r
 from riemann.vision.datasets import CIFAR10
@@ -405,27 +411,27 @@ from riemann.nn import *
 from riemann.optim import SGD
 from tqdm import tqdm
 
-# 加载数据
-# 训练集使用数据增强，测试集不使用
+# Load data
+# Use data augmentation for training set, not for test set
 train_transform = Compose([
-    RandomHorizontalFlip(),  # 随机水平翻转
+    RandomHorizontalFlip(),  # Random horizontal flip
     ToTensor(),
-    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10实际标准化参数
+    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10 actual normalization parameters
 ])
 
 test_transform = Compose([
     ToTensor(),
-    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10实际标准化参数
+    Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10 actual normalization parameters
 ])
 
 train_dataset = CIFAR10(root='data', train=True, transform=train_transform)
 test_dataset = CIFAR10(root='data', train=False, transform=test_transform)
 
-# 减小批次大小和数据量以加快测试
+# Reduce batch size and data volume to speed up testing
 train_loader = r.utils.DataLoader(train_dataset, batch_size=100, shuffle=True)
 test_loader = r.utils.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-# 创建模型、损失函数和优化器
+# Create model, loss function, and optimizer
 model = Sequential(
     Conv2d(3, 16, kernel_size=3, padding=1),
     ReLU(),
@@ -436,71 +442,71 @@ model = Sequential(
 criterion = CrossEntropyLoss()
 optimizer = SGD(model.parameters(), lr=0.01)
 
-# 训练循环
-for epoch in range(3):  # 训练3代
+# Training loop
+for epoch in range(3):  # Train for 3 epochs
     total_loss = 0
-    # 使用tqdm显示进度条
+    # Use tqdm to display progress bar
     progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/3")
     
     for batch_idx, (data, target) in enumerate(progress_bar):
-        # 前向传播
+        # Forward propagation
         output = model(data)
-        loss = criterion(output, target)   # 计算输出与目标标签间的损失
+        loss = criterion(output, target)   # Calculate loss between output and target labels
         
-        # 反向传播和优化器更新
-        optimizer.zero_grad()   # 清空训练参数的梯度
-        loss.backward()         # 计算loss对训练参数的梯度
-        optimizer.step()        # 更新训练参数
+        # Backward propagation and optimizer update
+        optimizer.zero_grad()   # Clear gradients of training parameters
+        loss.backward()         # Calculate gradients of loss with respect to training parameters
+        optimizer.step()        # Update training parameters
         
         total_loss += loss.item()
         
-        # 更新进度条显示当前损失
+        # Update progress bar to display current loss
         progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
     
     avg_loss = total_loss/len(train_loader)
     print(f"Epoch {epoch+1}, Average Loss: {avg_loss:.4f}")
 
-# 模型评估（推理测试）
-model.eval()  # 设置为评估模式
+# Model evaluation (inference test)
+model.eval()  # Set to evaluation mode
 correct = 0
 total = 0
 
-# 使用tqdm显示测试进度
+# Use tqdm to display test progress
 test_progress_bar = tqdm(test_loader, desc="Testing")
 
-with r.no_grad():  # 禁用梯度计算
+with r.no_grad():  # Disable gradient calculation
     for data, target in test_progress_bar:
-        # 前向传播
+        # Forward propagation
         outputs = model(data)
         
-        # 获取预测结果
-        predicted = outputs.argmax(dim=1)  # 获取每个样本的预测类别
-        total += target.size(0)  # 累加测试样本数
-        correct += (predicted == target).sum().item() # 累加正确预测的样本数
+        # Get prediction results
+        predicted = outputs.argmax(dim=1)  # Get predicted class for each sample
+        total += target.size(0)  # Accumulate test sample count
+        correct += (predicted == target).sum().item() # Accumulate correctly predicted sample count
         
-        # 更新进度条显示当前准确率
+        # Update progress bar to display current accuracy
         current_accuracy = 100 * correct / total
         test_progress_bar.set_postfix({"Accuracy": f"{current_accuracy:.2f}%"})
 
-# 输出最终测试准确率
+# Output final test accuracy
 test_accuracy = 100 * correct / total
-print(f"测试集准确率: {test_accuracy:.2f}% ({correct}/{total})")
+print(f"Test set accuracy: {test_accuracy:.2f}% ({correct}/{total})")
 
-# 单个样本推理示例
+# Single sample inference example
 sample_data, sample_target = next(iter(test_loader))
-sample_output = model(sample_data[:1])  # 只取第一个样本
+sample_output = model(sample_data[:1])  # Only take the first sample
 predicted_class = sample_output.argmax(dim=1)
-print(f"样本预测类别: {predicted_class.item()}, 实际类别: {sample_target[0].item()}")
+print(f"Sample predicted class: {predicted_class.item()}, actual class: {sample_target[0].item()}")
 
-print("CNN训练和推理测试完成！")
+print("CNN training and inference test completed!")
 ```
 
-### 例5：GPU加速示例
+### Example 5: GPU Acceleration Example
 
 ```python
-# 例6：GPU加速示例
-# 本示例展示了如何在Riemann中使用GPU加速神经网络训练
-# 包括设备检测与设置、模型和数据的设备迁移、GPU上的训练和评估过程
+# Example 6: GPU Acceleration Example
+# This example demonstrates how to use GPU acceleration for neural network training in Riemann
+# Including device detection and setup, model and data device migration, training and evaluation process on GPU
 
 import riemann as r
 from riemann.nn import Linear, Flatten, ReLU, Sequential, CrossEntropyLoss
@@ -509,11 +515,11 @@ from riemann.vision.datasets import MNIST
 from riemann.vision.transforms import Compose, ToTensor, Normalize
 from tqdm import tqdm
 
-# 检查CUDA是否可用
+# Check if CUDA is available
 device = r.device('cuda' if r.cuda.is_available() else 'cpu')
-print(f"使用设备: {device}")
+print(f"Using device: {device}")
 
-# 加载MNIST数据集
+# Load MNIST dataset
 transform = Compose([
     ToTensor(),
     Normalize((0.1307,), (0.3081,))
@@ -525,7 +531,7 @@ test_dataset = MNIST(root='data', train=False, transform=transform)
 train_loader = r.utils.DataLoader(train_dataset, batch_size=128, shuffle=True)
 test_loader = r.utils.DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-# 创建模型并移动到指定设备
+# Create model and move to specified device
 model = Sequential(
     Flatten(),
     Linear(28*28, 128),
@@ -536,7 +542,7 @@ model.to(device)
 criterion = CrossEntropyLoss()
 optimizer = Adam(model.parameters(), lr=0.001)
 
-# 训练循环
+# Training loop
 num_epochs = 5
 for epoch in range(num_epochs):
     model.train()
@@ -544,14 +550,14 @@ for epoch in range(num_epochs):
     progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
     
     for batch_idx, (data, target) in enumerate(progress_bar):
-        # 将数据移动到指定设备
+        # Move data to specified device
         data, target = data.to(device), target.to(device)
         
-        # 前向传播
+        # Forward propagation
         output = model(data)
         loss = criterion(output, target)
         
-        # 反向传播和优化
+        # Backward propagation and optimization
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -562,7 +568,7 @@ for epoch in range(num_epochs):
     avg_loss = total_loss / len(train_loader)
     print(f"Epoch {epoch+1}, Average Loss: {avg_loss:.4f}")
 
-# 模型评估
+# Model evaluation
 model.eval()
 correct = 0
 total = 0
@@ -570,13 +576,13 @@ total = 0
 with r.no_grad():
     test_progress_bar = tqdm(test_loader, desc="Testing")
     for data, target in test_progress_bar:
-        # 将数据移动到指定设备
+        # Move data to specified device
         data, target = data.to(device), target.to(device)
         
-        # 前向传播
+        # Forward propagation
         outputs = model(data)
         
-        # 获取预测结果
+        # Get prediction results
         predicted = outputs.argmax(dim=1)
         total += target.size(0)
         correct += (predicted == target).sum().item()
@@ -584,48 +590,48 @@ with r.no_grad():
         current_accuracy = 100 * correct / total
         test_progress_bar.set_postfix({"Accuracy": f"{current_accuracy:.2f}%"})
 
-# 输出最终测试准确率
+# Output final test accuracy
 test_accuracy = 100 * correct / total
-print(f"测试集准确率: {test_accuracy:.2f}% ({correct}/{total})")
+print(f"Test set accuracy: {test_accuracy:.2f}% ({correct}/{total})")
 ```
 
-## 测试方法
+## Testing Method
 
-Riemann项目文件夹中tests目录下包括覆盖所有功能的测试用例，这些测试用例既可以用pytest批量运行，也可以作独立脚本运行。
+The tests directory in the Riemann project folder includes test cases that cover all functionalities, which can be run in batches using pytest or as standalone scripts.
 
-### 使用pytest批量运行测试
+### Run Tests in Batches with pytest
 
-您可以使用以下命令批量运行所有测试：
+You can use the following commands to run all tests in batches:
 
 ```bash
-# 运行tests目录下所有测试文件
+# Run all test files in the tests directory
 pytest tests
 
-# 运行特定测试文件
+# Run specific test files
 pytest tests/test_010_grad.py
 
-# 运行特定测试类或方法
+# Run specific test classes or methods
 pytest tests/test_011_jacobian.py::TestJacobianFunctions::test_single_input_single_output
 
-# 运行测试并生成覆盖率报告
+# Run tests and generate coverage report
 pytest --cov=riemann tests/
 
-# 运行vision模块测试
+# Run vision module tests
 pytest tests/test_052_vision.py
 ```
 
-### 单独运行测试脚本
+### Run Test Scripts Individually
 
-您也可以单独运行测试脚本：
+You can also run test scripts individually:
 
 ```bash
 cd tests
 python test_010_grad.py
-# 运行其他测试脚本
+# Run other test scripts
 ```
 
 
-## 第三方依赖及许可证
+## Third-party Dependencies and Licenses
 
 ### Core Dependencies
 
@@ -636,6 +642,7 @@ python test_010_grad.py
 | tqdm    | >=4.0.0             | MIT          | Progress bar for training and data loading|
 
 ### Testing Dependencies
+
 | Library    | Version Requirement | Purpose           | License Type  | Notes                                     |
 |------------|---------------------|-------------------|---------------|-------------------------------------------|
 | PyTorch    | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying calculation results    |
@@ -655,16 +662,16 @@ python test_010_grad.py
 
 *Note: Details of the BSD 3-Clause license for NumPy, PyTorch and Pillow can be found on their official websites.*
 
-## 许可证
+## License
 
-本项目采用BSD 3-Clause许可证。详见LICENSE文件。
+This project adopts the BSD 3-Clause license. See the LICENSE file for details.
 
-## 贡献指南
+## Contribution Guidelines
 
-欢迎提交Issue和Pull Request！在贡献代码前，请确保所有贡献都符合项目的编码标准，并通过所有测试。
+Welcome to submit Issues and Pull Requests! Before contributing code, please ensure all contributions comply with the project's coding standards and pass all tests.
 
-## 联系方式
+## Contact Information
 
-作者: Fei Xiang
-邮箱: xfeix@outlook.com
+Author: Fei Xiang
+Email: xfeix@outlook.com
 Gitee: https://gitee.com/xfcode2021
