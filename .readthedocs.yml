@@ -1,33 +1,17 @@
 # .readthedocs.yml
-# Read the Docs configuration file
-# See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
-
-# Required
 version: 2
 
-# Set the OS, Python version and other tools you might need
+# 设置构建环境
 build:
   os: ubuntu-22.04
   tools:
     python: "3.9"
 
-# 定义两个独立的子配置（Submodules），用于构建不同语言的文档
-submodules:
-  # 这里定义 defaults，为下面的 include 列表中的项提供默认值
-  defaults:
-    # 这个 `name` 的默认值意义不大，因为您在 include 里已经明确指定了每个配置的 name
-    # 但通常这里可以放置其他通用默认值，比如 `recursive: false`
-  include:
-    # 英文文档配置 (对应版本名 “en”)
-    - name: en
-      path: docs/source/
-      conf: conf.py
-    # 中文文档配置 (对应版本名 “zh-cn”)
-    - name: zh-cn
-      path: docs/source_zh/
-      conf: conf.py
+# 使用 Sphinx 构建文档，并指定配置文件路径
+sphinx:
+  configuration: docs/source/conf.py  # 指向英文文档的 conf.py
 
-# 声明构建文档所需的 Python 依赖
+# 安装 Python 依赖
 python:
   install:
     - requirements: docs/requirements.txt
