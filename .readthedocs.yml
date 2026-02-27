@@ -6,15 +6,23 @@ build:
   tools:
     python: "3.9"
 
-# 核心：使用 Jinja2 条件判断，根据环境变量选择配置文件。
-# 注意：需要在 Read the Docs 后台为中文项目设置环境变量 RTD_LANG=zh
+# 必须声明此键以满足平台检查，即使命令被覆盖
 sphinx:
-  configuration: |
-    {% if env.get('RTD_LANG', 'en') == 'zh' %}
-    docs/source_zh/conf.py
-    {% else %}
-    docs/source/conf.py
-    {% endif %}
+  configuration: docs/source/conf.py
+
+# 使用 jobs 覆盖默认的构建过程
+jobs:
+  build:
+    # 注意：这是正确的语法，`build` 的值是一个命令列表
+    # 根据环境变量 READTHEDOCS_PROJECT 判断构建哪个目录
+    - |
+      if [ "$READTHEDOCS_PROJECT" = "riemann-zh" ]; then
+        echo "Building Chinese documentation from docs/source_zh/"
+        sphinx-build -b html docs/source_zh/ _build/html
+      else
+        echo "Building English documentation from docs/source/"
+        sphinx-build -b html docs/source/ _build/html
+      fi
 
 python:
   install:
