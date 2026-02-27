@@ -5,17 +5,30 @@
 # Required
 version: 2
 
-# Set the version of Python and other tools you might need
+# Set the OS, Python version and other tools you might need
 build:
   os: ubuntu-22.04
   tools:
     python: "3.9"
 
-# Build documentation in the docs/ directory with Sphinx
-sphinx:
-  configuration: docs/source/conf.py
+# 定义两个独立的子配置（Submodules），用于构建不同语言的文档
+# 这里的 `include` 列表中的每个 `name` 对应 Read the Docs 后台的一个“版本”
+submodules:
+  include:
+    # 英文文档配置 (对应版本名 “latest” 或 “en”)
+    - name: en
+      path: docs/source/
+      conf: conf.py
+    # 中文文档配置 (对应版本名 “zh-cn”)
+    - name: zh-cn
+      path: docs/source_zh/
+      conf: conf.py
 
-# Optionally declare the Python requirements required to build your docs
+# (可选) 设置默认激活哪个构建配置。如果省略，通常“latest”是默认的。
+defaults:
+  name: en
+
+# (可选) 声明构建文档所需的 Python 依赖
 python:
   install:
     - requirements: docs/requirements.txt
