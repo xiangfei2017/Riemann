@@ -230,7 +230,11 @@ print("使用设备:", r.device('cuda' if r.cuda.is_available() else 'cpu'))
 
 ### 详细文档说明
 
-Riemann的详细使用指南在`docs`目录下，文档采用reStructuredText格式编写。需要根据`docs`目录下的README文档指南构建成HTML后阅读。
+Riemann的详细使用指南已在线发布：
+- **中文文档**: https://riemann-zh.readthedocs.io/zh-cn/latest/
+- **英文文档**: https://riemann-en.readthedocs.io/en/latest/
+
+文档源文件位于`docs`目录，采用reStructuredText格式编写。你也可以阅读`docs`中README.md和README_en.md中的说明，在本地手工构建出html格式的文档
 
 ### riemann包的模块结构
 
