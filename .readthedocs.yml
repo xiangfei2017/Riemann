@@ -1,17 +1,21 @@
 # .readthedocs.yml
 version: 2
 
-# 设置构建环境
 build:
   os: ubuntu-22.04
   tools:
     python: "3.9"
 
-# 使用 Sphinx 构建文档，并指定配置文件路径
+# 核心：根据 RTD 项目名称动态选择配置文件路径
 sphinx:
-  configuration: docs/source/conf.py  # 指向英文文档的 conf.py
+  # 使用 Jinja2 条件判断，如果项目名为 'riemann-zh'，则使用中文配置，否则使用英文配置
+  configuration: |
+    {% if readthedocs.project.slug == 'riemann-zh' %}
+    docs/source_zh/conf.py
+    {% else %}
+    docs/source/conf.py
+    {% endif %}
 
-# 安装 Python 依赖
 python:
   install:
     - requirements: docs/requirements.txt
