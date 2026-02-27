@@ -233,7 +233,11 @@ If CUDA is installed successfully, it will display `CUDA available: True`, other
 
 ### Detailed Documentation
 
-Riemann's detailed usage guide is located in the `docs` directory, and the documentation is written in reStructuredText format. You need to build it into HTML according to the README guide in the `docs` directory before reading.
+Riemann's detailed usage guide is available online:
+- **English documentation**: https://riemann-en.readthedocs.io/en/latest/
+- **Chinese documentation**: https://riemann-zh.readthedocs.io/zh-cn/latest/
+
+The documentation source files are located in the `docs` directory, written in reStructuredText format. You can also read the instructions in README.md and README_en.md in the docs directory to manually build the documentation in HTML format locally.
 
 ### Riemann Package Module Structure
 
