@@ -6,7 +6,12 @@ build:
   tools:
     python: "3.9"
 
-# 关键：覆盖默认的构建步骤，使用自定义命令
+# 核心：虽然实际构建由下方的 commands 执行，但此处仍需声明 Sphinx 配置以满足平台检查。
+# 这里可以为任意一个有效路径（如英文版），因为最终构建路径由 commands 中的条件语句决定。
+sphinx:
+  configuration: docs/source/conf.py
+
+# 使用 jobs 覆盖默认构建步骤，实现按项目名选择构建目录
 jobs:
   build:
     commands:
