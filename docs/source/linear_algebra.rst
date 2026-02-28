@@ -89,6 +89,19 @@ Decompositions
 Singular Value Decomposition (SVD)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+**Function**: ``linalg.svd(A, full_matrices=True)``
+
+**Description**: Computes the singular value decomposition of a matrix.
+
+**Parameters**:
+- ``A``: Input tensor (matrix or batch of matrices)
+- ``full_matrices``: If True, returns full-sized U and Vh matrices. If False, returns reduced-sized matrices.
+
+**Returns**:
+- ``U``: Unitary matrix(ces)
+- ``S``: Singular values as a 1D tensor
+- ``Vh``: Unitary matrix(ces) (conjugate transpose of V)
+
 .. code-block:: python
 
     import riemann as rm
@@ -110,6 +123,17 @@ Singular Value Decomposition (SVD)
 Eigen Value Decomposition(EVD)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+**Function**: ``linalg.eig(A)``
+
+**Description**: Computes the eigenvalues and eigenvectors of a square matrix.
+
+**Parameters**:
+- ``A``: Input tensor (square matrix or batch of square matrices)
+
+**Returns**:
+- ``eigenvalues``: Eigenvalues of the matrix as a 1D tensor
+- ``eigenvectors``: Eigenvectors of the matrix, where each column is an eigenvector
+
 .. code-block:: python
 
     import riemann as rm
@@ -128,6 +152,17 @@ Eigen Value Decomposition(EVD)
 QR Decomposition
 ~~~~~~~~~~~~~~~~
 
+**Function**: ``linalg.qr(A)``
+
+**Description**: Computes the QR decomposition of a matrix, decomposing it into an orthogonal matrix Q and an upper triangular matrix R.
+
+**Parameters**:
+- ``A``: Input tensor (matrix or batch of matrices)
+
+**Returns**:
+- ``Q``: Orthogonal matrix(ces)
+- ``R``: Upper triangular matrix(ces)
+
 .. code-block:: python
 
     import riemann as rm
@@ -144,6 +179,18 @@ QR Decomposition
 
 LU Decomposition
 ~~~~~~~~~~~~~~~~
+
+**Function**: ``linalg.lu(A)``
+
+**Description**: Computes the LU decomposition of a matrix with partial pivoting, decomposing it into a permutation matrix P, a lower triangular matrix L, and an upper triangular matrix U such that A = P @ L @ U.
+
+**Parameters**:
+- ``A``: Input tensor (matrix or batch of matrices)
+
+**Returns**:
+- ``P``: Permutation matrix(ces)
+- ``L``: Lower triangular matrix(ces)
+- ``U``: Upper triangular matrix(ces)
 
 .. code-block:: python
 
@@ -167,11 +214,62 @@ LU Decomposition
     # Note: pivot=False is not yet implemented
     # P, L, U = linalg.lu(A, pivot=False)  # Throws NotImplementedError
 
-Norms and Metrics
------------------
+Cholesky Decomposition
+~~~~~~~~~~~~~~~~~~~~~~
+
+**Function**: ``linalg.cholesky(A, upper=False)``
+
+**Description**: Computes the Cholesky decomposition of a symmetric positive-definite matrix, decomposing it into a lower triangular matrix L such that A = L @ L.T (or upper triangular matrix U such that A = U.T @ U if upper=True).
+
+**Parameters**:
+- ``A``: Input tensor (symmetric positive-definite matrix or batch of such matrices)
+- ``upper``: If True, returns an upper triangular matrix. If False (default), returns a lower triangular matrix.
+
+**Returns**:
+- ``L``: Lower or upper triangular matrix(ces) such that A = L @ L.T (or U.T @ U)
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.linalg as linalg
+    
+    # Cholesky decomposition of symmetric positive-definite matrix
+    A = rm.randn(3, 3)
+    A = A @ A.T  # Make it symmetric positive-definite
+    L = linalg.cholesky(A)
+    print(L.shape)  # (3, 3)
+    
+    # Reconstruct matrix
+    A_reconstructed = L @ L.T
+    print(rm.allclose(A, A_reconstructed))  # True
+    
+    # Upper triangular Cholesky decomposition
+    U = linalg.cholesky(A, upper=True)
+    A_reconstructed_upper = U.T @ U
+    print(rm.allclose(A, A_reconstructed_upper))  # True
+    
+    # Batch Cholesky decomposition
+    A_batch = rm.randn(4, 3, 3)
+    A_batch = A_batch @ A_batch.transpose(1, 2)  # Make symmetric positive-definite
+    L_batch = linalg.cholesky(A_batch)
+    print(L_batch.shape)  # (4, 3, 3)
+
+Norms and Vector Products
+-------------------------
 
 Vector Norms
 ~~~~~~~~~~~~
+
+**Function**: ``linalg.norm(x, ord=None)``
+
+**Description**: Computes the norm of a vector or matrix.
+
+**Parameters**:
+- ``x``: Input tensor (vector, matrix, or batch of vectors/matrices)
+- ``ord``: Norm order. For vectors: 1, 2, inf, etc. For matrices: 'fro' (Frobenius), 'nuc' (nuclear), 2 (spectral), etc.
+
+**Returns**:
+- Norm of the input tensor as a scalar or tensor of scalars for batches
 
 .. code-block:: python
 
@@ -214,29 +312,86 @@ Matrix Norms
     
     print(frobenius_norm, nuclear_norm, spectral_norm)
 
-Distance Metrics
-~~~~~~~~~~~~~~~~
+Inner Product
+~~~~~~~~~~~~~
+
+**Function**: ``linalg.dot(a, b)``
+
+**Description**: Computes the dot product of two vectors, or batch of vectors.
+
+**Parameters**:
+- ``a``: First input tensor (vector or batch of vectors)
+- ``b``: Second input tensor (vector or batch of vectors)
+
+**Returns**:
+- Dot product of the input vectors as a scalar or tensor of scalars for batches
 
 .. code-block:: python
 
     import riemann as rm
     import riemann.linalg as linalg
     
-    # Euclidean distance between vectors
+    # Dot product between vectors
     v1 = rm.randn(5)
     v2 = rm.randn(5)
-    euclidean_dist = linalg.norm(v1 - v2)
+    dot_product = linalg.dot(v1, v2)
     
     # Cosine similarity
     cosine_sim = linalg.dot(v1, v2) / (linalg.norm(v1) * linalg.norm(v2))
     
-    print(euclidean_dist, cosine_sim)
+    # Euclidean distance between vectors (using norm)
+    euclidean_dist = linalg.norm(v1 - v2)
+    
+    print(dot_product, cosine_sim, euclidean_dist)
+
+Vector Cross Product
+~~~~~~~~~~~~~~~~~~~~
+
+**Function**: ``linalg.cross(a, b, dim=-1)``
+
+**Description**: Computes the cross product of two 3-dimensional vectors.
+
+**Parameters**:
+- ``a``: First input tensor (3D vector or batch of 3D vectors)
+- ``b``: Second input tensor (3D vector or batch of 3D vectors)
+- ``dim``: Dimension along which to compute the cross product (default: -1)
+
+**Returns**:
+- Cross product of the input vectors as a tensor of the same shape
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.linalg as linalg
+    
+    # Cross product of 3D vectors
+    v1 = rm.tensor([1.0, 2.0, 3.0])
+    v2 = rm.tensor([4.0, 5.0, 6.0])
+    cross_product = linalg.cross(v1, v2)
+    print(cross_product)  # [-3.  6. -3.]
+    
+    # Batch cross product
+    v1_batch = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    v2_batch = rm.tensor([[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]])
+    cross_product_batch = linalg.cross(v1_batch, v2_batch)
+    print(cross_product_batch.shape)  # (2, 3)
 
 Linear Systems
 --------------
 
 Solving Linear Systems
 ~~~~~~~~~~~~~~~~~~~~~~
+
+**Function**: ``linalg.solve(A, b)``
+
+**Description**: Solves a linear system of equations Ax = b.
+
+**Parameters**:
+- ``A``: Coefficient matrix (square matrix or batch of square matrices)
+- ``b``: Right-hand side vector or matrix
+
+**Returns**:
+- Solution vector or matrix x such that Ax = b
 
 .. code-block:: python
 
@@ -260,6 +415,17 @@ Solving Linear Systems
 
 Least Squares Solutions
 ~~~~~~~~~~~~~~~~~~~~~~~
+
+**Function**: ``linalg.lstsq(A, b)``
+
+**Description**: Computes the least squares solution to a linear system Ax = b.
+
+**Parameters**:
+- ``A``: Coefficient matrix
+- ``b``: Right-hand side vector or matrix
+
+**Returns**:
+- Tuple containing the solution vector/matrix, residuals, rank, and singular values
 
 .. code-block:: python
 

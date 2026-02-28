@@ -32,8 +32,9 @@ Riemann 是一个轻量级的自动求导库及神经网络编程框架，支持
 
 - 基本层（Linear, Dropout, BatchNorm, LayerNorm, Embedding 等）
 - 激活函数（ReLU, Sigmoid, Softmax 等）
-- 卷积池化层（Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d 等）
 - 损失函数（MSE, CrossEntropy 等）
+- 卷积池化（Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d 等）
+- Transformer(MultiheadAttention, TransformerEncoder, TransformerDecoder, Transformer等)
 - 优化器（SGD, Adam, Adagrad, LBFGS 等）
 - 网络模块容器（Sequential, ModuleList, ModuleDict 等）
 
@@ -54,6 +55,74 @@ CUDA/GPU 支持
 
 - 提供 GPU 加速，支持张量、模型在 CPU 和 GPU 之间迁移
 - 优化的 GPU 计算性能
+
+riemann包的模块结构
+--------------------
+
+.. code-block:: text
+
+    riemann                  # 主包
+    ├── autograd             # 自动微分模块
+    │   └── functional       # 自动微分函数式接口
+    ├── linalg               # 线性代数模块
+    ├── nn                   # 神经网络模块
+    │   └── functional       # 神经网络函数
+    ├── optim                # 优化器模块
+    │   └── lr_scheduler     # 学习率调度器模块
+    ├── utils                # 工具函数模块
+    │   └── data             # 数据处理工具
+    ├── vision               # 计算机视觉模块
+    │   ├── datasets         # 数据集类
+    │   └── transforms       # 图像变换操作
+    └── cuda                 # CUDA/GPU支持
+
+模块导入示例
+------------
+
+**整体导入riemann模块：**
+
+.. code-block:: python
+
+    import riemann as r
+
+    # 使用张量创建函数
+    t = r.tensor([1.0, 2.0, 3.0])
+
+    # 使用自动微分功能
+    x = r.tensor([1.0, 2.0], requires_grad=True)
+    y = x ** 2
+    y.sum().backward()
+    print(x.grad)  # 输出: [2. 4.]
+
+**按模块树导入需要的函数和类：**
+
+.. code-block:: python
+
+    # 导入张量相关功能
+    from riemann import tensor, zeros, ones, randn
+
+    # 导入自动微分功能
+    from riemann.autograd import grad, backward
+    from riemann.autograd.functional import jacobian, hessian
+
+    # 导入线性代数功能
+    from riemann import linalg
+    from riemann.linalg import svd, det, inv
+
+    # 导入神经网络组件
+    from riemann.nn import Linear, Conv2d, ReLU, CrossEntropyLoss
+    from riemann.nn.functional import relu, cross_entropy
+
+    # 导入优化器
+    from riemann.optim import SGD, Adam, Adagrad
+
+    # 导入计算机视觉功能
+    from riemann.vision.datasets import MNIST, CIFAR10
+    from riemann.vision.transforms import Compose, ToTensor, Normalize, RandomHorizontalFlip
+
+    # 导入CUDA支持
+    from riemann import cuda
+    from riemann.cuda import is_available, Device
 
 应用场景
 --------

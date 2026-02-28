@@ -1282,7 +1282,7 @@ Convolutional Layers
 Convolutional layers extract local features through sliding windows and are core components of convolutional neural networks.
 
 Conv1d
-------
+~~~~~~
 
 1D convolutional layer, suitable for sequence data such as audio, text, etc.:
 
@@ -1312,7 +1312,7 @@ Conv1d
     print(output.shape)  # [10, 32, 50] (with padding)
 
 Conv2d
-------
+~~~~~~
 
 2D convolutional layer, suitable for image data:
 
@@ -1342,7 +1342,7 @@ Conv2d
     print(output.shape)  # [4, 16, 32, 32] (with padding)
 
 Conv3d
-------
+~~~~~~
 
 3D convolutional layer, suitable for 3D data such as video, medical imaging, etc.:
 
@@ -1377,7 +1377,7 @@ Pooling Layers
 Pooling layers reduce the spatial dimensions of feature maps while preserving important information.
 
 MaxPool1d
----------
+~~~~~~~~~
 
 1D max pooling layer:
 
@@ -1405,7 +1405,7 @@ MaxPool1d
     print(output.shape)  # [4, 16, 25]
 
 MaxPool2d
----------
+~~~~~~~~~
 
 2D max pooling layer:
 
@@ -1433,7 +1433,7 @@ MaxPool2d
     print(output.shape)  # [4, 16, 16, 16]
 
 MaxPool3d
----------
+~~~~~~~~~
 
 3D max pooling layer:
 
@@ -1461,7 +1461,7 @@ MaxPool3d
     print(output.shape)  # [2, 16, 8, 8, 8]
 
 AvgPool1d
----------
+~~~~~~~~~
 
 1D average pooling layer:
 
@@ -1489,7 +1489,7 @@ AvgPool1d
     print(output.shape)  # [4, 16, 25]
 
 AvgPool2d
----------
+~~~~~~~~~
 
 2D average pooling layer:
 
@@ -1517,7 +1517,7 @@ AvgPool2d
     print(output.shape)  # [4, 16, 16, 16]
 
 AvgPool3d
----------
+~~~~~~~~~
 
 3D average pooling layer:
 
@@ -1543,6 +1543,295 @@ AvgPool3d
     x = rm.randn(2, 16, 16, 16, 16)  # [batch_size, channels, depth, height, width]
     output = avg_pool3d(x)
     print(output.shape)  # [2, 16, 8, 8, 8]
+
+Transformer
+===========
+
+Transformer is a deep learning architecture based on self-attention mechanisms, originally designed for natural language processing tasks and now the mainstream method for sequence modeling. Riemann provides complete Transformer components compatible with PyTorch's interface.
+
+MultiheadAttention
+------------------
+
+Multi-head attention mechanism that allows the model to simultaneously focus on information from different representation subspaces.
+
+**Description**:
+Implements multi-head attention mechanism by computing multiple sets of attention weights in parallel to capture different aspects of the input sequence.
+
+**Parameters**:
+- ``embed_dim`` (int): Dimension of input and output vectors, must be divisible by ``num_heads``
+- ``num_heads`` (int): Number of attention heads
+- ``dropout`` (float, optional): Dropout probability applied to attention weights during training, default is 0.0
+- ``bias`` (bool, optional): Whether to add bias terms in projection layers, default is True
+- ``add_bias_kv`` (bool, optional): Whether to add learnable bias to key and value sequences, default is False
+- ``add_zero_attn`` (bool, optional): Whether to add a column of zeros to attention weights, default is False
+- ``kdim`` (int, optional): Dimension of key vectors, default is None (uses embed_dim)
+- ``vdim`` (int, optional): Dimension of value vectors, default is None (uses embed_dim)
+- ``batch_first`` (bool, optional): Input/output format, default is False (seq_len, batch_size, embed_dim)
+
+**Notes**:
+- ``embed_dim`` must be divisible by ``num_heads``
+- When ``batch_first=True``, input shape is (batch_size, seq_len, embed_dim)
+- Supports both self-attention and cross-attention modes
+
+**Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create multi-head attention layer
+    mha = nn.MultiheadAttention(embed_dim=512, num_heads=8, dropout=0.1)
+    
+    # Self-attention mode
+    query = rm.randn(10, 32, 512)  # [seq_len, batch_size, embed_dim]
+    key = query
+    value = query
+    output, attn_weights = mha(query, key, value)
+    print(output.shape)  # [10, 32, 512]
+    
+    # Cross-attention mode
+    query = rm.randn(10, 32, 512)  # Target sequence
+    key = rm.randn(20, 32, 512)    # Source sequence
+    value = rm.randn(20, 32, 512)  # Source sequence
+    output, attn_weights = mha(query, key, value)
+    print(output.shape)  # [10, 32, 512]
+    
+    # Using batch_first=True
+    mha_bf = nn.MultiheadAttention(embed_dim=512, num_heads=8, batch_first=True)
+    query = rm.randn(32, 10, 512)  # [batch_size, seq_len, embed_dim]
+    output, _ = mha_bf(query, query, query)
+    print(output.shape)  # [32, 10, 512]
+
+TransformerEncoderLayer
+-----------------------
+
+A single layer of Transformer encoder, consisting of self-attention mechanism and feed-forward network.
+
+**Description**:
+Implements a single layer of Transformer encoder, containing multi-head self-attention sublayer and feed-forward neural network sublayer, each followed by residual connection and layer normalization.
+
+**Parameters**:
+- ``d_model`` (int): Dimension of input and output features
+- ``nhead`` (int): Number of attention heads
+- ``dim_feedforward`` (int, optional): Dimension of hidden layer in feed-forward network, default is 2048
+- ``dropout`` (float, optional): Dropout probability applied to layer outputs during training, default is 0.1
+- ``activation`` (str, optional): Activation function type in feed-forward network, 'relu' or 'gelu', default is 'relu'
+- ``layer_norm_eps`` (float, optional): Epsilon value for layer normalization, default is 1e-05
+- ``batch_first`` (bool, optional): Input/output format, default is False
+- ``norm_first`` (bool, optional): Whether to use Pre-LN mode, default is False (Post-LN mode)
+- ``bias`` (bool, optional): Whether to add bias in all linear layers, default is True
+
+**Notes**:
+- ``norm_first=False`` uses Post-LN mode (original Transformer paper): attention/feed-forward first, then residual connection, then layer normalization
+- ``norm_first=True`` uses Pre-LN mode: layer normalization first, then attention/feed-forward, then residual connection
+- Pre-LN mode usually provides more stable training
+
+**Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create Transformer encoder layer (Post-LN mode)
+    encoder_layer = nn.TransformerEncoderLayer(
+        d_model=512, nhead=8, dim_feedforward=2048, dropout=0.1
+    )
+    
+    # Forward pass
+    src = rm.randn(10, 32, 512)  # [seq_len, batch_size, d_model]
+    output = encoder_layer(src)
+    print(output.shape)  # [10, 32, 512]
+    
+    # Using Pre-LN mode
+    encoder_layer_prenorm = nn.TransformerEncoderLayer(
+        d_model=512, nhead=8, norm_first=True
+    )
+    output = encoder_layer_prenorm(src)
+    print(output.shape)  # [10, 32, 512]
+
+TransformerDecoderLayer
+-----------------------
+
+A single layer of Transformer decoder, consisting of self-attention, cross-attention mechanisms and feed-forward network.
+
+**Description**:
+Implements a single layer of Transformer decoder, containing three sublayers: masked multi-head self-attention, multi-head cross-attention, and feed-forward neural network, each followed by residual connection and layer normalization.
+
+**Parameters**:
+- ``d_model`` (int): Dimension of input and output features
+- ``nhead`` (int): Number of attention heads
+- ``dim_feedforward`` (int, optional): Dimension of hidden layer in feed-forward network, default is 2048
+- ``dropout`` (float, optional): Dropout probability applied to layer outputs during training, default is 0.1
+- ``activation`` (str, optional): Activation function type in feed-forward network, 'relu' or 'gelu', default is 'relu'
+- ``layer_norm_eps`` (float, optional): Epsilon value for layer normalization, default is 1e-05
+- ``batch_first`` (bool, optional): Input/output format, default is False
+- ``norm_first`` (bool, optional): Whether to use Pre-LN mode, default is False
+- ``bias`` (bool, optional): Whether to add bias in all linear layers, default is True
+
+**Notes**:
+- Decoder layer needs to receive both target sequence (tgt) and encoder output (memory)
+- Self-attention uses masking to prevent attending to future positions (for autoregressive generation)
+- Cross-attention is used to attend to encoder output information
+
+**Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create Transformer decoder layer
+    decoder_layer = nn.TransformerDecoderLayer(
+        d_model=512, nhead=8, dim_feedforward=2048, dropout=0.1
+    )
+    
+    # Forward pass
+    tgt = rm.randn(20, 32, 512)     # [tgt_len, batch_size, d_model] Target sequence
+    memory = rm.randn(10, 32, 512)  # [src_len, batch_size, d_model] Encoder output
+    output = decoder_layer(tgt, memory)
+    print(output.shape)  # [20, 32, 512]
+
+TransformerEncoder
+------------------
+
+Transformer encoder consisting of N stacked TransformerEncoderLayer layers.
+
+**Description**:
+Passes input sequence through multiple encoder layers for feature extraction, where each encoder layer contains self-attention mechanism and feed-forward network.
+
+**Parameters**:
+- ``encoder_layer`` (TransformerEncoderLayer): Single encoder layer instance, will be cloned num_layers times
+- ``num_layers`` (int): Number of encoder layers
+- ``norm`` (Module, optional): Final layer normalization layer, default is None
+
+**Notes**:
+- Encoder layers are deep-copied, so the passed encoder_layer will not be modified
+- Final layer normalization can be added to stabilize output
+
+**Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create encoder layer
+    encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
+    
+    # Create encoder (6 layers)
+    transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
+    
+    # Forward pass
+    src = rm.randn(10, 32, 512)  # [seq_len, batch_size, d_model]
+    output = transformer_encoder(src)
+    print(output.shape)  # [10, 32, 512]
+    
+    # Encoder with final layer normalization
+    encoder_norm = nn.LayerNorm(512)
+    transformer_encoder_norm = nn.TransformerEncoder(
+        encoder_layer, num_layers=6, norm=encoder_norm
+    )
+    output = transformer_encoder_norm(src)
+    print(output.shape)  # [10, 32, 512]
+
+TransformerDecoder
+------------------
+
+Transformer decoder consisting of N stacked TransformerDecoderLayer layers.
+
+**Description**:
+Passes target sequence through multiple decoder layers for feature extraction, where each decoder layer contains self-attention, cross-attention, and feed-forward network.
+
+**Parameters**:
+- ``decoder_layer`` (TransformerDecoderLayer): Single decoder layer instance, will be cloned num_layers times
+- ``num_layers`` (int): Number of decoder layers
+- ``norm`` (Module, optional): Final layer normalization layer, default is None
+
+**Notes**:
+- Decoder needs encoder output (memory) as input for cross-attention
+- Suitable for sequence-to-sequence generation tasks
+
+**Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create decoder layer
+    decoder_layer = nn.TransformerDecoderLayer(d_model=512, nhead=8)
+    
+    # Create decoder (6 layers)
+    transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
+    
+    # Forward pass
+    tgt = rm.randn(20, 32, 512)     # [tgt_len, batch_size, d_model] Target sequence
+    memory = rm.randn(10, 32, 512)  # [src_len, batch_size, d_model] Encoder output
+    output = transformer_decoder(tgt, memory)
+    print(output.shape)  # [20, 32, 512]
+
+Transformer
+-----------
+
+Complete Transformer model containing encoder and decoder.
+
+**Description**:
+Implements the complete Transformer architecture, an end-to-end implementation of encoder-decoder structure, suitable for sequence-to-sequence tasks such as machine translation, text summarization, etc.
+
+**Parameters**:
+- ``d_model`` (int, optional): Feature dimension of encoder/decoder input, default is 512
+- ``nhead`` (int, optional): Number of attention heads, default is 8
+- ``num_encoder_layers`` (int, optional): Number of encoder layers, default is 6
+- ``num_decoder_layers`` (int, optional): Number of decoder layers, default is 6
+- ``dim_feedforward`` (int, optional): Dimension of feed-forward network, default is 2048
+- ``dropout`` (float, optional): Dropout value, default is 0.1
+- ``activation`` (str, optional): Activation function for encoder/decoder intermediate layers, 'relu' or 'gelu', default is 'relu'
+- ``custom_encoder`` (Module, optional): Custom encoder, default is None
+- ``custom_decoder`` (Module, optional): Custom decoder, default is None
+- ``layer_norm_eps`` (float, optional): Epsilon value for layer normalization, default is 1e-05
+- ``batch_first`` (bool, optional): Whether input/output tensors are (batch, seq, feature) format, default is False
+- ``norm_first`` (bool, optional): Whether to execute LayerNorm before other attention and feed-forward operations, default is False
+- ``bias`` (bool, optional): Whether Linear and LayerNorm layers learn additive bias, default is True
+
+**Notes**:
+- If ``custom_encoder`` or ``custom_decoder`` is provided, custom modules will be used instead of default encoder/decoder
+- Complete Transformer is suitable for sequence-to-sequence tasks
+- For encoder-only tasks (like BERT), can use TransformerEncoder only
+- For decoder-only tasks (like GPT), can use TransformerDecoder only
+
+**Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create complete Transformer model
+    transformer_model = nn.Transformer(
+        d_model=512,
+        nhead=8,
+        num_encoder_layers=6,
+        num_decoder_layers=6,
+        dim_feedforward=2048,
+        dropout=0.1
+    )
+    
+    # Forward pass
+    src = rm.randn(10, 32, 512)     # [src_len, batch_size, d_model] Source sequence
+    tgt = rm.randn(20, 32, 512)     # [tgt_len, batch_size, d_model] Target sequence
+    output = transformer_model(src, tgt)
+    print(output.shape)  # [20, 32, 512]
+    
+    # Using batch_first=True
+    transformer_model_bf = nn.Transformer(
+        d_model=512, nhead=8, batch_first=True
+    )
+    src = rm.randn(32, 10, 512)     # [batch_size, src_len, d_model]
+    tgt = rm.randn(32, 20, 512)     # [batch_size, tgt_len, d_model]
+    output = transformer_model_bf(src, tgt)
+    print(output.shape)  # [32, 20, 512]
 
 Examples
 ========

@@ -1996,23 +1996,23 @@ Riemann supports the following in-place operations functions and operators:
     - ``x.setat_(index, val)`` or ``x[index] = val``
   * - ``addat_``
     - In-place perform addition at specified position
-    - None
+    - ``x[index] += val``
     - ``x.addat_(index, val)``
   * - ``subat_``
     - In-place perform subtraction at specified position
-    - None
+    - ``x[index] -= val``
     - ``x.subat_(index, val)``
   * - ``mulat_``
     - In-place perform multiplication at specified position
-    - None
+    - ``x[index] *= val``
     - ``x.mulat_(index, val)``
   * - ``divat_``
     - In-place perform division at specified position
-    - None
+    - ``x[index] /= val``
     - ``x.divat_(index, val)``
   * - ``powat_``
     - In-place perform power operation at specified position
-    - None
+    - ``x[index] **= val``
     - ``x.powat_(index, val)``
   * - ``scatter_``
     - In-place scatter values according to index
@@ -2042,8 +2042,8 @@ When using in-place operations, please note the following:
    - It is recommended to use in-place operations with caution in scenarios where gradient tracking is required
 
 4. **Recommended Usage Scenarios**
-   - For newly created tensors without gradient tracking properties (``requires_grad=False``)
-   - For objects after ``clone()`` or ``copy()``, which are new leaf nodes
+   - In-place operations can be used on newly created tensors without gradient tracking attributes ( requires_grad=False )
+   - For objects after ``clone()`` or ``copy()``, which are new leaf nodes, so in-place operations can be used
    - In the inference phase where gradient calculation is not needed, using in-place operations can save memory
 
 5. **Memory Optimization**
@@ -2051,8 +2051,8 @@ When using in-place operations, please note the following:
    - When processing large tensors, appropriate use of in-place operations can significantly reduce memory usage
 
 6. **Chained Operations**
-   - In-place operations usually return ``None`` or ``self``, so they cannot be chained like non-in-place operations
-   - For example: ``x.add_(y).mul_(z)`` is feasible, but ``x + y * z`` is a chained call of non-in-place operations
+   - In-place operations return self , so they can be chained
+   - For example: x.add_(y).mul_(z) is valid, while (x + y) * z is a chain of non-in-place operations
 
 Gradient Tracking Example for In-place Operations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
