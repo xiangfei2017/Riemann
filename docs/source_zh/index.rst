@@ -1,6 +1,8 @@
 Riemann 文档
 =============
 
+**English documentation**: https://riemann-en.readthedocs.io/en/latest/
+
 Riemann 是一个开源的轻量级自动微分库，专为学习、教育和研究自动微分和神经网络相关内容而设计。
 
 .. toctree::
