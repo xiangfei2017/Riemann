@@ -1282,7 +1282,7 @@ Dropout 层通过随机失活神经元来防止过拟合：
 卷积层通过滑动窗口提取局部特征，是卷积神经网络的核心组件。
 
 Conv1d
-------
+~~~~~~
 
 一维卷积层，适用于序列数据如音频、文本等：
 
@@ -1312,7 +1312,7 @@ Conv1d
     print(output.shape)  # [10, 32, 50] (有填充)
 
 Conv2d
-------
+~~~~~~
 
 二维卷积层，适用于图像数据：
 
@@ -1342,7 +1342,7 @@ Conv2d
     print(output.shape)  # [4, 16, 32, 32] (有填充)
 
 Conv3d
-------
+~~~~~~
 
 三维卷积层，适用于 3D 数据如视频、医学影像等：
 
@@ -1377,7 +1377,7 @@ Conv3d
 池化层用于减少特征图的空间维度，同时保留重要信息。
 
 MaxPool1d
----------
+~~~~~~~~~
 
 一维最大池化层：
 
@@ -1405,7 +1405,7 @@ MaxPool1d
     print(output.shape)  # [4, 16, 25]
 
 MaxPool2d
----------
+~~~~~~~~~
 
 二维最大池化层：
 
@@ -1433,7 +1433,7 @@ MaxPool2d
     print(output.shape)  # [4, 16, 16, 16]
 
 MaxPool3d
----------
+~~~~~~~~~
 
 三维最大池化层：
 
@@ -1461,7 +1461,7 @@ MaxPool3d
     print(output.shape)  # [2, 16, 8, 8, 8]
 
 AvgPool1d
----------
+~~~~~~~~~
 
 一维平均池化层：
 
@@ -1489,7 +1489,7 @@ AvgPool1d
     print(output.shape)  # [4, 16, 25]
 
 AvgPool2d
----------
+~~~~~~~~~
 
 二维平均池化层：
 
@@ -1517,7 +1517,7 @@ AvgPool2d
     print(output.shape)  # [4, 16, 16, 16]
 
 AvgPool3d
----------
+~~~~~~~~~
 
 三维平均池化层：
 
@@ -1543,6 +1543,295 @@ AvgPool3d
     x = rm.randn(2, 16, 16, 16, 16)  # [batch_size, channels, depth, height, width]
     output = avg_pool3d(x)
     print(output.shape)  # [2, 16, 8, 8, 8]
+
+Transformer
+===========
+
+Transformer 是一种基于自注意力机制的深度学习架构，最初用于自然语言处理任务，现已成为序列建模的主流方法。Riemann 提供了完整的 Transformer 组件，与 PyTorch 接口兼容。
+
+MultiheadAttention
+------------------
+
+多头注意力机制，允许模型同时关注来自不同表示子空间的信息。
+
+**功能描述**：
+实现多头注意力机制，通过并行计算多组注意力权重来捕获输入序列的不同方面特征。
+
+**参数**：
+- ``embed_dim`` (int): 输入和输出向量的维度大小，必须能被 ``num_heads`` 整除
+- ``num_heads`` (int): 多头注意力中使用的头部数量
+- ``dropout`` (float, optional): 训练过程中对注意力权重应用的 dropout 概率，默认为 0.0
+- ``bias`` (bool, optional): 是否在投影层中添加偏置项，默认为 True
+- ``add_bias_kv`` (bool, optional): 是否在 key 和 value 序列的末尾添加可学习的偏置项，默认为 False
+- ``add_zero_attn`` (bool, optional): 是否在注意力权重中添加一列零，默认为 False
+- ``kdim`` (int, optional): key 向量的维度，默认为 None（使用 embed_dim）
+- ``vdim`` (int, optional): value 向量的维度，默认为 None（使用 embed_dim）
+- ``batch_first`` (bool, optional): 输入输出的形状格式，默认为 False（seq_len, batch_size, embed_dim）
+
+**注意事项**：
+- ``embed_dim`` 必须能被 ``num_heads`` 整除
+- 当 ``batch_first=True`` 时，输入形状为 (batch_size, seq_len, embed_dim)
+- 支持自注意力和交叉注意力两种模式
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # 创建多头注意力层
+    mha = nn.MultiheadAttention(embed_dim=512, num_heads=8, dropout=0.1)
+    
+    # 自注意力模式
+    query = rm.randn(10, 32, 512)  # [seq_len, batch_size, embed_dim]
+    key = query
+    value = query
+    output, attn_weights = mha(query, key, value)
+    print(output.shape)  # [10, 32, 512]
+    
+    # 交叉注意力模式
+    query = rm.randn(10, 32, 512)  # 目标序列
+    key = rm.randn(20, 32, 512)    # 源序列
+    value = rm.randn(20, 32, 512)  # 源序列
+    output, attn_weights = mha(query, key, value)
+    print(output.shape)  # [10, 32, 512]
+    
+    # 使用 batch_first=True
+    mha_bf = nn.MultiheadAttention(embed_dim=512, num_heads=8, batch_first=True)
+    query = rm.randn(32, 10, 512)  # [batch_size, seq_len, embed_dim]
+    output, _ = mha_bf(query, query, query)
+    print(output.shape)  # [32, 10, 512]
+
+TransformerEncoderLayer
+-----------------------
+
+Transformer 编码器的单个层，由自注意力机制和前馈网络组成。
+
+**功能描述**：
+实现 Transformer 编码器的单个层，包含多头自注意力子层和前馈神经网络子层，每个子层后都有残差连接和层归一化。
+
+**参数**：
+- ``d_model`` (int): 输入和输出特征的维度大小
+- ``nhead`` (int): 多头注意力中使用的头部数量
+- ``dim_feedforward`` (int, optional): 前馈网络中隐藏层的维度大小，默认为 2048
+- ``dropout`` (float, optional): 训练过程中对各层输出应用的 dropout 概率，默认为 0.1
+- ``activation`` (str, optional): 前馈网络中使用的激活函数类型，'relu' 或 'gelu'，默认为 'relu'
+- ``layer_norm_eps`` (float, optional): 层归一化中使用的 epsilon 值，默认为 1e-05
+- ``batch_first`` (bool, optional): 输入输出的形状格式，默认为 False
+- ``norm_first`` (bool, optional): 是否使用 Pre-LN 模式，默认为 False（Post-LN 模式）
+- ``bias`` (bool, optional): 是否在所有线性层中添加偏置项，默认为 True
+
+**注意事项**：
+- ``norm_first=False`` 时使用 Post-LN 模式（原始 Transformer 论文）：先进行注意力/前馈计算，然后残差连接，最后层归一化
+- ``norm_first=True`` 时使用 Pre-LN 模式：先层归一化，然后进行注意力/前馈计算，最后残差连接
+- Pre-LN 模式通常训练更稳定
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # 创建 Transformer 编码器层（Post-LN 模式）
+    encoder_layer = nn.TransformerEncoderLayer(
+        d_model=512, nhead=8, dim_feedforward=2048, dropout=0.1
+    )
+    
+    # 前向传播
+    src = rm.randn(10, 32, 512)  # [seq_len, batch_size, d_model]
+    output = encoder_layer(src)
+    print(output.shape)  # [10, 32, 512]
+    
+    # 使用 Pre-LN 模式
+    encoder_layer_prenorm = nn.TransformerEncoderLayer(
+        d_model=512, nhead=8, norm_first=True
+    )
+    output = encoder_layer_prenorm(src)
+    print(output.shape)  # [10, 32, 512]
+
+TransformerDecoderLayer
+-----------------------
+
+Transformer 解码器的单个层，由自注意力机制、交叉注意力机制和前馈网络组成。
+
+**功能描述**：
+实现 Transformer 解码器的单个层，包含三个子层：掩码多头自注意力、多头交叉注意力和前馈神经网络，每个子层后都有残差连接和层归一化。
+
+**参数**：
+- ``d_model`` (int): 输入和输出特征的维度大小
+- ``nhead`` (int): 多头注意力中使用的头部数量
+- ``dim_feedforward`` (int, optional): 前馈网络中隐藏层的维度大小，默认为 2048
+- ``dropout`` (float, optional): 训练过程中对各层输出应用的 dropout 概率，默认为 0.1
+- ``activation`` (str, optional): 前馈网络中使用的激活函数类型，'relu' 或 'gelu'，默认为 'relu'
+- ``layer_norm_eps`` (float, optional): 层归一化中使用的 epsilon 值，默认为 1e-05
+- ``batch_first`` (bool, optional): 输入输出的形状格式，默认为 False
+- ``norm_first`` (bool, optional): 是否使用 Pre-LN 模式，默认为 False
+- ``bias`` (bool, optional): 是否在所有线性层中添加偏置项，默认为 True
+
+**注意事项**：
+- 解码器层需要同时接收目标序列（tgt）和编码器输出（memory）
+- 自注意力使用掩码防止关注未来位置（用于自回归生成）
+- 交叉注意力用于关注编码器输出的信息
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # 创建 Transformer 解码器层
+    decoder_layer = nn.TransformerDecoderLayer(
+        d_model=512, nhead=8, dim_feedforward=2048, dropout=0.1
+    )
+    
+    # 前向传播
+    tgt = rm.randn(20, 32, 512)     # [tgt_len, batch_size, d_model] 目标序列
+    memory = rm.randn(10, 32, 512)  # [src_len, batch_size, d_model] 编码器输出
+    output = decoder_layer(tgt, memory)
+    print(output.shape)  # [20, 32, 512]
+
+TransformerEncoder
+------------------
+
+由 N 个 TransformerEncoderLayer 层堆叠而成的 Transformer 编码器。
+
+**功能描述**：
+将输入序列通过多个编码器层进行特征提取，每个编码器层都包含自注意力机制和前馈网络。
+
+**参数**：
+- ``encoder_layer`` (TransformerEncoderLayer): 单个编码器层实例，将被克隆 num_layers 次
+- ``num_layers`` (int): 编码器层的数量
+- ``norm`` (Module, optional): 最后的层归一化层，默认为 None
+
+**注意事项**：
+- 编码器层会被深拷贝，因此传入的 encoder_layer 不会被修改
+- 可以添加最终的层归一化来稳定输出
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # 创建编码器层
+    encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
+    
+    # 创建编码器（6层）
+    transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
+    
+    # 前向传播
+    src = rm.randn(10, 32, 512)  # [seq_len, batch_size, d_model]
+    output = transformer_encoder(src)
+    print(output.shape)  # [10, 32, 512]
+    
+    # 带最终层归一化的编码器
+    encoder_norm = nn.LayerNorm(512)
+    transformer_encoder_norm = nn.TransformerEncoder(
+        encoder_layer, num_layers=6, norm=encoder_norm
+    )
+    output = transformer_encoder_norm(src)
+    print(output.shape)  # [10, 32, 512]
+
+TransformerDecoder
+------------------
+
+由 N 个 TransformerDecoderLayer 层堆叠而成的 Transformer 解码器。
+
+**功能描述**：
+将目标序列通过多个解码器层进行特征提取，每个解码器层都包含自注意力、交叉注意力和前馈网络。
+
+**参数**：
+- ``decoder_layer`` (TransformerDecoderLayer): 单个解码器层实例，将被克隆 num_layers 次
+- ``num_layers`` (int): 解码器层的数量
+- ``norm`` (Module, optional): 最后的层归一化层，默认为 None
+
+**注意事项**：
+- 解码器需要编码器的输出（memory）作为交叉注意力的输入
+- 适用于序列到序列的生成任务
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # 创建解码器层
+    decoder_layer = nn.TransformerDecoderLayer(d_model=512, nhead=8)
+    
+    # 创建解码器（6层）
+    transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
+    
+    # 前向传播
+    tgt = rm.randn(20, 32, 512)     # [tgt_len, batch_size, d_model] 目标序列
+    memory = rm.randn(10, 32, 512)  # [src_len, batch_size, d_model] 编码器输出
+    output = transformer_decoder(tgt, memory)
+    print(output.shape)  # [20, 32, 512]
+
+Transformer
+-----------
+
+完整的 Transformer 模型，包含编码器和解码器。
+
+**功能描述**：
+实现完整的 Transformer 架构，是编码器-解码器结构的端到端实现，适用于序列到序列的任务，如机器翻译、文本摘要等。
+
+**参数**：
+- ``d_model`` (int, optional): 编码器/解码器输入的特征维度，默认为 512
+- ``nhead`` (int, optional): 多头注意力模型中的头数，默认为 8
+- ``num_encoder_layers`` (int, optional): 编码器中子编码器层的数量，默认为 6
+- ``num_decoder_layers`` (int, optional): 解码器中子解码器层的数量，默认为 6
+- ``dim_feedforward`` (int, optional): 前馈网络模型的维度，默认为 2048
+- ``dropout`` (float, optional): dropout 值，默认为 0.1
+- ``activation`` (str, optional): 编码器/解码器中间层的激活函数，'relu' 或 'gelu'，默认为 'relu'
+- ``custom_encoder`` (Module, optional): 自定义编码器，默认为 None
+- ``custom_decoder`` (Module, optional): 自定义解码器，默认为 None
+- ``layer_norm_eps`` (float, optional): 层归一化组件中的 eps 值，默认为 1e-05
+- ``batch_first`` (bool, optional): 输入输出张量是否为 (batch, seq, feature) 格式，默认为 False
+- ``norm_first`` (bool, optional): 是否在其他注意力和前馈操作之前执行 LayerNorm，默认为 False
+- ``bias`` (bool, optional): Linear 和 LayerNorm 层是否学习加性偏置，默认为 True
+
+**注意事项**：
+- 如果提供了 ``custom_encoder`` 或 ``custom_decoder``，将使用自定义模块替代默认的编码器/解码器
+- 完整的 Transformer 适用于序列到序列的任务
+- 对于仅编码器任务（如 BERT），可以只使用 TransformerEncoder
+- 对于仅解码器任务（如 GPT），可以只使用 TransformerDecoder
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # 创建完整的 Transformer 模型
+    transformer_model = nn.Transformer(
+        d_model=512,
+        nhead=8,
+        num_encoder_layers=6,
+        num_decoder_layers=6,
+        dim_feedforward=2048,
+        dropout=0.1
+    )
+    
+    # 前向传播
+    src = rm.randn(10, 32, 512)     # [src_len, batch_size, d_model] 源序列
+    tgt = rm.randn(20, 32, 512)     # [tgt_len, batch_size, d_model] 目标序列
+    output = transformer_model(src, tgt)
+    print(output.shape)  # [20, 32, 512]
+    
+    # 使用 batch_first=True
+    transformer_model_bf = nn.Transformer(
+        d_model=512, nhead=8, batch_first=True
+    )
+    src = rm.randn(32, 10, 512)     # [batch_size, src_len, d_model]
+    tgt = rm.randn(32, 20, 512)     # [batch_size, tgt_len, d_model]
+    output = transformer_model_bf(src, tgt)
+    print(output.shape)  # [32, 20, 512]
 
 示例
 ====

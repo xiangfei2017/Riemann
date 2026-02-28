@@ -652,9 +652,9 @@ Gradient Computation Tips
 Common Pitfalls
 ------------------
 
-1. **In-place Operations**: Avoid in-place operations on tensors that require gradients.
+1. **In-place Operations**: Avoid performing in-place operations on leaf node tensors that require gradient tracking.
 
-2. **Detaching Tensors**: Once detached, tensors lose their gradient history.
+2. **Detaching Tensors from Computational Graph**: After detaching, tensors lose their computational graph dependencies and cannot perform backward propagation for gradient calculation.
 
 3. **Non-scalar Outputs**: Remember to provide gradient arguments when calling ``backward()`` on non-scalar outputs.
 
