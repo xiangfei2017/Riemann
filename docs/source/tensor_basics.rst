@@ -1993,7 +1993,7 @@ Riemann supports the following in-place operations functions and operators:
   * - ``setat_``
     - In-place set value at specified position
     - ``x[index] = val``
-    - ``x.setat_(index, val)`` or ``x[index] = val``
+    - ``x.setat_(index, val)``
   * - ``addat_``
     - In-place perform addition at specified position
     - ``x[index] += val``
@@ -2029,28 +2029,34 @@ Notes on In-place Operations
 When using in-place operations, please note the following:
 
 1. **Leaf Node Restrictions with Gradient Tracking**
+
    - For leaf node tensors with ``requires_grad=True``, in-place operations are not allowed
    - This is because in-place operations modify tensor values, which may compromise the correctness of gradient calculation
 
 2. **Gradient Tracking for Right-hand Side Values**
+
    - The gradient of the right-hand side value (such as ``y`` in ``x += y``) can be tracked normally
    - This means that even when using in-place operations, the gradient calculation of the right-hand side tensor is not affected
 
 3. **Gradient Tracking for In-place Operation Objects**
+
    - For non-leaf node tensors, the gradient tracking result of in-place operations is more complex
    - Especially when assigning values to arrays by index (such as ``x[index] = val``), gradient calculation may produce unexpected behavior
    - It is recommended to use in-place operations with caution in scenarios where gradient tracking is required
 
 4. **Recommended Usage Scenarios**
+
    - In-place operations can be used on newly created tensors without gradient tracking attributes ( requires_grad=False )
    - For objects after ``clone()`` or ``copy()``, which are new leaf nodes, so in-place operations can be used
    - In the inference phase where gradient calculation is not needed, using in-place operations can save memory
 
 5. **Memory Optimization**
+
    - In-place operations do not create new tensor objects, so they can save memory
    - When processing large tensors, appropriate use of in-place operations can significantly reduce memory usage
 
 6. **Chained Operations**
+
    - In-place operations return self , so they can be chained
    - For example: x.add_(y).mul_(z) is valid, while (x + y) * z is a chain of non-in-place operations
 
@@ -2353,10 +2359,17 @@ Extracts the upper triangular part of the tensor (including the diagonal).
 Saving and Loading Tensors
 --------------------------
 
-You can save and load tensors using Riemann's serialization functions:
+Riemann provides PyTorch-compatible serialization functionality for saving and loading tensors, parameters, module states, and training checkpoints. These features use ZIP format for serialization, ensuring cross-platform compatibility and efficient storage.
+
+Basic Usage
+~~~~~~~~~~~
+
+Save and load a single tensor:
 
 .. code-block:: python
 
+    import riemann as rm
+    
     # Create tensor
     x = rm.tensor([1, 2, 3])
     
@@ -2366,3 +2379,141 @@ You can save and load tensors using Riemann's serialization functions:
     # Load from file
     y = rm.load('tensor.pt')
     print(y)  # tensor([1, 2, 3])
+
+Saving Multi-dimensional Tensors
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You can save tensors of any shape and dimension:
+
+.. code-block:: python
+
+    # Create multi-dimensional tensors
+    matrix = rm.randn(3, 4)
+    tensor_3d = rm.randn(2, 3, 4)
+    
+    # Save multi-dimensional tensors
+    rm.save(matrix, 'matrix.pt')
+    rm.save(tensor_3d, 'tensor_3d.pt')
+    
+    # Load and verify
+    loaded_matrix = rm.load('matrix.pt')
+    loaded_tensor_3d = rm.load('tensor_3d.pt')
+    
+    print(f"Matrix shape: {loaded_matrix.shape}")  # (3, 4)
+    print(f"3D tensor shape: {loaded_tensor_3d.shape}")  # (2, 3, 4)
+
+Saving Model State Dict
+~~~~~~~~~~~~~~~~~~~~~~~
+
+When training deep learning models, you typically need to save the model's parameter state:
+
+.. code-block:: python
+
+    # Create a simple neural network
+    model = rm.nn.Sequential(
+        rm.nn.Linear(10, 64),
+        rm.nn.ReLU(),
+        rm.nn.Linear(64, 10)
+    )
+    
+    # Save model state dict
+    rm.save(model.state_dict(), 'model_weights.pt')
+    
+    # Create new model and load weights
+    new_model = rm.nn.Sequential(
+        rm.nn.Linear(10, 64),
+        rm.nn.ReLU(),
+        rm.nn.Linear(64, 10)
+    )
+    new_model.load_state_dict(rm.load('model_weights.pt'))
+
+Saving Training Checkpoints
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+During training, you can save complete checkpoints containing model state, optimizer state, and training progress:
+
+.. code-block:: python
+
+    # Assume model training is in progress
+    model = rm.nn.Linear(10, 5)
+    optimizer = rm.optim.Adam(model.parameters(), lr=0.001)
+    
+    # Train for several epochs
+    for epoch in range(10):
+        # ... training code ...
+        pass
+    
+    # Save complete training checkpoint
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': 0.5,  # Current loss value
+    }
+    rm.save(checkpoint, 'checkpoint.pt')
+    
+    # Resume training from checkpoint
+    checkpoint = rm.load('checkpoint.pt')
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    start_epoch = checkpoint['epoch'] + 1
+    loss = checkpoint['loss']
+    
+    print(f"Resuming training from epoch {start_epoch}, last loss: {loss}")
+
+Device Mapping for Loading
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When loading models between different devices (CPU/GPU), you can use the ``map_location`` parameter to specify the loading location:
+
+.. code-block:: python
+
+    # Load tensor saved on GPU to CPU
+    # Assume training and saving on GPU
+    # rm.save(gpu_tensor, 'gpu_tensor.pt')
+    
+    # Load on CPU
+    cpu_tensor = rm.load('gpu_tensor.pt', map_location='cpu')
+    
+    # Use dictionary for device mapping
+    map_location = {'cuda:0': 'cpu', 'cuda:1': 'cpu'}
+    cpu_tensor = rm.load('model.pt', map_location=map_location)
+
+Saving Multiple Tensors
+~~~~~~~~~~~~~~~~~~~~~~~
+
+You can save multiple tensors in a single file:
+
+.. code-block:: python
+
+    # Create multiple tensors
+    tensor_a = rm.randn(3, 3)
+    tensor_b = rm.randn(4, 4)
+    tensor_c = rm.tensor([1, 2, 3, 4, 5])
+    
+    # Save as dictionary
+    tensor_dict = {
+        'weights': tensor_a,
+        'biases': tensor_b,
+        'labels': tensor_c
+    }
+    rm.save(tensor_dict, 'tensors.pt')
+    
+    # Load and access individual tensors
+    loaded_dict = rm.load('tensors.pt')
+    weights = loaded_dict['weights']
+    biases = loaded_dict['biases']
+    labels = loaded_dict['labels']
+
+Important Notes
+~~~~~~~~~~~~~~~
+
+1. **File Format**: Riemann uses ZIP format for serialization, with file extensions typically being ``.pt`` or ``.pth``
+
+2. **Compatibility**: The serialization format is compatible with PyTorch, and can load PyTorch-saved tensors (with some limitations)
+
+3. **Device Information**: Saved tensors retain device information (CPU/GPU), which can be remapped using ``map_location`` during loading
+
+4. **Gradient Information**: When saving tensors, gradient computation graph information (requires_grad attribute) is preserved
+
+5. **Large File Handling**: For large models, it is recommended to use checkpoint mechanisms to save in chunks to avoid memory issues

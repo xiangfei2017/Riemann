@@ -1993,7 +1993,7 @@ Riemann 支持以下原地操作函数和运算符：
   * - ``setat_``
     - 原地设置指定位置的值
     - ``x[index] = val``
-    - ``x.setat_(index, val)`` 或 ``x[index] = val``
+    - ``x.setat_(index, val)``
   * - ``addat_``
     - 原地在指定位置执行加法
     - ``x[index] += val``
@@ -2029,28 +2029,34 @@ Riemann 支持以下原地操作函数和运算符：
 使用原地操作时需要注意以下几点：
 
 1. **带梯度跟踪属性的叶子节点限制**
+
    - 对于 ``requires_grad=True`` 的叶子节点张量，不允许执行原地操作
    - 这是因为原地操作会修改张量的值，可能会破坏梯度计算的正确性
 
 2. **右值的梯度跟踪**
+
    - 原地操作的右值（如 ``x += y`` 中的 ``y``）的梯度可以正常跟踪
    - 这意味着即使使用原地操作，右值张量的梯度计算不受影响
 
 3. **原地操作对象的梯度跟踪**
+
    - 对于非叶子节点的张量，原地操作的梯度跟踪结果比较复杂
    - 特别是按索引对数组赋值（如 ``x[index] = val``）时，梯度计算可能会出现意外行为
    - 建议在需要梯度跟踪的场景中谨慎使用原地操作
 
 4. **推荐使用场景**
+
    - 对新建的无梯度跟踪属性的张量（``requires_grad=False``），可以使用原地操作
    - 对 ``clone()`` 或 ``copy()`` 后的对象，这些对象是新的叶子节点，可以使用原地操作
    - 在不需要梯度计算的推理阶段，使用原地操作可以节省内存
 
 5. **内存优化**
+
    - 原地操作不会创建新的张量对象，因此可以节省内存
    - 在处理大型张量时，适当使用原地操作可以显著减少内存使用
 
 6. **链式操作**
+
    - 原地操作返回``self``，因此可以进行链式调用
    - 例如：``x.add_(y).mul_(z)`` 是可行的， ``(x + y) * z`` 是非原地操作的链式调用
 
@@ -2353,10 +2359,17 @@ Riemann 提供了多种对角化操作函数，用于处理张量的对角线元
 保存和加载张量
 --------------
 
-您可以使用 Riemann 的序列化函数保存和加载张量：
+Riemann 提供了与 PyTorch 兼容的序列化功能，支持保存和加载张量、参数、模块状态以及训练检查点。这些功能使用 ZIP 格式进行序列化，确保跨平台兼容性和高效的存储。
+
+基本用法
+~~~~~~~~
+
+保存和加载单个张量：
 
 .. code-block:: python
 
+    import riemann as rm
+    
     # 创建张量
     x = rm.tensor([1, 2, 3])
     
@@ -2366,3 +2379,141 @@ Riemann 提供了多种对角化操作函数，用于处理张量的对角线元
     # 从文件加载
     y = rm.load('tensor.pt')
     print(y)  # tensor([1, 2, 3])
+
+保存多维张量
+~~~~~~~~~~~~
+
+可以保存任意形状和维度的张量：
+
+.. code-block:: python
+
+    # 创建多维张量
+    matrix = rm.randn(3, 4)
+    tensor_3d = rm.randn(2, 3, 4)
+    
+    # 保存多维张量
+    rm.save(matrix, 'matrix.pt')
+    rm.save(tensor_3d, 'tensor_3d.pt')
+    
+    # 加载并验证
+    loaded_matrix = rm.load('matrix.pt')
+    loaded_tensor_3d = rm.load('tensor_3d.pt')
+    
+    print(f"矩阵形状: {loaded_matrix.shape}")  # (3, 4)
+    print(f"3D张量形状: {loaded_tensor_3d.shape}")  # (2, 3, 4)
+
+保存模型状态字典
+~~~~~~~~~~~~~~~~
+
+在训练深度学习模型时，通常需要保存模型的参数状态：
+
+.. code-block:: python
+
+    # 创建一个简单的神经网络
+    model = rm.nn.Sequential(
+        rm.nn.Linear(10, 64),
+        rm.nn.ReLU(),
+        rm.nn.Linear(64, 10)
+    )
+    
+    # 保存模型状态字典
+    rm.save(model.state_dict(), 'model_weights.pt')
+    
+    # 创建新模型并加载权重
+    new_model = rm.nn.Sequential(
+        rm.nn.Linear(10, 64),
+        rm.nn.ReLU(),
+        rm.nn.Linear(64, 10)
+    )
+    new_model.load_state_dict(rm.load('model_weights.pt'))
+
+保存训练检查点
+~~~~~~~~~~~~~~
+
+训练过程中，可以保存包含模型状态、优化器状态和训练进度的完整检查点：
+
+.. code-block:: python
+
+    # 假设正在进行模型训练
+    model = rm.nn.Linear(10, 5)
+    optimizer = rm.optim.Adam(model.parameters(), lr=0.001)
+    
+    # 训练若干轮次
+    for epoch in range(10):
+        # ... 训练代码 ...
+        pass
+    
+    # 保存完整的训练检查点
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': 0.5,  # 当前损失值
+    }
+    rm.save(checkpoint, 'checkpoint.pt')
+    
+    # 从检查点恢复训练
+    checkpoint = rm.load('checkpoint.pt')
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    start_epoch = checkpoint['epoch'] + 1
+    loss = checkpoint['loss']
+    
+    print(f"从第 {start_epoch} 轮继续训练，上次损失: {loss}")
+
+设备映射加载
+~~~~~~~~~~~~
+
+当在不同设备（CPU/GPU）之间加载模型时，可以使用 ``map_location`` 参数指定加载位置：
+
+.. code-block:: python
+
+    # 在GPU上保存的张量，在CPU上加载
+    # 假设在GPU上训练并保存
+    # rm.save(gpu_tensor, 'gpu_tensor.pt')
+    
+    # 在CPU上加载
+    cpu_tensor = rm.load('gpu_tensor.pt', map_location='cpu')
+    
+    # 使用字典进行设备映射
+    map_location = {'cuda:0': 'cpu', 'cuda:1': 'cpu'}
+    cpu_tensor = rm.load('model.pt', map_location=map_location)
+
+保存多个张量
+~~~~~~~~~~~~
+
+可以将多个张量保存在同一个文件中：
+
+.. code-block:: python
+
+    # 创建多个张量
+    tensor_a = rm.randn(3, 3)
+    tensor_b = rm.randn(4, 4)
+    tensor_c = rm.tensor([1, 2, 3, 4, 5])
+    
+    # 保存为字典
+    tensor_dict = {
+        'weights': tensor_a,
+        'biases': tensor_b,
+        'labels': tensor_c
+    }
+    rm.save(tensor_dict, 'tensors.pt')
+    
+    # 加载并访问各个张量
+    loaded_dict = rm.load('tensors.pt')
+    weights = loaded_dict['weights']
+    biases = loaded_dict['biases']
+    labels = loaded_dict['labels']
+
+注意事项
+~~~~~~~~
+
+1. **文件格式**：Riemann 使用 ZIP 格式进行序列化，文件扩展名通常为 ``.pt`` 或 ``.pth``
+
+2. **兼容性**：序列化格式与 PyTorch 兼容，可以加载 PyTorch 保存的张量（部分限制）
+
+3. **设备信息**：保存的张量会保留设备信息（CPU/GPU），加载时可以通过 ``map_location`` 重新映射
+
+4. **梯度信息**：保存张量时会保留梯度计算图信息（requires_grad 属性）
+
+5. **大文件处理**：对于大型模型，建议使用检查点机制分块保存，避免内存不足
