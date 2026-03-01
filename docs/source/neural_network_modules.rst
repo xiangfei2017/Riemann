@@ -1558,6 +1558,7 @@ Multi-head attention mechanism that allows the model to simultaneously focus on 
 Implements multi-head attention mechanism by computing multiple sets of attention weights in parallel to capture different aspects of the input sequence.
 
 **Parameters**:
+
 - ``embed_dim`` (int): Dimension of input and output vectors, must be divisible by ``num_heads``
 - ``num_heads`` (int): Number of attention heads
 - ``dropout`` (float, optional): Dropout probability applied to attention weights during training, default is 0.0
@@ -1569,6 +1570,7 @@ Implements multi-head attention mechanism by computing multiple sets of attentio
 - ``batch_first`` (bool, optional): Input/output format, default is False (seq_len, batch_size, embed_dim)
 
 **Notes**:
+
 - ``embed_dim`` must be divisible by ``num_heads``
 - When ``batch_first=True``, input shape is (batch_size, seq_len, embed_dim)
 - Supports both self-attention and cross-attention modes
@@ -1612,6 +1614,7 @@ A single layer of Transformer encoder, consisting of self-attention mechanism an
 Implements a single layer of Transformer encoder, containing multi-head self-attention sublayer and feed-forward neural network sublayer, each followed by residual connection and layer normalization.
 
 **Parameters**:
+
 - ``d_model`` (int): Dimension of input and output features
 - ``nhead`` (int): Number of attention heads
 - ``dim_feedforward`` (int, optional): Dimension of hidden layer in feed-forward network, default is 2048
@@ -1623,6 +1626,7 @@ Implements a single layer of Transformer encoder, containing multi-head self-att
 - ``bias`` (bool, optional): Whether to add bias in all linear layers, default is True
 
 **Notes**:
+
 - ``norm_first=False`` uses Post-LN mode (original Transformer paper): attention/feed-forward first, then residual connection, then layer normalization
 - ``norm_first=True`` uses Pre-LN mode: layer normalization first, then attention/feed-forward, then residual connection
 - Pre-LN mode usually provides more stable training
@@ -1660,6 +1664,7 @@ A single layer of Transformer decoder, consisting of self-attention, cross-atten
 Implements a single layer of Transformer decoder, containing three sublayers: masked multi-head self-attention, multi-head cross-attention, and feed-forward neural network, each followed by residual connection and layer normalization.
 
 **Parameters**:
+
 - ``d_model`` (int): Dimension of input and output features
 - ``nhead`` (int): Number of attention heads
 - ``dim_feedforward`` (int, optional): Dimension of hidden layer in feed-forward network, default is 2048
@@ -1671,6 +1676,7 @@ Implements a single layer of Transformer decoder, containing three sublayers: ma
 - ``bias`` (bool, optional): Whether to add bias in all linear layers, default is True
 
 **Notes**:
+
 - Decoder layer needs to receive both target sequence (tgt) and encoder output (memory)
 - Self-attention uses masking to prevent attending to future positions (for autoregressive generation)
 - Cross-attention is used to attend to encoder output information
@@ -1702,11 +1708,13 @@ Transformer encoder consisting of N stacked TransformerEncoderLayer layers.
 Passes input sequence through multiple encoder layers for feature extraction, where each encoder layer contains self-attention mechanism and feed-forward network.
 
 **Parameters**:
+
 - ``encoder_layer`` (TransformerEncoderLayer): Single encoder layer instance, will be cloned num_layers times
 - ``num_layers`` (int): Number of encoder layers
 - ``norm`` (Module, optional): Final layer normalization layer, default is None
 
 **Notes**:
+
 - Encoder layers are deep-copied, so the passed encoder_layer will not be modified
 - Final layer normalization can be added to stabilize output
 
@@ -1745,11 +1753,13 @@ Transformer decoder consisting of N stacked TransformerDecoderLayer layers.
 Passes target sequence through multiple decoder layers for feature extraction, where each decoder layer contains self-attention, cross-attention, and feed-forward network.
 
 **Parameters**:
+
 - ``decoder_layer`` (TransformerDecoderLayer): Single decoder layer instance, will be cloned num_layers times
 - ``num_layers`` (int): Number of decoder layers
 - ``norm`` (Module, optional): Final layer normalization layer, default is None
 
 **Notes**:
+
 - Decoder needs encoder output (memory) as input for cross-attention
 - Suitable for sequence-to-sequence generation tasks
 
@@ -1781,6 +1791,7 @@ Complete Transformer model containing encoder and decoder.
 Implements the complete Transformer architecture, an end-to-end implementation of encoder-decoder structure, suitable for sequence-to-sequence tasks such as machine translation, text summarization, etc.
 
 **Parameters**:
+
 - ``d_model`` (int, optional): Feature dimension of encoder/decoder input, default is 512
 - ``nhead`` (int, optional): Number of attention heads, default is 8
 - ``num_encoder_layers`` (int, optional): Number of encoder layers, default is 6
@@ -1796,6 +1807,7 @@ Implements the complete Transformer architecture, an end-to-end implementation o
 - ``bias`` (bool, optional): Whether Linear and LayerNorm layers learn additive bias, default is True
 
 **Notes**:
+
 - If ``custom_encoder`` or ``custom_decoder`` is provided, custom modules will be used instead of default encoder/decoder
 - Complete Transformer is suitable for sequence-to-sequence tasks
 - For encoder-only tasks (like BERT), can use TransformerEncoder only
@@ -1841,69 +1853,310 @@ Simple CNN for Image Classification
 
 .. code-block:: python
 
-    import riemann as rm
-    import riemann.nn as nn
-    
-    class SimpleCNN(nn.Module):
-        def __init__(self, num_classes=10):
-            super(SimpleCNN, self).__init__()
-            self.features = nn.Sequential(
-                nn.Conv2d(3, 16, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.MaxPool2d(kernel_size=2, stride=2),
-                nn.Conv2d(16, 32, kernel_size=3, padding=1),
-                nn.ReLU(),
-                nn.MaxPool2d(kernel_size=2, stride=2)
-            )
-            self.classifier = nn.Sequential(
-                nn.Linear(32 * 8 * 8, 128),
-                nn.ReLU(),
-                nn.Linear(128, num_classes)
-            )
-        
-        def forward(self, x):
-            x = self.features(x)
-            x = x.view(x.size(0), -1)  # Flatten
-            x = self.classifier(x)
-            return x
-    
-    # Create model
-    model = SimpleCNN(num_classes=10)
-    
-    # Forward pass
-    x = rm.randn(4, 3, 32, 32)  # Batch of 4 RGB images
-    output = model(x)
-    print(output.shape)  # [4, 10]
+    # This example demonstrates how to use a convolutional neural network (CNN) to train a CIFAR10 image classification model
+    # Including model definition, data loading and preprocessing, training loop, model evaluation, and single sample inference
 
-Simple RNN for Sequence Data
-----------------------------
+    import riemann as r
+    from riemann.vision.datasets import CIFAR10
+    from riemann.vision.transforms import *
+    from riemann.nn import *
+    from riemann.optim import SGD
+    from tqdm import tqdm
+
+    # Load data
+    # Use data augmentation for training set, not for test set
+    train_transform = Compose([
+        RandomHorizontalFlip(),  # Random horizontal flip
+        ToTensor(),
+        Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10 actual normalization parameters
+    ])
+
+    test_transform = Compose([
+        ToTensor(),
+        Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10 actual normalization parameters
+    ])
+
+    train_dataset = CIFAR10(root='data', train=True, transform=train_transform)
+    test_dataset = CIFAR10(root='data', train=False, transform=test_transform)
+
+    # Reduce batch size and data volume to speed up testing
+    train_loader = r.utils.DataLoader(train_dataset, batch_size=100, shuffle=True)
+    test_loader = r.utils.DataLoader(test_dataset, batch_size=1, shuffle=False)
+
+    # Create model, loss function, and optimizer
+    model = Sequential(
+        Conv2d(3, 16, kernel_size=3, padding=1),
+        ReLU(),
+        MaxPool2d(kernel_size=2, stride=2),
+        Flatten(),
+        Linear(16 * 16 * 16, 10)
+    )
+    criterion = CrossEntropyLoss()
+    optimizer = SGD(model.parameters(), lr=0.01)
+
+    # Training loop
+    for epoch in range(3):  # Train for 3 epochs
+        total_loss = 0
+        # Use tqdm to display progress bar
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/3")
+        
+        for batch_idx, (data, target) in enumerate(progress_bar):
+            # Forward propagation
+            output = model(data)
+            loss = criterion(output, target)   # Calculate loss between output and target labels
+            
+            # Backward propagation and optimizer update
+            optimizer.zero_grad()   # Clear gradients of training parameters
+            loss.backward()         # Calculate gradients of loss with respect to training parameters
+            optimizer.step()        # Update training parameters
+            
+            total_loss += loss.item()
+            
+            # Update progress bar to display current loss
+            progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
+        
+        avg_loss = total_loss/len(train_loader)
+        print(f"Epoch {epoch+1}, Average Loss: {avg_loss:.4f}")
+
+    # Model evaluation (inference test)
+    model.eval()  # Set to evaluation mode
+    correct = 0
+    total = 0
+
+    # Use tqdm to display test progress
+    test_progress_bar = tqdm(test_loader, desc="Testing")
+
+    with r.no_grad():  # Disable gradient calculation
+        for data, target in test_progress_bar:
+            # Forward propagation
+            outputs = model(data)
+            
+            # Get prediction results
+            predicted = outputs.argmax(dim=1)  # Get predicted class for each sample
+            total += target.size(0)  # Accumulate test sample count
+            correct += (predicted == target).sum().item() # Accumulate correctly predicted sample count
+            
+            # Update progress bar to display current accuracy
+            current_accuracy = 100 * correct / total
+            test_progress_bar.set_postfix({"Accuracy": f"{current_accuracy:.2f}%"})
+
+    # Output final test accuracy
+    test_accuracy = 100 * correct / total
+    print(f"Test set accuracy: {test_accuracy:.2f}% ({correct}/{total})")
+
+    # Single sample inference example
+    sample_data, sample_target = next(iter(test_loader))
+    sample_output = model(sample_data[:1])  # Only take the first sample
+    predicted_class = sample_output.argmax(dim=1)
+    print(f"Sample predicted class: {predicted_class.item()}, actual class: {sample_target[0].item()}")
+
+    print("CNN training and inference test completed!")
+
+Transformer for Time Series Prediction
+---------------------------------------
 
 .. code-block:: python
 
+    # This example demonstrates how to use a Transformer model for time series prediction
+    # Including data preparation, model construction, training and prediction
+
     import riemann as rm
     import riemann.nn as nn
-    
-    class SimpleRNN(nn.Module):
-        def __init__(self, input_size=10, hidden_size=50, num_classes=2):
-            super(SimpleRNN, self).__init__()
-            self.hidden_size = hidden_size
-            # Note: Riemann has not yet implemented RNN layers, this is just an example structure
-            # When using, you need to use existing layer combinations or wait for official implementation
-            self.fc1 = nn.Linear(input_size, hidden_size)
-            self.relu = nn.ReLU()
-            self.fc2 = nn.Linear(hidden_size, num_classes)
+    from riemann.optim import Adam
+    from riemann.utils.data import Dataset, DataLoader
+    import numpy as np
+
+    # Generate time series data
+    def generate_time_series_data(num_samples, seq_length, pred_length):
+        """
+        Generate time series data
         
-        def forward(self, x):
-            # Simple feed-forward network simulation
-            x = self.fc1(x)
-            x = self.relu(x)
-            x = self.fc2(x)
-            return x
-    
+        :param num_samples: Number of samples
+        :param seq_length: Input sequence length
+        :param pred_length: Prediction sequence length
+        :return: Input sequences and target sequences
+        """
+        # Generate sine wave data as an example
+        t = np.linspace(0, 100, num_samples + seq_length + pred_length)
+        data = np.sin(t) + 0.1 * np.random.randn(len(t))
+        
+        inputs = []
+        targets = []
+        
+        for i in range(num_samples):
+            inputs.append(data[i:i+seq_length])
+            targets.append(data[i+seq_length:i+seq_length+pred_length])
+        
+        return np.array(inputs), np.array(targets)
+
+    # Custom time series dataset
+    class TimeSeriesDataset(Dataset):
+        def __init__(self, num_samples=1000, seq_length=50, pred_length=10):
+            self.inputs, self.targets = generate_time_series_data(
+                num_samples, seq_length, pred_length
+            )
+            # Convert to Riemann tensors
+            self.inputs = rm.tensor(self.inputs, dtype=rm.float32)
+            self.targets = rm.tensor(self.targets, dtype=rm.float32)
+            
+        def __len__(self):
+            return len(self.inputs)
+        
+        def __getitem__(self, idx):
+            return self.inputs[idx], self.targets[idx]
+
+    # Simplified Transformer time series prediction model (encoder only)
+    class TransformerTimeSeriesModel(nn.Module):
+        def __init__(self, input_dim=1, d_model=64, nhead=4, 
+                     num_layers=2, dim_feedforward=128, pred_length=10):
+            """
+            Transformer time series prediction model (simplified version)
+            
+            Uses only Transformer encoder to map sequences to predictions
+            
+            :param input_dim: Input feature dimension
+            :param d_model: Transformer model dimension
+            :param nhead: Number of multi-head attention heads
+            :param num_layers: Number of encoder layers
+            :param dim_feedforward: Feedforward network dimension
+            :param pred_length: Prediction sequence length
+            """
+            super(TransformerTimeSeriesModel, self).__init__()
+            
+            self.d_model = d_model
+            self.pred_length = pred_length
+            
+            # Input embedding layer: map input dimension to d_model dimension
+            self.input_embedding = nn.Linear(input_dim, d_model)
+            
+            # Positional encoding parameter (learnable positional encoding)
+            self.pos_encoding = nn.Parameter(rm.randn(100, d_model) * 0.01)
+            
+            # Transformer encoder
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=d_model, 
+                nhead=nhead, 
+                dim_feedforward=dim_feedforward,
+                dropout=0.1,
+                batch_first=True
+            )
+            self.transformer_encoder = nn.TransformerEncoder(
+                encoder_layer, 
+                num_layers=num_layers
+            )
+            
+            # Output layer: map d_model dimension to pred_length * input_dim
+            self.output_layer = nn.Linear(d_model, pred_length * input_dim)
+            
+        def forward(self, src):
+            """
+            Forward pass
+            
+            :param src: Input sequence [batch_size, src_len, input_dim]
+            :return: Prediction sequence [batch_size, pred_length, input_dim]
+            """
+            batch_size, src_len, input_dim = src.shape
+            
+            # Input embedding
+            src = self.input_embedding(src)  # [batch_size, src_len, d_model]
+            
+            # Add positional encoding
+            src = src + self.pos_encoding[:src_len, :].unsqueeze(0)
+            
+            # Encoder
+            memory = self.transformer_encoder(src)  # [batch_size, src_len, d_model]
+            
+            # Take the last time step output
+            last_output = memory[:, -1, :]  # [batch_size, d_model]
+            
+            # Output layer
+            output = self.output_layer(last_output)  # [batch_size, pred_length * input_dim]
+            
+            # Reshape to [batch_size, pred_length, input_dim]
+            output = output.view(batch_size, self.pred_length, input_dim)
+            
+            return output
+
+    # Create dataset and data loader
+    train_dataset = TimeSeriesDataset(num_samples=1000, seq_length=50, pred_length=10)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+
     # Create model
-    model = SimpleRNN()
-    
-    # Forward pass
-    x = rm.randn(32, 10)  # 32 samples, each with 10 features
-    output = model(x)
-    print(output.shape)  # [32, 2]
+    model = TransformerTimeSeriesModel(
+        input_dim=1, 
+        d_model=64, 
+        nhead=4, 
+        num_layers=2,
+        dim_feedforward=128,
+        pred_length=10
+    )
+
+    # Define loss function and optimizer
+    criterion = nn.MSELoss()
+    optimizer = Adam(model.parameters(), lr=0.001)
+
+    # Training loop
+    num_epochs = 10
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0.0
+        
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
+            # Add feature dimension
+            inputs = inputs.unsqueeze(-1)  # [batch_size, seq_len, 1]
+            targets = targets.unsqueeze(-1)  # [batch_size, pred_len, 1]
+            
+            # Zero gradients
+            optimizer.zero_grad()
+            
+            # Forward pass
+            outputs = model(inputs)
+            
+            # Calculate loss
+            loss = criterion(outputs, targets)
+            
+            # Backward pass
+            loss.backward()
+            
+            # Update parameters
+            optimizer.step()
+            
+            total_loss += loss.item()
+        
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch [{epoch+1}/{num_epochs}], Average Loss: {avg_loss:.4f}")
+
+    # Prediction example
+    model.eval()
+    with rm.no_grad():
+        # Get a test sample
+        test_input, test_target = train_dataset[0]
+        test_input = test_input.unsqueeze(0).unsqueeze(-1)  # [1, seq_len, 1]
+        
+        # Make prediction
+        prediction = model(test_input)
+        
+        print(f"\nInput sequence shape: {test_input.shape}")
+        print(f"Prediction sequence shape: {prediction.shape}")
+        print(f"True target shape: {test_target.shape}")
+        
+        # Calculate prediction error
+        test_target = test_target.unsqueeze(-1)
+        error = rm.mean((prediction - test_target) ** 2).item()
+        print(f"Prediction MSE: {error:.6f}")
+        
+        # Print target and prediction values
+        print("\n===== Prediction Results Comparison =====")
+        print(f"{'Step':<10} {'Target':<15} {'Prediction':<15} {'Error':<15}")
+        print("-" * 55)
+        
+        pred_values = prediction.squeeze().tolist()
+        target_values = test_target.squeeze().tolist()
+        
+        for i in range(len(target_values)):
+            target_val = target_values[i]
+            pred_val = pred_values[i] if isinstance(pred_values, list) else pred_values
+            diff = target_val - pred_val
+            print(f"{i+1:<10} {target_val:<15.6f} {pred_val:<15.6f} {diff:<15.6f}")
+        
+        print("-" * 55)

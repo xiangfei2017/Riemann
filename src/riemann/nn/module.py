@@ -763,7 +763,8 @@ class Module:
             - 返回的是生成器，支持惰性求值
         """
         for name, param in self._parameters.items():
-            yield param
+            if param is not None:
+                yield param
         if recurse:
             for module in self._modules.values():
                 yield from module.parameters()
@@ -811,7 +812,8 @@ class Module:
             - 返回的是生成器，支持惰性求值
         """
         for name, param in self._parameters.items():
-            yield f"{prefix}{name}", param
+            if param is not None:
+                yield f"{prefix}{name}", param
         if recurse:
             for module_name, module in self._modules.items():
                 sub_prefix = f"{prefix}{module_name}."

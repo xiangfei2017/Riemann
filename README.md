@@ -677,5 +677,5 @@ Welcome to submit Issues and Pull Requests! Before contributing code, please ens
 ## Contact Information
 
 Author: Fei Xiang
-Email: xfeix@outlook.com
-Gitee: https://gitee.com/xfcode2021
+github: https://github.com/xiangfei2017
+ Gitee: https://gitee.com/xfcode2021
