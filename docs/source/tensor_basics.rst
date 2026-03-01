@@ -2047,7 +2047,7 @@ When using in-place operations, please note the following:
 4. **Recommended Usage Scenarios**
 
    - In-place operations can be used on newly created tensors without gradient tracking attributes ( requires_grad=False )
-   - For objects after ``clone()`` or ``copy()``, which are new leaf nodes, so in-place operations can be used
+   - For objects after ``clone()`` or ``copy()``, which are not leaf nodes with ``requires_grad=True``, so in-place operations can be used
    - In the inference phase where gradient calculation is not needed, using in-place operations can save memory
 
 5. **Memory Optimization**
