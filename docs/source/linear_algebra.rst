@@ -94,10 +94,12 @@ Singular Value Decomposition (SVD)
 **Description**: Computes the singular value decomposition of a matrix.
 
 **Parameters**:
+
 - ``A``: Input tensor (matrix or batch of matrices)
 - ``full_matrices``: If True, returns full-sized U and Vh matrices. If False, returns reduced-sized matrices.
 
 **Returns**:
+
 - ``U``: Unitary matrix(ces)
 - ``S``: Singular values as a 1D tensor
 - ``Vh``: Unitary matrix(ces) (conjugate transpose of V)
@@ -128,9 +130,11 @@ Eigen Value Decomposition(EVD)
 **Description**: Computes the eigenvalues and eigenvectors of a square matrix.
 
 **Parameters**:
+
 - ``A``: Input tensor (square matrix or batch of square matrices)
 
 **Returns**:
+
 - ``eigenvalues``: Eigenvalues of the matrix as a 1D tensor
 - ``eigenvectors``: Eigenvectors of the matrix, where each column is an eigenvector
 
@@ -157,9 +161,11 @@ QR Decomposition
 **Description**: Computes the QR decomposition of a matrix, decomposing it into an orthogonal matrix Q and an upper triangular matrix R.
 
 **Parameters**:
+
 - ``A``: Input tensor (matrix or batch of matrices)
 
 **Returns**:
+
 - ``Q``: Orthogonal matrix(ces)
 - ``R``: Upper triangular matrix(ces)
 
@@ -185,9 +191,11 @@ LU Decomposition
 **Description**: Computes the LU decomposition of a matrix with partial pivoting, decomposing it into a permutation matrix P, a lower triangular matrix L, and an upper triangular matrix U such that A = P @ L @ U.
 
 **Parameters**:
+
 - ``A``: Input tensor (matrix or batch of matrices)
 
 **Returns**:
+
 - ``P``: Permutation matrix(ces)
 - ``L``: Lower triangular matrix(ces)
 - ``U``: Upper triangular matrix(ces)
@@ -222,10 +230,12 @@ Cholesky Decomposition
 **Description**: Computes the Cholesky decomposition of a symmetric positive-definite matrix, decomposing it into a lower triangular matrix L such that A = L @ L.T (or upper triangular matrix U such that A = U.T @ U if upper=True).
 
 **Parameters**:
+
 - ``A``: Input tensor (symmetric positive-definite matrix or batch of such matrices)
 - ``upper``: If True, returns an upper triangular matrix. If False (default), returns a lower triangular matrix.
 
 **Returns**:
+
 - ``L``: Lower or upper triangular matrix(ces) such that A = L @ L.T (or U.T @ U)
 
 .. code-block:: python
@@ -265,10 +275,12 @@ Vector Norms
 **Description**: Computes the norm of a vector or matrix.
 
 **Parameters**:
+
 - ``x``: Input tensor (vector, matrix, or batch of vectors/matrices)
 - ``ord``: Norm order. For vectors: 1, 2, inf, etc. For matrices: 'fro' (Frobenius), 'nuc' (nuclear), 2 (spectral), etc.
 
 **Returns**:
+
 - Norm of the input tensor as a scalar or tensor of scalars for batches
 
 .. code-block:: python
@@ -320,10 +332,12 @@ Inner Product
 **Description**: Computes the dot product of two vectors, or batch of vectors.
 
 **Parameters**:
+
 - ``a``: First input tensor (vector or batch of vectors)
 - ``b``: Second input tensor (vector or batch of vectors)
 
 **Returns**:
+
 - Dot product of the input vectors as a scalar or tensor of scalars for batches
 
 .. code-block:: python
@@ -352,11 +366,13 @@ Vector Cross Product
 **Description**: Computes the cross product of two 3-dimensional vectors.
 
 **Parameters**:
+
 - ``a``: First input tensor (3D vector or batch of 3D vectors)
 - ``b``: Second input tensor (3D vector or batch of 3D vectors)
 - ``dim``: Dimension along which to compute the cross product (default: -1)
 
 **Returns**:
+
 - Cross product of the input vectors as a tensor of the same shape
 
 .. code-block:: python
@@ -387,10 +403,12 @@ Solving Linear Systems
 **Description**: Solves a linear system of equations Ax = b.
 
 **Parameters**:
+
 - ``A``: Coefficient matrix (square matrix or batch of square matrices)
 - ``b``: Right-hand side vector or matrix
 
 **Returns**:
+
 - Solution vector or matrix x such that Ax = b
 
 .. code-block:: python
@@ -421,10 +439,12 @@ Least Squares Solutions
 **Description**: Computes the least squares solution to a linear system Ax = b.
 
 **Parameters**:
+
 - ``A``: Coefficient matrix
 - ``b``: Right-hand side vector or matrix
 
 **Returns**:
+
 - Tuple containing the solution vector/matrix, residuals, rank, and singular values
 
 .. code-block:: python
