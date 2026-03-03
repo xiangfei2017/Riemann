@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "riemann"
 version = "0.3.0"
-description = "A Python library providing automatic differentiation for tensor computation and basic building blocks for neural networks."
+description = "A framework for tensor computation, automatic differentiation, and neural network development with PyTorch-compatible APIs."
 readme = "README.md"
 authors = [
-    { name = "Fei Xiang", email = "xfeix@outlook.com" }
+    { name = "Fei Xiang" }
 ]
 license = "BSD-3-Clause"
 classifiers = [
@@ -26,7 +26,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-keywords = ["automatic differentiation", "deep learning", "gradient", "tensor", "machine learning", "open source", "gitee"]
+keywords = ["automatic differentiation", "deep learning", "gradient", "tensor", 
+            "machine learning", "neural networks", "pytorch-compatible", 
+            "scientific computing", "optimization"]
 requires-python = ">=3.7"
 dependencies = [
     "numpy>=1.20.0",
@@ -64,9 +66,12 @@ tests = [
 ]
 
 [project.urls]
-"Documentation" = "https://gitee.com/xfcode2021/Riemann"
-"Source" = "https://gitee.com/xfcode2021/Riemann"
-"Tracker" = "https://gitee.com/xfcode2021/Riemann/issues"
+"Documentation (Gitee)" = "https://gitee.com/xfcode2021/Riemann"
+"Documentation (GitHub)" = "https://github.com/xiangfei2017/Riemann"
+"Source (Gitee)" = "https://gitee.com/xfcode2021/Riemann"
+"Source (GitHub)" = "https://github.com/xiangfei2017/Riemann"
+"Tracker (Gitee)" = "https://gitee.com/xfcode2021/Riemann/issues"
+"Tracker (GitHub)" = "https://github.com/xiangfei2017/Riemann/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

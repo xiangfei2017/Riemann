@@ -1287,6 +1287,7 @@ Conv1d
 一维卷积层，适用于序列数据如音频、文本等：
 
 **参数**：
+
 - ``in_channels``: 输入通道数
 - ``out_channels``: 输出通道数
 - ``kernel_size``: 卷积核大小
@@ -1317,6 +1318,7 @@ Conv2d
 二维卷积层，适用于图像数据：
 
 **参数**：
+
 - ``in_channels``: 输入通道数
 - ``out_channels``: 输出通道数
 - ``kernel_size``: 卷积核大小
@@ -1347,6 +1349,7 @@ Conv3d
 三维卷积层，适用于 3D 数据如视频、医学影像等：
 
 **参数**：
+
 - ``in_channels``: 输入通道数
 - ``out_channels``: 输出通道数
 - ``kernel_size``: 卷积核大小
@@ -1382,6 +1385,7 @@ MaxPool1d
 一维最大池化层：
 
 **参数**：
+
 - ``kernel_size``: 池化核大小
 - ``stride``: 步长，默认 kernel_size
 - ``padding``: 填充，默认 0
@@ -1410,6 +1414,7 @@ MaxPool2d
 二维最大池化层：
 
 **参数**：
+
 - ``kernel_size``: 池化核大小
 - ``stride``: 步长，默认 kernel_size
 - ``padding``: 填充，默认 0
@@ -1438,6 +1443,7 @@ MaxPool3d
 三维最大池化层：
 
 **参数**：
+
 - ``kernel_size``: 池化核大小
 - ``stride``: 步长，默认 kernel_size
 - ``padding``: 填充，默认 0
@@ -1466,6 +1472,7 @@ AvgPool1d
 一维平均池化层：
 
 **参数**：
+
 - ``kernel_size``: 池化核大小
 - ``stride``: 步长，默认 kernel_size
 - ``padding``: 填充，默认 0
@@ -1494,6 +1501,7 @@ AvgPool2d
 二维平均池化层：
 
 **参数**：
+
 - ``kernel_size``: 池化核大小
 - ``stride``: 步长，默认 kernel_size
 - ``padding``: 填充，默认 0
@@ -1522,6 +1530,7 @@ AvgPool3d
 三维平均池化层：
 
 **参数**：
+
 - ``kernel_size``: 池化核大小
 - ``stride``: 步长，默认 kernel_size
 - ``padding``: 填充，默认 0
