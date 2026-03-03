@@ -677,5 +677,5 @@ Welcome to submit Issues and Pull Requests! Before contributing code, please ens
 ## Contact Information
 
 Author: Fei Xiang
-github: https://github.com/xiangfei2017
- Gitee: https://gitee.com/xfcode2021
+GitHub: https://github.com/xiangfei2017
+Gitee: https://gitee.com/xfcode2021
