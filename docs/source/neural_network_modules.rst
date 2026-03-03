@@ -1287,6 +1287,7 @@ Conv1d
 1D convolutional layer, suitable for sequence data such as audio, text, etc.:
 
 **Parameters**:
+
 - ``in_channels``: Input channels
 - ``out_channels``: Output channels
 - ``kernel_size``: Convolution kernel size
@@ -1317,6 +1318,7 @@ Conv2d
 2D convolutional layer, suitable for image data:
 
 **Parameters**:
+
 - ``in_channels``: Input channels
 - ``out_channels``: Output channels
 - ``kernel_size``: Convolution kernel size
@@ -1347,6 +1349,7 @@ Conv3d
 3D convolutional layer, suitable for 3D data such as video, medical imaging, etc.:
 
 **Parameters**:
+
 - ``in_channels``: Input channels
 - ``out_channels``: Output channels
 - ``kernel_size``: Convolution kernel size
@@ -1382,6 +1385,7 @@ MaxPool1d
 1D max pooling layer:
 
 **Parameters**:
+
 - ``kernel_size``: Pooling kernel size
 - ``stride``: Stride, default kernel_size
 - ``padding``: Padding, default 0
@@ -1410,6 +1414,7 @@ MaxPool2d
 2D max pooling layer:
 
 **Parameters**:
+
 - ``kernel_size``: Pooling kernel size
 - ``stride``: Stride, default kernel_size
 - ``padding``: Padding, default 0
@@ -1438,6 +1443,7 @@ MaxPool3d
 3D max pooling layer:
 
 **Parameters**:
+
 - ``kernel_size``: Pooling kernel size
 - ``stride``: Stride, default kernel_size
 - ``padding``: Padding, default 0
@@ -1466,6 +1472,7 @@ AvgPool1d
 1D average pooling layer:
 
 **Parameters**:
+
 - ``kernel_size``: Pooling kernel size
 - ``stride``: Stride, default kernel_size
 - ``padding``: Padding, default 0
@@ -1494,6 +1501,7 @@ AvgPool2d
 2D average pooling layer:
 
 **Parameters**:
+
 - ``kernel_size``: Pooling kernel size
 - ``stride``: Stride, default kernel_size
 - ``padding``: Padding, default 0
@@ -1522,6 +1530,7 @@ AvgPool3d
 3D average pooling layer:
 
 **Parameters**:
+
 - ``kernel_size``: Pooling kernel size
 - ``stride``: Stride, default kernel_size
 - ``padding``: Padding, default 0
