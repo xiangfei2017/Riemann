@@ -2436,7 +2436,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2462,7 +2462,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2488,7 +2488,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2514,7 +2514,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2544,7 +2544,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2570,7 +2570,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2782,10 +2782,8 @@ class TN:
         arrlib = self._get_array_lib()
         if isinstance(self.data,arrlib.ndarray):
             self.data.fill(0.)
-        elif isinstance(self.data,arrlib.number):
-            self.data = type(self.data)(0.)
         else:
-            raise ValueError(f'zero_ only supports numpy/cupy ndarray or number object but got {type(self.data)}')
+            raise ValueError(f'zero_ only supports numpy/cupy ndarray but got {type(self.data)}')
         return self
     
     def fill_(self, value):
