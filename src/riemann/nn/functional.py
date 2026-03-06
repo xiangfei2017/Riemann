@@ -154,9 +154,7 @@ def linear(input: TN, weight: TN, bias: Optional[TN] = None) -> TN:
         raise ValueError(f"bias.shape[0] ({bias.shape[0]}) must equal weight.shape[0] ({out_features})")
     
     # 执行线性变换：input @ weight.T
-    # 为避免对矩阵转置影响矩阵乘法性能，使用unsqueeze(-1)将input最后一个维度转换为列向量
-    # 然后使用squeeze(-1)将结果转换为原始形状
-    output = (weight @ input.unsqueeze(-1)).squeeze(-1)
+    output = input @ weight.mT
     
     # 添加偏置（如果提供）
     if bias is not None:

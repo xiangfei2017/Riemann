@@ -2626,11 +2626,13 @@ class Linear(Module):
         
         dt = get_default_dtype() if dtype is None else dtype
 
-        # Xavier初始化需要确保数值类型正确
         # 与PyTorch保持一致：权重形状为 [out_features, in_features]
+        # 先初始化权重张量为 (in_features, out_features) 形状，再转置为 (out_features, in_features) 形状的参数
+        # 在forward里前向计算时，权重会再次转置为连续内存布局，这样前向计算性能会提升
+        # 这么处理的目的是在与PyTorch保持一致的权重形状的前提下，提升前向计算的性能
         stdv = 1.0 / sqrt(in_features)
-        w_para = randn(out_features, in_features, dtype=dt, device=device) * stdv
-        self.weight = Parameter(w_para)
+        w_para = randn(in_features, out_features, dtype=dt, device=device) * stdv
+        self.weight = Parameter(w_para.mT)
         
         # 偏置处理需要完整注册逻辑
         if bias:
@@ -2665,11 +2667,8 @@ class Linear(Module):
             - 使用矩阵乘法实现高效的批量计算
             - 当bias为None时只执行矩阵乘法
         """
-        # 执行矩阵乘法: x @ weight.T + bias，与PyTorch保持一致
-        # output =  x @ self.weight.mT
-        # 性能优化：对权重矩阵转置后，矩阵乘法时性能会下降，
-        # 对1D向量作维度缩放不会改变内存布局，对乘法性能影响较小
-        output = (self.weight @ x.unsqueeze(-1)).squeeze(-1)
+        # 执行矩阵乘法: x @ weight.T + bias
+        output = x @ self.weight.mT
         if self.bias is not None:
             output = output + self.bias
         return output
