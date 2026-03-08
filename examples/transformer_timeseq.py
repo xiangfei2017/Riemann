@@ -71,7 +71,8 @@ class TransformerTimeSeriesModel(nn.Module):
         self.input_embedding = nn.Linear(input_dim, d_model)
         
         # Positional encoding parameter (learnable positional encoding)
-        self.pos_encoding = nn.Parameter(rm.randn(100, d_model) * 0.01)
+        self.max_seq_len = 1000  # Increased maximum sequence length
+        self.pos_encoding = nn.Parameter(rm.randn(self.max_seq_len, d_model) * 0.01)
         
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
@@ -137,7 +138,7 @@ criterion = nn.MSELoss()
 optimizer = Adam(model.parameters(), lr=0.001)
 
 # Training loop
-num_epochs = 10
+num_epochs = 20
 for epoch in range(num_epochs):
     model.train()
     total_loss = 0.0
@@ -196,7 +197,7 @@ with rm.no_grad():
     
     for i in range(len(target_values)):
         target_val = target_values[i]
-        pred_val = pred_values[i] if isinstance(pred_values, list) else pred_values
+        pred_val = pred_values[i]
         diff = target_val - pred_val
         print(f"{i+1:<10} {target_val:<15.6f} {pred_val:<15.6f} {diff:<15.6f}")
     
