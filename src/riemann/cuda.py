@@ -161,6 +161,34 @@ class Device:
         # Restore device if needed
         if hasattr(self, '_old_device') and self._old_device is not None:
             set_device(self._old_device)
+    
+    def synchronize(self):
+        """
+        同步设备，等待所有 CUDA 操作完成。
+        
+        对于 CPU 设备，此操作不执行任何操作。
+        对于 CUDA 设备，阻塞直到该设备上所有已排队的 CUDA 操作完成。
+        
+        常用于确保异步数据传输（non_blocking=True）已完成。
+        
+        Examples:
+            >>> device = Device('cuda:0')
+            >>> # 执行异步操作
+            >>> data = data.to('cuda', non_blocking=True)
+            >>> # 确保操作完成
+            >>> device.synchronize()
+        """
+        if self.type == 'cuda' and CUPY_AVAILABLE:
+            # 保存当前设备
+            old_device = current_device()
+            try:
+                # 切换到目标设备
+                set_device(self.index)
+                # 同步该设备
+                cp.cuda.Device(self.index).synchronize()
+            finally:
+                # 恢复之前的设备
+                set_device(old_device)
 
 
 def is_available() -> bool:
@@ -240,6 +268,36 @@ def empty_cache() -> None:
             cp.get_default_memory_pool().free_all_blocks()
         except Exception:
             pass
+
+
+def synchronize(device: str | int | Device = None) -> None:
+    """
+    同步指定设备，等待所有 CUDA 操作完成。
+    
+    如果未指定设备，同步当前设备。
+    
+    Args:
+        device (str, int, or Device, optional): 要同步的设备。
+            - 字符串: 'cuda:0', 'cuda'
+            - 整数: CUDA 设备索引
+            - Device 对象
+            如果为 None，同步当前设备。
+    
+    Examples:
+        >>> synchronize()  # 同步当前设备
+        >>> synchronize('cuda:0')  # 同步指定设备
+        >>> synchronize(0)  # 同步 cuda:0
+    """
+    if not CUPY_AVAILABLE:
+        return  # CPU 模式下无操作
+    
+    if device is None:
+        # 同步当前设备
+        cp.cuda.Device().synchronize()
+    else:
+        # 创建 Device 对象并同步
+        dev = Device(device)
+        dev.synchronize()
 
 def is_in_cuda_context() -> bool:
     """

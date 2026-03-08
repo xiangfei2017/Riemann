@@ -307,6 +307,21 @@ class CUDAUnitTest(unittest.TestCase):
                     "name": "test_tensor_cuda_function",
                     "description": "测试 TN 张量 cuda() 函数功能及不同参数取值",
                     "test_func": lambda: self._test_tensor_cuda_function()
+                },
+                {
+                    "name": "test_tensor_to_non_blocking",
+                    "description": "测试 TN 张量 to() 函数 non_blocking 参数的各种取值",
+                    "test_func": lambda: self._test_tensor_to_non_blocking()
+                },
+                {
+                    "name": "test_tensor_to_copy",
+                    "description": "测试 TN 张量 to() 函数 copy 参数的各种取值",
+                    "test_func": lambda: self._test_tensor_to_copy()
+                },
+                {
+                    "name": "test_tensor_to_combined_params",
+                    "description": "测试 TN 张量 to() 函数 non_blocking 和 copy 参数组合使用",
+                    "test_func": lambda: self._test_tensor_to_combined_params()
                 }
             ]
             
@@ -570,6 +585,122 @@ class CUDAUnitTest(unittest.TestCase):
             self.assertEqual(cuda_tensor7.device.type, 'cuda')
             self.assertEqual(cuda_tensor7.device.index, 1)
             self.assertTrue(np.allclose(cuda_tensor7.data, cpu_tensor.data))
+    
+    def _test_tensor_to_non_blocking(self):
+        """测试 TN 张量 to() 函数 non_blocking 参数的各种取值（子用例）"""
+        # 创建CPU张量
+        cpu_tensor = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+        
+        # 测试1: non_blocking=False (默认，同步传输)
+        cuda_tensor1 = cpu_tensor.to('cuda', non_blocking=False)
+        self.assertEqual(cuda_tensor1.device.type, 'cuda')
+        self.assertTrue(np.allclose(cuda_tensor1.data, cpu_tensor.data))
+        # 同步传输完成后数据已就绪，无需额外同步
+        
+        # 测试2: non_blocking=True (异步传输)
+        cuda_tensor2 = cpu_tensor.to('cuda', non_blocking=True)
+        self.assertEqual(cuda_tensor2.device.type, 'cuda')
+        # 异步传输后立即同步确保数据就绪
+        rm.cuda.Device('cuda:0').synchronize()
+        self.assertTrue(np.allclose(cuda_tensor2.data, cpu_tensor.data))
+        
+        # 测试3: 异步传输 + 数据类型转换
+        cpu_tensor_float32 = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float32)
+        cuda_tensor3 = cpu_tensor_float32.to('cuda', dtype=rm.float64, non_blocking=True)
+        self.assertEqual(cuda_tensor3.device.type, 'cuda')
+        self.assertEqual(cuda_tensor3.dtype, rm.float64)
+        rm.cuda.Device('cuda:0').synchronize()
+        self.assertTrue(np.allclose(cuda_tensor3.data, [1.0, 2.0, 3.0]))
+        
+        # 测试4: 异步传输功能验证（不严格测试性能，因为小数据量下创建Stream有开销）
+        import time
+        large_cpu_tensor = rm.randn(1000, 1000)
+        
+        # 验证异步传输能正常工作（不抛出异常，数据正确）
+        async_result = large_cpu_tensor.to('cuda', non_blocking=True)
+        self.assertEqual(async_result.device.type, 'cuda')
+        # 同步确保数据就绪后验证数据正确性
+        rm.cuda.Device('cuda:0').synchronize()
+        self.assertTrue(np.allclose(async_result.data, large_cpu_tensor.data))
+        
+        # 验证同步传输也能正常工作
+        sync_result = large_cpu_tensor.to('cuda', non_blocking=False)
+        self.assertEqual(sync_result.device.type, 'cuda')
+        self.assertTrue(np.allclose(sync_result.data, large_cpu_tensor.data))
+    
+    def _test_tensor_to_copy(self):
+        """测试 TN 张量 to() 函数 copy 参数的各种取值（子用例）"""
+        # 创建CPU张量
+        cpu_tensor = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+        original_data_ptr = cpu_tensor.data.ctypes.data
+        
+        # 测试1: copy=False (默认，设备和类型相同时返回原张量)
+        same_tensor = cpu_tensor.to('cpu', copy=False)
+        self.assertIs(same_tensor, cpu_tensor, "copy=False 时应该返回原张量")
+        
+        # 测试2: copy=True (设备和类型相同时也强制复制)
+        copied_tensor = cpu_tensor.to('cpu', copy=True)
+        self.assertIsNot(copied_tensor, cpu_tensor, "copy=True 时应该返回新张量")
+        self.assertTrue(np.allclose(copied_tensor.data, cpu_tensor.data))
+        self.assertNotEqual(copied_tensor.data.ctypes.data, original_data_ptr,
+                           "copy=True 时数据应该有不同的内存地址")
+        
+        # 测试3: 类型转换时 copy=True (应该创建新张量)
+        dtype_converted = cpu_tensor.to('float64', copy=True)
+        self.assertEqual(dtype_converted.dtype, rm.float64)
+        self.assertTrue(np.allclose(dtype_converted.data, cpu_tensor.data))
+        
+        # 测试4: 设备迁移时 copy 参数的行为
+        # 设备迁移总是会创建新张量，copy 参数不影响
+        cuda_tensor = cpu_tensor.to('cuda', copy=False)
+        self.assertIsNot(cuda_tensor, cpu_tensor)
+        self.assertEqual(cuda_tensor.device.type, 'cuda')
+        
+        # 测试5: 从另一个张量复制 + copy=True
+        other = rm.randn(3, 3, dtype='float64', device='cpu')
+        copied_from_other = cpu_tensor.to(other, copy=True)
+        self.assertEqual(copied_from_other.dtype, rm.float64)
+        self.assertIsNot(copied_from_other, cpu_tensor)
+    
+    def _test_tensor_to_combined_params(self):
+        """测试 TN 张量 to() 函数 non_blocking 和 copy 参数组合使用（子用例）"""
+        # 创建CPU张量
+        cpu_tensor = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+        
+        # 测试1: non_blocking=True, copy=False (默认copy)
+        # 设备迁移，copy参数不影响（总是会创建新张量）
+        cuda_tensor1 = cpu_tensor.to('cuda', non_blocking=True, copy=False)
+        self.assertEqual(cuda_tensor1.device.type, 'cuda')
+        rm.cuda.Device('cuda:0').synchronize()
+        self.assertTrue(np.allclose(cuda_tensor1.data, cpu_tensor.data))
+        
+        # 测试2: non_blocking=True, copy=True
+        cuda_tensor2 = cpu_tensor.to('cuda', non_blocking=True, copy=True)
+        self.assertEqual(cuda_tensor2.device.type, 'cuda')
+        rm.cuda.Device('cuda:0').synchronize()
+        self.assertTrue(np.allclose(cuda_tensor2.data, cpu_tensor.data))
+        
+        # 测试3: 同设备 + copy=True + non_blocking (non_blocking在此无实际作用)
+        same_device_copy = cpu_tensor.to('cpu', non_blocking=True, copy=True)
+        self.assertIsNot(same_device_copy, cpu_tensor)
+        self.assertTrue(np.allclose(same_device_copy.data, cpu_tensor.data))
+        
+        # 测试4: 复杂场景 - 类型转换 + 设备迁移 + 异步 + 复制
+        complex_tensor = rm.tensor([1+2j, 3+4j], dtype=rm.complex64)
+        result = complex_tensor.to('cuda', dtype=rm.complex128, non_blocking=True, copy=True)
+        self.assertEqual(result.device.type, 'cuda')
+        self.assertEqual(result.dtype, rm.complex128)
+        rm.cuda.Device('cuda:0').synchronize()
+        self.assertTrue(np.allclose(result.data, [1+2j, 3+4j]))
+        
+        # 测试5: 确保梯度跟踪在参数组合下正常工作
+        grad_tensor = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+        cuda_grad = grad_tensor.to('cuda', non_blocking=False, copy=False)
+        self.assertTrue(cuda_grad.requires_grad)
+        # 测试反向传播
+        s = cuda_grad.sum()
+        s.backward()
+        self.assertIsNotNone(grad_tensor.grad)
     
     def test_basic_cuda_features(self):
         """测试基本 CUDA 功能"""

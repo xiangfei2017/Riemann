@@ -803,14 +803,18 @@ class TN:
         将张量转换为指定的数据类型和/或设备。
         
         创建并返回一个新的张量，其数据类型和/或设备为指定的值，与原张量内容相同。
-        如果原张量的数据类型和设备已经与指定的值相同，则返回原张量本身。
+        如果原张量的数据类型和设备已经与指定的值相同，则返回原张量本身（除非 copy=True）。
         
         Args:
             dtype (optional): 目标数据类型，可以是Python类型、NumPy dtype、字符串或Riemann dtype
             device (optional): 目标设备，可以是字符串（如'cpu'、'cuda'）或Device对象
+            non_blocking (bool, optional): 如果为True且数据在固定内存中，则复制到GPU可以与主机计算异步进行。
+                                          默认为False。仅适用于CPU -> GPU的传输。
+            copy (bool, optional): 如果为True，则总是返回副本，即使设备和数据类型相同。
+                                  默认为False。
             
         Returns:
-            TN: 指定数据类型和/或设备的新张量，或原张量（如果已匹配）
+            TN: 指定数据类型和/或设备的新张量，或原张量（如果已匹配且copy=False）
             
         Examples:
             >>> # 转换数据类型
@@ -829,10 +833,16 @@ class TN:
             >>> x = tensor([1.0, 2.0, 3.0], dtype=float64, device='cuda')
             >>> y = tensor([4.0, 5.0, 6.0])
             >>> z = y.to(x)
+            >>> # 强制复制
+            >>> y = x.to(copy=True)
+            >>> # 异步传输
+            >>> y = x.to('cuda', non_blocking=True)
         """
         # 解析参数
         dtype = kwargs.get('dtype', None)
         device = kwargs.get('device', None)
+        non_blocking = kwargs.get('non_blocking', False)
+        copy = kwargs.get('copy', False)
         
         # 处理位置参数
         if len(args) > 0:
@@ -892,7 +902,9 @@ class TN:
         # 检查当前类型和设备是否已经匹配
         dtype_not_change = (self.dtype == target_dtype)
         device_not_change = (self.device == target_device)
-        if dtype_not_change and device_not_change:
+        
+        # 如果类型和设备都相同，且不需要复制，则返回自身
+        if dtype_not_change and device_not_change and not copy:
             return self
         
         # 创建新张量
@@ -900,12 +912,16 @@ class TN:
         
         # 处理设备迁移、数据转换
         if device_not_change:
-            # 设备相同，数据类型一定不同
+            # 设备相同，只需要转换数据类型（或强制复制）
             if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
                 # 复数向非复数转换时，为避免warning，不用astype直接转，取real后再转换
                 ret.data = self.data.real.astype(target_dtype)
             else:
-                ret.data = self.data.astype(target_dtype)            
+                # 如果数据类型相同但需要复制，使用copy()
+                if dtype_not_change and copy:
+                    ret.data = self.data.copy()
+                else:
+                    ret.data = self.data.astype(target_dtype)            
         else:
             # 设备不同，需要转换设备
             if target_device.type=='cuda':
@@ -913,12 +929,27 @@ class TN:
                 # 利用cp.asarray()支持dtype参数的特性，一步完成转换
                 if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
                     # 复数向非复数转换时，先取real
-                    ret.data = cp.asarray(self.data.real, dtype=target_dtype)
+                    source_data = self.data.real
                 else:
-                    ret.data = cp.asarray(self.data, dtype=target_dtype)
+                    source_data = self.data
+                
+                # 处理non_blocking参数
+                if non_blocking and cp is not None:
+                    # 使用异步流传输
+                    # 创建非阻塞流进行异步数据传输
+                    stream = cp.cuda.Stream(non_blocking=True)
+                    with stream:
+                        ret.data = cp.asarray(source_data, dtype=target_dtype)
+                    # 注意：异步传输后，如果需要立即使用数据，应调用 stream.synchronize()
+                    # 这里不立即同步，让调用者决定何时同步
+                else:
+                    # 同步传输（默认）
+                    ret.data = cp.asarray(source_data, dtype=target_dtype)
             else:
                 # CUDA -> CPU
-                # 先转换设备，再转换数据类型
+                # 注意：non_blocking 参数主要适用于 CPU -> GPU 传输
+                # GPU -> CPU 使用 cp.asnumpy()，这是同步操作
+                # 如果需要异步 GPU -> CPU 传输，需要更复杂的实现（使用 pinned memory + 异步拷贝）
                 if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
                     # 复数向非复数转换时，先取real
                     ret.data = cp.asnumpy(self.data.real).astype(target_dtype)
