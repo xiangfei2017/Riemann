@@ -272,34 +272,46 @@ class Module:
         self._buffers = {}
         self.training = True  # 训练/评估模式标志 
     
-    def to(self, device):
+    def to(self, *args, **kwargs):
         """
-        将模块的所有参数和缓冲区移动到指定设备
+        将模块的所有参数和缓冲区移动到指定设备和/或转换为指定数据类型
         
-        参数:
-            device: 目标设备，可以是字符串（如'cpu'、'cuda'）或Device对象
+        Args:
+            device: 目标设备，可以是字符串（如'cpu'、'cuda'）、整数（设备ID）或Device对象
+            dtype: 目标数据类型，可以是Python类型、NumPy dtype、字符串或Riemann dtype
+            也可以传入另一个张量，复制其dtype和device
             
-        返回:
-            Module: 移动设备后的模块本身（原地操作）
+        Returns:
+            Module: 转换后的模块本身（原地操作）
+            
+        Examples:
+            >>> model = MyModule()
+            >>> model.to('cuda')  # 移动到CUDA设备
+            >>> model.to('cpu')  # 移动到CPU
+            >>> model.to(float32)  # 转换为float32类型
+            >>> model.to('cuda', float16)  # 移动到CUDA并转换为float16
+            >>> model.to(device='cuda', dtype=float16)  # 使用关键字参数
+            >>> model.to(other_tensor)  # 从另一个张量复制dtype和device
         """
         # 移动所有参数
         for name, param in self._parameters.items():
             if param is not None:
-                # 对参数张量调用to方法,跨设备时要清除计算图依赖，确保新参数不会向旧参数传递梯度
-                new_param = param.to(device)
+                # 直接透传参数给 param.to()
+                new_param = param.to(*args, **kwargs)
                 if new_param is not param:
+                    # 跨设备或跨类型转换时要清除计算图依赖
                     new_param = new_param.detach_()
                     new_param.requires_grad = param.requires_grad
-                
                     # 更新实例属性引用
                     setattr(self, name, new_param)
         
         # 移动所有缓冲区
         for name, buffer in self._buffers.items():
             if buffer is not None:
-                # 对缓冲区张量调用to方法,跨设备时要清除计算图依赖，确保新缓冲区不会向旧缓冲区传递梯度
-                new_buffer = buffer.to(device)
+                # 直接透传参数给 buffer.to()
+                new_buffer = buffer.to(*args, **kwargs)
                 if new_buffer is not buffer:
+                    # 清除计算图依赖
                     new_buffer = new_buffer.detach_()
                     new_buffer.requires_grad = buffer.requires_grad
                     # 更新实例属性引用
@@ -307,7 +319,7 @@ class Module:
         
         # 递归移动所有子模块
         for name, module in self._modules.items():
-            module.to(device)
+            module.to(*args, **kwargs)
         
         return self
 
@@ -1777,39 +1789,8 @@ class Module:
                     return param.dtype
             return None
         
-        # 转换所有参数
-        for name, param in self._parameters.items():
-            if param is not None:
-                # 对参数张量调用type方法
-                new_param = param.type(dtype)
-                if new_param is not param:
-                    # 清除计算图依赖，确保新参数不会向旧参数传递梯度
-                    new_param = new_param.detach_()
-                    # 确保新参数保持梯度要求
-                    new_param.requires_grad = param.requires_grad
-                
-                    # 更新实例属性引用
-                    setattr(self, name, new_param)
-        
-        # 转换所有缓冲区
-        for name, buffer in self._buffers.items():
-            if buffer is not None:
-                # 对缓冲区张量调用type方法
-                new_buffer = buffer.type(dtype)
-                if new_buffer is not buffer:
-                    # 清除计算图依赖
-                    new_buffer = new_buffer.detach_()
-                    # 确保缓冲区保持梯度要求
-                    new_buffer.requires_grad = buffer.requires_grad
-                    
-                    # 更新实例属性引用
-                    setattr(self, name, new_buffer)
-        
-        # 递归转换所有子模块
-        for name, module in self._modules.items():
-            module.type(dtype)
-        
-        return self
+        # 直接调用 to() 方法进行数据类型转换
+        return self.to(dtype=dtype)
 
     def float(self):
         """转换为float32类型 (Float Cast)
