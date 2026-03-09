@@ -138,6 +138,7 @@ class TN:
             retains_grad (bool): 是否保留梯度，默认为False
             rcv_grad_count (int): 在计算图中可接收梯度的计数，计算梯度时临时使用
             grad_value (TN): 用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
+            _module: 存储创建此张量的模块（用于反向传播钩子）
         """
         #tensor函数构造对象时，data引用一个numpy或cupy数组
         self.data: np.ndarray = None    # type: ignore
@@ -151,6 +152,8 @@ class TN:
         
         self.rcv_grad_count = 0         #在具体计算图中，self可接收梯度的计数，计算梯度时临时使用
         self.grad_value:TN = None       #用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
+        
+        self._module = None             #存储创建此张量的模块（用于反向传播钩子）
         
         return
     
@@ -803,14 +806,18 @@ class TN:
         将张量转换为指定的数据类型和/或设备。
         
         创建并返回一个新的张量，其数据类型和/或设备为指定的值，与原张量内容相同。
-        如果原张量的数据类型和设备已经与指定的值相同，则返回原张量本身。
+        如果原张量的数据类型和设备已经与指定的值相同，则返回原张量本身（除非 copy=True）。
         
         Args:
             dtype (optional): 目标数据类型，可以是Python类型、NumPy dtype、字符串或Riemann dtype
             device (optional): 目标设备，可以是字符串（如'cpu'、'cuda'）或Device对象
+            non_blocking (bool, optional): 如果为True且数据在固定内存中，则复制到GPU可以与主机计算异步进行。
+                                          默认为False。仅适用于CPU -> GPU的传输。
+            copy (bool, optional): 如果为True，则总是返回副本，即使设备和数据类型相同。
+                                  默认为False。
             
         Returns:
-            TN: 指定数据类型和/或设备的新张量，或原张量（如果已匹配）
+            TN: 指定数据类型和/或设备的新张量，或原张量（如果已匹配且copy=False）
             
         Examples:
             >>> # 转换数据类型
@@ -829,10 +836,16 @@ class TN:
             >>> x = tensor([1.0, 2.0, 3.0], dtype=float64, device='cuda')
             >>> y = tensor([4.0, 5.0, 6.0])
             >>> z = y.to(x)
+            >>> # 强制复制
+            >>> y = x.to(copy=True)
+            >>> # 异步传输
+            >>> y = x.to('cuda', non_blocking=True)
         """
         # 解析参数
         dtype = kwargs.get('dtype', None)
         device = kwargs.get('device', None)
+        non_blocking = kwargs.get('non_blocking', False)
+        copy = kwargs.get('copy', False)
         
         # 处理位置参数
         if len(args) > 0:
@@ -892,7 +905,9 @@ class TN:
         # 检查当前类型和设备是否已经匹配
         dtype_not_change = (self.dtype == target_dtype)
         device_not_change = (self.device == target_device)
-        if dtype_not_change and device_not_change:
+        
+        # 如果类型和设备都相同，且不需要复制，则返回自身
+        if dtype_not_change and device_not_change and not copy:
             return self
         
         # 创建新张量
@@ -900,12 +915,16 @@ class TN:
         
         # 处理设备迁移、数据转换
         if device_not_change:
-            # 设备相同，数据类型一定不同
+            # 设备相同，只需要转换数据类型（或强制复制）
             if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
                 # 复数向非复数转换时，为避免warning，不用astype直接转，取real后再转换
                 ret.data = self.data.real.astype(target_dtype)
             else:
-                ret.data = self.data.astype(target_dtype)            
+                # 如果数据类型相同但需要复制，使用copy()
+                if dtype_not_change and copy:
+                    ret.data = self.data.copy()
+                else:
+                    ret.data = self.data.astype(target_dtype)            
         else:
             # 设备不同，需要转换设备
             if target_device.type=='cuda':
@@ -913,12 +932,27 @@ class TN:
                 # 利用cp.asarray()支持dtype参数的特性，一步完成转换
                 if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
                     # 复数向非复数转换时，先取real
-                    ret.data = cp.asarray(self.data.real, dtype=target_dtype)
+                    source_data = self.data.real
                 else:
-                    ret.data = cp.asarray(self.data, dtype=target_dtype)
+                    source_data = self.data
+                
+                # 处理non_blocking参数
+                if non_blocking and cp is not None:
+                    # 使用异步流传输
+                    # 创建非阻塞流进行异步数据传输
+                    stream = cp.cuda.Stream(non_blocking=True)
+                    with stream:
+                        ret.data = cp.asarray(source_data, dtype=target_dtype)
+                    # 注意：异步传输后，如果需要立即使用数据，应调用 stream.synchronize()
+                    # 这里不立即同步，让调用者决定何时同步
+                else:
+                    # 同步传输（默认）
+                    ret.data = cp.asarray(source_data, dtype=target_dtype)
             else:
                 # CUDA -> CPU
-                # 先转换设备，再转换数据类型
+                # 注意：non_blocking 参数主要适用于 CPU -> GPU 传输
+                # GPU -> CPU 使用 cp.asnumpy()，这是同步操作
+                # 如果需要异步 GPU -> CPU 传输，需要更复杂的实现（使用 pinned memory + 异步拷贝）
                 if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
                     # 复数向非复数转换时，先取real
                     ret.data = cp.asnumpy(self.data.real).astype(target_dtype)
@@ -2436,7 +2470,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2462,7 +2496,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2488,7 +2522,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2514,7 +2548,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2544,7 +2578,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2570,7 +2604,7 @@ class TN:
         dev = self.device
 
         #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,device=dev)
+        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
         
@@ -2782,10 +2816,8 @@ class TN:
         arrlib = self._get_array_lib()
         if isinstance(self.data,arrlib.ndarray):
             self.data.fill(0.)
-        elif isinstance(self.data,arrlib.number):
-            self.data = type(self.data)(0.)
         else:
-            raise ValueError(f'zero_ only supports numpy/cupy ndarray or number object but got {type(self.data)}')
+            raise ValueError(f'zero_ only supports numpy/cupy ndarray but got {type(self.data)}')
         return self
     
     def fill_(self, value):
@@ -3873,6 +3905,63 @@ class TN:
             target.grad_value = target.grad_value + self
         return
 
+    def _call_backward_pre_hooks(self) -> None:
+        """
+        调用反向传播前钩子 (Call Backward Pre-Hooks)
+        
+        在梯度传播到来源节点之前调用由 Module 实例注册的 backward_pre_hooks。
+        这些钩子通过 module.register_full_backward_pre_hook(hook) 注册，用于在反向传播
+        开始时拦截并可能修改输出梯度。
+        
+        钩子函数签名: hook(module, grad_output) -> None or modified grad_output
+        
+        用途:
+            - 监控梯度值
+            - 修改输出梯度（如梯度裁剪、梯度缩放）
+            - 调试反向传播过程
+        
+        注意:
+            - 只有当 self._module 存在时才会调用钩子（即张量由某个 Module 创建）
+            - 钩子可以返回修改后的梯度，返回的梯度将用于后续计算
+            - 多个钩子按注册顺序依次调用
+        """
+        if self._module:
+            for hook in self._module._backward_pre_hooks.values():
+                hook_result = hook(self._module, (self.grad_value,))
+                if hook_result is not None:
+                    self.grad_value = hook_result[0] if isinstance(hook_result, tuple) else hook_result
+
+    def _call_backward_hooks(self, computed_grad_inputs: list | None) -> None:
+        """
+        调用反向传播钩子 (Call Backward Hooks)
+        
+        在梯度传播完成后调用由 Module 实例注册的 backward_hooks。
+        这些钩子通过 module.register_full_backward_hook(hook) 注册，用于在反向传播
+        完成后访问输入梯度和输出梯度。
+        
+        钩子函数签名: hook(module, grad_input, grad_output) -> None
+        
+        用途:
+            - 监控梯度值
+            - 分析梯度流动
+            - 调试反向传播过程
+            - 记录梯度统计信息
+        
+        参数:
+            computed_grad_inputs: 由梯度函数计算得到的输入梯度列表
+            
+        注意:
+            - 只有当 self._module 存在时才会调用钩子（即张量由某个 Module 创建）
+            - grad_input 是相对于模块输入的梯度（由梯度函数计算得到）
+            - grad_output 是相对于模块输出的梯度（当前节点的 grad_value）
+            - 多个钩子按注册顺序依次调用
+        """
+        if self._module:
+            grad_output = (self.grad_value,)
+            grad_input = tuple(computed_grad_inputs)
+            for hook in self._module._backward_hooks.values():
+                hook(self._module, grad_input, grad_output)
+
     def backward(self, gradient: TN|None = None, 
                  retain_graph: bool = False,  # type: ignore
                  create_graph: bool = False):  # type: ignore
@@ -3926,12 +4015,18 @@ class TN:
         while stack:  #对栈循环处理直至为空
             item:TN = stack.pop(-1)    #pop(-1)效率o(1),表示从栈尾弹出
             
+            # 调用反向传播前钩子（在梯度传播到来源节点之前）
+            item._call_backward_pre_hooks()
+            
             # 对于叶子节点或要求保存梯度的中间节点，保存grad
             if item.is_leaf or item.retains_grad:
                 item._save_grad(create_graph)
             
             fromvars = item.fromvars
             gradfuncs = item.gradfuncs
+
+            # 存储计算得到的输入梯度（用于 backward_hook）
+            computed_grad_inputs = []
 
             #向来源节点传播梯度
             #fromvars和gradfuncs是等长并元素一一对应的，所以可以在一个循环中处理
@@ -3942,6 +4037,11 @@ class TN:
                 if var.requires_grad == True:
                     #调用来源节点对应的梯度函数，向该节点传播梯度值,每接收一次梯度传递，计数减1
                     tobe_add_grad:TN = fn(item,i)
+                    
+                    # 保存计算得到的输入梯度（用于 backward_hook）
+                    if item._module:
+                        computed_grad_inputs.append(tobe_add_grad)
+                    
                     tobe_add_grad._addto_grad_value(var)
 
                     var.rcv_grad_count -= 1   # 收到一次梯度，计数-1
@@ -3950,6 +4050,9 @@ class TN:
                     # stack中永远只存放收集完梯度的节点
                     if var.rcv_grad_count == 0:
                         stack.append(var)
+            
+            # 调用反向传播钩子（在梯度传播完成后）
+            item._call_backward_hooks(computed_grad_inputs)
             
             # 节点反向传播完梯度后，grad_value清空，节省空间
             item.grad_value = None  # type: ignore

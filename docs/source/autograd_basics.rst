@@ -121,6 +121,7 @@ Tensor Methods for Graph Detaching and Data Copying
 ---------------------------------------------------
 
 Riemann provides several tensor methods for managing computation graph dependencies, and copying tensor data. Each method has distinct characteristics related to:
+
 - Whether it creates a new tensor object or modifies in-place
 - Whether it shares data with the original tensor
 - Whether gradient tracking is preserved
@@ -130,6 +131,7 @@ Here are the key methods explained with individual examples:
 1. **detach()**: Create a new tensor that shares data with the original but is detached from the computation graph
 
 The detach() method returns a new tensor object that shares the same data memory as the original tensor, but is disconnected from the computation graph. This means:
+
 - Changes to the detached tensor will modify the original tensor
 - No gradients will be backpropagated through the detached tensor
 

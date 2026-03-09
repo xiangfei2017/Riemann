@@ -37,13 +37,24 @@ It contains the core Module class and various neural network components that imp
 common deep learning operations.
 
 This file implements the following key components:
-- Module: Base class for all neural network modules with parameter management
+- RemovableHandle: Handle for managing hook registration and removal
 - Parameter: Special tensor type for module parameters requiring gradients
+- Module: Base class for all neural network modules with parameter management
 - Linear: Fully connected linear layer
 - Sequential: Container for sequential module execution
 - ModuleList: List-based module container
 - ModuleDict: Dictionary-based module container
+- ParameterList: List-based parameter container
+- ParameterDict: Dictionary-based parameter container
 - Dropout: Regularization technique to prevent overfitting
+- Dropout2d: 2D version of Dropout
+- Dropout3d: 3D version of Dropout
+- Flatten: Layer to flatten input tensors
+- BatchNorm1d: 1D batch normalization layer
+- BatchNorm2d: 2D batch normalization layer
+- BatchNorm3d: 3D batch normalization layer
+- LayerNorm: Layer normalization
+- Embedding: Embedding layer for categorical data
 
 All modules implement a PyTorch-compatible interface, making it easy to migrate code
 between Riemann and PyTorch frameworks.
@@ -55,7 +66,56 @@ from ..tensordef import *
 from ..cuda import cp, Device
 from .functional import *
 
-                        
+
+class RemovableHandle:
+    """
+    可移除句柄类 (Removable Handle)
+    
+    用于管理钩子函数的注册和移除。当调用remove()方法时，
+    会从对应的钩子字典中移除该钩子。
+    
+    Attributes:
+        id (int): 钩子的唯一标识符
+        hook_dict (dict): 存储钩子的字典引用
+        _next_id (classmethod): 类变量，用于生成唯一ID
+        
+    Examples:
+        >>> handle = module.register_forward_hook(my_hook)
+        >>> handle.remove()  # 移除钩子
+        >>> handle.id  # 访问钩子ID
+    """
+    _next_id = 0
+    
+    def __init__(self, hook_dict):
+        """
+        初始化句柄
+        
+        Args:
+            hook_dict (dict): 存储钩子的字典
+        """
+        self.hook_dict = hook_dict
+        self.id = RemovableHandle._next_id
+        RemovableHandle._next_id += 1
+    
+    def remove(self):
+        """
+        移除钩子 (Remove Hook)
+        
+        从钩子字典中删除此句柄对应的钩子。
+        如果钩子已被移除，则不做任何操作。
+        """
+        if self.id in self.hook_dict:
+            del self.hook_dict[self.id]
+    
+    def __enter__(self):
+        """支持上下文管理器协议"""
+        return self
+    
+    def __exit__(self, *args):
+        """退出上下文时自动移除钩子"""
+        self.remove()
+
+
 class Parameter(TN):
     """
     模型参数类 (Model Parameter Class)
@@ -262,6 +322,10 @@ class Module:
         - _modules: 存储子模块的字典
         - _parameters: 存储参数的字典
         - _buffers: 存储缓冲区的字典
+        - _forward_pre_hooks: 存储前向传播前钩子的字典
+        - _forward_hooks: 存储前向传播钩子的字典
+        - _backward_pre_hooks: 存储反向传播前钩子的字典
+        - _backward_hooks: 存储反向传播钩子的字典
         - training: 训练模式标志，默认为True
         
         所有子类都应该调用super().__init__()来确保正确的初始化。
@@ -270,36 +334,52 @@ class Module:
         self._modules = {}
         self._parameters = {}
         self._buffers = {}
-        self.training = True  # 训练/评估模式标志 
+        self._forward_pre_hooks = {}
+        self._forward_hooks = {}
+        self._backward_pre_hooks = {}
+        self._backward_hooks = {}
+        self.training = True  # 训练/评估模式标志      
     
-    def to(self, device):
+    def to(self, *args, **kwargs):
         """
-        将模块的所有参数和缓冲区移动到指定设备
+        将模块的所有参数和缓冲区移动到指定设备和/或转换为指定数据类型
         
-        参数:
-            device: 目标设备，可以是字符串（如'cpu'、'cuda'）或Device对象
+        Args:
+            device: 目标设备，可以是字符串（如'cpu'、'cuda'）、整数（设备ID）或Device对象
+            dtype: 目标数据类型，可以是Python类型、NumPy dtype、字符串或Riemann dtype
+            也可以传入另一个张量，复制其dtype和device
             
-        返回:
-            Module: 移动设备后的模块本身（原地操作）
+        Returns:
+            Module: 转换后的模块本身（原地操作）
+            
+        Examples:
+            >>> model = MyModule()
+            >>> model.to('cuda')  # 移动到CUDA设备
+            >>> model.to('cpu')  # 移动到CPU
+            >>> model.to(float32)  # 转换为float32类型
+            >>> model.to('cuda', float16)  # 移动到CUDA并转换为float16
+            >>> model.to(device='cuda', dtype=float16)  # 使用关键字参数
+            >>> model.to(other_tensor)  # 从另一个张量复制dtype和device
         """
         # 移动所有参数
         for name, param in self._parameters.items():
             if param is not None:
-                # 对参数张量调用to方法,跨设备时要清除计算图依赖，确保新参数不会向旧参数传递梯度
-                new_param = param.to(device)
+                # 直接透传参数给 param.to()
+                new_param = param.to(*args, **kwargs)
                 if new_param is not param:
+                    # 跨设备或跨类型转换时要清除计算图依赖
                     new_param = new_param.detach_()
                     new_param.requires_grad = param.requires_grad
-                
                     # 更新实例属性引用
                     setattr(self, name, new_param)
         
         # 移动所有缓冲区
         for name, buffer in self._buffers.items():
             if buffer is not None:
-                # 对缓冲区张量调用to方法,跨设备时要清除计算图依赖，确保新缓冲区不会向旧缓冲区传递梯度
-                new_buffer = buffer.to(device)
+                # 直接透传参数给 buffer.to()
+                new_buffer = buffer.to(*args, **kwargs)
                 if new_buffer is not buffer:
+                    # 清除计算图依赖
                     new_buffer = new_buffer.detach_()
                     new_buffer.requires_grad = buffer.requires_grad
                     # 更新实例属性引用
@@ -307,7 +387,7 @@ class Module:
         
         # 递归移动所有子模块
         for name, module in self._modules.items():
-            module.to(device)
+            module.to(*args, **kwargs)
         
         return self
 
@@ -704,6 +784,7 @@ class Module:
         
         使模块实例可调用，实现module(x)的调用方式。
         这是用户使用模块的主要接口，内部调用forward方法。
+        同时处理前向传播前钩子和前向传播钩子的调用。
         
         Args:
             *args: 位置参数，传递给forward方法
@@ -719,10 +800,37 @@ class Module:
             
         Note:
             - 这是模块的标准调用方式
-            - 未来可能在此方法中添加钩子调用等逻辑
+            - 在forward前后会调用注册的钩子函数
             - 提供与PyTorch兼容的调用接口
         """
-        return self.forward(*args,**kwargs)
+        # 调用前向传播前钩子
+        for hook in self._forward_pre_hooks.values():
+            result = hook(self, args)
+            if result is not None:
+                if not isinstance(result, tuple):
+                    result = (result,)
+                args = result
+        
+        # 执行前向传播
+        output = self.forward(*args, **kwargs)
+        
+        # 调用前向传播钩子
+        for hook in self._forward_hooks.values():
+            hook_result = hook(self, args, output)
+            if hook_result is not None:
+                output = hook_result
+        
+        # 设置输出张量的模块引用（用于反向传播钩子）
+        # 只有当存在backward钩子时才设置，避免不必要的开销
+        if output is not None and (self._backward_hooks or self._backward_pre_hooks):
+            if isinstance(output, TN):
+                output._module = self
+            elif isinstance(output, (tuple, list)):
+                for out in output:
+                    if isinstance(out, TN):
+                        out._module = self
+        
+        return output
 
     def parameters(self, recurse=True):
         """
@@ -927,6 +1035,147 @@ class Module:
             for module_name, module in self._modules.items():
                 sub_prefix = f"{prefix}{module_name}."
                 yield from module.named_modules(sub_prefix, recurse)
+
+    def register_forward_pre_hook(self, hook):
+        """
+        注册前向传播前钩子 (Register Forward Pre-Hook)
+        
+        注册一个钩子函数，该钩子会在模块的forward方法被调用之前执行。
+        钩子函数应该具有以下签名：
+            hook(module, input) -> None or modified input
+        
+        Args:
+            hook (callable): 钩子函数，接收模块和输入参数，可以返回修改后的输入
+            
+        Returns:
+            RemovableHandle: 一个可调用对象，调用它可以移除这个钩子
+            
+        Examples:
+            >>> def my_hook(module, input):
+            ...     print(f"Forward pre-hook called for {module._get_name()}")
+            ...     # 可以修改输入
+            ...     return input
+            >>> 
+            >>> layer = Linear(10, 5)
+            >>> handle = layer.register_forward_pre_hook(my_hook)
+            >>> output = layer(input_data)  # 会调用 my_hook
+            >>> handle.remove()  # 移除钩子
+            
+        Note:
+            - 钩子函数可以返回修改后的输入来改变forward的输入
+            - 如果返回None，则使用原始输入
+            - 多个钩子按注册顺序执行
+        """
+        handle = RemovableHandle(self._forward_pre_hooks)
+        self._forward_pre_hooks[handle.id] = hook
+        return handle
+
+    def register_forward_hook(self, hook):
+        """
+        注册前向传播钩子 (Register Forward Hook)
+        
+        注册一个钩子函数，该钩子会在模块的forward方法被调用之后执行。
+        钩子函数应该具有以下签名：
+            hook(module, input, output) -> None or modified output
+        
+        Args:
+            hook (callable): 钩子函数，接收模块、输入和输出，可以返回修改后的输出
+            
+        Returns:
+            RemovableHandle: 一个可调用对象，调用它可以移除这个钩子
+            
+        Examples:
+            >>> def my_hook(module, input, output):
+            ...     print(f"Forward hook called for {module._get_name()}")
+            ...     print(f"Output shape: {output.shape}")
+            ...     # 可以修改输出
+            ...     return output * 2
+            >>> 
+            >>> layer = Linear(10, 5)
+            >>> handle = layer.register_forward_hook(my_hook)
+            >>> output = layer(input_data)  # 会调用 my_hook
+            >>> handle.remove()  # 移除钩子
+            
+        Note:
+            - 钩子可以返回修改后的输出来改变模块的输出
+            - 如果返回None，则使用原始输出
+            - 多个钩子按注册顺序执行
+        """
+        handle = RemovableHandle(self._forward_hooks)
+        self._forward_hooks[handle.id] = hook
+        return handle
+
+    def register_full_backward_pre_hook(self, hook):
+        """
+        注册反向传播前钩子 (Register Full Backward Pre-Hook)
+        
+        注册一个钩子函数，该钩子会在模块的反向传播开始之前执行。
+        钩子函数应该具有以下签名：
+            hook(module, grad_output) -> None or modified grad_output
+        
+        Args:
+            hook (callable): 钩子函数，接收模块和输出梯度，可以返回修改后的梯度
+            
+        Returns:
+            RemovableHandle: 一个可调用对象，调用它可以移除这个钩子
+            
+        Examples:
+            >>> def my_hook(module, grad_output):
+            ...     print(f"Backward pre-hook called for {module._get_name()}")
+            ...     # 可以修改梯度
+            ...     return grad_output
+            >>> 
+            >>> layer = Linear(10, 5)
+            >>> handle = layer.register_full_backward_pre_hook(my_hook)
+            >>> output = layer(input_data)
+            >>> output.sum().backward()  # 会调用 my_hook
+            >>> handle.remove()  # 移除钩子
+            
+        Note:
+            - 钩子在反向传播开始前被调用
+            - 可以修改传递给模块的梯度
+            - grad_output是一个元组，包含相对于输出的梯度
+        """
+        handle = RemovableHandle(self._backward_pre_hooks)
+        self._backward_pre_hooks[handle.id] = hook
+        return handle
+
+    def register_full_backward_hook(self, hook):
+        """
+        注册反向传播钩子 (Register Full Backward Hook)
+        
+        注册一个钩子函数，该钩子会在模块的反向传播完成后执行。
+        钩子函数应该具有以下签名：
+            hook(module, grad_input, grad_output) -> None or modified grad_input
+        
+        Args:
+            hook (callable): 钩子函数，接收模块、输入梯度和输出梯度
+            
+        Returns:
+            RemovableHandle: 一个可调用对象，调用它可以移除这个钩子
+            
+        Examples:
+            >>> def my_hook(module, grad_input, grad_output):
+            ...     print(f"Backward hook called for {module._get_name()}")
+            ...     print(f"grad_input: {grad_input}")
+            ...     print(f"grad_output: {grad_output}")
+            ...     # 可以修改输入梯度
+            ...     return grad_input
+            >>> 
+            >>> layer = Linear(10, 5)
+            >>> handle = layer.register_full_backward_hook(my_hook)
+            >>> output = layer(input_data)
+            >>> output.sum().backward()  # 会调用 my_hook
+            >>> handle.remove()  # 移除钩子
+            
+        Note:
+            - 钩子在反向传播完成后被调用
+            - grad_input和grad_output都是元组
+            - 可以返回修改后的grad_input来影响梯度传播
+        """
+        handle = RemovableHandle(self._backward_hooks)
+        self._backward_hooks[handle.id] = hook
+        return handle
 
     def train(self, mode=True):
         """
@@ -1777,39 +2026,8 @@ class Module:
                     return param.dtype
             return None
         
-        # 转换所有参数
-        for name, param in self._parameters.items():
-            if param is not None:
-                # 对参数张量调用type方法
-                new_param = param.type(dtype)
-                if new_param is not param:
-                    # 清除计算图依赖，确保新参数不会向旧参数传递梯度
-                    new_param = new_param.detach_()
-                    # 确保新参数保持梯度要求
-                    new_param.requires_grad = param.requires_grad
-                
-                    # 更新实例属性引用
-                    setattr(self, name, new_param)
-        
-        # 转换所有缓冲区
-        for name, buffer in self._buffers.items():
-            if buffer is not None:
-                # 对缓冲区张量调用type方法
-                new_buffer = buffer.type(dtype)
-                if new_buffer is not buffer:
-                    # 清除计算图依赖
-                    new_buffer = new_buffer.detach_()
-                    # 确保缓冲区保持梯度要求
-                    new_buffer.requires_grad = buffer.requires_grad
-                    
-                    # 更新实例属性引用
-                    setattr(self, name, new_buffer)
-        
-        # 递归转换所有子模块
-        for name, module in self._modules.items():
-            module.type(dtype)
-        
-        return self
+        # 直接调用 to() 方法进行数据类型转换
+        return self.to(dtype=dtype)
 
     def float(self):
         """转换为float32类型 (Float Cast)
@@ -2626,11 +2844,13 @@ class Linear(Module):
         
         dt = get_default_dtype() if dtype is None else dtype
 
-        # Xavier初始化需要确保数值类型正确
         # 与PyTorch保持一致：权重形状为 [out_features, in_features]
+        # 先初始化权重张量为 (in_features, out_features) 形状，再转置为 (out_features, in_features) 形状的参数
+        # 在forward里前向计算时，权重会再次转置为连续内存布局，这样前向计算性能会提升
+        # 这么处理的目的是在与PyTorch保持一致的权重形状的前提下，提升前向计算的性能
         stdv = 1.0 / sqrt(in_features)
-        w_para = randn(out_features, in_features, dtype=dt, device=device) * stdv
-        self.weight = Parameter(w_para)
+        w_para = randn(in_features, out_features, dtype=dt, device=device) * stdv
+        self.weight = Parameter(w_para.mT)
         
         # 偏置处理需要完整注册逻辑
         if bias:
@@ -2665,11 +2885,8 @@ class Linear(Module):
             - 使用矩阵乘法实现高效的批量计算
             - 当bias为None时只执行矩阵乘法
         """
-        # 执行矩阵乘法: x @ weight.T + bias，与PyTorch保持一致
-        # output =  x @ self.weight.mT
-        # 性能优化：对权重矩阵转置后，矩阵乘法时性能会下降，
-        # 对1D向量作维度缩放不会改变内存布局，对乘法性能影响较小
-        output = (self.weight @ x.unsqueeze(-1)).squeeze(-1)
+        # 执行矩阵乘法: x @ weight.T + bias
+        output = x @ self.weight.mT
         if self.bias is not None:
             output = output + self.bias
         return output
@@ -2990,6 +3207,538 @@ class ModuleDict(Module):
 
     def keys(self):
         return self._modules.keys()
+
+# end of class
+
+class ParameterList(Module):
+    """
+    参数列表容器 (Parameter List Container)
+    
+    将参数存储在列表中，支持索引访问、迭代和动态修改。
+    与ModuleList类似，但专门用于存储Parameter对象。
+    
+    主要用途:
+        - 管理多个参数
+        - 动态构建参数集合
+        - 在循环中访问多个参数
+        
+    Args:
+        parameters (iterable, optional): 参数的迭代器。可以是列表、元组或任何可迭代对象，
+            其中的元素必须是Parameter对象。如果为None，则创建空列表。默认值: None
+            
+    Attributes:
+        参数以数字字符串 '0', '1', '2', ... 作为名称注册到模块中，
+        可以通过parameters()和named_parameters()方法访问
+        
+    Examples:
+        >>> # 创建参数列表
+        >>> params = ParameterList([
+        ...     Parameter(rm.randn(10, 5)),
+        ...     Parameter(rm.randn(5)),
+        ...     Parameter(rm.randn(3, 3))
+        ... ])
+        >>> 
+        >>> # 索引访问
+        >>> weight = params[0]
+        >>> bias = params[1]
+        >>> 
+        >>> # 迭代访问
+        >>> for param in params:
+        ...     print(param.shape)
+        >>> 
+        >>> # 动态添加参数
+        >>> params.append(Parameter(rm.randn(1, 10)))
+        >>> 
+        >>> # 在自定义模块中使用
+        >>> class MyModule(Module):
+        ...     def __init__(self):
+        ...         super().__init__()
+        ...         self.params = ParameterList([
+        ...             Parameter(rm.randn(10, 20)),
+        ...             Parameter(rm.randn(20))
+        ...         ])
+        ...     
+        ...     def forward(self, x):
+        ...         weight, bias = self.params
+        ...         return x @ weight + bias
+        
+    Note:
+        - 专门用于存储Parameter对象
+        - 支持列表操作：append, extend, 索引访问等
+        - 参数会自动注册，包含在parameters()中
+        - 接口与torch.nn.ParameterList一致
+    """
+    def __init__(self, parameters=None):
+        """
+        初始化参数列表 (Initialize Parameter List)
+        
+        创建参数列表，可选择性地添加初始参数。
+        
+        Args:
+            parameters (iterable, optional): 包含Parameter对象的迭代器。可以是列表、元组、
+                生成器或任何可迭代对象。每个元素必须是Parameter类型。如果为None，
+                则创建空的参数列表。默认值: None
+                
+        Raises:
+            TypeError: 如果parameters中的元素不是Parameter对象
+            
+        Examples:
+            >>> # 空列表
+            >>> params = ParameterList()
+            >>> 
+            >>> # 从列表创建
+            >>> params = ParameterList([
+            ...     Parameter(rm.randn(10, 5)),
+            ...     Parameter(rm.randn(5))
+            ... ])
+            >>> 
+            >>> # 从生成器创建
+            >>> params = ParameterList(Parameter(rm.randn(i, i+1)) for i in range(3))
+        """
+        super().__init__()
+        if parameters is not None:
+            self.extend(parameters)
+
+    def append(self, parameter):
+        """
+        在列表末尾添加参数 (Append Parameter)
+        
+        将新参数添加到参数列表的末尾。参数会被自动注册到模块中，
+        注册名称为当前列表长度的字符串形式（如'0', '1', '2'等）。
+        
+        Args:
+            parameter (Parameter): 要添加的参数。必须是Parameter类型，
+                不能是普通的Tensor或其他类型
+                
+        Raises:
+            TypeError: 如果parameter不是Parameter对象
+            
+        Returns:
+            None
+            
+        Examples:
+            >>> params = ParameterList()
+            >>> params.append(Parameter(rm.randn(10, 20)))
+            >>> params.append(Parameter(rm.randn(20)))
+            >>> print(len(params))  # 2
+            >>> 
+            >>> # 验证参数已注册
+            >>> print(list(params.named_parameters()))  # [('0', Parameter(...)), ('1', Parameter(...))]
+        """
+        if not isinstance(parameter, Parameter):
+            raise TypeError(f"ParameterList only accepts Parameter objects, got {type(parameter)}")
+        self.register_parameter(str(len(self)), parameter)
+
+    def extend(self, parameters):
+        """
+        扩展参数列表 (Extend Parameter List)
+        
+        将多个参数添加到参数列表的末尾。每个参数会被依次调用append()方法添加，
+        因此会继承append()的所有特性，包括类型检查和自动注册。
+        
+        Args:
+            parameters (iterable): 包含Parameter对象的迭代器。可以是列表、元组、
+                生成器或任何可迭代对象。每个元素必须是Parameter类型
+                
+        Raises:
+            TypeError: 如果parameters中的任何元素不是Parameter对象
+            
+        Returns:
+            None
+            
+        Examples:
+            >>> params = ParameterList([Parameter(rm.randn(10, 20))])
+            >>> 
+            >>> # 从列表扩展
+            >>> new_params = [Parameter(rm.randn(20)), Parameter(rm.randn(20, 5))]
+            >>> params.extend(new_params)
+            >>> print(len(params))  # 3
+            >>> 
+            >>> # 从生成器扩展
+            >>> params.extend(Parameter(rm.randn(i, i+1)) for i in range(2))
+            >>> print(len(params))  # 5
+        """
+        for parameter in parameters:
+            self.append(parameter)
+
+    def __getitem__(self, idx):
+        """
+        索引访问参数 (Index Access)
+        
+        支持整数索引访问参数列表中的参数。索引从0开始，支持负数索引
+        （如-1表示最后一个参数）。
+        
+        Args:
+            idx (int): 参数索引。必须是整数，范围在[-len(self), len(self)-1]之间
+            
+        Returns:
+            Parameter: 指定索引处的参数
+            
+        Raises:
+            IndexError: 如果索引超出范围
+            TypeError: 如果idx不是整数类型
+            
+        Examples:
+            >>> params = ParameterList([
+            ...     Parameter(rm.randn(10, 20)),
+            ...     Parameter(rm.randn(20)),
+            ...     Parameter(rm.randn(20, 5))
+            ... ])
+            >>> weight = params[0]  # 获取第一个参数
+            >>> bias = params[1]  # 获取第二个参数
+            >>> last = params[-1]  # 获取最后一个参数（负数索引）
+        """
+        if not isinstance(idx, int):
+            raise TypeError(f"ParameterList indices must be integers, not {type(idx)}")
+        return list(self._parameters.values())[idx]
+
+    def __iter__(self):
+        """
+        迭代器支持 (Iterator Support)
+        
+        返回参数列表的迭代器，支持for循环遍历。
+        
+        Returns:
+            iterator: 参数的迭代器
+            
+        Examples:
+            >>> params = ParameterList([
+            ...     Parameter(rm.randn(10, 20)),
+            ...     Parameter(rm.randn(20))
+            ... ])
+            >>> for param in params:
+            ...     print(param.shape)
+        """
+        return iter(self._parameters.values())
+
+    def __len__(self):
+        """
+        获取参数列表长度 (Get Length)
+        
+        Returns:
+            int: 参数列表的长度
+            
+        Examples:
+            >>> params = ParameterList([
+            ...     Parameter(rm.randn(10, 20)),
+            ...     Parameter(rm.randn(20))
+            ... ])
+            >>> print(len(params))  # 2
+        """
+        return len(self._parameters)
+
+# end of class
+
+class ParameterDict(Module):
+    """
+    参数字典容器 (Parameter Dictionary Container)
+    
+    将参数存储在字典中，支持按名称访问和动态修改。
+    与ModuleDict类似，但专门用于存储Parameter对象。
+    
+    主要用途:
+        - 按名称管理参数
+        - 动态构建命名参数集合
+        - 方便地访问特定参数
+        
+    Args:
+        parameters (dict, optional): 参数的字典。键必须是字符串类型，
+            值必须是Parameter对象。如果为None，则创建空的参数字典。默认值: None
+            
+    Attributes:
+        参数以用户指定的键作为名称注册到模块中，
+        可以通过parameters()和named_parameters()方法访问
+        
+    Examples:
+        >>> # 创建参数字典
+        >>> params = ParameterDict({
+        ...     'weight': Parameter(rm.randn(10, 5)),
+        ...     'bias': Parameter(rm.randn(5)),
+        ...     'scale': Parameter(rm.randn(1))
+        ... })
+        >>> 
+        >>> # 按名称访问
+        >>> weight = params['weight']
+        >>> bias = params['bias']
+        >>> 
+        >>> # 迭代访问
+        >>> for name, param in params.items():
+        ...     print(f"{name}: {param.shape}")
+        >>> 
+        >>> # 动态添加参数
+        >>> params['new_param'] = Parameter(rm.randn(3, 3))
+        >>> 
+        >>> # 在自定义模块中使用
+        >>> class MyModule(Module):
+        ...     def __init__(self):
+        ...         super().__init__()
+        ...         self.params = ParameterDict({
+        ...             'w1': Parameter(rm.randn(10, 20)),
+        ...             'b1': Parameter(rm.randn(20)),
+        ...             'w2': Parameter(rm.randn(20, 5)),
+        ...             'b2': Parameter(rm.randn(5))
+        ...         })
+        ...     
+        ...     def forward(self, x):
+        ...         x = x @ self.params['w1'] + self.params['b1']
+        ...         x = x @ self.params['w2'] + self.params['b2']
+        ...         return x
+        
+    Note:
+        - 专门用于存储Parameter对象
+        - 支持字典操作：__setitem__, __getitem__, update等
+        - 参数会自动注册，包含在parameters()中
+        - 接口与torch.nn.ParameterDict一致
+    """
+    def __init__(self, parameters=None):
+        """
+        初始化参数字典 (Initialize Parameter Dict)
+        
+        创建参数字典，可选择性地添加初始参数。
+        
+        Args:
+            parameters (dict, optional): 包含Parameter对象的字典。键必须是字符串类型，
+                值必须是Parameter类型。如果为None，则创建空的参数字典。默认值: None
+                
+        Raises:
+            TypeError: 如果parameters不是字典类型，或键不是字符串，或值不是Parameter对象
+            
+        Examples:
+            >>> # 空字典
+            >>> params = ParameterDict()
+            >>> 
+            >>> # 从字典创建
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5)),
+            ...     'bias': Parameter(rm.randn(5))
+            ... })
+            >>> 
+            >>> # 验证参数已注册
+            >>> print(list(params.named_parameters()))  # [('weight', Parameter(...)), ('bias', Parameter(...))]
+        """
+        super().__init__()
+        if parameters is not None:
+            self.update(parameters)
+
+    def __setitem__(self, key, parameter):
+        """
+        设置参数 (Set Parameter)
+        
+        按键设置参数。参数会被自动注册到模块中，注册名称为指定的键。
+        
+        Args:
+            key (str): 参数键。必须是字符串类型，作为参数的名称
+            parameter (Parameter): 要设置的参数。必须是Parameter类型，
+                不能是普通的Tensor或其他类型
+                
+        Raises:
+            TypeError: 如果key不是字符串类型，或parameter不是Parameter对象
+            
+        Returns:
+            None
+            
+        Examples:
+            >>> params = ParameterDict()
+            >>> params['weight'] = Parameter(rm.randn(10, 5))
+            >>> params['bias'] = Parameter(rm.randn(5))
+            >>> 
+            >>> # 使用变量名作为键
+            >>> w_key = 'encoder_weight'
+            >>> params[w_key] = Parameter(rm.randn(20, 10))
+            >>> print(w_key in params)  # True
+        """
+        if not isinstance(key, str):
+            raise TypeError(f"ParameterDict keys must be strings, not {type(key)}")
+        if not isinstance(parameter, Parameter):
+            raise TypeError(f"ParameterDict only accepts Parameter objects, got {type(parameter)}")
+        self.register_parameter(key, parameter)
+
+    def __getitem__(self, key):
+        """
+        按键获取参数 (Get Parameter)
+        
+        通过键获取对应的参数。如果键不存在，会抛出KeyError。
+        
+        Args:
+            key (str): 参数键。必须是字符串类型，且必须存在于字典中
+            
+        Returns:
+            Parameter: 指定键的参数
+            
+        Raises:
+            KeyError: 如果指定的键不存在于字典中
+            TypeError: 如果key不是字符串类型
+            
+        Examples:
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5)),
+            ...     'bias': Parameter(rm.randn(5))
+            ... })
+            >>> weight = params['weight']
+            >>> bias = params['bias']
+            >>> 
+            >>> # 使用变量名作为键
+            >>> w_key = 'encoder_weight'
+            >>> params[w_key] = Parameter(rm.randn(20, 10))
+            >>> encoder_w = params[w_key]
+        """
+        if not isinstance(key, str):
+            raise TypeError(f"ParameterDict keys must be strings, not {type(key)}")
+        return self._parameters[key]
+
+    def update(self, parameters):
+        """
+        更新参数字典 (Update Parameter Dict)
+        
+        从字典更新参数。对于字典中的每个键值对，会调用__setitem__方法添加参数，
+        因此会继承__setitem__的所有特性，包括类型检查和自动注册。
+        
+        Args:
+            parameters (dict): 包含Parameter对象的字典。键必须是字符串类型，
+                值必须是Parameter类型。如果键已存在，会覆盖原有参数
+                
+        Raises:
+            TypeError: 如果parameters不是字典类型，或键不是字符串，或值不是Parameter对象
+            
+        Returns:
+            None
+            
+        Examples:
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5))
+            ... })
+            >>> 
+            >>> # 批量添加新参数
+            >>> new_params = {
+            ...     'bias': Parameter(rm.randn(5)),
+            ...     'scale': Parameter(rm.randn(1))
+            ... }
+            >>> params.update(new_params)
+            >>> print(len(params))  # 3
+            >>> 
+            >>> # 覆盖已有参数
+            >>> params.update({'weight': Parameter(rm.randn(10, 5))})  # 覆盖原有的weight
+        """
+        if not isinstance(parameters, dict):
+            raise TypeError("ParameterDict.update requires a dict")
+        for key, parameter in parameters.items():
+            self[key] = parameter
+
+    def keys(self):
+        """
+        获取所有参数键 (Get Keys)
+        
+        返回包含所有参数键的视图对象。返回的是dict_keys对象，
+        支持迭代和成员检查，但不支持索引访问。
+        
+        Returns:
+            dict_keys: 参数键的视图，包含所有字符串类型的键
+            
+        Examples:
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5)),
+            ...     'bias': Parameter(rm.randn(5))
+            ... })
+            >>> print(list(params.keys()))  # ['weight', 'bias']
+            >>> 
+            >>> # 成员检查
+            >>> 'weight' in params.keys()  # True
+            >>> 'nonexistent' in params.keys()  # False
+        """
+        return self._parameters.keys()
+
+    def items(self):
+        """
+        获取所有参数项 (Get Items)
+        
+        返回包含所有参数键值对的视图对象。返回的是dict_items对象，
+        每个元素是一个(key, value)元组，其中key是字符串，value是Parameter对象。
+        
+        Returns:
+            dict_items: 参数项的视图，包含(key, Parameter)元组
+            
+        Examples:
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5)),
+            ...     'bias': Parameter(rm.randn(5))
+            ... })
+            >>> for name, param in params.items():
+            ...     print(f"{name}: {param.shape}")
+            >>> 
+            >>> # 转换为列表
+            >>> items_list = list(params.items())
+            >>> print(items_list)  # [('weight', Parameter(...)), ('bias', Parameter(...))]
+        """
+        return self._parameters.items()
+
+    def values(self):
+        """
+        获取所有参数值 (Get Values)
+        
+        返回包含所有参数值的视图对象。返回的是dict_values对象，
+        包含所有的Parameter对象，支持迭代但不支持索引访问。
+        
+        Returns:
+            dict_values: 参数值的视图，包含所有Parameter对象
+            
+        Examples:
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5)),
+            ...     'bias': Parameter(rm.randn(5))
+            ... })
+            >>> for param in params.values():
+            ...     print(param.shape)
+            >>> 
+            >>> # 转换为列表
+            >>> values_list = list(params.values())
+            >>> print(len(values_list))  # 2
+        """
+        return self._parameters.values()
+
+    def __iter__(self):
+        """
+        迭代器支持 (Iterator Support)
+        
+        返回参数字典键的迭代器，支持for循环遍历。迭代顺序与keys()方法一致。
+        
+        Returns:
+            iterator: 参数键（字符串类型）的迭代器
+            
+        Examples:
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5)),
+            ...     'bias': Parameter(rm.randn(5))
+            ... })
+            >>> for name in params:
+            ...     print(name)
+            >>> 
+            >>> # 等价于
+            >>> for name in params.keys():
+            ...     print(name)
+        """
+        return iter(self._parameters)
+
+    def __len__(self):
+        """
+        获取参数字典长度 (Get Length)
+        
+        返回参数字典中键值对的数量，即参数的总数。
+        
+        Returns:
+            int: 参数字典中参数的数量
+            
+        Examples:
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5)),
+            ...     'bias': Parameter(rm.randn(5))
+            ... })
+            >>> print(len(params))  # 2
+            >>> 
+            >>> # 添加新参数后
+            >>> params['scale'] = Parameter(rm.randn(1))
+            >>> print(len(params))  # 3
+        """
+        return len(self._parameters)
 
 # end of class
 

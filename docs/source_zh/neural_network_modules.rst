@@ -688,6 +688,18 @@ Module 类主要方法
    * - ``enable_cache(enabled=True)``
      - 启用或禁用属性缓存
      - ``model.enable_cache(False)``
+   * - ``register_forward_pre_hook(hook)``
+     - 注册前向传播前钩子，在forward方法调用前执行
+     - ``handle = model.register_forward_pre_hook(lambda module, input: print(f'Input: {input}'))``
+   * - ``register_forward_hook(hook)``
+     - 注册前向传播钩子，在forward方法调用后执行
+     - ``handle = model.register_forward_hook(lambda module, input, output: print(f'Output: {output}'))``
+   * - ``register_full_backward_pre_hook(hook)``
+     - 注册反向传播前钩子，在反向传播开始前执行
+     - ``handle = model.register_full_backward_pre_hook(lambda module, grad_output: print(f'Grad output: {grad_output}'))``
+   * - ``register_full_backward_hook(hook)``
+     - 注册反向传播钩子，在反向传播完成后执行
+     - ``handle = model.register_full_backward_hook(lambda module, grad_input, grad_output: print(f'Grad input: {grad_input}'))``
 
 创建自定义模块
 ----------------
@@ -747,11 +759,12 @@ Parameter 类
 Riemann 提供了几种容器类来组织和管理模块：
 
 Sequential
-----------
+~~~~~~~~~~
 
 ``Sequential`` 容器按顺序执行模块，适用于简单的线性网络结构：
 
 **参数**：
+
 - 接受模块列表或关键字参数
 
 **使用示例**：
@@ -781,14 +794,16 @@ Sequential
     print(output.shape)  # [32, 5]
 
 ModuleList
-----------
+~~~~~~~~~~
 
 ``ModuleList`` 容器存储模块列表，允许通过索引访问，适用于需要动态控制前向传播的场景：
 
 **参数**：
+
 - ``modules``：模块列表（可选）
 
 **主要方法**：
+
 - ``append(module)``：添加模块
 - ``extend(modules)``：扩展模块列表
 - ``insert(index, module)``：插入模块
@@ -820,14 +835,16 @@ ModuleList
     print(f"Final output shape: {x.shape}")  # [32, 5]
 
 ModuleDict
-----------
+~~~~~~~~~~
 
 ``ModuleDict`` 容器使用字典存储模块，允许通过键访问，适用于需要根据条件选择不同模块的场景：
 
 **参数**：
+
 - ``modules``：模块字典（可选）
 
 **主要方法**：
+
 - ``update(modules)``：更新模块字典
 - ``pop(key)``：移除并返回指定键的模块
 
@@ -857,15 +874,314 @@ ModuleDict
     
     print(x.shape)  # [32, 5]
 
+ParameterList
+~~~~~~~~~~~~~
+
+``ParameterList`` 容器专门用于存储参数列表，允许通过索引访问，适用于需要管理多个参数的场景：
+
+**构造函数参数**：
+
+- ``parameters`` (iterable, optional)：参数的迭代器。可以是列表、元组、生成器或任何可迭代对象，
+  其中的元素必须是 ``Parameter`` 对象。如果为 ``None``，则创建空列表。默认值：``None``
+
+**主要方法**：
+
+- ``append(parameter)``：在列表末尾添加参数
+  
+  - **参数**：
+    
+    - ``parameter`` (Parameter)：要添加的参数，必须是 ``Parameter`` 类型
+    
+  - **说明**：参数会被自动注册到模块中，注册名称为当前列表长度的字符串形式 (如 ``'0'``、``'1'``、``'2'`` 等)
+  
+  - **异常**：
+    
+    - ``TypeError``：如果 ``parameter`` 不是 ``Parameter`` 对象
+
+- ``extend(parameters)``：扩展参数列表
+  
+  - **参数**：
+    
+    - ``parameters`` (iterable)：包含 ``Parameter`` 对象的迭代器
+    
+  - **说明**：将多个参数添加到参数列表的末尾，每个参数会依次调用 ``append()`` 方法
+  
+  - **异常**：
+    
+    - ``TypeError``：如果 ``parameters`` 中的任何元素不是 ``Parameter`` 对象
+
+- ``__getitem__(idx)``：索引访问参数
+  
+  - **参数**：
+    
+    - ``idx`` (int)：参数索引，必须是整数，支持负数索引 (如 ``-1`` 表示最后一个参数)
+    
+  - **返回**：
+    
+    - ``Parameter``：指定索引处的参数
+    
+  - **异常**：
+    
+    - ``IndexError``：如果索引超出范围
+    - ``TypeError``：如果 ``idx`` 不是整数类型
+
+- ``__len__()``：获取参数列表长度
+  
+  - **返回**：
+    
+    - ``int``：参数列表中参数的数量
+
+- ``__iter__()``：迭代器支持
+  
+  - **返回**：
+    
+    - ``iterator``：参数的迭代器，支持 ``for`` 循环遍历
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # 创建空参数列表
+    params = nn.ParameterList()
+    print(len(params))  # 0
+    
+    # 从列表创建
+    params = nn.ParameterList([
+        nn.Parameter(rm.randn(10, 20)),
+        nn.Parameter(rm.randn(20))
+    ])
+    print(len(params))  # 2
+    
+    # 从生成器创建
+    params = nn.ParameterList(nn.Parameter(rm.randn(i, i+1)) for i in range(3))
+    print(len(params))  # 3
+    
+    # 添加更多参数
+    params.append(nn.Parameter(rm.randn(20, 5)))
+    params.append(nn.Parameter(rm.randn(5)))
+    print(len(params))  # 5
+    
+    # 批量添加参数
+    new_params = [nn.Parameter(rm.randn(5, 3)), nn.Parameter(rm.randn(3))]
+    params.extend(new_params)
+    print(len(params))  # 7
+    
+    # 索引访问 (支持负数索引)
+    weight1 = params[0]      # 第一个参数
+    bias1 = params[1]        # 第二个参数
+    last_param = params[-1]  # 最后一个参数
+    
+    # 迭代访问
+    for i, param in enumerate(params):
+        print(f"Parameter {i}: {param.shape}")
+    
+    # 验证参数已注册
+    for name, param in params.named_parameters():
+        print(f"{name}: {param.shape}")
+    
+    # 在模块中使用
+    class MultiLayerNetwork(nn.Module):
+        def __init__(self):
+            super(MultiLayerNetwork, self).__init__()
+            self.params = nn.ParameterList([
+                nn.Parameter(rm.randn(10, 20)),
+                nn.Parameter(rm.randn(20)),
+                nn.Parameter(rm.randn(20, 5)),
+                nn.Parameter(rm.randn(5))
+            ])
+        
+        def forward(self, x):
+            x = x @ self.params[0] + self.params[1]
+            x = x @ self.params[2] + self.params[3]
+            return x
+    
+    model = MultiLayerNetwork()
+    x = rm.randn(32, 10)
+    output = model(x)
+    print(output.shape)  # [32, 5]
+
+ParameterDict
+~~~~~~~~~~~~~
+
+``ParameterDict`` 容器专门用于存储参数字典，允许通过键访问，适用于需要按名称管理参数的场景：
+
+**构造函数参数**：
+
+- ``parameters`` (dict, optional)：参数的字典。键必须是字符串类型，值必须是 ``Parameter`` 对象。
+  如果为 ``None``，则创建空的参数字典。默认值：``None``
+
+**主要方法**：
+
+- ``__setitem__(key, parameter)``：设置参数
+  
+  - **参数**：
+    
+    - ``key`` (str)：参数键，必须是字符串类型
+    - ``parameter`` (Parameter)：要设置的参数，必须是 ``Parameter`` 类型
+    
+  - **说明**：参数会被自动注册到模块中，注册名称为指定的键
+  
+  - **异常**：
+    
+    - ``TypeError``：如果 ``key`` 不是字符串类型，或 ``parameter`` 不是 ``Parameter`` 对象
+
+- ``__getitem__(key)``：按键获取参数
+  
+  - **参数**：
+    
+    - ``key`` (str)：参数键，必须是字符串类型
+    
+  - **返回**：
+    
+    - ``Parameter``：指定键的参数
+    
+  - **异常**：
+    
+    - ``KeyError``：如果指定的键不存在于字典中
+    - ``TypeError``：如果 ``key`` 不是字符串类型
+
+- ``update(parameters)``：更新参数字典
+  
+  - **参数**：
+    
+    - ``parameters`` (dict)：包含 ``Parameter`` 对象的字典，键必须是字符串类型
+    
+  - **说明**：对于字典中的每个键值对，会调用 ``__setitem__`` 方法添加参数。
+    如果键已存在，会覆盖原有参数
+  
+  - **异常**：
+    
+    - ``TypeError``：如果 ``parameters`` 不是字典类型，或键不是字符串，或值不是 ``Parameter`` 对象
+
+- ``keys()``：获取所有参数键
+  
+  - **返回**：
+    
+    - ``dict_keys``：参数键的视图，包含所有字符串类型的键
+
+- ``items()``：获取所有参数项
+  
+  - **返回**：
+    
+    - ``dict_items``：参数项的视图，包含 ``(key, Parameter)`` 元组
+
+- ``values()``：获取所有参数值
+  
+  - **返回**：
+    
+    - ``dict_values``：参数值的视图，包含所有 ``Parameter`` 对象
+
+- ``__iter__()``：迭代器支持
+  
+  - **返回**：
+    
+    - ``iterator``：参数键 (字符串类型) 的迭代器
+
+- ``__len__()``：获取参数字典长度
+  
+  - **返回**：
+    
+    - ``int``：参数字典中参数的数量
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # 创建空参数字典
+    params = nn.ParameterDict()
+    print(len(params))  # 0
+    
+    # 从字典创建
+    params = nn.ParameterDict({
+        'w1': nn.Parameter(rm.randn(10, 20)),
+        'b1': nn.Parameter(rm.randn(20)),
+        'w2': nn.Parameter(rm.randn(20, 5)),
+        'b2': nn.Parameter(rm.randn(5))
+    })
+    print(len(params))  # 4
+    
+    # 动态添加参数
+    params['scale'] = nn.Parameter(rm.randn(1))
+    params['shift'] = nn.Parameter(rm.randn(1))
+    print(len(params))  # 6
+    
+    # 批量添加/更新参数
+    params.update({
+        'new_w': nn.Parameter(rm.randn(5, 3)),
+        'new_b': nn.Parameter(rm.randn(3))
+    })
+    print(len(params))  # 8
+    
+    # 覆盖已有参数
+    params.update({'w1': nn.Parameter(rm.randn(10, 20))})
+    
+    # 按键访问
+    weight1 = params['w1']
+    bias1 = params['b1']
+    
+    # 使用变量名作为键
+    w_key = 'encoder_weight'
+    params[w_key] = nn.Parameter(rm.randn(20, 10))
+    encoder_w = params[w_key]
+    
+    # 迭代访问键
+    for name in params:
+        print(f"Key: {name}")
+    
+    # 迭代访问键值对
+    for name, param in params.items():
+        print(f"{name}: {param.shape}")
+    
+    # 迭代访问值
+    for param in params.values():
+        print(f"Shape: {param.shape}")
+    
+    # 成员检查
+    print('w1' in params.keys())  # True
+    print('nonexistent' in params.keys())  # False
+    
+    # 验证参数已注册
+    for name, param in params.named_parameters():
+        print(f"{name}: {param.shape}")
+    
+    # 在模块中使用
+    class NamedParameterNetwork(nn.Module):
+        def __init__(self):
+            super(NamedParameterNetwork, self).__init__()
+            self.params = nn.ParameterDict({
+                'encoder_w': nn.Parameter(rm.randn(10, 20)),
+                'encoder_b': nn.Parameter(rm.randn(20)),
+                'decoder_w': nn.Parameter(rm.randn(20, 5)),
+                'decoder_b': nn.Parameter(rm.randn(5))
+            })
+        
+        def forward(self, x):
+            x = x @ self.params['encoder_w'] + self.params['encoder_b']
+            x = x @ self.params['decoder_w'] + self.params['decoder_b']
+            return x
+    
+    model = NamedParameterNetwork()
+    x = rm.randn(32, 10)
+    output = model(x)
+    print(output.shape)  # [32, 5]
+
 容器类的选择
------------------
+~~~~~~~~~~~~
 
 - **Sequential**：适用于简单的线性网络，代码简洁
 - **ModuleList**：适用于需要动态调整模块顺序或数量的场景
 - **ModuleDict**：适用于需要根据条件选择不同模块的场景
+- **ParameterList**：适用于需要管理多个参数的场景
+- **ParameterDict**：适用于需要按名称管理参数的场景
 
 混合使用容器类
-----------------
+~~~~~~~~~~~~~~
 
 可以根据网络结构的复杂度，混合使用不同的容器类：
 

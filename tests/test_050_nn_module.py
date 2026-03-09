@@ -20,13 +20,11 @@ Riemann nn.Module 全功能测试套件
 12. 前向传播 - forward(), __call__()
 """
 
-import unittest
 import numpy as np
 import time
 import sys
 import os
 import copy
-from typing import Any, Dict, List
 
 # 添加项目根目录到sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
@@ -34,7 +32,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 # 导入riemann模块
 try:
     import riemann as rm
-    from riemann.nn import Parameter, Module, Linear, Sequential, ModuleList, ModuleDict, Dropout
+    from riemann.nn import Parameter, Module, Linear, Sequential, ModuleList, ModuleDict, Dropout, ParameterList, ParameterDict
     RIEMANN_AVAILABLE = True
 except ImportError as e:
     print(f"无法导入riemann模块: {e}")
@@ -1075,6 +1073,411 @@ def test_to_method():
     finally:
         stats.end_function()
 
+# ==================== 钩子函数测试 ====================
+def test_hook_functions():
+    """测试Module的钩子函数注册方法"""
+    stats.start_function("钩子函数测试")
+    
+    try:
+        # 测试1: register_forward_pre_hook
+        print("测试 register_forward_pre_hook...")
+        module = CustomModule(10, 5)
+        input_data = rm.randn(2, 10)
+        
+        forward_pre_hook_called = False
+        def forward_pre_hook(module, input):
+            nonlocal forward_pre_hook_called
+            forward_pre_hook_called = True
+            assert isinstance(module, CustomModule)
+            assert isinstance(input, tuple)
+            assert len(input) == 1
+            assert input[0].shape == (2, 10)
+            return input
+        
+        # 注册钩子
+        hook_handle = module.register_forward_pre_hook(forward_pre_hook)
+        
+        # 调用前向传播
+        output = module(input_data)
+        passed = forward_pre_hook_called
+        stats.add_result("register_forward_pre_hook调用", passed, f"前向预处理钩子被调用: {forward_pre_hook_called}")
+        
+        # 测试2: 移除钩子
+        print("测试移除 forward_pre_hook...")
+        hook_handle.remove()
+        forward_pre_hook_called = False
+        
+        # 再次调用前向传播
+        output = module(input_data)
+        passed = not forward_pre_hook_called
+        stats.add_result("forward_pre_hook移除", passed, f"前向预处理钩子被正确移除: {not forward_pre_hook_called}")
+        
+        # 测试3: register_forward_hook
+        print("测试 register_forward_hook...")
+        forward_hook_called = False
+        def forward_hook(module, input, output):
+            nonlocal forward_hook_called
+            forward_hook_called = True
+            assert isinstance(module, CustomModule)
+            assert isinstance(input, tuple)
+            assert hasattr(output, 'shape')  # 检查是否有shape属性
+            assert input[0].shape == (2, 10)
+            assert output.shape == (2, 5)
+            return output
+        
+        # 注册钩子
+        hook_handle = module.register_forward_hook(forward_hook)
+        
+        # 调用前向传播
+        output = module(input_data)
+        passed = forward_hook_called
+        stats.add_result("register_forward_hook调用", passed, f"前向钩子被调用: {forward_hook_called}")
+        
+        # 测试4: 移除钩子
+        print("测试移除 forward_hook...")
+        hook_handle.remove()
+        forward_hook_called = False
+        
+        # 再次调用前向传播
+        output = module(input_data)
+        passed = not forward_hook_called
+        stats.add_result("forward_hook移除", passed, f"前向钩子被正确移除: {not forward_hook_called}")
+        
+        # 测试5: register_full_backward_pre_hook
+        print("测试 register_full_backward_pre_hook...")
+        backward_pre_hook_called = False
+        def backward_pre_hook(module, grad_input):
+            nonlocal backward_pre_hook_called
+            backward_pre_hook_called = True
+            assert isinstance(module, CustomModule)
+            assert isinstance(grad_input, tuple)
+            return grad_input
+        
+        # 注册钩子
+        hook_handle = module.register_full_backward_pre_hook(backward_pre_hook)
+        
+        # 执行前向和反向传播
+        input_data = rm.randn(2, 10, requires_grad=True)
+        output = module(input_data)
+        loss = output.sum()
+        loss.backward()
+        passed = backward_pre_hook_called
+        stats.add_result("register_full_backward_pre_hook调用", passed, f"反向预处理钩子被调用: {backward_pre_hook_called}")
+        
+        # 测试6: 移除钩子
+        print("测试移除 backward_pre_hook...")
+        hook_handle.remove()
+        backward_pre_hook_called = False
+        
+        # 再次执行前向和反向传播
+        module.zero_grad()
+        input_data = rm.randn(2, 10, requires_grad=True)
+        output = module(input_data)
+        loss = output.sum()
+        loss.backward()
+        passed = not backward_pre_hook_called
+        stats.add_result("register_full_backward_pre_hook移除", passed, f"反向预处理钩子被正确移除: {not backward_pre_hook_called}")
+        
+        # 测试7: register_full_backward_hook
+        print("测试 register_full_backward_hook...")
+        backward_hook_called = False
+        def backward_hook(module, grad_input, grad_output):
+            nonlocal backward_hook_called
+            backward_hook_called = True
+            assert isinstance(module, CustomModule)
+            assert isinstance(grad_input, tuple)
+            assert isinstance(grad_output, tuple)
+            return grad_input
+        
+        # 注册钩子
+        hook_handle = module.register_full_backward_hook(backward_hook)
+        
+        # 执行前向和反向传播
+        module.zero_grad()
+        input_data = rm.randn(2, 10, requires_grad=True)
+        output = module(input_data)
+        loss = output.sum()
+        loss.backward()
+        passed = backward_hook_called
+        stats.add_result("register_full_backward_hook调用", passed, f"反向钩子被调用: {backward_hook_called}")
+        
+        # 测试8: 移除钩子
+        print("测试移除 backward_hook...")
+        hook_handle.remove()
+        backward_hook_called = False
+        
+        # 再次执行前向和反向传播
+        module.zero_grad()
+        input_data = rm.randn(2, 10, requires_grad=True)
+        output = module(input_data)
+        loss = output.sum()
+        loss.backward()
+        passed = not backward_hook_called
+        stats.add_result("register_full_backward_hook移除", passed, f"反向钩子被正确移除: {not backward_hook_called}")
+        
+        # 测试9: 多个钩子同时注册
+        print("测试多个钩子同时注册...")
+        hook_count = 0
+        def hook1(module, input):
+            nonlocal hook_count
+            hook_count += 1
+            return input
+        
+        def hook2(module, input):
+            nonlocal hook_count
+            hook_count += 1
+            return input
+        
+        # 注册多个钩子
+        handle1 = module.register_forward_pre_hook(hook1)
+        handle2 = module.register_forward_pre_hook(hook2)
+        
+        # 调用前向传播
+        output = module(input_data)
+        passed = hook_count == 2
+        stats.add_result("多个钩子注册", passed, f"所有钩子都被调用: {hook_count == 2}")
+        
+        # 清理
+        handle1.remove()
+        handle2.remove()
+        
+    except Exception as e:
+        print(f"钩子函数测试出现异常: {e}")
+        stats.add_result("钩子函数测试异常", False, str(e))
+    
+    finally:
+        stats.end_function()
+
+# ==================== ParameterList测试 ====================
+def test_parameter_list():
+    """测试ParameterList类的功能"""
+    stats.start_function("ParameterList测试")
+    
+    try:
+        # 测试1: 创建空ParameterList
+        print("测试创建空ParameterList...")
+        params = ParameterList()
+        passed = len(params) == 0
+        stats.add_result("空ParameterList创建", passed, f"空列表长度: {len(params)}")
+        
+        # 测试2: 从列表创建ParameterList
+        print("测试从列表创建ParameterList...")
+        params = ParameterList([
+            Parameter(rm.randn(10, 20)),
+            Parameter(rm.randn(20))
+        ])
+        passed = len(params) == 2
+        stats.add_result("从列表创建", passed, f"列表长度: {len(params)}")
+        
+        # 测试3: append方法
+        print("测试append方法...")
+        params.append(Parameter(rm.randn(20, 5)))
+        params.append(Parameter(rm.randn(5)))
+        passed = len(params) == 4
+        stats.add_result("append方法", passed, f"添加后长度: {len(params)}")
+        
+        # 测试4: 索引访问
+        print("测试索引访问...")
+        weight1 = params[0]
+        bias1 = params[1]
+        weight2 = params[2]
+        bias2 = params[3]
+        passed = (hasattr(weight1, 'shape') and hasattr(bias1, 'shape') and 
+                  hasattr(weight2, 'shape') and hasattr(bias2, 'shape'))
+        stats.add_result("索引访问", passed, "所有参数都可以通过索引访问")
+        
+        # 测试5: 负数索引
+        print("测试负数索引...")
+        last_param = params[-1]
+        passed = hasattr(last_param, 'shape')
+        stats.add_result("负数索引", passed, f"最后一个参数可访问: {hasattr(last_param, 'shape')}")
+        
+        # 测试6: extend方法
+        print("测试extend方法...")
+        new_params = [Parameter(rm.randn(5, 3)), Parameter(rm.randn(3))]
+        params.extend(new_params)
+        passed = len(params) == 6
+        stats.add_result("extend方法", passed, f"扩展后长度: {len(params)}")
+        
+        # 测试7: 迭代访问
+        print("测试迭代访问...")
+        param_count = 0
+        for param in params:
+            param_count += 1
+            assert hasattr(param, 'shape')
+        passed = param_count == 6
+        stats.add_result("迭代访问", passed, f"迭代参数数量: {param_count}")
+        
+        # 测试8: 参数注册
+        print("测试参数注册...")
+        named_params = list(params.named_parameters())
+        passed = len(named_params) == 6
+        stats.add_result("参数注册", passed, f"注册参数数量: {len(named_params)}")
+        
+        # 测试9: 在模块中使用
+        print("测试在模块中使用...")
+        class TestModule(Module):
+            def __init__(self):
+                super().__init__()
+                self.params = ParameterList([
+                    Parameter(rm.randn(10, 20)),
+                    Parameter(rm.randn(20))
+                ])
+            
+            def forward(self, x):
+                return x @ self.params[0] + self.params[1]
+        
+        module = TestModule()
+        x = rm.randn(2, 10)
+        output = module(x)
+        passed = hasattr(output, 'shape') and output.shape == (2, 20)
+        stats.add_result("模块中使用", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
+        
+        # 测试10: 类型检查
+        print("测试类型检查...")
+        try:
+            params.append(rm.randn(5, 5))
+            stats.add_result("类型检查", False, "应该拒绝非Parameter对象")
+        except TypeError:
+            stats.add_result("类型检查", True, "正确拒绝非Parameter对象")
+        
+    except Exception as e:
+        print(f"ParameterList测试出现异常: {e}")
+        stats.add_result("ParameterList测试异常", False, str(e))
+    
+    finally:
+        stats.end_function()
+
+# ==================== ParameterDict测试 ====================
+def test_parameter_dict():
+    """测试ParameterDict类的功能"""
+    stats.start_function("ParameterDict测试")
+    
+    try:
+        # 测试1: 创建空ParameterDict
+        print("测试创建空ParameterDict...")
+        params = ParameterDict()
+        passed = len(params) == 0
+        stats.add_result("空ParameterDict创建", passed, f"空字典长度: {len(params)}")
+        
+        # 测试2: 从字典创建ParameterDict
+        print("测试从字典创建ParameterDict...")
+        params = ParameterDict({
+            'w1': Parameter(rm.randn(10, 20)),
+            'b1': Parameter(rm.randn(20))
+        })
+        passed = len(params) == 2
+        stats.add_result("从字典创建", passed, f"字典长度: {len(params)}")
+        
+        # 测试3: __setitem__方法
+        print("测试__setitem__方法...")
+        params['w2'] = Parameter(rm.randn(20, 5))
+        params['b2'] = Parameter(rm.randn(5))
+        passed = len(params) == 4
+        stats.add_result("__setitem__方法", passed, f"添加后长度: {len(params)}")
+        
+        # 测试4: __getitem__方法
+        print("测试__getitem__方法...")
+        weight1 = params['w1']
+        bias1 = params['b1']
+        weight2 = params['w2']
+        bias2 = params['b2']
+        passed = (hasattr(weight1, 'shape') and hasattr(bias1, 'shape') and 
+                  hasattr(weight2, 'shape') and hasattr(bias2, 'shape'))
+        stats.add_result("__getitem__方法", passed, "所有参数都可以通过键访问")
+        
+        # 测试5: update方法
+        print("测试update方法...")
+        params.update({
+            'scale': Parameter(rm.randn(1)),
+            'shift': Parameter(rm.randn(1))
+        })
+        passed = len(params) == 6
+        stats.add_result("update方法", passed, f"更新后长度: {len(params)}")
+        
+        # 测试6: keys方法
+        print("测试keys方法...")
+        keys = list(params.keys())
+        passed = len(keys) == 6 and all(isinstance(k, str) for k in keys)
+        stats.add_result("keys方法", passed, f"键数量: {len(keys)}, 都是字符串: {all(isinstance(k, str) for k in keys)}")
+        
+        # 测试7: items方法
+        print("测试items方法...")
+        items = list(params.items())
+        passed = len(items) == 6 and all(isinstance(item, tuple) and len(item) == 2 for item in items)
+        stats.add_result("items方法", passed, f"项数量: {len(items)}, 都是元组: {all(isinstance(item, tuple) for item in items)}")
+        
+        # 测试8: values方法
+        print("测试values方法...")
+        values = list(params.values())
+        passed = len(values) == 6 and all(hasattr(v, 'shape') for v in values)
+        stats.add_result("values方法", passed, f"值数量: {len(values)}, 都是参数: {all(hasattr(v, 'shape') for v in values)}")
+        
+        # 测试9: 迭代访问
+        print("测试迭代访问...")
+        key_count = 0
+        for key in params:
+            key_count += 1
+            assert isinstance(key, str)
+        passed = key_count == 6
+        stats.add_result("迭代访问", passed, f"迭代键数量: {key_count}")
+        
+        # 测试10: 参数注册
+        print("测试参数注册...")
+        named_params = list(params.named_parameters())
+        passed = len(named_params) == 6
+        stats.add_result("参数注册", passed, f"注册参数数量: {len(named_params)}")
+        
+        # 测试11: 在模块中使用
+        print("测试在模块中使用...")
+        class TestModule(Module):
+            def __init__(self):
+                super().__init__()
+                self.params = ParameterDict({
+                    'w1': Parameter(rm.randn(10, 20)),
+                    'b1': Parameter(rm.randn(20))
+                })
+            
+            def forward(self, x):
+                return x @ self.params['w1'] + self.params['b1']
+        
+        module = TestModule()
+        x = rm.randn(2, 10)
+        output = module(x)
+        passed = hasattr(output, 'shape') and output.shape == (2, 20)
+        stats.add_result("模块中使用", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
+        
+        # 测试12: 类型检查
+        print("测试类型检查...")
+        try:
+            params['test'] = rm.randn(5, 5)
+            stats.add_result("类型检查", False, "应该拒绝非Parameter对象")
+        except TypeError:
+            stats.add_result("类型检查", True, "正确拒绝非Parameter对象")
+        
+        # 测试13: 键类型检查
+        print("测试键类型检查...")
+        try:
+            params[123] = Parameter(rm.randn(5, 5))
+            stats.add_result("键类型检查", False, "应该拒绝非字符串键")
+        except TypeError:
+            stats.add_result("键类型检查", True, "正确拒绝非字符串键")
+        
+        # 测试14: 覆盖参数
+        print("测试覆盖参数...")
+        old_param = params['w1']
+        params['w1'] = Parameter(rm.randn(10, 20))
+        new_param = params['w1']
+        passed = old_param is not new_param
+        stats.add_result("覆盖参数", passed, "参数被正确覆盖")
+        
+    except Exception as e:
+        print(f"ParameterDict测试出现异常: {e}")
+        stats.add_result("ParameterDict测试异常", False, str(e))
+    
+    finally:
+        stats.end_function()
+
 # ==================== 主测试函数 ====================
 def run_all_tests():
     """运行所有测试"""
@@ -1103,7 +1506,10 @@ def run_all_tests():
         test_module_copying,
         test_attribute_management,
         test_forward_propagation,
-        test_to_method
+        test_to_method,
+        test_hook_functions,
+        test_parameter_list,
+        test_parameter_dict
     ]
     
     start_time = time.time()

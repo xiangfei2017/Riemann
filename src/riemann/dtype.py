@@ -53,6 +53,10 @@ All functions are designed to provide consistent type handling across the Rieman
 """
 
 import numpy as np
+try:
+    import cupy as cp
+except:
+    cp = None
 import math
 
 # 预定义常量
@@ -125,6 +129,12 @@ def is_float_or_complex(dtype:np.dtype):
         return True
     return False
 
+def is_float(dtype:np.dtype):
+    return np.issubdtype(dtype, np.floating)
+
+def is_complex(dtype:np.dtype):
+    return np.issubdtype(dtype, np.complexfloating)
+
 # 预定义类型值映射，避免在每次函数调用时重新创建字典
 type_value_dict = { np.dtype('bool'):(1,0),
                     np.dtype('uint8'):(8,0),
@@ -154,7 +164,7 @@ def infer_data_type(v):
         dt = get_default_dtype()    
     elif isinstance(v,complex):
         dt = get_default_complex()
-    elif isinstance(v,np.ndarray):
+    elif isinstance(v,np.ndarray) or (cp and isinstance(v,cp.ndarray)):
         dt = v.dtype
     elif isinstance(v,(list,tuple)):
         if len(v) == 0:
@@ -183,6 +193,21 @@ def infer_data_type(v):
         dt = max_type
     else:
         raise TypeError('elements of v need to be number')
+    return dt
+
+def infer_dtype_in_binoper(non_tensor_value,tensor_dtype):
+    '''
+    推断二元操作符运算中非TN量的数据类型
+    '''
+
+    if is_float(tensor_dtype) and \
+       isinstance(non_tensor_value,(int,float,bool)):
+        return tensor_dtype
+    
+    if is_complex(tensor_dtype):
+        return tensor_dtype
+    
+    dt = infer_data_type(non_tensor_value)
     return dt
 
 def is_scalar(value):

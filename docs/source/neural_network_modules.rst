@@ -688,6 +688,18 @@ Module Class Main Methods
    * - ``enable_cache(enabled=True)``
      - Enable or disable attribute cache
      - ``model.enable_cache(False)``
+   * - ``register_forward_pre_hook(hook)``
+     - Register forward pre-hook, executed before forward method call
+     - ``handle = model.register_forward_pre_hook(lambda module, input: print(f'Input: {input}'))``
+   * - ``register_forward_hook(hook)``
+     - Register forward hook, executed after forward method call
+     - ``handle = model.register_forward_hook(lambda module, input, output: print(f'Output: {output}'))``
+   * - ``register_full_backward_pre_hook(hook)``
+     - Register backward pre-hook, executed before backward propagation starts
+     - ``handle = model.register_full_backward_pre_hook(lambda module, grad_output: print(f'Grad output: {grad_output}'))``
+   * - ``register_full_backward_hook(hook)``
+     - Register backward hook, executed after backward propagation completes
+     - ``handle = model.register_full_backward_hook(lambda module, grad_input, grad_output: print(f'Grad input: {grad_input}'))``
 
 Creating Custom Modules
 -----------------------
@@ -747,11 +759,12 @@ Container Classes
 Riemann provides several container classes to organize and manage modules:
 
 Sequential
-----------
+~~~~~~~~~~
 
 The ``Sequential`` container executes modules in sequence, suitable for simple linear network structures:
 
 **Parameters**:
+
 - Accepts module lists or keyword arguments
 
 **Usage Example**:
@@ -781,14 +794,16 @@ The ``Sequential`` container executes modules in sequence, suitable for simple l
     print(output.shape)  # [32, 5]
 
 ModuleList
-----------
+~~~~~~~~~~
 
 The ``ModuleList`` container stores module lists, allowing access by index, suitable for scenarios requiring dynamic control of forward propagation:
 
 **Parameters**:
+
 - ``modules``: Module list (optional)
 
 **Main Methods**:
+
 - ``append(module)``: Add module
 - ``extend(modules)``: Extend module list
 - ``insert(index, module)``: Insert module
@@ -820,14 +835,16 @@ The ``ModuleList`` container stores module lists, allowing access by index, suit
     print(f"Final output shape: {x.shape}")  # [32, 5]
 
 ModuleDict
-----------
+~~~~~~~~~~
 
 The ``ModuleDict`` container uses a dictionary to store modules, allowing access by key, suitable for scenarios requiring selection of different modules based on conditions:
 
 **Parameters**:
+
 - ``modules``: Module dictionary (optional)
 
 **Main Methods**:
+
 - ``update(modules)``: Update module dictionary
 - ``pop(key)``: Remove and return module with specified key
 
@@ -857,15 +874,311 @@ The ``ModuleDict`` container uses a dictionary to store modules, allowing access
     
     print(x.shape)  # [32, 5]
 
+ParameterList
+~~~~~~~~~~~~~
+
+The ``ParameterList`` container is specifically designed for storing parameter lists, allowing access by index, suitable for scenarios requiring management of multiple parameters:
+
+**Constructor Parameters**:
+
+- ``parameters`` (iterable, optional): An iterable of parameters. Can be a list, tuple, generator, or any iterable object where each element must be a ``Parameter`` object. If ``None``, creates an empty list. Default: ``None``
+
+**Main Methods**:
+
+- ``append(parameter)``: Append parameter to the end of the list
+  
+  - **Parameters**:
+    
+    - ``parameter`` (Parameter): The parameter to add, must be of type ``Parameter``
+    
+  - **Description**: The parameter is automatically registered to the module with the registration name being the string representation of the current list length (e.g., ``'0'``, ``'1'``, ``'2'``, etc.)
+  
+  - **Exceptions**:
+    
+    - ``TypeError``: If ``parameter`` is not a ``Parameter`` object
+
+- ``extend(parameters)``: Extend the parameter list
+  
+  - **Parameters**:
+    
+    - ``parameters`` (iterable): An iterable containing ``Parameter`` objects
+    
+  - **Description**: Adds multiple parameters to the end of the list, with each parameter calling the ``append()`` method in sequence
+  
+  - **Exceptions**:
+    
+    - ``TypeError``: If any element in ``parameters`` is not a ``Parameter`` object
+
+- ``__getitem__(idx)``: Index access to parameters
+  
+  - **Parameters**:
+    
+    - ``idx`` (int): Parameter index, must be an integer, supports negative indexing (e.g., ``-1`` for the last parameter)
+    
+  - **Returns**:
+    
+    - ``Parameter``: The parameter at the specified index
+    
+  - **Exceptions**:
+    
+    - ``IndexError``: If the index is out of range
+    - ``TypeError``: If ``idx`` is not an integer type
+
+- ``__len__()``: Get the length of the parameter list
+  
+  - **Returns**:
+    
+    - ``int``: The number of parameters in the list
+
+- ``__iter__()``: Iterator support
+  
+  - **Returns**:
+    
+    - ``iterator``: An iterator over the parameters, supporting ``for`` loop iteration
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create empty parameter list
+    params = nn.ParameterList()
+    print(len(params))  # 0
+    
+    # Create from list
+    params = nn.ParameterList([
+        nn.Parameter(rm.randn(10, 20)),
+        nn.Parameter(rm.randn(20))
+    ])
+    print(len(params))  # 2
+    
+    # Create from generator
+    params = nn.ParameterList(nn.Parameter(rm.randn(i, i+1)) for i in range(3))
+    print(len(params))  # 3
+    
+    # Add more parameters
+    params.append(nn.Parameter(rm.randn(20, 5)))
+    params.append(nn.Parameter(rm.randn(5)))
+    print(len(params))  # 5
+    
+    # Batch add parameters
+    new_params = [nn.Parameter(rm.randn(5, 3)), nn.Parameter(rm.randn(3))]
+    params.extend(new_params)
+    print(len(params))  # 7
+    
+    # Index access (supports negative indexing)
+    weight1 = params[0]      # First parameter
+    bias1 = params[1]        # Second parameter
+    last_param = params[-1]  # Last parameter
+    
+    # Iterative access
+    for i, param in enumerate(params):
+        print(f"Parameter {i}: {param.shape}")
+    
+    # Verify parameters are registered
+    for name, param in params.named_parameters():
+        print(f"{name}: {param.shape}")
+    
+    # Use in module
+    class MultiLayerNetwork(nn.Module):
+        def __init__(self):
+            super(MultiLayerNetwork, self).__init__()
+            self.params = nn.ParameterList([
+                nn.Parameter(rm.randn(10, 20)),
+                nn.Parameter(rm.randn(20)),
+                nn.Parameter(rm.randn(20, 5)),
+                nn.Parameter(rm.randn(5))
+            ])
+        
+        def forward(self, x):
+            x = x @ self.params[0] + self.params[1]
+            x = x @ self.params[2] + self.params[3]
+            return x
+    
+    model = MultiLayerNetwork()
+    x = rm.randn(32, 10)
+    output = model(x)
+    print(output.shape)  # [32, 5]
+
+ParameterDict
+~~~~~~~~~~~~~
+
+The ``ParameterDict`` container is specifically designed for storing parameter dictionaries, allowing access by key, suitable for scenarios requiring management of parameters by name:
+
+**Constructor Parameters**:
+
+- ``parameters`` (dict, optional): A dictionary of parameters. Keys must be of string type, values must be ``Parameter`` objects. If ``None``, creates an empty parameter dictionary. Default: ``None``
+
+**Main Methods**:
+
+- ``__setitem__(key, parameter)``: Set parameter
+  
+  - **Parameters**:
+    
+    - ``key`` (str): Parameter key, must be of string type
+    - ``parameter`` (Parameter): The parameter to set, must be of type ``Parameter``
+    
+  - **Description**: The parameter is automatically registered to the module with the registration name being the specified key
+  
+  - **Exceptions**:
+    
+    - ``TypeError``: If ``key`` is not of string type, or ``parameter`` is not a ``Parameter`` object
+
+- ``__getitem__(key)``: Get parameter by key
+  
+  - **Parameters**:
+    
+    - ``key`` (str): Parameter key, must be of string type
+    
+  - **Returns**:
+    
+    - ``Parameter``: The parameter for the specified key
+    
+  - **Exceptions**:
+    
+    - ``KeyError``: If the specified key does not exist in the dictionary
+    - ``TypeError``: If ``key`` is not of string type
+
+- ``update(parameters)``: Update parameter dictionary
+  
+  - **Parameters**:
+    
+    - ``parameters`` (dict): A dictionary containing ``Parameter`` objects, keys must be of string type
+    
+  - **Description**: For each key-value pair in the dictionary, calls the ``__setitem__`` method to add the parameter. If the key already exists, the original parameter is overwritten
+  
+  - **Exceptions**:
+    
+    - ``TypeError``: If ``parameters`` is not a dictionary type, or keys are not strings, or values are not ``Parameter`` objects
+
+- ``keys()``: Get all parameter keys
+  
+  - **Returns**:
+    
+    - ``dict_keys``: A view of parameter keys, containing all keys of string type
+
+- ``items()``: Get all parameter items
+  
+  - **Returns**:
+    
+    - ``dict_items``: A view of parameter items, containing ``(key, Parameter)`` tuples
+
+- ``values()``: Get all parameter values
+  
+  - **Returns**:
+    
+    - ``dict_values``: A view of parameter values, containing all ``Parameter`` objects
+
+- ``__iter__()``: Iterator support
+  
+  - **Returns**:
+    
+    - ``iterator``: An iterator over parameter keys (of string type)
+
+- ``__len__()``: Get parameter dictionary length
+  
+  - **Returns**:
+    
+    - ``int``: The number of parameters in the dictionary
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create empty parameter dictionary
+    params = nn.ParameterDict()
+    print(len(params))  # 0
+    
+    # Create from dictionary
+    params = nn.ParameterDict({
+        'w1': nn.Parameter(rm.randn(10, 20)),
+        'b1': nn.Parameter(rm.randn(20)),
+        'w2': nn.Parameter(rm.randn(20, 5)),
+        'b2': nn.Parameter(rm.randn(5))
+    })
+    print(len(params))  # 4
+    
+    # Dynamically add parameters
+    params['scale'] = nn.Parameter(rm.randn(1))
+    params['shift'] = nn.Parameter(rm.randn(1))
+    print(len(params))  # 6
+    
+    # Batch add/update parameters
+    params.update({
+        'new_w': nn.Parameter(rm.randn(5, 3)),
+        'new_b': nn.Parameter(rm.randn(3))
+    })
+    print(len(params))  # 8
+    
+    # Overwrite existing parameter
+    params.update({'w1': nn.Parameter(rm.randn(10, 20))})
+    
+    # Access by key
+    weight1 = params['w1']
+    bias1 = params['b1']
+    
+    # Use variable as key
+    w_key = 'encoder_weight'
+    params[w_key] = nn.Parameter(rm.randn(20, 10))
+    encoder_w = params[w_key]
+    
+    # Iterate over keys
+    for name in params:
+        print(f"Key: {name}")
+    
+    # Iterate over key-value pairs
+    for name, param in params.items():
+        print(f"{name}: {param.shape}")
+    
+    # Iterate over values
+    for param in params.values():
+        print(f"Shape: {param.shape}")
+    
+    # Membership check
+    print('w1' in params.keys())  # True
+    print('nonexistent' in params.keys())  # False
+    
+    # Verify parameters are registered
+    for name, param in params.named_parameters():
+        print(f"{name}: {param.shape}")
+    
+    # Use in module
+    class NamedParameterNetwork(nn.Module):
+        def __init__(self):
+            super(NamedParameterNetwork, self).__init__()
+            self.params = nn.ParameterDict({
+                'encoder_w': nn.Parameter(rm.randn(10, 20)),
+                'encoder_b': nn.Parameter(rm.randn(20)),
+                'decoder_w': nn.Parameter(rm.randn(20, 5)),
+                'decoder_b': nn.Parameter(rm.randn(5))
+            })
+        
+        def forward(self, x):
+            x = x @ self.params['encoder_w'] + self.params['encoder_b']
+            x = x @ self.params['decoder_w'] + self.params['decoder_b']
+            return x
+    
+    model = NamedParameterNetwork()
+    x = rm.randn(32, 10)
+    output = model(x)
+    print(output.shape)  # [32, 5]
+
 Container Class Selection
--------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Sequential**: Suitable for simple linear networks, concise code
 - **ModuleList**: Suitable for scenarios requiring dynamic adjustment of module order or quantity
 - **ModuleDict**: Suitable for scenarios requiring selection of different modules based on conditions
+- **ParameterList**: Suitable for scenarios requiring management of multiple parameters
+- **ParameterDict**: Suitable for scenarios requiring management of parameters by name
 
 Mixing Container Classes
-------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 You can mix different container classes based on the complexity of the network structure:
 
