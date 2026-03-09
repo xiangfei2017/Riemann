@@ -1399,6 +1399,97 @@ Riemann provides various functions for tensor type conversion, including data ty
     - General device switching function
     - ``x.to('cuda')`` or ``x.to('cpu')``
 
+**to() Function Detailed Parameters**
+
+.. list-table:: to() Function Parameters
+  :widths: 15 30 40 15
+  :header-rows: 1
+  :align: center
+
+  * - Parameter
+    - Type
+    - Description
+    - Default
+  * - ``other``
+    - TN
+    - Another tensor, use its device and dtype as target for migration
+    - None
+  * - ``device``
+    - str or Device
+    - Target device, can be a string (e.g. 'cpu', 'cuda') or Device object
+    - None
+  * - ``dtype``
+    - dtype
+    - Target data type, can be Python type, NumPy dtype, string or Riemann dtype
+    - None
+  * - ``non_blocking``
+    - bool
+    - If True and data is in pinned memory, copying to GPU can be asynchronous with host computation. Only applicable for CPU -> GPU transfers
+    - False
+  * - ``copy``
+    - bool
+    - If True, always return a copy, even if device and dtype are the same
+    - False
+
+**to() Function Usage Examples**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # Convert data type
+    x = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float32)
+    y = x.to(rm.float64)
+    print(f"Converted dtype: {y.dtype}")
+
+    # Convert device
+    x = rm.tensor([1.0, 2.0, 3.0], device='cpu')
+    y = x.to('cuda')
+    print(f"Converted device: {y.device}")
+
+    # Convert both dtype and device
+    x = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float32, device='cpu')
+    y = x.to(rm.float64, device='cuda')
+    print(f"Converted dtype: {y.dtype}, device: {y.device}")
+
+    # Use keyword arguments
+    x = rm.tensor([1.0, 2.0, 3.0])
+    y = x.to(dtype=rm.float64, device='cuda')
+
+    # Copy dtype and device from another tensor
+    x = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float64, device='cuda')
+    y = rm.tensor([4.0, 5.0, 6.0])
+    z = y.to(x)
+    print(f"Copied from x: dtype={z.dtype}, device={z.device}")
+
+    # Force copy
+    y = x.to(copy=True)
+
+**non_blocking Parameter Usage Example**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # Create tensor on CPU
+    x = rm.tensor([1.0, 2.0, 3.0], device='cpu')
+
+    # Asynchronous transfer to GPU
+    # Note: Asynchronous transfer requires data to be in pinned memory
+    # In practice, it's recommended to synchronize device after transfer to ensure completion
+    y = x.to('cuda', non_blocking=True)
+
+    # Perform some CPU computations
+    # These can run in parallel with data transfer
+    cpu_result = x * 2
+
+    # Synchronize device to ensure data transfer is complete
+    # Must synchronize before accessing the GPU tensor
+    rm.cuda.synchronize()
+
+    # Now it's safe to use the GPU tensor
+    gpu_result = y * 2
+
 **Type Conversion Examples**
 
 .. code-block:: python
@@ -1452,16 +1543,19 @@ Riemann provides various functions for tensor type conversion, including data ty
 **Notes on Type Conversion**
 
 1. **Data Type Conversion**:
+
    - Converting from higher precision to lower precision types may cause precision loss
    - Converting from integer to floating point types is safe
    - Converting from floating point to integer types will truncate the decimal part
 
 2. **Device Switching**:
+
    - Device switching creates a new tensor copy, consuming memory and time
    - Ensure the target device is available before switching
    - Tensors on different devices cannot be directly operated on, they need to be unified first
 
 3. **Complex Number Conversion**:
+
    - ``real()`` and ``imag()`` functions return the real and imaginary parts of complex tensors, resulting in floating point types
    - ``conj()`` function returns the complex conjugate of complex tensors, resulting in complex type
 
