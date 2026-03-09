@@ -138,6 +138,7 @@ class TN:
             retains_grad (bool): 是否保留梯度，默认为False
             rcv_grad_count (int): 在计算图中可接收梯度的计数，计算梯度时临时使用
             grad_value (TN): 用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
+            _module: 存储创建此张量的模块（用于反向传播钩子）
         """
         #tensor函数构造对象时，data引用一个numpy或cupy数组
         self.data: np.ndarray = None    # type: ignore
@@ -151,6 +152,8 @@ class TN:
         
         self.rcv_grad_count = 0         #在具体计算图中，self可接收梯度的计数，计算梯度时临时使用
         self.grad_value:TN = None       #用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
+        
+        self._module = None             #存储创建此张量的模块（用于反向传播钩子）
         
         return
     
@@ -3902,6 +3905,63 @@ class TN:
             target.grad_value = target.grad_value + self
         return
 
+    def _call_backward_pre_hooks(self) -> None:
+        """
+        调用反向传播前钩子 (Call Backward Pre-Hooks)
+        
+        在梯度传播到来源节点之前调用由 Module 实例注册的 backward_pre_hooks。
+        这些钩子通过 module.register_full_backward_pre_hook(hook) 注册，用于在反向传播
+        开始时拦截并可能修改输出梯度。
+        
+        钩子函数签名: hook(module, grad_output) -> None or modified grad_output
+        
+        用途:
+            - 监控梯度值
+            - 修改输出梯度（如梯度裁剪、梯度缩放）
+            - 调试反向传播过程
+        
+        注意:
+            - 只有当 self._module 存在时才会调用钩子（即张量由某个 Module 创建）
+            - 钩子可以返回修改后的梯度，返回的梯度将用于后续计算
+            - 多个钩子按注册顺序依次调用
+        """
+        if self._module:
+            for hook in self._module._backward_pre_hooks.values():
+                hook_result = hook(self._module, (self.grad_value,))
+                if hook_result is not None:
+                    self.grad_value = hook_result[0] if isinstance(hook_result, tuple) else hook_result
+
+    def _call_backward_hooks(self, computed_grad_inputs: list | None) -> None:
+        """
+        调用反向传播钩子 (Call Backward Hooks)
+        
+        在梯度传播完成后调用由 Module 实例注册的 backward_hooks。
+        这些钩子通过 module.register_full_backward_hook(hook) 注册，用于在反向传播
+        完成后访问输入梯度和输出梯度。
+        
+        钩子函数签名: hook(module, grad_input, grad_output) -> None
+        
+        用途:
+            - 监控梯度值
+            - 分析梯度流动
+            - 调试反向传播过程
+            - 记录梯度统计信息
+        
+        参数:
+            computed_grad_inputs: 由梯度函数计算得到的输入梯度列表
+            
+        注意:
+            - 只有当 self._module 存在时才会调用钩子（即张量由某个 Module 创建）
+            - grad_input 是相对于模块输入的梯度（由梯度函数计算得到）
+            - grad_output 是相对于模块输出的梯度（当前节点的 grad_value）
+            - 多个钩子按注册顺序依次调用
+        """
+        if self._module:
+            grad_output = (self.grad_value,)
+            grad_input = tuple(computed_grad_inputs)
+            for hook in self._module._backward_hooks.values():
+                hook(self._module, grad_input, grad_output)
+
     def backward(self, gradient: TN|None = None, 
                  retain_graph: bool = False,  # type: ignore
                  create_graph: bool = False):  # type: ignore
@@ -3955,12 +4015,18 @@ class TN:
         while stack:  #对栈循环处理直至为空
             item:TN = stack.pop(-1)    #pop(-1)效率o(1),表示从栈尾弹出
             
+            # 调用反向传播前钩子（在梯度传播到来源节点之前）
+            item._call_backward_pre_hooks()
+            
             # 对于叶子节点或要求保存梯度的中间节点，保存grad
             if item.is_leaf or item.retains_grad:
                 item._save_grad(create_graph)
             
             fromvars = item.fromvars
             gradfuncs = item.gradfuncs
+
+            # 存储计算得到的输入梯度（用于 backward_hook）
+            computed_grad_inputs = []
 
             #向来源节点传播梯度
             #fromvars和gradfuncs是等长并元素一一对应的，所以可以在一个循环中处理
@@ -3971,6 +4037,11 @@ class TN:
                 if var.requires_grad == True:
                     #调用来源节点对应的梯度函数，向该节点传播梯度值,每接收一次梯度传递，计数减1
                     tobe_add_grad:TN = fn(item,i)
+                    
+                    # 保存计算得到的输入梯度（用于 backward_hook）
+                    if item._module:
+                        computed_grad_inputs.append(tobe_add_grad)
+                    
                     tobe_add_grad._addto_grad_value(var)
 
                     var.rcv_grad_count -= 1   # 收到一次梯度，计数-1
@@ -3979,6 +4050,9 @@ class TN:
                     # stack中永远只存放收集完梯度的节点
                     if var.rcv_grad_count == 0:
                         stack.append(var)
+            
+            # 调用反向传播钩子（在梯度传播完成后）
+            item._call_backward_hooks(computed_grad_inputs)
             
             # 节点反向传播完梯度后，grad_value清空，节省空间
             item.grad_value = None  # type: ignore

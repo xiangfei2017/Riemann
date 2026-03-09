@@ -1399,6 +1399,97 @@ Riemann 提供了多种函数用于张量类型转换，包括数据类型转换
     - 通用设备切换函数
     - ``x.to('cuda')`` 或 ``x.to('cpu')``
 
+**to() 函数详细参数说明**
+
+.. list-table:: to() 函数参数
+  :widths: 15 30 40 15
+  :header-rows: 1
+  :align: center
+
+  * - 参数名
+    - 类型
+    - 描述
+    - 默认值
+  * - ``other``
+    - TN
+    - 另一个张量，使用其device和dtype作为目标进行迁移
+    - None
+  * - ``device``
+    - str 或 Device
+    - 目标设备，可以是字符串（如'cpu'、'cuda'）或Device对象
+    - None
+  * - ``dtype``
+    - dtype
+    - 目标数据类型，可以是Python类型、NumPy dtype、字符串或Riemann dtype
+    - None
+  * - ``non_blocking``
+    - bool
+    - 如果为True且数据在固定内存中，则复制到GPU可以与主机计算异步进行。仅适用于CPU -> GPU的传输
+    - False
+  * - ``copy``
+    - bool
+    - 如果为True，则总是返回副本，即使设备和数据类型相同
+    - False
+
+**to() 函数使用示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 转换数据类型
+    x = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float32)
+    y = x.to(rm.float64)
+    print(f"转换后数据类型: {y.dtype}")
+
+    # 转换设备
+    x = rm.tensor([1.0, 2.0, 3.0], device='cpu')
+    y = x.to('cuda')
+    print(f"转换后设备: {y.device}")
+
+    # 同时转换数据类型和设备
+    x = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float32, device='cpu')
+    y = x.to(rm.float64, device='cuda')
+    print(f"转换后数据类型: {y.dtype}, 设备: {y.device}")
+
+    # 使用关键字参数
+    x = rm.tensor([1.0, 2.0, 3.0])
+    y = x.to(dtype=rm.float64, device='cuda')
+
+    # 从另一个张量复制dtype和device
+    x = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float64, device='cuda')
+    y = rm.tensor([4.0, 5.0, 6.0])
+    z = y.to(x)
+    print(f"从x复制后: dtype={z.dtype}, device={z.device}")
+
+    # 强制复制
+    y = x.to(copy=True)
+
+**non_blocking 参数使用示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 创建CPU上的张量
+    x = rm.tensor([1.0, 2.0, 3.0], device='cpu')
+
+    # 异步传输到GPU
+    # 注意：异步传输需要数据在固定内存中
+    # 实际使用中，建议在传输后同步设备以确保数据已传输完成
+    y = x.to('cuda', non_blocking=True)
+
+    # 执行一些CPU计算
+    # 这些计算可以与数据传输并行进行
+    cpu_result = x * 2
+
+    # 同步设备，确保数据传输完成
+    # 在访问GPU上的张量之前必须同步
+    rm.cuda.synchronize()
+
+    # 现在可以安全地使用GPU上的张量
+    gpu_result = y * 2
+
 **类型转换示例**
 
 .. code-block:: python
@@ -1452,16 +1543,19 @@ Riemann 提供了多种函数用于张量类型转换，包括数据类型转换
 **类型转换的注意事项**
 
 1. **数据类型转换**：
+
    - 从高精度类型转换为低精度类型可能会导致精度损失
    - 从整数类型转换为浮点数类型是安全的
    - 从浮点数类型转换为整数类型会截断小数部分
 
 2. **设备切换**：
+
    - 设备切换会创建新的张量副本，消耗内存和时间
    - 确保在进行设备切换时，目标设备可用
    - 不同设备上的张量不能直接进行运算，需要先统一设备
 
 3. **复数转换**：
+
    - ``real()`` 和 ``imag()`` 函数返回复数张量的实部和虚部，结果为浮点类型
    - ``conj()`` 函数返回复数张量的共轭，结果仍为复数类型
 
