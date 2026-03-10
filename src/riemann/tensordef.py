@@ -3931,36 +3931,93 @@ class TN:
                 if hook_result is not None:
                     self.grad_value = hook_result[0] if isinstance(hook_result, tuple) else hook_result
 
-    def _call_backward_hooks(self, computed_grad_inputs: list | None) -> None:
+    def _call_backward_hooks_delayed(self) -> None:
         """
-        调用反向传播钩子 (Call Backward Hooks)
+        延迟调用的反向传播钩子 (Delayed Backward Hooks)
         
-        在梯度传播完成后调用由 Module 实例注册的 backward_hooks。
-        这些钩子通过 module.register_full_backward_hook(hook) 注册，用于在反向传播
-        完成后访问输入梯度和输出梯度。
+        在所有梯度计算完成后调用，此时 forward 输入的 grad 属性已经被设置。
+        这是 backward_hook 的延迟调用版本，用于确保 grad_input 可以正确获取。
         
-        钩子函数签名: hook(module, grad_input, grad_output) -> None
+        为什么需要延迟调用：
+        ------------------
+        在反向传播过程中，计算图按拓扑顺序处理：
         
-        用途:
-            - 监控梯度值
-            - 分析梯度流动
-            - 调试反向传播过程
-            - 记录梯度统计信息
+            forward:  x (输入) --> 中间计算 --> y (输出/当前节点)
+            backward: y.grad_value --> 中间计算.grad_value --> x.grad
         
-        参数:
-            computed_grad_inputs: 由梯度函数计算得到的输入梯度列表
+        当处理 y 时：
+        - y.grad_value 已设置（当前节点的梯度）
+        - x.grad 还未计算（forward 输入的梯度在后续才计算）
+        
+        而 backward_hook 需要 x.grad（forward 输入的梯度），
+        因此必须等到所有梯度计算完成后才能调用。
+        
+        钩子函数签名：
+        --------------
+            hook(module, grad_input, grad_output) -> None or modified grad_input
             
-        注意:
-            - 只有当 self._module 存在时才会调用钩子（即张量由某个 Module 创建）
-            - grad_input 是相对于模块输入的梯度（由梯度函数计算得到）
-            - grad_output 是相对于模块输出的梯度（当前节点的 grad_value）
-            - 多个钩子按注册顺序依次调用
+            - module: 当前模块实例
+            - grad_input: tuple，模块 forward() 输入参数的梯度
+                         长度等于 forward() 输入参数数量
+                         requires_grad=False 的输入对应位置为 None
+            - grad_output: tuple，模块输出的梯度（当前节点的梯度）
+        
+        与 PyTorch 的兼容性：
+        --------------------
+        - grad_input 只包含输入参数的梯度（不包括模块参数）
+        - 如果所有输入 requires_grad=False，则 grad_input 全为 None
+        - 如果任意输入 requires_grad=True，则所有输入的梯度都会被计算
+        
+        内存管理：
+        ----------
+        - forward_inputs 和 grad_output 存储在 module 的字典中（以 tensor id 为键）
+        - 调用完成后立即清理字典，避免内存泄漏
+        - 同一模块多次调用时，每次调用的数据独立存储
         """
         if self._module:
-            grad_output = (self.grad_value,)
-            grad_input = tuple(computed_grad_inputs)
-            for hook in self._module._backward_hooks.values():
-                hook(self._module, grad_input, grad_output)
+            module = self._module
+            tensor_id = id(self)
+            
+            # 从 module 的字典中获取本次 forward 调用的数据
+            # _forward_inputs_map: {output_tensor_id: (input_tensor1, input_tensor2, ...)}
+            # _saved_grad_output_map: {output_tensor_id: grad_output_tensor}
+            forward_inputs = module._forward_inputs_map.get(tensor_id)
+            grad_output = module._saved_grad_output_map.get(tensor_id)
+            
+            if forward_inputs is not None:
+                # 检查是否有任意输入需要计算梯度
+                # 这是为了与 PyTorch 行为保持一致：
+                # 如果所有输入 requires_grad=False，则所有 grad_input 为 None
+                has_any_requires_grad = any(inp.requires_grad for inp in forward_inputs)
+                
+                # 构建 grad_input 元组
+                # 遍历 forward 的所有输入，获取它们的梯度
+                grad_input_list = []
+                for inp in forward_inputs:
+                    if has_any_requires_grad:
+                        if inp.requires_grad:
+                            # 此时 inp.grad 已经被 backward() 计算并设置
+                            grad = inp.grad if inp.grad is not None else None
+                        else:
+                            # Riemann 不为 requires_grad=False 的输入计算梯度
+                            grad = None
+                        grad_input_list.append(grad)
+                    else:
+                        # 所有输入都不需要梯度，直接返回 None
+                        grad_input_list.append(None)
+                
+                grad_input = tuple(grad_input_list)
+                
+                # 调用所有注册的 backward hooks
+                for hook in module._backward_hooks.values():
+                    hook(module, grad_input, (grad_output,))
+            
+            # 清理 module 字典中的数据，避免内存泄漏
+            # 这些数据只在本次 backward 中需要，调用完成后即可删除
+            if tensor_id in module._forward_inputs_map:
+                del module._forward_inputs_map[tensor_id]
+            if tensor_id in module._saved_grad_output_map:
+                del module._saved_grad_output_map[tensor_id]
 
     def backward(self, gradient: TN|None = None, 
                  retain_graph: bool = False,  # type: ignore
@@ -4011,6 +4068,8 @@ class TN:
         
         stack = []  # 初始化用于存放收集完梯度的节点的堆栈
         stack.append(self)
+        
+        pending_backward_hooks = []
                 
         while stack:  #对栈循环处理直至为空
             item:TN = stack.pop(-1)    #pop(-1)效率o(1),表示从栈尾弹出
@@ -4025,9 +4084,6 @@ class TN:
             fromvars = item.fromvars
             gradfuncs = item.gradfuncs
 
-            # 存储计算得到的输入梯度（用于 backward_hook）
-            computed_grad_inputs = []
-
             #向来源节点传播梯度
             #fromvars和gradfuncs是等长并元素一一对应的，所以可以在一个循环中处理
             # for i,(var,fn) in enumerate(zip(fromvars,gradfuncs)):
@@ -4038,10 +4094,6 @@ class TN:
                     #调用来源节点对应的梯度函数，向该节点传播梯度值,每接收一次梯度传递，计数减1
                     tobe_add_grad:TN = fn(item,i)
                     
-                    # 保存计算得到的输入梯度（用于 backward_hook）
-                    if item._module:
-                        computed_grad_inputs.append(tobe_add_grad)
-                    
                     tobe_add_grad._addto_grad_value(var)
 
                     var.rcv_grad_count -= 1   # 收到一次梯度，计数-1
@@ -4051,12 +4103,20 @@ class TN:
                     if var.rcv_grad_count == 0:
                         stack.append(var)
             
-            # 调用反向传播钩子（在梯度传播完成后）
-            item._call_backward_hooks(computed_grad_inputs)
+            # 记录需要延迟调用的 backward_hook
+            # 在所有 forward 输入的梯度都计算完成后才调用
+            if item._module:
+                # 保存 grad_output 到 module 的字典中
+                item._module._saved_grad_output_map[id(item)] = item.grad_value
+                pending_backward_hooks.append(item)
             
             # 节点反向传播完梯度后，grad_value清空，节省空间
             item.grad_value = None  # type: ignore
         #end of while
+        
+        # 在所有梯度计算完成后，调用 backward_hook
+        for item in pending_backward_hooks:
+            item._call_backward_hooks_delayed()
 
         return
     

@@ -83,6 +83,7 @@ class StatisticsCollector:
         self.current_function = None
         self.current_function_start_time = 0
         self.current_test_details = []
+        self.function_test_details = {}  # 存储每个函数的测试用例
     
     def start_function(self, function_name):
         self.current_function = function_name
@@ -91,6 +92,13 @@ class StatisticsCollector:
         
         if function_name not in self.function_stats:
             self.function_stats[function_name] = {"total": 0, "passed": 0, "time": 0.0}
+        
+        if function_name not in self.function_test_details:
+            self.function_test_details[function_name] = []
+        
+        # 打印用例组开始信息，每组之间用空行隔开
+        print(f"\n{Colors.BOLD}{function_name}{Colors.ENDC}")
+        print("-" * 80)
     
     def add_result(self, case_name, passed, details=None):
         self.total_cases += 1
@@ -104,18 +112,25 @@ class StatisticsCollector:
                 
             status = "通过" if passed else "失败"
             status_color = Colors.OKGREEN if passed else Colors.FAIL
-            self.current_test_details.append({
+            test_detail = {
                 "name": case_name,
                 "status": status,
                 "color": status_color,
                 "details": details
-            })
+            }
+            self.current_test_details.append(test_detail)
+            self.function_test_details[self.current_function].append(test_detail)
+            
+            # 实时打印用例执行状态
+            print(f"  {case_name} [{status}]" + (f" - {details}" if details else ""))
     
     def end_function(self):
         if self.current_function:
             elapsed = time.time() - self.current_function_start_time
             self.function_stats[self.current_function]["time"] += elapsed
             self.total_time += elapsed
+            # 保存当前函数的测试用例
+            self.function_test_details[self.current_function] = self.current_test_details.copy()
     
     def _get_display_width(self, text):
         """计算字符串的显示宽度，中文字符算2个宽度，英文字符算1个宽度"""
@@ -1143,15 +1158,166 @@ def test_hook_functions():
         passed = not forward_hook_called
         stats.add_result("forward_hook移除", passed, f"前向钩子被正确移除: {not forward_hook_called}")
         
-        # 测试5: register_full_backward_pre_hook
+        # 测试5: 前向预处理钩子 - 多输入
+        print("测试前向预处理钩子 - 多输入...")
+        class MultiInputModule(Module):
+            def forward(self, x, y):
+                return x + y
+        
+        multi_module = MultiInputModule()
+        pre_hook_called = False
+        input_received = None
+        
+        def multi_input_pre_hook(module, input):
+            nonlocal pre_hook_called, input_received
+            pre_hook_called = True
+            input_received = input
+            assert isinstance(input, tuple)
+            assert len(input) == 2
+            assert input[0].shape == (2, 3)
+            assert input[1].shape == (2, 3)
+            return input
+        
+        multi_module.register_forward_pre_hook(multi_input_pre_hook)
+        
+        x = rm.randn(2, 3)
+        y = rm.randn(2, 3)
+        output = multi_module(x, y)
+        
+        passed = pre_hook_called and input_received is not None
+        stats.add_result("前向预处理钩子 - 多输入", passed, f"钩子被调用: {pre_hook_called}, 收到输入: {input_received is not None}")
+        
+        # 测试6: 前向钩子 - 多输入
+        print("测试前向钩子 - 多输入...")
+        forward_hook_called = False
+        input_received = None
+        output_received = None
+        
+        def multi_input_forward_hook(module, input, output):
+            nonlocal forward_hook_called, input_received, output_received
+            forward_hook_called = True
+            input_received = input
+            output_received = output
+            assert isinstance(input, tuple)
+            assert len(input) == 2
+            assert input[0].shape == (2, 3)
+            assert input[1].shape == (2, 3)
+            assert output.shape == (2, 3)
+            return output
+        
+        multi_module.register_forward_hook(multi_input_forward_hook)
+        output = multi_module(x, y)
+        
+        passed = forward_hook_called and input_received is not None and output_received is not None
+        stats.add_result("前向钩子 - 多输入", passed, f"钩子被调用: {forward_hook_called}, 收到输入: {input_received is not None}, 收到输出: {output_received is not None}")
+        
+        # 测试7: 前向预处理钩子 - 修改输入
+        print("测试前向预处理钩子 - 修改输入...")
+        modify_module = MultiInputModule()
+        input_modified = False
+        
+        def modify_input_pre_hook(module, input):
+            nonlocal input_modified
+            input_modified = True
+            # 修改输入
+            x, y = input
+            modified_x = x * 2
+            modified_y = y * 2
+            return (modified_x, modified_y)
+        
+        modify_module.register_forward_pre_hook(modify_input_pre_hook)
+        
+        x_orig = rm.ones(2, 3)
+        y_orig = rm.ones(2, 3)
+        output = modify_module(x_orig, y_orig)
+        
+        # 验证输出是否被修改（应为 2 + 2 = 4）
+        expected_output = rm.ones(2, 3) * 4
+        output_correct = tensor_allclose(output, expected_output)
+        passed = input_modified and output_correct
+        stats.add_result("前向预处理钩子 - 修改输入", passed, f"输入被修改: {input_modified}, 输出正确: {output_correct}")
+        
+        # 测试8: 前向钩子 - 修改输出
+        print("测试前向钩子 - 修改输出...")
+        modify_output_module = MultiInputModule()
+        output_modified = False
+        
+        def modify_output_hook(module, input, output):
+            nonlocal output_modified
+            output_modified = True
+            # 修改输出
+            return output * 2
+        
+        modify_output_module.register_forward_hook(modify_output_hook)
+        
+        output = modify_output_module(x_orig, y_orig)
+        
+        # 验证输出是否被修改（应为 (1+1)*2 = 4）
+        expected_output = rm.ones(2, 3) * 4
+        output_correct = tensor_allclose(output, expected_output)
+        passed = output_modified and output_correct
+        stats.add_result("前向钩子 - 修改输出", passed, f"输出被修改: {output_modified}, 输出正确: {output_correct}")
+        
+        # 测试9: 前向钩子 - 同一模块多次调用
+        print("测试前向钩子 - 同一模块多次调用...")
+        repeat_module = CustomModule(5, 3)
+        call_count = 0
+        
+        def count_forward_hook(module, input, output):
+            nonlocal call_count
+            call_count += 1
+            return output
+        
+        repeat_module.register_forward_hook(count_forward_hook)
+        
+        # 多次调用
+        for i in range(3):
+            input_data = rm.randn(2, 5)
+            output = repeat_module(input_data)
+        
+        passed = call_count == 3
+        stats.add_result("前向钩子 - 同一模块多次调用", passed, f"钩子被调用次数: {call_count}")
+        
+        # 测试10: 前向钩子 - 多个钩子同时注册
+        print("测试前向钩子 - 多个钩子同时注册...")
+        try:
+            multi_hook_module = CustomModule(4, 2)
+            hook1_called = False
+            hook2_called = False
+            
+            def hook1(module, input, output):
+                nonlocal hook1_called
+                hook1_called = True
+                return output
+            
+            def hook2(module, input, output):
+                nonlocal hook2_called
+                hook2_called = True
+                return output
+            
+            handle1 = multi_hook_module.register_forward_hook(hook1)
+            handle2 = multi_hook_module.register_forward_hook(hook2)
+            
+            input_data = rm.randn(2, 4)
+            output = multi_hook_module(input_data)
+            
+            passed = hook1_called and hook2_called
+            stats.add_result("前向钩子 - 多个钩子同时注册", passed, f"所有钩子被调用: hook1={hook1_called}, hook2={hook2_called}")
+            
+            # 清理
+            handle1.remove()
+            handle2.remove()
+        except Exception as e:
+            print(f"测试10失败: {e}")
+            stats.add_result("前向钩子 - 多个钩子同时注册", False, f"异常: {e}")
         print("测试 register_full_backward_pre_hook...")
         backward_pre_hook_called = False
-        def backward_pre_hook(module, grad_input):
+        def backward_pre_hook(module, grad_output):
             nonlocal backward_pre_hook_called
             backward_pre_hook_called = True
             assert isinstance(module, CustomModule)
-            assert isinstance(grad_input, tuple)
-            return grad_input
+            assert isinstance(grad_output, tuple)
+            return grad_output
         
         # 注册钩子
         hook_handle = module.register_full_backward_pre_hook(backward_pre_hook)
@@ -1215,31 +1381,274 @@ def test_hook_functions():
         passed = not backward_hook_called
         stats.add_result("register_full_backward_hook移除", passed, f"反向钩子被正确移除: {not backward_hook_called}")
         
-        # 测试9: 多个钩子同时注册
-        print("测试多个钩子同时注册...")
-        hook_count = 0
-        def hook1(module, input):
-            nonlocal hook_count
-            hook_count += 1
-            return input
+        # 测试9: 前向预处理钩子 - 多个钩子同时注册
+        print("测试前向预处理钩子 - 多个钩子同时注册...")
+        try:
+            hook_count = 0
+            def hook1(module, input):
+                nonlocal hook_count
+                hook_count += 1
+                return input
+            
+            def hook2(module, input):
+                nonlocal hook_count
+                hook_count += 1
+                return input
+            
+            # 创建新的模块实例
+            module = CustomModule(10, 5)
+            # 创建新的输入数据
+            input_data = rm.randn(2, 10)
+            
+            # 注册多个钩子
+            handle1 = module.register_forward_pre_hook(hook1)
+            handle2 = module.register_forward_pre_hook(hook2)
+            
+            # 调用前向传播
+            output = module(input_data)
+            passed = hook_count == 2
+            stats.add_result("前向预处理钩子 - 多个钩子同时注册", passed, f"所有钩子都被调用: {hook_count == 2}")
+            
+            # 清理
+            handle1.remove()
+            handle2.remove()
+        except Exception as e:
+            print(f"测试9失败: {e}")
+            stats.add_result("前向预处理钩子 - 多个钩子同时注册", False, f"异常: {e}")
         
-        def hook2(module, input):
-            nonlocal hook_count
-            hook_count += 1
-            return input
+        # 测试10: 反向钩子 - 单输入 requires_grad=True
+        print("测试反向钩子 - 单输入 requires_grad=True...")
+        try:
+            class TestLinear(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((3, 4)))
+                    self.bias = Parameter(rm.ones((3,)))
+                
+                def forward(self, x):
+                    return x @ self.weight.T + self.bias
+            
+            module = TestLinear()
+            hook_called = False
+            grad_input_received = None
+            grad_output_received = None
+            
+            def backward_hook(module, grad_input, grad_output):
+                nonlocal hook_called, grad_input_received, grad_output_received
+                hook_called = True
+                grad_input_received = grad_input
+                grad_output_received = grad_output
+                assert isinstance(grad_input, tuple)
+                assert isinstance(grad_output, tuple)
+                assert len(grad_input) == 1  # 只有一个输入
+                assert len(grad_output) == 1  # 只有一个输出
+                assert grad_input[0] is not None  # 输入需要梯度
+            
+            module.register_full_backward_hook(backward_hook)
+            
+            # 执行前向和反向传播
+            x = rm.tensor([[1.0, 2.0, 3.0, 4.0]], requires_grad=True)
+            y = module(x)
+            loss = y.sum()
+            loss.backward()
+            
+            passed = hook_called and grad_input_received is not None and grad_output_received is not None
+            stats.add_result("反向钩子 - 单输入 requires_grad=True", passed, f"钩子被调用: {hook_called}, 收到grad_input: {grad_input_received is not None}")
+        except Exception as e:
+            print(f"测试10失败: {e}")
+            stats.add_result("反向钩子 - 单输入 requires_grad=True", False, f"异常: {e}")
         
-        # 注册多个钩子
-        handle1 = module.register_forward_pre_hook(hook1)
-        handle2 = module.register_forward_pre_hook(hook2)
+        # 测试11: 反向钩子 - 多输入，部分 requires_grad=False
+        print("测试反向钩子 - 多输入，部分 requires_grad=False...")
+        try:
+            class TestMultiInput(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((3, 4)))
+                
+                def forward(self, x, y):
+                    return x @ self.weight.T + y
+            
+            module2 = TestMultiInput()
+            hook_called2 = False
+            grad_input_length = None
+            
+            def backward_hook2(module, grad_input, grad_output):
+                nonlocal hook_called2, grad_input_length
+                hook_called2 = True
+                grad_input_length = len(grad_input)
+                assert isinstance(grad_input, tuple)
+                assert len(grad_input) == 2  # 两个输入
+                assert grad_input[0] is not None  # x requires_grad=True
+                assert grad_input[1] is None  # y requires_grad=False
+            
+            module2.register_full_backward_hook(backward_hook2)
+            
+            # 执行前向和反向传播
+            x2 = rm.tensor([[1.0, 2.0, 3.0, 4.0]], requires_grad=True)
+            y2 = rm.tensor([[1.0, 1.0, 1.0]], requires_grad=False)
+            out2 = module2(x2, y2)
+            loss2 = out2.sum()
+            loss2.backward()
+            
+            passed2 = hook_called2 and grad_input_length == 2
+            stats.add_result("反向钩子 - 多输入，部分 requires_grad=False", passed2, f"钩子被调用: {hook_called2}, grad_input长度: {grad_input_length}")
+        except Exception as e:
+            print(f"测试11失败: {e}")
+            stats.add_result("反向钩子 - 多输入，部分 requires_grad=False", False, f"异常: {e}")
         
-        # 调用前向传播
-        output = module(input_data)
-        passed = hook_count == 2
-        stats.add_result("多个钩子注册", passed, f"所有钩子都被调用: {hook_count == 2}")
+        # 测试12: 反向钩子 - 多输入，全部 requires_grad=False
+        print("测试反向钩子 - 多输入，全部 requires_grad=False...")
+        try:
+            module3 = TestMultiInput()
+            hook_called3 = False
+            grad_input_all_none = False
+            
+            def backward_hook3(module, grad_input, grad_output):
+                nonlocal hook_called3, grad_input_all_none
+                hook_called3 = True
+                grad_input_all_none = all(g is None for g in grad_input)
+                assert isinstance(grad_input, tuple)
+                assert len(grad_input) == 2  # 两个输入
+            
+            module3.register_full_backward_hook(backward_hook3)
+            
+            # 执行前向和反向传播
+            x3 = rm.tensor([[1.0, 2.0, 3.0, 4.0]], requires_grad=False)
+            y3 = rm.tensor([[1.0, 1.0, 1.0]], requires_grad=False)
+            out3 = module3(x3, y3)
+            loss3 = out3.sum()
+            loss3.backward()
+            
+            passed3 = hook_called3 and grad_input_all_none
+            stats.add_result("反向钩子 - 多输入，全部 requires_grad=False", passed3, f"钩子被调用: {hook_called3}, 所有grad_input为None: {grad_input_all_none}")
+        except Exception as e:
+            print(f"测试12失败: {e}")
+            stats.add_result("反向钩子 - 多输入，全部 requires_grad=False", False, f"异常: {e}")
         
-        # 清理
-        handle1.remove()
-        handle2.remove()
+        # 测试14: 反向预处理钩子 - 基本功能
+        print("测试反向预处理钩子 - 基本功能...")
+        try:
+            module = CustomModule(10, 5)
+            backward_pre_hook_called = False
+            grad_output_received = None
+            
+            def backward_pre_hook(module, grad_output):
+                nonlocal backward_pre_hook_called, grad_output_received
+                backward_pre_hook_called = True
+                grad_output_received = grad_output
+                assert isinstance(module, CustomModule)
+                assert isinstance(grad_output, tuple)
+                assert len(grad_output) == 1
+                return grad_output
+            
+            module.register_full_backward_pre_hook(backward_pre_hook)
+            
+            # 执行前向和反向传播
+            input_data = rm.randn(2, 10, requires_grad=True)
+            output = module(input_data)
+            loss = output.sum()
+            loss.backward()
+            
+            passed = backward_pre_hook_called and grad_output_received is not None
+            stats.add_result("反向预处理钩子 - 基本功能", passed, f"钩子被调用: {backward_pre_hook_called}, 收到grad_output: {grad_output_received is not None}")
+        except Exception as e:
+            print(f"测试14失败: {e}")
+            stats.add_result("反向预处理钩子 - 基本功能", False, f"异常: {e}")
+        
+        # 测试15: 反向预处理钩子 - 多输入
+        print("测试反向预处理钩子 - 多输入...")
+        try:
+            module = TestMultiInput()
+            backward_pre_hook_called = False
+            grad_output_received = None
+            
+            def backward_pre_hook(module, grad_output):
+                nonlocal backward_pre_hook_called, grad_output_received
+                backward_pre_hook_called = True
+                grad_output_received = grad_output
+                assert isinstance(module, TestMultiInput)
+                assert isinstance(grad_output, tuple)
+                assert len(grad_output) == 1
+                return grad_output
+            
+            module.register_full_backward_pre_hook(backward_pre_hook)
+            
+            # 执行前向和反向传播
+            x = rm.tensor([[1.0, 2.0, 3.0, 4.0]], requires_grad=True)
+            y = rm.tensor([[1.0, 1.0, 1.0]], requires_grad=False)
+            output = module(x, y)
+            loss = output.sum()
+            loss.backward()
+            
+            passed = backward_pre_hook_called and grad_output_received is not None
+            stats.add_result("反向预处理钩子 - 多输入", passed, f"钩子被调用: {backward_pre_hook_called}, 收到grad_output: {grad_output_received is not None}")
+        except Exception as e:
+            print(f"测试15失败: {e}")
+            stats.add_result("反向预处理钩子 - 多输入", False, f"异常: {e}")
+        
+        # 测试16: 反向预处理钩子 - 修改梯度
+        print("测试反向预处理钩子 - 修改梯度...")
+        try:
+            module = CustomModule(10, 5)
+            backward_pre_hook_called = False
+            grad_modified = False
+            
+            def backward_pre_hook(module, grad_output):
+                nonlocal backward_pre_hook_called, grad_modified
+                backward_pre_hook_called = True
+                # 修改梯度
+                modified_grad = (grad_output[0] * 2,)
+                grad_modified = True
+                return modified_grad
+            
+            module.register_full_backward_pre_hook(backward_pre_hook)
+            
+            # 执行前向和反向传播
+            input_data = rm.randn(2, 10, requires_grad=True)
+            output = module(input_data)
+            loss = output.sum()
+            loss.backward()
+            
+            passed = backward_pre_hook_called and grad_modified
+            stats.add_result("反向预处理钩子 - 修改梯度", passed, f"钩子被调用: {backward_pre_hook_called}, 梯度被修改: {grad_modified}")
+        except Exception as e:
+            print(f"测试16失败: {e}")
+            stats.add_result("反向预处理钩子 - 修改梯度", False, f"异常: {e}")
+        
+        # 测试17: 反向预处理钩子 - 多次调用
+        print("测试反向预处理钩子 - 多次调用...")
+        try:
+            module = CustomModule(10, 5)
+            backward_pre_hook_count = 0
+            
+            def backward_pre_hook(module, grad_output):
+                nonlocal backward_pre_hook_count
+                backward_pre_hook_count += 1
+                assert isinstance(module, CustomModule)
+                assert isinstance(grad_output, tuple)
+                return grad_output
+            
+            module.register_full_backward_pre_hook(backward_pre_hook)
+            
+            # 第一次调用
+            input_data1 = rm.randn(2, 10, requires_grad=True)
+            output1 = module(input_data1)
+            loss1 = output1.sum()
+            loss1.backward()
+            
+            # 第二次调用
+            module.zero_grad()
+            input_data2 = rm.randn(2, 10, requires_grad=True)
+            output2 = module(input_data2)
+            loss2 = output2.sum()
+            loss2.backward()
+            
+            passed = backward_pre_hook_count == 2
+            stats.add_result("反向预处理钩子 - 多次调用", passed, f"钩子被调用次数: {backward_pre_hook_count}")
+        except Exception as e:
+            print(f"测试17失败: {e}")
+            stats.add_result("反向预处理钩子 - 多次调用", False, f"异常: {e}")
         
     except Exception as e:
         print(f"钩子函数测试出现异常: {e}")
