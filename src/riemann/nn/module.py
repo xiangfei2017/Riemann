@@ -326,6 +326,8 @@ class Module:
         - _forward_hooks: 存储前向传播钩子的字典
         - _backward_pre_hooks: 存储反向传播前钩子的字典
         - _backward_hooks: 存储反向传播钩子的字典
+        - _forward_inputs_map: 存储每次调用的 forward 输入 {output_tensor_id: forward_inputs}
+        - _saved_grad_output_map: 存储每次调用的 grad_output {output_tensor_id: grad_output}
         - training: 训练模式标志，默认为True
         
         所有子类都应该调用super().__init__()来确保正确的初始化。
@@ -338,6 +340,8 @@ class Module:
         self._forward_hooks = {}
         self._backward_pre_hooks = {}
         self._backward_hooks = {}
+        self._forward_inputs_map = {}      # 存储每次调用的 forward 输入 {output_tensor_id: forward_inputs}
+        self._saved_grad_output_map = {}   # 存储每次调用的 grad_output {output_tensor_id: grad_output}
         self.training = True  # 训练/评估模式标志      
     
     def to(self, *args, **kwargs):
@@ -804,31 +808,42 @@ class Module:
             - 提供与PyTorch兼容的调用接口
         """
         # 调用前向传播前钩子
-        for hook in self._forward_pre_hooks.values():
-            result = hook(self, args)
-            if result is not None:
-                if not isinstance(result, tuple):
-                    result = (result,)
-                args = result
+        if self._forward_pre_hooks:
+            for hook in self._forward_pre_hooks.values():
+                result = hook(self, args)
+                if result is not None:
+                    if not isinstance(result, tuple):
+                        result = (result,)
+                    args = result
         
         # 执行前向传播
         output = self.forward(*args, **kwargs)
         
         # 调用前向传播钩子
-        for hook in self._forward_hooks.values():
-            hook_result = hook(self, args, output)
-            if hook_result is not None:
-                output = hook_result
+        if self._forward_hooks:
+            for hook in self._forward_hooks.values():
+                hook_result = hook(self, args, output)
+                if hook_result is not None:
+                    output = hook_result
         
         # 设置输出张量的模块引用（用于反向传播钩子）
         # 只有当存在backward钩子时才设置，避免不必要的开销
         if output is not None and (self._backward_hooks or self._backward_pre_hooks):
+            # 提取 forward 输入中的张量（不包括模块参数）
+            forward_input_tensors = []
+            for arg in args:
+                if isinstance(arg, TN):
+                    forward_input_tensors.append(arg)
+            forward_inputs = tuple(forward_input_tensors)
+            
             if isinstance(output, TN):
                 output._module = self
+                self._forward_inputs_map[id(output)] = forward_inputs
             elif isinstance(output, (tuple, list)):
                 for out in output:
                     if isinstance(out, TN):
                         out._module = self
+                        self._forward_inputs_map[id(out)] = forward_inputs
         
         return output
 
