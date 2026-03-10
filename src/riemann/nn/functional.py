@@ -437,13 +437,12 @@ def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
         # target_flat_shape = (-1,)
         
         input = input.reshape(input.shape[0], input.shape[1], -1)  # (N, C, D)
-        input = input.permute(0, 2, 1).reshape(-1, input.shape[1])  # (N*D, C) → 分类维度为dim=1
+        input = input.transpose(1, 2).reshape(-1, input.shape[1])  # (N*D, C) → 分类维度为dim=1
         target = target.reshape(-1).type(int64)
     
     # 创建忽略索引掩码
     mask = (target != ignore_index)
-    # valid_samples = sum(mask.type(int32))  # 有效样本数
-    valid_samples = sum(mask)  # 有效样本数
+    valid_samples = sum(mask).type(input.dtype)  # 有效样本数，保持与input相同的dtype
     
     # 处理边界情况：没有有效样本时
     if valid_samples == 0:
@@ -460,8 +459,9 @@ def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
             return tensor(float('nan'),dtype=input.dtype,device=input.device)
     
     # 核心计算 - 计算所有样本的损失
-    # 对于被忽略的样本，target值可能超出范围，所以我们需要使用临时target
-    temp_target = where(mask, target, zeros_like(target))
+    # 对于被忽略的样本，target值可能超出范围，使用临时target避免越界
+    temp_zeros = zeros_like(target)
+    temp_target = where(mask, target, temp_zeros)
     target_expanded = temp_target.unsqueeze(1)
     
     selected_log_probs = input.gather(1, target_expanded).squeeze(1)
@@ -475,36 +475,29 @@ def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
         if weight.shape[0] != original_shape[1]:
             raise ValueError(f'weight size ({weight.shape}) must match number of classes ({original_shape[1]})')
         
-        # 获取对应类别的权重
+        # 获取对应类别的权重并直接应用到损失
         class_weights = weight.gather(0, temp_target)
         loss = loss * class_weights
-        # weight_sum = sum(class_weights * mask.type(float32))
         weight_sum = sum(class_weights * mask)
     
-    # 应用ignore_index掩码 - 将被忽略样本的损失设为0
-    loss = where(mask, loss, zeros_like(loss))
+    # 应用ignore_index掩码 - 复用temp_zeros避免重复分配
+    loss = where(mask, loss, temp_zeros)
     
-    # 对于non-reduction模式，恢复原始形状（如果需要）
-    if reduction == 'none' and input.ndim > 2:
-        # 恢复为与target原始形状匹配的损失张量
-        loss = loss.reshape(original_target_shape)
+    # 根据reduction模式返回结果
+    if reduction == 'none':
+        # non-reduction模式：恢复原始形状（如果需要）
+        if input.ndim > 2:
+            loss = loss.reshape(original_target_shape)
         return loss
-    elif reduction == 'none':
-        return loss
-    
-    # 对于其他reduction模式，只考虑有效样本
-    valid_loss = loss[mask]
-    
-    if reduction == 'sum':
-        return valid_loss.sum()
+    elif reduction == 'sum':
+        # sum模式：直接对mask后的损失求和
+        return (loss * mask).sum()
     elif reduction == 'mean':
+        # mean模式：使用有效样本数或权重和进行归一化
         if weight is None:
-            # 没有权重时，直接除以有效样本数
-            # return valid_loss.sum() / valid_loss.numel()
-            return valid_loss.mean()
+            return (loss * mask).sum() / valid_samples
         else:
-            # 有权重时，使用权重和进行归一化
-            return valid_loss.sum() / weight_sum            
+            return (loss * mask).sum() / weight_sum if weight_sum > 0 else tensor(float('nan'), dtype=input.dtype, device=input.device)
     else:
         raise ValueError(f"Invalid reduction: {reduction}")
 # endof nll_loss
@@ -682,34 +675,38 @@ def cross_entropy(input: TN, target: TN, weight: Optional[TN] = None,
             reduction=reduction
         )
     
-    # 标签平滑处理
+    # 标签平滑处理 - 优化版本（无one-hot编码）
     num_classes = input.shape[1]
+    epsilon = label_smoothing
     
     # 创建安全的临时target，确保所有值都在有效范围内
     temp_target = where(mask, target, zeros_like(target))
     
-    # 计算log_softmax
+    # 计算log_softmax（只需一次）
     log_probs = log_softmax(input, dim=1)
     
-    # 创建平滑目标分布 - 严格按照PyTorch实现
-    # 关键点1: 创建one-hot编码
-    target_onehot = zeros_like(input)
-    target_onehot = target_onehot.scatter(1, temp_target.unsqueeze(1), 1.0)
-
-    # 关键点2: 应用标签平滑
-    epsilon = label_smoothing
-    smooth_target = target_onehot * (1.0 - epsilon) + epsilon / num_classes
+    # 获取目标类别的log概率（使用gather，避免one-hot编码）
+    target_expanded = temp_target.unsqueeze(1)
+    target_log_probs = log_probs.gather(1, target_expanded).squeeze(1)
     
-    # 关键点3: 如果有权重，需要特殊处理
+    # 标签平滑交叉熵计算 - 根据是否有权重选择不同路径
+    target_weights = None
     if weight is not None:
-        # 权重需要应用到每个类别的贡献上，而不仅仅是最终损失
-        # 这是与之前实现的关键区别
-        smooth_target = smooth_target * weight.view(1, -1)
+        if weight.ndim != 1:
+            raise ValueError('weight must be 1D tensor')
+        # 带权重的标签平滑计算：
+        # loss = -Σ_j smooth_target[j] * weight[j] * log_probs[j]
+        #      = -(1-ε) * weight[target] * log_probs[target] - ε/C * Σ_j weight[j] * log_probs[j]
+        target_weights = weight.gather(0, temp_target.view(-1))
+        weighted_entropy_term = sum(log_probs * weight.view(1, -1), dim=1) / num_classes
+        loss = -((1.0 - epsilon) * target_log_probs * target_weights + epsilon * weighted_entropy_term)
+    else:
+        # 基本标签平滑计算：
+        # H = -(1-ε) * log(p_target) - ε * Σ log(p) / C
+        entropy_term = sum(log_probs, dim=1) / num_classes
+        loss = -((1.0 - epsilon) * target_log_probs + epsilon * entropy_term)
     
-    # 计算交叉熵损失
-    loss = -sum(smooth_target * log_probs, dim=1)
-    
-    # 应用ignore_index掩码
+    # 应用ignore_index掩码（合并处理）
     loss = where(mask, loss, zeros_like(loss))
     
     # 应用reduction参数
@@ -718,14 +715,11 @@ def cross_entropy(input: TN, target: TN, weight: Optional[TN] = None,
     elif reduction == 'sum':
         return loss.sum()
     elif reduction == 'mean':
-        # 计算有效样本数
         valid_count = sum(mask.type(input.dtype))
         if valid_count > 0:
             if weight is not None:
-                # 关键点4: 对于带权重的mean reduction，分母是有效样本的权重总和
-                # 但这里我们已经在smooth_target中应用了权重，所以需要重新计算有效权重
-                target_weights = weight.gather(0, temp_target.view(-1)).view(loss.shape)
-                weight_sum = sum(target_weights * mask.type(input.dtype))
+                # 直接使用之前计算的target_weights，无需重复检查
+                weight_sum = sum(target_weights.view(loss.shape) * mask.type(input.dtype))
                 if weight_sum > 0:
                     return loss.sum() / weight_sum
                 else:
@@ -754,20 +748,21 @@ def binary_cross_entropy_with_logits(input: TN, target: TN, weight: Optional[TN]
     if size_average is not None or reduce is not None:
         reduction = _get_reduction(size_average, reduce)
     
-    # 数值稳定性处理：避免log(0)问题
+    # 数值稳定性处理：避免log(0)问题 - 预计算公共部分
+    abs_input = abs(input)
+    log_1p_exp_neg_abs = log(1.0 + exp(-abs_input))
     max_val = where(-input > 0, -input, 0.0)
     
-    # 稳定的交叉熵计算：input - input * target + log(1 + exp(-input))
-    loss = input - input * target + max_val + log(1.0 + exp(-abs(input)))
-    
-    # 应用正类权重
+    # 根据是否有pos_weight选择不同的计算路径
     if pos_weight is not None:
-        # pos_weight * target * (-log(sigmoid(input))) + (1 - target) * (-log(1 - sigmoid(input)))
-        # 重新计算以应用pos_weight
-        log_weight = pos_weight
-        loss_pos = log_weight * (-log(sigmoid(input)))
-        loss_neg = -log(1.0 - sigmoid(input))
+        # 带正类权重的路径：只计算一次sigmoid
+        sig = sigmoid(input)
+        loss_pos = pos_weight * (-log(sig))
+        loss_neg = -log(1.0 - sig)
         loss = target * loss_pos + (1.0 - target) * loss_neg
+    else:
+        # 基本路径：使用数值稳定的交叉熵计算
+        loss = input - input * target + max_val + log_1p_exp_neg_abs
     
     # 应用样本权重
     if weight is not None:
