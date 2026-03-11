@@ -342,6 +342,9 @@ class Module:
         self._backward_hooks = {}
         self._forward_inputs_map = {}      # 存储每次调用的 forward 输入 {output_tensor_id: forward_inputs}
         self._saved_grad_output_map = {}   # 存储每次调用的 grad_output {output_tensor_id: grad_output}
+        self._multi_outputs_map = {}       # 存储多输出模块的所有输出张量 {first_output_id: [output1, output2, ...]}
+        self._pending_outputs = {}         # 反向传播时缓存已收集梯度的输出张量 {first_output_id: set(collected_output_ids)}
+        self._pending_inputs = {}          # 反向传播时缓存已收集梯度的输入张量 {output_tensor_id: set(collected_input_ids)}
         self.training = True  # 训练/评估模式标志      
     
     def to(self, *args, **kwargs):
@@ -807,6 +810,10 @@ class Module:
             - 在forward前后会调用注册的钩子函数
             - 提供与PyTorch兼容的调用接口
         """
+        # 清理过期的缓存（防止内存泄漏）
+        # 每次前向传播开始时清理，因为之前的计算图已经不再需要
+        self._cleanup_caches()
+        
         # 调用前向传播前钩子
         if self._forward_pre_hooks:
             for hook in self._forward_pre_hooks.values():
@@ -837,15 +844,63 @@ class Module:
             forward_inputs = tuple(forward_input_tensors)
             
             if isinstance(output, TN):
+                # 单输出模块
                 output._module = self
-                self._forward_inputs_map[id(output)] = forward_inputs
+                output._is_multi_output = False
+                # 只有 backward_hooks 需要前向输入
+                if self._backward_hooks:
+                    self._forward_inputs_map[id(output)] = forward_inputs
+                    # 设置输入张量的 _module_input_of 属性
+                    for inp in forward_inputs:
+                        inp._module_input_of.append((self, output))
             elif isinstance(output, (tuple, list)):
+                # 多输出模块：记录所有输出张量
+                all_outputs = []
                 for out in output:
                     if isinstance(out, TN):
+                        all_outputs.append(out)
+                
+                if all_outputs:
+                    # 使用第一个输出张量的 id 作为键
+                    first_output_id = id(all_outputs[0])
+                    
+                    for out in all_outputs:
                         out._module = self
-                        self._forward_inputs_map[id(out)] = forward_inputs
+                        out._is_multi_output = True
+                        out._multi_outputs = all_outputs
+                        out._first_output_id = first_output_id
+                        # 只有 backward_hooks 需要前向输入
+                        if self._backward_hooks:
+                            self._forward_inputs_map[id(out)] = forward_inputs
+                            # 设置输入张量的 _module_input_of 属性
+                            for inp in forward_inputs:
+                                inp._module_input_of.append((self, out))
+                    
+                    # 存储所有输出张量
+                    self._multi_outputs_map[first_output_id] = all_outputs
         
         return output
+    
+    def _cleanup_caches(self):
+        """
+        清理模块缓存，防止内存泄漏
+        
+        清理以下缓存：
+        - _multi_outputs_map: 存储多输出模块的所有输出张量
+        - _pending_outputs: 反向传播时缓存已收集梯度的输出张量
+        - _forward_inputs_map: 存储前向输入
+        - _saved_grad_output_map: 存储梯度输出
+        """
+        # 清理 _multi_outputs_map
+        self._multi_outputs_map.clear()
+        # 清理 _pending_outputs
+        self._pending_outputs.clear()
+        # 清理 _pending_inputs
+        self._pending_inputs.clear()
+        # 清理 _forward_inputs_map
+        self._forward_inputs_map.clear()
+        # 清理 _saved_grad_output_map
+        self._saved_grad_output_map.clear()
 
     def parameters(self, recurse=True):
         """
