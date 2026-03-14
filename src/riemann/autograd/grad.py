@@ -246,7 +246,7 @@ def grad(outputs:TN,
             if var.requires_grad == True:            
                 #调用来源节点对应的梯度函数，向该节点传播梯度值,每接收一次梯度传递，计数减1
                 tobe_add_grad:TN = fn(item,i)
-                tobe_add_grad._addto_grad_value(var)
+                var._add_received_grad_value(tobe_add_grad)
                 var.rcv_grad_count -= 1
                 
                 # 如果节点var的梯度已收集完毕，将该节点加入队列q，以便后续继续反向传播梯度

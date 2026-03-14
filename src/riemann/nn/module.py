@@ -810,10 +810,6 @@ class Module:
             - 在forward前后会调用注册的钩子函数
             - 提供与PyTorch兼容的调用接口
         """
-        # 清理过期的缓存（防止内存泄漏）
-        # 每次前向传播开始时清理，因为之前的计算图已经不再需要
-        self._cleanup_caches()
-        
         # 调用前向传播前钩子
         if self._forward_pre_hooks:
             for hook in self._forward_pre_hooks.values():
@@ -834,31 +830,23 @@ class Module:
                     output = hook_result
         
         # 设置输出张量的模块引用（用于反向传播钩子）
-        # 只有当存在backward钩子时才设置，避免不必要的开销
-        if output is not None and (self._backward_hooks or self._backward_pre_hooks):
+        if output is not None:
             # 提取 forward 输入中的张量（不包括模块参数）
-            forward_input_tensors = []
-            for arg in args:
-                if isinstance(arg, TN):
-                    forward_input_tensors.append(arg)
+            forward_input_tensors = [arg for arg in args if isinstance(arg, TN)]
             forward_inputs = tuple(forward_input_tensors)
             
             if isinstance(output, TN):
                 # 单输出模块
                 output._module = self
                 output._is_multi_output = False
-                # 只有 backward_hooks 需要前向输入
+                # 只有在有反向钩子时才保存输入输出信息
                 if self._backward_hooks:
                     self._forward_inputs_map[id(output)] = forward_inputs
-                    # 设置输入张量的 _module_input_of 属性
                     for inp in forward_inputs:
                         inp._module_input_of.append((self, output))
             elif isinstance(output, (tuple, list)):
                 # 多输出模块：记录所有输出张量
-                all_outputs = []
-                for out in output:
-                    if isinstance(out, TN):
-                        all_outputs.append(out)
+                all_outputs = tuple([out for out in output if isinstance(out, TN)])
                 
                 if all_outputs:
                     # 使用第一个输出张量的 id 作为键
@@ -869,15 +857,24 @@ class Module:
                         out._is_multi_output = True
                         out._multi_outputs = all_outputs
                         out._first_output_id = first_output_id
-                        # 只有 backward_hooks 需要前向输入
-                        if self._backward_hooks:
-                            self._forward_inputs_map[id(out)] = forward_inputs
-                            # 设置输入张量的 _module_input_of 属性
+                    
+                    # 对于多输出模块，始终保存_forward_inputs_map和_multi_outputs_map，因为反向预处理钩子需要
+                    for out in all_outputs:
+                        self._forward_inputs_map[id(out)] = forward_inputs
+                    
+                    # 存储所有输出张量（反向预处理钩子需要）
+                    self._multi_outputs_map[first_output_id] = all_outputs
+                    
+                    # 只有在有反向钩子时才设置_module_input_of属性
+                    if self._backward_hooks:
+                        for out in all_outputs:
                             for inp in forward_inputs:
                                 inp._module_input_of.append((self, out))
-                    
-                    # 存储所有输出张量
-                    self._multi_outputs_map[first_output_id] = all_outputs
+                    else:
+                        # 即使没有反向钩子，也需要设置_module_input_of属性，用于反向预处理钩子
+                        for out in all_outputs:
+                            for inp in forward_inputs:
+                                inp._module_input_of.append((self, out))
         
         return output
     
