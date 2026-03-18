@@ -318,34 +318,92 @@ class Module:
         """
         初始化模块实例
         
-        创建新的模块实例，初始化核心数据结构：
-        - _modules: 存储子模块的字典
-        - _parameters: 存储参数的字典
-        - _buffers: 存储缓冲区的字典
-        - _forward_pre_hooks: 存储前向传播前钩子的字典
-        - _forward_hooks: 存储前向传播钩子的字典
-        - _backward_pre_hooks: 存储反向传播前钩子的字典
-        - _backward_hooks: 存储反向传播钩子的字典
-        - _forward_inputs_map: 存储每次调用的 forward 输入 {output_tensor_id: forward_inputs}
-        - _saved_grad_output_map: 存储每次调用的 grad_output {output_tensor_id: grad_output}
-        - training: 训练模式标志，默认为True
+        创建新的模块实例，初始化核心数据结构。所有子类都应该调用super().__init__()来确保正确的初始化。
         
-        所有子类都应该调用super().__init__()来确保正确的初始化。
+        核心属性说明:
+        ----------------
+        模块结构相关:
+            _modules (dict): 存储子模块的字典，键为属性名，值为Module实例
+                示例: {'layer1': Linear(...), 'layer2': ReLU(...)}
+            _parameters (dict): 存储可学习参数的字典，键为属性名，值为Parameter实例
+                示例: {'weight': Parameter(...), 'bias': Parameter(...)}
+            _buffers (dict): 存储不可学习缓冲区的字典，如BatchNorm的running_mean
+                示例: {'running_mean': Tensor(...), 'running_var': Tensor(...)}
+        
+        前向钩子相关:
+            _forward_pre_hooks (dict): 存储前向传播前钩子的字典
+                键为钩子句柄ID，值为钩子函数
+                钩子函数签名: hook(module, input) -> modified_input or None
+            _forward_hooks (dict): 存储前向传播钩子的字典
+                键为钩子句柄ID，值为钩子函数
+                钩子函数签名: hook(module, input, output) -> modified_output or None
+        
+        反向钩子相关:
+            _backward_pre_hooks (dict): 存储反向传播前钩子的字典
+                键为钩子句柄ID，值为钩子函数
+                钩子函数签名: hook(module, grad_output) -> modified_grad_output or None
+            _backward_hooks (dict): 存储反向传播钩子的字典
+                键为钩子句柄ID，值为钩子函数
+                钩子函数签名: hook(module, grad_input, grad_output) -> modified_grad_input or None
+        
+        反向传播缓存（用于支持反向钩子机制）:
+            _forward_inputs_map (dict): 存储每次前向调用的输入信息
+                键: 输出张量的id，值: 前向输入元组 (input_tensor1, input_tensor2, ...)
+                用途: 反向传播时确定模块的输入，用于计算grad_input
+            
+            _module_output_grads_clone (dict): 存储模块输出梯度的clone副本
+                键: 输出张量的id，值: 该输出梯度的clone
+                用途: 反向钩子需要访问原始的grad_output，防止被预处理钩子修改
+            
+            _module_output_tensors (dict): 存储模块输出张量对象
+                键: 输出张量的id，值: 输出张量本身
+                用途: 反向传播时快速获取输出张量的grad_value和requires_grad等属性
+            
+            _multi_outputs_map (dict): 存储多输出模块的所有输出张量
+                键: 第一个输出张量的id，值: 所有输出张量的元组 (output1, output2, ...)
+                用途: 识别哪些输出属于同一前向调用，确保收集齐所有梯度后才调用钩子
+            
+            注意: 反向钩子的调用状态由BackwardHookManager统一管理，不在Module中维护
+        
+        模式标志:
+            training (bool): 训练模式标志，默认为True
+                影响: 某些模块（如Dropout、BatchNorm）在训练和评估模式下行为不同
+        
+        示例:
+            >>> class MyModule(Module):
+            ...     def __init__(self):
+            ...         super().__init__()  # 必须调用父类初始化
+            ...         self.weight = Parameter(rm.randn(10, 5))
+            ...     def forward(self, x):
+            ...         return x @ self.weight
+        
+        Note:
+            - 所有子类必须调用super().__init__()作为第一条语句
+            - 参数和子模块通过属性赋值自动注册
+            - 反向传播缓存会在backward完成后自动清理
         """
         
-        self._modules = {}
-        self._parameters = {}
-        self._buffers = {}
-        self._forward_pre_hooks = {}
-        self._forward_hooks = {}
-        self._backward_pre_hooks = {}
-        self._backward_hooks = {}
-        self._forward_inputs_map = {}      # 存储每次调用的 forward 输入 {output_tensor_id: forward_inputs}
-        self._saved_grad_output_map = {}   # 存储每次调用的 grad_output {output_tensor_id: grad_output}
-        self._multi_outputs_map = {}       # 存储多输出模块的所有输出张量 {first_output_id: [output1, output2, ...]}
-        self._pending_outputs = {}         # 反向传播时缓存已收集梯度的输出张量 {first_output_id: set(collected_output_ids)}
-        self._pending_inputs = {}          # 反向传播时缓存已收集梯度的输入张量 {output_tensor_id: set(collected_input_ids)}
-        self.training = True  # 训练/评估模式标志      
+        # 模块结构组件
+        self._modules = {}      # {属性名: 子模块}，存储子模块
+        self._parameters = {}   # {属性名: Parameter}，存储可学习参数
+        self._buffers = {}      # {属性名: Tensor}，存储不可学习的缓冲区（如BN的running_mean）
+
+        # 前向传播钩子
+        self._forward_pre_hooks = {}  # {钩子ID: hook_fn}，前向传播前钩子，可修改输入
+        self._forward_hooks = {}      # {钩子ID: hook_fn}，前向传播后钩子，可修改输出
+
+        # 反向传播钩子
+        self._backward_pre_hooks = {}  # {钩子ID: hook_fn}，反向传播前钩子，可修改输出梯度
+        self._backward_hooks = {}      # {钩子ID: hook_fn}，反向传播后钩子，可修改输入梯度
+
+        # 反向传播缓存（用于支持反向钩子机制）
+        self._forward_inputs_map = {}        # {输出张量ID: (输入张量,)}，记录前向输入
+        self._module_output_tensors = {}     # {输出张量ID: 输出张量}，缓存输出张量对象
+        self._module_output_grads_clone = {} # {输出张量ID: 梯度副本}，缓存输出梯度供反向钩子使用
+        self._multi_outputs_map = {}         # {首个输出ID: (输出1, 输出2)}，多输出模块映射
+
+        # 训练模式标志
+        self.training = True      
     
     def to(self, *args, **kwargs):
         """
@@ -789,26 +847,101 @@ class Module:
         """
         模块调用方法 (Module Call)
         
-        使模块实例可调用，实现module(x)的调用方式。
-        这是用户使用模块的主要接口，内部调用forward方法。
-        同时处理前向传播前钩子和前向传播钩子的调用。
+        使模块实例可调用，实现module(x)的调用方式。这是用户使用模块的主要接口，
+        内部调用forward方法，同时处理前向传播前钩子和前向传播钩子的调用。
+        
+        执行流程:
+        ---------
+        1. 调用前向传播前钩子 (_forward_pre_hooks)
+           - 钩子函数接收 (module, input) 参数
+           - 如果钩子返回非None值，则使用该返回值替换原始输入
+           - 多个钩子按注册顺序依次执行，前一个钩子的输出作为后一个钩子的输入
+        
+        2. 执行前向传播 (forward)
+           - 调用子类实现的forward方法
+           - 计算模块的输出
+        
+        3. 调用前向传播钩子 (_forward_hooks)
+           - 钩子函数接收 (module, input, output) 参数
+           - 如果钩子返回非None值，则使用该返回值替换原始输出
+           - 多个钩子按注册顺序依次执行
+        
+        4. 设置输出张量的模块引用（用于反向传播钩子机制）
+           - 单输出: 设置 output._output_of = [self]
+           - 多输出: 为每个输出设置 output._output_of = [self]
+           - 记录前向输入: _forward_inputs_map[output_id] = forward_inputs
+           - 记录多输出映射: _multi_outputs_map[first_output_id] = all_outputs
+           
+           注：多输出模块通过 _multi_outputs_map 识别，键为第一个输出张量的id，值为所有输出张量的元组
         
         Args:
             *args: 位置参数，传递给forward方法
+                可以是张量、数值或其他类型，张量会被提取用于反向传播钩子
             **kwargs: 关键字参数，传递给forward方法
+                如training=True等控制参数
             
         Returns:
-            forward方法的返回值
+            Tensor or tuple: forward方法的返回值
+                - 单输出: 返回单个张量
+                - 多输出: 返回张量元组
             
         Examples:
+            基本调用:
             >>> layer = Linear(10, 5)
             >>> output = layer(input_data)  # 等价于layer.forward(input_data)
-            >>> output = layer(input_data, training=True)  # 传递额外参数
+            
+            传递额外参数:
+            >>> output = layer(input_data, training=True)
+            
+            多输入模块:
+            >>> class AddModule(Module):
+            ...     def forward(self, x, y):
+            ...         return x + y
+            >>> add = AddModule()
+            >>> result = add(x, y)
+            
+            多输出模块:
+            >>> class SplitModule(Module):
+            ...     def forward(self, x):
+            ...         return x[:, :5], x[:, 5:]
+            >>> split = SplitModule()
+            >>> out1, out2 = split(x)
+        
+        前向钩子执行示例:
+        -----------------
+        >>> def pre_hook(module, input):
+        ...     print(f"Pre-hook: input shape = {input[0].shape}")
+        ...     return input  # 返回None表示不修改输入
+        >>> 
+        >>> def forward_hook(module, input, output):
+        ...     print(f"Forward hook: output shape = {output.shape}")
+        ...     return output  # 返回None表示不修改输出
+        >>> 
+        >>> layer.register_forward_pre_hook(pre_hook)
+        >>> layer.register_forward_hook(forward_hook)
+        >>> output = layer(x)  # 会依次调用pre_hook、forward、forward_hook
+        
+        反向传播钩子支持:
+        -----------------
+        __call__方法会为输出张量设置必要的属性，以支持反向传播钩子:
+        - output._output_of: 记录产生该输出的模块
+        - output._module_input_of: 记录该张量作为哪些模块的输入
+        
+        同时会在模块级别记录以下信息:
+        - _forward_inputs_map: 存储输出张量id到前向输入的映射
+        - _multi_outputs_map: 存储多输出模块的所有输出张量
+        - _module_output_tensors: 存储输出张量id到张量对象的映射
+        
+        这些信息在backward()时被用于:
+        - 确定需要调用哪些模块的反向钩子
+        - 收集多输出模块的所有输出梯度
+        - 计算grad_input并传递给反向钩子
             
         Note:
-            - 这是模块的标准调用方式
-            - 在forward前后会调用注册的钩子函数
-            - 提供与PyTorch兼容的调用接口
+            - 这是模块的标准调用方式，推荐使用module(x)而非module.forward(x)
+            - 前向钩子可以修改输入/输出，但应谨慎使用以避免副作用
+            - 反向传播钩子需要在调用backward()之前注册
+            - 多输出模块通过_multi_outputs_map识别，所有输出共享相同的first_output_id作为键
         """
         # 调用前向传播前钩子
         if self._forward_pre_hooks:
@@ -818,6 +951,11 @@ class Module:
                     if not isinstance(result, tuple):
                         result = (result,)
                     args = result
+        
+        # 如果模块注册了反向钩子，clone输入以避免多模块共享输入时的梯度聚合问题
+        # 这样可以确保反向钩子只处理本模块产生的梯度，与PyTorch行为一致
+        if self._backward_hooks:
+            args = tuple(arg.clone() if isinstance(arg, TN) else arg for arg in args)
         
         # 执行前向传播
         output = self.forward(*args, **kwargs)
@@ -831,73 +969,50 @@ class Module:
         
         # 设置输出张量的模块引用（用于反向传播钩子）
         if output is not None:
-            # 提取 forward 输入中的张量（不包括模块参数）
+            # 快速退出：如果模块没有注册反向钩子，跳过所有钩子相关处理
+            if not self._backward_hooks and not self._backward_pre_hooks:
+                return output
+            
             forward_input_tensors = [arg for arg in args if isinstance(arg, TN)]
             forward_inputs = tuple(forward_input_tensors)
             
             if isinstance(output, TN):
-                # 单输出模块
-                output._module = self
-                output._is_multi_output = False
-                # 只有在有反向钩子时才保存输入输出信息
-                if self._backward_hooks:
-                    self._forward_inputs_map[id(output)] = forward_inputs
-                    for inp in forward_inputs:
+                already_in_output_of = any(m is self for m in output._output_of)
+                if not already_in_output_of:
+                    output._output_of.append(self)
+                # 单输出模块，直接记录映射关系
+                self._forward_inputs_map[id(output)] = forward_inputs
+                self._module_output_tensors[id(output)] = output
+                
+                for inp in forward_inputs:
+                    already_in_input_of = any(m is self and o is output for m, o in inp._module_input_of)
+                    if not already_in_input_of:
                         inp._module_input_of.append((self, output))
             elif isinstance(output, (tuple, list)):
-                # 多输出模块：记录所有输出张量
                 all_outputs = tuple([out for out in output if isinstance(out, TN)])
                 
                 if all_outputs:
-                    # 使用第一个输出张量的 id 作为键
                     first_output_id = id(all_outputs[0])
                     
                     for out in all_outputs:
-                        out._module = self
-                        out._is_multi_output = True
-                        out._multi_outputs = all_outputs
-                        out._first_output_id = first_output_id
+                        already_in_output_of = any(m is self for m in out._output_of)
+                        if not already_in_output_of:
+                            out._output_of.append(self)
                     
-                    # 对于多输出模块，始终保存_forward_inputs_map和_multi_outputs_map，因为反向预处理钩子需要
                     for out in all_outputs:
                         self._forward_inputs_map[id(out)] = forward_inputs
+                        self._module_output_tensors[id(out)] = out
                     
-                    # 存储所有输出张量（反向预处理钩子需要）
+                    # 多输出模块，记录第一个输出ID到所有输出的映射
                     self._multi_outputs_map[first_output_id] = all_outputs
                     
-                    # 只有在有反向钩子时才设置_module_input_of属性
-                    if self._backward_hooks:
-                        for out in all_outputs:
-                            for inp in forward_inputs:
-                                inp._module_input_of.append((self, out))
-                    else:
-                        # 即使没有反向钩子，也需要设置_module_input_of属性，用于反向预处理钩子
-                        for out in all_outputs:
-                            for inp in forward_inputs:
+                    for out in all_outputs:
+                        for inp in forward_inputs:
+                            already_in_input_of = any(m is self and o is out for m, o in inp._module_input_of)
+                            if not already_in_input_of:
                                 inp._module_input_of.append((self, out))
         
         return output
-    
-    def _cleanup_caches(self):
-        """
-        清理模块缓存，防止内存泄漏
-        
-        清理以下缓存：
-        - _multi_outputs_map: 存储多输出模块的所有输出张量
-        - _pending_outputs: 反向传播时缓存已收集梯度的输出张量
-        - _forward_inputs_map: 存储前向输入
-        - _saved_grad_output_map: 存储梯度输出
-        """
-        # 清理 _multi_outputs_map
-        self._multi_outputs_map.clear()
-        # 清理 _pending_outputs
-        self._pending_outputs.clear()
-        # 清理 _pending_inputs
-        self._pending_inputs.clear()
-        # 清理 _forward_inputs_map
-        self._forward_inputs_map.clear()
-        # 清理 _saved_grad_output_map
-        self._saved_grad_output_map.clear()
 
     def parameters(self, recurse=True):
         """
@@ -1108,30 +1223,77 @@ class Module:
         注册前向传播前钩子 (Register Forward Pre-Hook)
         
         注册一个钩子函数，该钩子会在模块的forward方法被调用之前执行。
-        钩子函数应该具有以下签名：
-            hook(module, input) -> None or modified input
+        这是前向传播的第一个钩子点，可以用于修改输入数据或执行预处理操作。
+        
+        调用时机:
+        ----------
+        在模块的__call__方法中，forward方法执行之前调用。
+        调用顺序: register_forward_pre_hook -> forward -> register_forward_hook
+        
+        钩子函数签名:
+        --------------
+        hook(module, input) -> None or modified input
+        
+        参数:
+            module (Module): 当前被调用的模块实例
+            input (tuple): 包含所有输入张量的元组，即使只有一个输入也是元组形式
+        
+        返回值:
+            - None: 表示不修改输入，使用原始输入继续执行
+            - Tensor or tuple: 返回修改后的输入，将替换原始输入传递给forward
+        
+        多钩子行为:
+        -----------
+        当注册多个前向预处理钩子时，它们按注册顺序依次执行:
+        1. 第一个钩子接收原始输入
+        2. 如果第一个钩子返回非None，使用该返回值作为下一个钩子的输入
+        3. 如果返回None，使用原始输入传递给下一个钩子
+        4. 最后一个钩子的输出（或None）决定最终的forward输入
         
         Args:
             hook (callable): 钩子函数，接收模块和输入参数，可以返回修改后的输入
             
         Returns:
-            RemovableHandle: 一个可调用对象，调用它可以移除这个钩子
+            RemovableHandle: 一个可调用对象，调用remove()可以移除这个钩子
             
         Examples:
-            >>> def my_hook(module, input):
-            ...     print(f"Forward pre-hook called for {module._get_name()}")
-            ...     # 可以修改输入
-            ...     return input
+            基本用法 - 打印输入信息:
+            >>> def print_hook(module, input):
+            ...     print(f"Input shape: {input[0].shape}")
+            ...     return None  # 不修改输入
             >>> 
             >>> layer = Linear(10, 5)
-            >>> handle = layer.register_forward_pre_hook(my_hook)
-            >>> output = layer(input_data)  # 会调用 my_hook
+            >>> handle = layer.register_forward_pre_hook(print_hook)
+            >>> output = layer(input_data)  # 会打印输入shape
             >>> handle.remove()  # 移除钩子
             
+            修改输入:
+            >>> def modify_hook(module, input):
+            ...     # 将输入乘以2
+            ...     return (input[0] * 2,)
+            >>> 
+            >>> layer.register_forward_pre_hook(modify_hook)
+            >>> output = layer(rm.ones(2, 10))  # 实际使用的是rm.ones(2, 10) * 2
+            
+            多输入模块:
+            >>> class AddModule(Module):
+            ...     def forward(self, x, y):
+            ...         return x + y
+            >>> 
+            >>> def multi_input_hook(module, input):
+            ...     x, y = input
+            ...     print(f"x shape: {x.shape}, y shape: {y.shape}")
+            ...     return None
+            >>> 
+            >>> add = AddModule()
+            >>> add.register_forward_pre_hook(multi_input_hook)
+            >>> result = add(x, y)  # 会打印两个输入的shape
+            
         Note:
-            - 钩子函数可以返回修改后的输入来改变forward的输入
-            - 如果返回None，则使用原始输入
-            - 多个钩子按注册顺序执行
+            - 前向预处理钩子可以修改输入，但应谨慎使用以避免副作用
+            - 如果只需要观察而不修改，建议返回None
+            - 修改输入时务必保持输入的shape和dtype一致，否则可能导致错误
+            - 在多输入情况下，即使只修改一个输入，也需要返回完整的元组
         """
         handle = RemovableHandle(self._forward_pre_hooks)
         self._forward_pre_hooks[handle.id] = hook
@@ -1142,31 +1304,93 @@ class Module:
         注册前向传播钩子 (Register Forward Hook)
         
         注册一个钩子函数，该钩子会在模块的forward方法被调用之后执行。
-        钩子函数应该具有以下签名：
-            hook(module, input, output) -> None or modified output
+        这是前向传播的第二个钩子点，可以用于观察或修改模块的输出。
+        
+        调用时机:
+        ----------
+        在模块的__call__方法中，forward方法执行之后调用。
+        调用顺序: register_forward_pre_hook -> forward -> register_forward_hook
+        
+        钩子函数签名:
+        --------------
+        hook(module, input, output) -> None or modified output
+        
+        参数:
+            module (Module): 当前被调用的模块实例
+            input (tuple): 包含所有输入张量的元组（forward接收的原始输入）
+            output (Tensor or tuple): forward方法的返回值，可能是单个张量或张量元组
+        
+        返回值:
+            - None: 表示不修改输出，使用原始输出作为模块返回值
+            - Tensor or tuple: 返回修改后的输出，将替换原始输出作为模块返回值
+        
+        多钩子行为:
+        -----------
+        当注册多个前向钩子时，它们按注册顺序依次执行:
+        1. 第一个钩子接收原始输出
+        2. 如果第一个钩子返回非None，使用该返回值作为下一个钩子的输出
+        3. 如果返回None，使用原始输出传递给下一个钩子
+        4. 最后一个钩子的输出（或None）决定最终的模块返回值
         
         Args:
             hook (callable): 钩子函数，接收模块、输入和输出，可以返回修改后的输出
             
         Returns:
-            RemovableHandle: 一个可调用对象，调用它可以移除这个钩子
+            RemovableHandle: 一个可调用对象，调用remove()可以移除这个钩子
             
         Examples:
-            >>> def my_hook(module, input, output):
-            ...     print(f"Forward hook called for {module._get_name()}")
+            基本用法 - 打印输出信息:
+            >>> def print_hook(module, input, output):
             ...     print(f"Output shape: {output.shape}")
-            ...     # 可以修改输出
-            ...     return output * 2
+            ...     return None  # 不修改输出
             >>> 
             >>> layer = Linear(10, 5)
-            >>> handle = layer.register_forward_hook(my_hook)
-            >>> output = layer(input_data)  # 会调用 my_hook
+            >>> handle = layer.register_forward_hook(print_hook)
+            >>> output = layer(input_data)  # 会打印输出shape
             >>> handle.remove()  # 移除钩子
             
+            修改输出:
+            >>> def modify_hook(module, input, output):
+            ...     # 将输出乘以2
+            ...     return output * 2
+            >>> 
+            >>> layer.register_forward_hook(modify_hook)
+            >>> output = layer(rm.ones(2, 10))  # 返回值是正常输出的2倍
+            
+            多输出模块:
+            >>> class SplitModule(Module):
+            ...     def forward(self, x):
+            ...         return x[:, :5], x[:, 5:]  # 返回两个张量
+            >>> 
+            >>> def multi_output_hook(module, input, output):
+            ...     out1, out2 = output
+            ...     print(f"out1 shape: {out1.shape}, out2 shape: {out2.shape}")
+            ...     return None
+            >>> 
+            >>> split = SplitModule()
+            >>> split.register_forward_hook(multi_output_hook)
+            >>> o1, o2 = split(x)  # 会打印两个输出的shape
+            
+            特征提取 - 记录中间层输出:
+            >>> class FeatureExtractor:
+            ...     def __init__(self):
+            ...         self.features = []
+            ...     
+            ...     def hook(self, module, input, output):
+            ...         self.features.append(output.clone())
+            ...         return None
+            >>> 
+            >>> extractor = FeatureExtractor()
+            >>> layer.register_forward_hook(extractor.hook)
+            >>> output = model(input_data)  # 会自动记录该层的输出
+            >>> print(extractor.features)  # 查看提取的特征
+            
         Note:
-            - 钩子可以返回修改后的输出来改变模块的输出
-            - 如果返回None，则使用原始输出
-            - 多个钩子按注册顺序执行
+            - 前向钩子可以修改输出，但应谨慎使用以避免副作用
+            - 如果只需要观察而不修改，建议返回None
+            - 修改输出时务必保持输出的shape和dtype一致，否则可能导致后续层错误
+            - 在多输出情况下，即使只修改一个输出，也需要返回完整的元组
+            - 常用于特征提取、输出监控和调试
         """
         handle = RemovableHandle(self._forward_hooks)
         self._forward_hooks[handle.id] = hook
@@ -1177,31 +1401,95 @@ class Module:
         注册反向传播前钩子 (Register Full Backward Pre-Hook)
         
         注册一个钩子函数，该钩子会在模块的反向传播开始之前执行。
-        钩子函数应该具有以下签名：
-            hook(module, grad_output) -> None or modified grad_output
+        这是反向传播的第一个钩子点，可以用于修改输出梯度（即传递给模块的梯度）。
+        
+        调用时机:
+        ----------
+        在反向传播过程中，当模块的所有输出梯度都收集完成后，在计算输入梯度之前调用。
+        调用顺序: register_full_backward_pre_hook -> (计算grad_input) -> register_full_backward_hook
+        
+        钩子函数签名:
+        --------------
+        hook(module, grad_output) -> None or modified grad_output
+        
+        参数:
+            module (Module): 当前反向传播的模块实例
+            grad_output (tuple): 包含所有输出梯度的元组
+                - 单输出模块: (grad_output_tensor,)
+                - 多输出模块: (grad_output1, grad_output2, ...)
+                - 对于不需要梯度的输出，对应位置为None
+        
+        返回值:
+            - None: 表示不修改梯度，使用原始grad_output继续计算
+            - tuple: 返回修改后的grad_output，将用于后续梯度计算
+        
+        多钩子行为:
+        -----------
+        当注册多个反向预处理钩子时，它们按注册顺序依次执行:
+        1. 第一个钩子接收原始grad_output
+        2. 如果第一个钩子返回非None，使用该返回值作为下一个钩子的grad_output
+        3. 如果返回None，使用原始grad_output传递给下一个钩子
+        4. 最后一个钩子的输出（或None）决定最终的grad_output用于梯度计算
         
         Args:
             hook (callable): 钩子函数，接收模块和输出梯度，可以返回修改后的梯度
             
         Returns:
-            RemovableHandle: 一个可调用对象，调用它可以移除这个钩子
+            RemovableHandle: 一个可调用对象，调用remove()可以移除这个钩子
             
         Examples:
-            >>> def my_hook(module, grad_output):
-            ...     print(f"Backward pre-hook called for {module._get_name()}")
-            ...     # 可以修改梯度
-            ...     return grad_output
+            基本用法 - 打印梯度信息:
+            >>> def print_hook(module, grad_output):
+            ...     print(f"grad_output shape: {grad_output[0].shape}")
+            ...     print(f"grad_output values: {grad_output[0]}")
+            ...     return None  # 不修改梯度
             >>> 
             >>> layer = Linear(10, 5)
-            >>> handle = layer.register_full_backward_pre_hook(my_hook)
+            >>> handle = layer.register_full_backward_pre_hook(print_hook)
             >>> output = layer(input_data)
-            >>> output.sum().backward()  # 会调用 my_hook
+            >>> output.sum().backward()  # 会打印grad_output信息
             >>> handle.remove()  # 移除钩子
             
+            修改输出梯度:
+            >>> def modify_grad_hook(module, grad_output):
+            ...     # 将输出梯度乘以2
+            ...     return (grad_output[0] * 2,)
+            >>> 
+            >>> layer.register_full_backward_pre_hook(modify_grad_hook)
+            >>> output = layer(input_data)
+            >>> output.sum().backward()  # 输入梯度将是正常值的2倍
+            
+            多输出模块:
+            >>> class MultiOutputModule(Module):
+            ...     def forward(self, x):
+            ...         return x @ self.weight.T, x @ self.weight.T * 2
+            >>> 
+            >>> def multi_output_hook(module, grad_output):
+            ...     g1, g2 = grad_output
+            ...     print(f"grad_output1: {g1.shape}, grad_output2: {g2.shape}")
+            ...     return None
+            >>> 
+            >>> module = MultiOutputModule()
+            >>> module.register_full_backward_pre_hook(multi_output_hook)
+            >>> out1, out2 = module(x)
+            >>> (out1.sum() + out2.sum()).backward()  # 会打印两个grad_output
+            
+            梯度裁剪:
+            >>> def clip_grad_hook(module, grad_output):
+            ...     # 裁剪梯度，防止梯度爆炸
+            ...     clipped = tuple(g.clip(-1, 1) if g is not None else None for g in grad_output)
+            ...     return clipped
+            >>> 
+            >>> layer.register_full_backward_pre_hook(clip_grad_hook)
+            >>> output.sum().backward()  # 梯度将被裁剪到[-1, 1]范围
+            
         Note:
-            - 钩子在反向传播开始前被调用
-            - 可以修改传递给模块的梯度
-            - grad_output是一个元组，包含相对于输出的梯度
+            - 反向预处理钩子在反向传播开始时调用，此时grad_output已准备好但grad_input尚未计算
+            - 修改grad_output会影响后续grad_input的计算（grad_input = grad_output @ weight）
+            - 如果只需要观察而不修改，建议返回None
+            - 在多输出情况下，即使只修改一个梯度，也需要返回完整的元组
+            - 常用于梯度裁剪、梯度监控和调试
+            - 与register_full_backward_hook的区别：本钩子在grad_input计算之前调用
         """
         handle = RemovableHandle(self._backward_pre_hooks)
         self._backward_pre_hooks[handle.id] = hook
@@ -1212,33 +1500,107 @@ class Module:
         注册反向传播钩子 (Register Full Backward Hook)
         
         注册一个钩子函数，该钩子会在模块的反向传播完成后执行。
-        钩子函数应该具有以下签名：
-            hook(module, grad_input, grad_output) -> None or modified grad_input
+        这是反向传播的第二个钩子点，可以用于观察或修改输入梯度（即传递给前一层/输入的梯度）。
+        
+        调用时机:
+        ----------
+        在反向传播过程中，当模块的输入梯度计算完成后调用。
+        调用顺序: register_full_backward_pre_hook -> (计算grad_input) -> register_full_backward_hook
+        
+        钩子函数签名:
+        --------------
+        hook(module, grad_input, grad_output) -> None or modified grad_input
+        
+        参数:
+            module (Module): 当前反向传播的模块实例
+            grad_input (tuple): 包含所有输入梯度的元组
+                - 单输入模块: (grad_input_tensor,)
+                - 多输入模块: (grad_input1, grad_input2, ...)
+                - 对于不需要梯度的输入，对应位置为None
+            grad_output (tuple): 包含所有输出梯度的元组（与register_full_backward_pre_hook接收的相同）
+        
+        返回值:
+            - None: 表示不修改梯度，使用原始grad_input继续传播
+            - tuple: 返回修改后的grad_input，将替换原始grad_input传播给前一层
+        
+        多钩子行为:
+        -----------
+        当注册多个反向钩子时，它们按注册顺序依次执行:
+        1. 第一个钩子接收原始grad_input
+        2. 如果第一个钩子返回非None，使用该返回值作为下一个钩子的grad_input
+        3. 如果返回None，使用原始grad_input传递给下一个钩子
+        4. 最后一个钩子的输出（或None）决定最终的grad_input传播给前一层
         
         Args:
             hook (callable): 钩子函数，接收模块、输入梯度和输出梯度
             
         Returns:
-            RemovableHandle: 一个可调用对象，调用它可以移除这个钩子
+            RemovableHandle: 一个可调用对象，调用remove()可以移除这个钩子
             
         Examples:
-            >>> def my_hook(module, grad_input, grad_output):
-            ...     print(f"Backward hook called for {module._get_name()}")
-            ...     print(f"grad_input: {grad_input}")
-            ...     print(f"grad_output: {grad_output}")
-            ...     # 可以修改输入梯度
-            ...     return grad_input
+            基本用法 - 打印梯度信息:
+            >>> def print_hook(module, grad_input, grad_output):
+            ...     print(f"grad_input shape: {grad_input[0].shape}")
+            ...     print(f"grad_output shape: {grad_output[0].shape}")
+            ...     return None  # 不修改梯度
             >>> 
             >>> layer = Linear(10, 5)
-            >>> handle = layer.register_full_backward_hook(my_hook)
+            >>> handle = layer.register_full_backward_hook(print_hook)
             >>> output = layer(input_data)
-            >>> output.sum().backward()  # 会调用 my_hook
+            >>> output.sum().backward()  # 会打印梯度信息
             >>> handle.remove()  # 移除钩子
             
+            修改输入梯度:
+            >>> def modify_grad_hook(module, grad_input, grad_output):
+            ...     # 将输入梯度乘以2
+            ...     return (grad_input[0] * 2,)
+            >>> 
+            >>> layer.register_full_backward_hook(modify_grad_hook)
+            >>> output = layer(input_data)
+            >>> output.sum().backward()  # 输入张量的梯度将是正常值的2倍
+            
+            多输入模块:
+            >>> class MultiInputModule(Module):
+            ...     def forward(self, x, y):
+            ...         return x + y
+            >>> 
+            >>> def multi_input_hook(module, grad_input, grad_output):
+            ...     g_x, g_y = grad_input
+            ...     print(f"grad_input for x: {g_x.shape if g_x is not None else None}")
+            ...     print(f"grad_input for y: {g_y.shape if g_y is not None else None}")
+            ...     return None
+            >>> 
+            >>> module = MultiInputModule()
+            >>> module.register_full_backward_hook(multi_input_hook)
+            >>> out = module(x, y)
+            >>> out.sum().backward()  # 会打印两个grad_input
+            
+            梯度监控和调试:
+            >>> class GradientMonitor:
+            ...     def __init__(self):
+            ...         self.gradients = []
+            ...     
+            ...     def hook(self, module, grad_input, grad_output):
+            ...         self.gradients.append({
+            ...             'module': module._get_name(),
+            ...             'grad_input': [g.clone() if g is not None else None for g in grad_input],
+            ...             'grad_output': [g.clone() if g is not None else None for g in grad_output]
+            ...         })
+            ...         return None
+            >>> 
+            >>> monitor = GradientMonitor()
+            >>> layer.register_full_backward_hook(monitor.hook)
+            >>> output.sum().backward()  # 会自动记录梯度信息
+            >>> print(monitor.gradients)  # 查看记录的梯度
+            
         Note:
-            - 钩子在反向传播完成后被调用
-            - grad_input和grad_output都是元组
-            - 可以返回修改后的grad_input来影响梯度传播
+            - 反向钩子在grad_input计算完成后调用，此时grad_input已准备好
+            - 修改grad_input会影响梯度向前的传播（即影响前一层的梯度）
+            - 如果只需要观察而不修改，建议返回None
+            - 在多输入情况下，即使只修改一个梯度，也需要返回完整的元组
+            - 常用于梯度监控、调试和可视化
+            - 与register_full_backward_pre_hook的区别：本钩子在grad_input计算之后调用
+            - grad_output参数可用于关联输入和输出梯度的关系
         """
         handle = RemovableHandle(self._backward_hooks)
         self._backward_hooks[handle.id] = hook

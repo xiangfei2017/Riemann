@@ -121,8 +121,8 @@ class StatisticsCollector:
             self.current_test_details.append(test_detail)
             self.function_test_details[self.current_function].append(test_detail)
             
-            # 实时打印用例执行状态
-            print(f"  {case_name} [{status}]" + (f" - {details}" if details else ""))
+            # 实时打印用例执行状态（使用颜色）
+            print(f"  {case_name} [{status_color}{status}{Colors.ENDC}]" + (f" - {details}" if details else ""))
     
     def end_function(self):
         if self.current_function:
@@ -2448,6 +2448,519 @@ def test_hook_functions():
         except Exception as e:
             print(f"测试失败: {e}")
             stats.add_result("反向钩子 - 多输出模块验证grad_input", False, f"异常: {e}")
+        
+        # ========== 新增：无参数模块的钩子测试 ==========
+        
+        # 测试: 无参数模块 + 反向预处理钩子（输入无需梯度）- 钩子不应调用
+        print("测试无参数模块 + 反向预处理钩子（输入无需梯度）...")
+        try:
+            class NoParamModule(Module):
+                def forward(self, x1, x2):
+                    out1 = x1 * 2 + x2 * 3
+                    out2 = x1 * 1 + x2 * 2
+                    return out1, out2
+            
+            module = NoParamModule()
+            hook_called = False
+            
+            def pre_hook_no_grad(module, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return grad_output
+            
+            module.register_full_backward_pre_hook(pre_hook_no_grad)
+            
+            # 输入无需梯度
+            x1 = rm.tensor([1.0, 2.0, 3.0])  # requires_grad=False
+            x2 = rm.tensor([4.0, 5.0, 6.0])  # requires_grad=False
+            out1, out2 = module(x1, x2)
+            out1.requires_grad = True
+            out2.requires_grad = True
+            
+            loss = (out1.sum() + out2.sum())
+            loss.backward()
+            
+            # 无输入梯度且无参数时，钩子不应被调用
+            passed = not hook_called
+            stats.add_result("无参数模块 + 反向预处理钩子（输入无需梯度）", passed, f"钩子被调用: {hook_called} (期望: False)")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("无参数模块 + 反向预处理钩子（输入无需梯度）", False, f"异常: {e}")
+        
+        # 测试: 无参数模块 + 反向预处理钩子（输入需要梯度）- 钩子应调用
+        print("测试无参数模块 + 反向预处理钩子（输入需要梯度）...")
+        try:
+            module = NoParamModule()
+            hook_called = False
+            
+            def pre_hook_with_grad(module, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return grad_output
+            
+            module.register_full_backward_pre_hook(pre_hook_with_grad)
+            
+            # 输入需要梯度
+            x1 = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+            x2 = rm.tensor([4.0, 5.0, 6.0], requires_grad=True)
+            out1, out2 = module(x1, x2)
+            
+            loss = (out1.sum() + out2.sum())
+            loss.backward()
+            
+            passed = hook_called
+            stats.add_result("无参数模块 + 反向预处理钩子（输入需要梯度）", passed, f"钩子被调用: {hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("无参数模块 + 反向预处理钩子（输入需要梯度）", False, f"异常: {e}")
+        
+        # 测试: 无参数模块 + 反向钩子（输入无需梯度）- 钩子不应调用
+        print("测试无参数模块 + 反向钩子（输入无需梯度）...")
+        try:
+            module = NoParamModule()
+            hook_called = False
+            
+            def backward_hook_no_grad(module, grad_input, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return grad_input
+            
+            module.register_full_backward_hook(backward_hook_no_grad)
+            
+            # 输入无需梯度
+            x1 = rm.tensor([1.0, 2.0, 3.0])  # requires_grad=False
+            x2 = rm.tensor([4.0, 5.0, 6.0])  # requires_grad=False
+            out1, out2 = module(x1, x2)
+            out1.requires_grad = True
+            out2.requires_grad = True
+            
+            loss = (out1.sum() + out2.sum())
+            loss.backward()
+            
+            # 无输入梯度且无参数时，钩子不应被调用
+            passed = not hook_called
+            stats.add_result("无参数模块 + 反向钩子（输入无需梯度）", passed, f"钩子被调用: {hook_called} (期望: False)")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("无参数模块 + 反向钩子（输入无需梯度）", False, f"异常: {e}")
+        
+        # 测试: 无参数模块 + 反向钩子（输入需要梯度）- 钩子应调用
+        print("测试无参数模块 + 反向钩子（输入需要梯度）...")
+        try:
+            module = NoParamModule()
+            hook_called = False
+            
+            def backward_hook_with_grad(module, grad_input, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return grad_input
+            
+            module.register_full_backward_hook(backward_hook_with_grad)
+            
+            # 输入需要梯度
+            x1 = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+            x2 = rm.tensor([4.0, 5.0, 6.0], requires_grad=True)
+            out1, out2 = module(x1, x2)
+            
+            loss = (out1.sum() + out2.sum())
+            loss.backward()
+            
+            passed = hook_called
+            stats.add_result("无参数模块 + 反向钩子（输入需要梯度）", passed, f"钩子被调用: {hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("无参数模块 + 反向钩子（输入需要梯度）", False, f"异常: {e}")
+        
+        # 测试: 有参数模块 + 反向钩子（输入无需梯度但有参数）- 钩子应调用
+        print("测试有参数模块 + 反向钩子（输入无需梯度但有参数）...")
+        try:
+            class ModuleWithParam(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones(3))
+                
+                def forward(self, x):
+                    return x * self.weight
+            
+            module = ModuleWithParam()
+            hook_called = False
+            
+            def backward_hook_with_param(module, grad_input, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return grad_input
+            
+            module.register_full_backward_hook(backward_hook_with_param)
+            
+            # 输入无需梯度，但模块有参数
+            x = rm.tensor([1.0, 2.0, 3.0])  # requires_grad=False
+            out = module(x)
+            out.requires_grad = True
+            
+            loss = out.sum()
+            loss.backward()
+            
+            # 无输入梯度但有参数时，钩子应被调用
+            passed = hook_called
+            stats.add_result("有参数模块 + 反向钩子（输入无需梯度但有参数）", passed, f"钩子被调用: {hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("有参数模块 + 反向钩子（输入无需梯度但有参数）", False, f"异常: {e}")
+        
+        # 测试: 有参数模块 + 反向预处理钩子（输入无需梯度但有参数）- 钩子应调用
+        print("测试有参数模块 + 反向预处理钩子（输入无需梯度但有参数）...")
+        try:
+            module = ModuleWithParam()
+            hook_called = False
+            
+            def pre_hook_with_param(module, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return grad_output
+            
+            module.register_full_backward_pre_hook(pre_hook_with_param)
+            
+            # 输入无需梯度，但模块有参数
+            x = rm.tensor([1.0, 2.0, 3.0])  # requires_grad=False
+            out = module(x)
+            out.requires_grad = True
+            
+            loss = out.sum()
+            loss.backward()
+            
+            # 无输入梯度但有参数时，预处理钩子应被调用
+            passed = hook_called
+            stats.add_result("有参数模块 + 反向预处理钩子（输入无需梯度但有参数）", passed, f"钩子被调用: {hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("有参数模块 + 反向预处理钩子（输入无需梯度但有参数）", False, f"异常: {e}")
+        
+        # ========== 从test_hook_modify_gradients.py补充的测试场景 ==========
+        
+        # 补充测试1: 单输出模块 + 反向预处理钩子 + 不修改（返回None）
+        print("测试单输出模块 + 反向预处理钩子 + 不修改（返回None）...")
+        try:
+            module = CustomModule(10, 5)
+            hook_called = False
+            
+            def pre_hook_no_modify(module, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return None  # 不修改
+            
+            module.register_full_backward_pre_hook(pre_hook_no_modify)
+            
+            input_data = rm.randn(2, 10, requires_grad=True)
+            output = module(input_data)
+            loss = output.sum()
+            loss.backward()
+            
+            passed = hook_called
+            stats.add_result("单输出模块 + 反向预处理钩子 + 不修改", passed, f"钩子被调用: {hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("单输出模块 + 反向预处理钩子 + 不修改", False, f"异常: {e}")
+        
+        # 补充测试2: 多输出模块 + 反向预处理钩子 + 部分修改（只修改第一个输出梯度）
+        print("测试多输出模块 + 反向预处理钩子 + 部分修改...")
+        try:
+            class MultiOutputModulePartial(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+                
+                def forward(self, x):
+                    return x @ self.weight.T, x @ self.weight.T * 2
+            
+            module = MultiOutputModulePartial()
+            hook_called = False
+            grad_modified = False
+            
+            def pre_hook_partial_modify(module, grad_output):
+                nonlocal hook_called, grad_modified
+                hook_called = True
+                # 只修改第一个输出梯度
+                modified = (grad_output[0] * 2, grad_output[1])
+                grad_modified = True
+                return modified
+            
+            module.register_full_backward_pre_hook(pre_hook_partial_modify)
+            
+            input_data = rm.ones((2, 10), requires_grad=True)
+            out1, out2 = module(input_data)
+            loss = out1.sum() + out2.sum()
+            loss.backward()
+            
+            # 验证梯度：第一个输出梯度被×2，第二个不变
+            # grad = (grad_out1 * 2 + grad_out2 * 2) @ weight
+            expected_grad = rm.ones((2, 5)) @ module.weight.data * 2 + rm.ones((2, 5)) @ module.weight.data * 2
+            grad_correct = tensor_allclose(input_data.grad, expected_grad)
+            passed = hook_called and grad_modified and grad_correct
+            stats.add_result("多输出模块 + 反向预处理钩子 + 部分修改", passed, f"钩子被调用: {hook_called}, 梯度正确: {grad_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("多输出模块 + 反向预处理钩子 + 部分修改", False, f"异常: {e}")
+        
+        # 补充测试3: 多输出模块 + 反向预处理钩子 + 全部修改（两个输出梯度都×2）
+        print("测试多输出模块 + 反向预处理钩子 + 全部修改...")
+        try:
+            module = MultiOutputModulePartial()
+            hook_called = False
+            grad_modified = False
+            
+            def pre_hook_all_modify(module, grad_output):
+                nonlocal hook_called, grad_modified
+                hook_called = True
+                # 两个输出梯度都×2
+                modified = (grad_output[0] * 2, grad_output[1] * 2)
+                grad_modified = True
+                return modified
+            
+            module.register_full_backward_pre_hook(pre_hook_all_modify)
+            
+            input_data = rm.ones((2, 10), requires_grad=True)
+            out1, out2 = module(input_data)
+            loss = out1.sum() + out2.sum()
+            loss.backward()
+            
+            # 验证梯度：两个输出梯度都被×2
+            expected_grad = rm.ones((2, 5)) @ module.weight.data * 2 + rm.ones((2, 5)) @ module.weight.data * 4
+            grad_correct = tensor_allclose(input_data.grad, expected_grad)
+            passed = hook_called and grad_modified and grad_correct
+            stats.add_result("多输出模块 + 反向预处理钩子 + 全部修改", passed, f"钩子被调用: {hook_called}, 梯度正确: {grad_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("多输出模块 + 反向预处理钩子 + 全部修改", False, f"异常: {e}")
+        
+        # 补充测试4: 单输入模块 + 反向钩子 + 不修改（返回None）
+        print("测试单输入模块 + 反向钩子 + 不修改（返回None）...")
+        try:
+            module = CustomModule(10, 5)
+            hook_called = False
+            
+            def backward_hook_no_modify(module, grad_input, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return None  # 不修改
+            
+            module.register_full_backward_hook(backward_hook_no_modify)
+            
+            input_data = rm.randn(2, 10, requires_grad=True)
+            output = module(input_data)
+            loss = output.sum()
+            loss.backward()
+            
+            passed = hook_called
+            stats.add_result("单输入模块 + 反向钩子 + 不修改", passed, f"钩子被调用: {hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("单输入模块 + 反向钩子 + 不修改", False, f"异常: {e}")
+        
+        # 补充测试5: 单输入模块 + 反向钩子 + 修改输入梯度（×3）
+        print("测试单输入模块 + 反向钩子 + 修改输入梯度（×3）...")
+        try:
+            class SimpleLinearX3(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+                    self.bias = Parameter(rm.ones((5,)))
+                
+                def forward(self, x):
+                    return x @ self.weight.T + self.bias
+            
+            module = SimpleLinearX3()
+            hook_called = False
+            grad_modified = False
+            
+            def backward_hook_modify_x3(module, grad_input, grad_output):
+                nonlocal hook_called, grad_modified
+                hook_called = True
+                # 输入梯度×3
+                modified = tuple(g * 3 if g is not None else None for g in grad_input)
+                grad_modified = True
+                return modified
+            
+            module.register_full_backward_hook(backward_hook_modify_x3)
+            
+            input_data = rm.randn(2, 10, requires_grad=True)
+            output = module(input_data)
+            loss = output.sum()
+            loss.backward()
+            
+            # 验证梯度被×3
+            expected_grad = rm.ones((2, 5)) @ module.weight.data * 3
+            grad_correct = tensor_allclose(input_data.grad, expected_grad)
+            passed = hook_called and grad_modified and grad_correct
+            stats.add_result("单输入模块 + 反向钩子 + 修改输入梯度（×3）", passed, f"钩子被调用: {hook_called}, 梯度正确: {grad_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("单输入模块 + 反向钩子 + 修改输入梯度（×3）", False, f"异常: {e}")
+        
+        # 补充测试6: 多输入模块 + 反向钩子 + 部分修改（只修改第一个输入梯度）
+        print("测试多输入模块 + 反向钩子 + 部分修改...")
+        try:
+            class MultiInputModule(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+                
+                def forward(self, x, y):
+                    return (x + y) @ self.weight.T
+            
+            module = MultiInputModule()
+            hook_called = False
+            grad_modified = False
+            
+            def backward_hook_partial(module, grad_input, grad_output):
+                nonlocal hook_called, grad_modified
+                hook_called = True
+                # 只修改第一个输入梯度
+                modified = (grad_input[0] * 2 if grad_input[0] is not None else None, grad_input[1])
+                grad_modified = True
+                return modified
+            
+            module.register_full_backward_hook(backward_hook_partial)
+            
+            x = rm.ones((2, 10), requires_grad=True)
+            y = rm.ones((2, 10), requires_grad=True)
+            output = module(x, y)
+            loss = output.sum()
+            loss.backward()
+            
+            # 验证：x的梯度被×2，y的梯度不变
+            expected_x_grad = rm.ones((2, 5)) @ module.weight.data * 2
+            expected_y_grad = rm.ones((2, 5)) @ module.weight.data
+            x_grad_correct = tensor_allclose(x.grad, expected_x_grad)
+            y_grad_correct = tensor_allclose(y.grad, expected_y_grad)
+            passed = hook_called and grad_modified and x_grad_correct and y_grad_correct
+            stats.add_result("多输入模块 + 反向钩子 + 部分修改", passed, f"钩子被调用: {hook_called}, x梯度正确: {x_grad_correct}, y梯度正确: {y_grad_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("多输入模块 + 反向钩子 + 部分修改", False, f"异常: {e}")
+        
+        # 补充测试7: 多输入模块 + 反向钩子 + 全部修改（两个输入梯度都×2）
+        print("测试多输入模块 + 反向钩子 + 全部修改...")
+        try:
+            module = MultiInputModule()
+            hook_called = False
+            grad_modified = False
+            
+            def backward_hook_all(module, grad_input, grad_output):
+                nonlocal hook_called, grad_modified
+                hook_called = True
+                # 两个输入梯度都×2
+                modified = tuple(g * 2 if g is not None else None for g in grad_input)
+                grad_modified = True
+                return modified
+            
+            module.register_full_backward_hook(backward_hook_all)
+            
+            x = rm.ones((2, 10), requires_grad=True)
+            y = rm.ones((2, 10), requires_grad=True)
+            output = module(x, y)
+            loss = output.sum()
+            loss.backward()
+            
+            # 验证：两个输入梯度都被×2
+            expected_grad = rm.ones((2, 5)) @ module.weight.data * 2
+            x_grad_correct = tensor_allclose(x.grad, expected_grad)
+            y_grad_correct = tensor_allclose(y.grad, expected_grad)
+            passed = hook_called and grad_modified and x_grad_correct and y_grad_correct
+            stats.add_result("多输入模块 + 反向钩子 + 全部修改", passed, f"钩子被调用: {hook_called}, x梯度正确: {x_grad_correct}, y梯度正确: {y_grad_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("多输入模块 + 反向钩子 + 全部修改", False, f"异常: {e}")
+        
+        # 补充测试8: 多输入模块 + 反向钩子 + 部分输入需要梯度 + 修改梯度
+        print("测试多输入模块 + 反向钩子 + 部分输入需要梯度...")
+        try:
+            module = MultiInputModule()
+            hook_called = False
+            grad_modified = False
+            
+            def backward_hook_partial_requires_grad(module, grad_input, grad_output):
+                nonlocal hook_called, grad_modified
+                hook_called = True
+                # 修改所有非None的梯度
+                modified = tuple(g * 2 if g is not None else None for g in grad_input)
+                grad_modified = True
+                return modified
+            
+            module.register_full_backward_hook(backward_hook_partial_requires_grad)
+            
+            x = rm.ones((2, 10), requires_grad=True)
+            y = rm.ones((2, 10), requires_grad=False)  # y不需要梯度
+            output = module(x, y)
+            loss = output.sum()
+            loss.backward()
+            
+            # 验证：x的梯度被修改，y没有梯度
+            expected_x_grad = rm.ones((2, 5)) @ module.weight.data * 2
+            x_grad_correct = tensor_allclose(x.grad, expected_x_grad)
+            y_has_no_grad = y.grad is None
+            passed = hook_called and grad_modified and x_grad_correct and y_has_no_grad
+            stats.add_result("多输入模块 + 反向钩子 + 部分输入需要梯度", passed, f"钩子被调用: {hook_called}, x梯度正确: {x_grad_correct}, y无梯度: {y_has_no_grad}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("多输入模块 + 反向钩子 + 部分输入需要梯度", False, f"异常: {e}")
+        
+        # ========== 从test_multiple_forward_backward.py补充的测试场景 ==========
+        
+        # 补充测试: 多次前向传播 + 反向钩子 + 分别对不同输出调用backward
+        print("测试多次前向传播 + 反向钩子 + 分别对不同输出调用backward...")
+        try:
+            class SimpleLinearModule(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+                
+                def forward(self, x):
+                    return x @ self.weight.T
+            
+            module = SimpleLinearModule()
+            hook_called = 0
+            
+            def backward_hook(module, grad_input, grad_output):
+                nonlocal hook_called
+                hook_called += 1
+                return grad_input
+            
+            module.register_full_backward_hook(backward_hook)
+            
+            # 多次前向传播
+            input_data = rm.ones((2, 10), requires_grad=True)
+            output1 = module(input_data)
+            output2 = module(input_data)
+            output3 = module(input_data)
+            
+            # 分别对不同输出调用backward（不按顺序）
+            loss2 = output2.sum()
+            loss2.backward()
+            
+            loss1 = output1.sum()
+            loss1.backward()
+            
+            loss3 = output3.sum()
+            loss3.backward()
+            
+            # 验证钩子被调用3次
+            hook_called_correct = hook_called == 3
+            
+            # 验证梯度累加正确（三次反向传播）
+            expected_grad = rm.ones((2, 5)) @ module.weight.data * 3
+            grad_correct = tensor_allclose(input_data.grad, expected_grad)
+            
+            # 验证缓存清理完毕
+            cache_cleaned = (len(module._forward_inputs_map) == 0 and 
+                           len(module._module_output_grads_clone) == 0 and
+                           len(module._multi_outputs_map) == 0)
+            
+            passed = hook_called_correct and grad_correct and cache_cleaned
+            stats.add_result("多次前向传播 + 反向钩子 + 分别backward", passed, 
+                           f"钩子调用{hook_called}次(预期3), 梯度正确: {grad_correct}, 缓存清理: {cache_cleaned}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("多次前向传播 + 反向钩子 + 分别backward", False, f"异常: {e}")
         
     except Exception as e:
         print(f"钩子函数测试出现异常: {e}")
