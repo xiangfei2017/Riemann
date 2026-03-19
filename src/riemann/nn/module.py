@@ -2211,20 +2211,23 @@ class Module:
                 raise AttributeError(f"{self._get_name()} has no buffer '{target}'")
             return self._buffers[target]
 
-    def has_parameter(self, target: str) -> bool:
-        """检查指定名称的参数是否存在 (Has Parameter)
-        
+    def has_parameter(self, target: str = None) -> bool:
+        """检查指定名称的参数是否存在，或模块是否有任何参数 (Has Parameter)
+
         根据参数名称路径检查对应的参数是否存在。参数名称路径使用点号分隔，
         支持检查嵌套模块中的参数，如 'layer1.weight' 或 'layer2.bias'。
-        
+
+        当 target 为 None 时，检查模块是否有任何参数（包括子模块的参数）。
+
         Args:
-            target (str): 参数名称路径，使用点号分隔层级关系
-            
+            target (str, optional): 参数名称路径，使用点号分隔层级关系。
+                                   如果为 None，则检查模块是否有任何参数。
+
         Returns:
             bool: 参数存在返回True，不存在返回False
-            
+
         Examples::
-        
+
             >>> class Net(Module):
             ...     def __init__(self):
             ...         super().__init__()
@@ -2236,11 +2239,14 @@ class Module:
             >>> has_weight = net.has_parameter('conv1.weight')  # True
             >>> has_bias = net.has_parameter('conv1.bias')      # True
             >>> has_fake = net.has_parameter('conv1.fake')      # False
-            >>> print(has_weight, has_bias, has_fake)
-                
+            >>> # 检查是否有任何参数
+            >>> has_any = net.has_parameter()                   # True
+            >>> print(has_weight, has_bias, has_fake, has_any)
+
         Note:
             has_parameter()方法的特点：
                 - 支持点号分隔的参数路径，可检查嵌套模块参数
+                - 当 target 为 None 时，检查模块是否有任何参数
                 - 返回布尔值，便于条件判断
                 - 常用于参数存在性验证和错误处理
                 - 与get_parameter()配合使用，提供安全的参数访问
@@ -2250,6 +2256,14 @@ class Module:
                 - 提供了比try-except更简洁的存在性检查
                 - 有助于编写健壮的模型操作代码
         """
+        if target is None:
+            # 检查模块是否有任何参数（包括子模块的参数）
+            try:
+                next(self.parameters())
+                return True
+            except StopIteration:
+                return False
+
         if '.' in target:
             # 嵌套参数，如 'layer1.weight'
             module_path, param_name = target.rsplit('.', 1)
@@ -2262,20 +2276,23 @@ class Module:
             # 本地参数
             return target in self._parameters
 
-    def has_buffer(self, target: str) -> bool:
-        """检查指定名称的缓冲区是否存在 (Has Buffer)
-        
+    def has_buffer(self, target: str = None) -> bool:
+        """检查指定名称的缓冲区是否存在，或模块是否有任何缓冲区 (Has Buffer)
+
         根据缓冲区名称路径检查对应的缓冲区是否存在。缓冲区名称路径使用点号分隔，
         支持检查嵌套模块中的缓冲区，如 'layer1.running_mean' 或 'batchnorm.weight'。
-        
+
+        当 target 为 None 时，检查模块是否有任何缓冲区（包括子模块的缓冲区）。
+
         Args:
-            target (str): 缓冲区名称路径，使用点号分隔层级关系
-            
+            target (str, optional): 缓冲区名称路径，使用点号分隔层级关系。
+                                   如果为 None，则检查模块是否有任何缓冲区。
+
         Returns:
             bool: 缓冲区存在返回True，不存在返回False
-            
+
         Examples::
-        
+
             >>> class Net(Module):
             ...     def __init__(self):
             ...         super().__init__()
@@ -2287,11 +2304,14 @@ class Module:
             >>> has_running_mean = net.has_buffer('bn1.running_mean')  # True
             >>> has_custom = net.has_buffer('custom_buffer')            # True
             >>> has_fake = net.has_buffer('fake_buffer')               # False
-            >>> print(has_running_mean, has_custom, has_fake)
-                
+            >>> # 检查是否有任何缓冲区
+            >>> has_any = net.has_buffer()                             # True
+            >>> print(has_running_mean, has_custom, has_fake, has_any)
+
         Note:
             has_buffer()方法的特点：
                 - 支持点号分隔的缓冲区路径，可检查嵌套模块缓冲区
+                - 当 target 为 None 时，检查模块是否有任何缓冲区
                 - 返回布尔值，便于条件判断
                 - 常用于缓冲区存在性验证和错误处理
                 - 与get_buffer()配合使用，提供安全的缓冲区访问
@@ -2302,6 +2322,14 @@ class Module:
                 - 有助于编写健壮的模型操作代码
                 - 缓冲区通常用于存储运行时状态信息
         """
+        if target is None:
+            # 检查模块是否有任何缓冲区（包括子模块的缓冲区）
+            try:
+                next(self.buffers())
+                return True
+            except StopIteration:
+                return False
+
         if '.' in target:
             # 嵌套缓冲区，如 'layer1.running_mean'
             module_path, buffer_name = target.rsplit('.', 1)

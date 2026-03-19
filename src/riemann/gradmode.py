@@ -79,7 +79,9 @@ def init_grad_mode_stack():
     注意：
         此函数通常不需要手动调用，其他梯度控制函数会自动确保栈已初始化。
     """
-    if not hasattr(_grad_mode_stack, 'stack'):
+    try:
+        _grad_mode_stack.stack
+    except AttributeError:
         _grad_mode_stack.stack = [True]  # 默认为启用梯度计算
 
 
@@ -93,9 +95,11 @@ def is_grad_enabled():
     返回：
         bool: 当前梯度计算模式，True 表示启用，False 表示禁用
     """
-    if not hasattr(_grad_mode_stack, 'stack'):
+    try:
+        return _grad_mode_stack.stack[-1]
+    except AttributeError:
         init_grad_mode_stack()  # 确保栈已初始化
-    return _grad_mode_stack.stack[-1]
+        return _grad_mode_stack.stack[-1]
 
 
 def _push_grad_mode(mode):
@@ -103,100 +107,138 @@ def _push_grad_mode(mode):
     将新的梯度计算模式压入栈
     
     内部辅助函数，用于在进入梯度控制上下文时保存新的梯度计算模式。
-    如果梯度模式栈尚未初始化，则会自动进行初始化。
+    调用此函数前，应确保栈已初始化（通过调用 is_grad_enabled()）。
     
     参数：
         mode (bool): 新的梯度计算模式，True 表示启用，False 表示禁用
     """
-    if not hasattr(_grad_mode_stack, 'stack'):
-        init_grad_mode_stack()
     _grad_mode_stack.stack.append(mode)
 
 
 def _pop_grad_mode():
     """
     弹出栈顶的梯度计算模式
-    
+
     内部辅助函数，用于在退出梯度控制上下文时恢复之前的梯度计算模式。
     只有当栈中元素数量大于 1 时才会弹出，确保始终保留一个默认模式。
-    
+    调用此函数前，应确保栈已初始化（通过调用 is_grad_enabled()）。
+
     返回：
         bool 或 None: 被弹出的梯度计算模式，如果无法弹出则返回 None
     """
-    if hasattr(_grad_mode_stack, 'stack') and len(_grad_mode_stack.stack) > 1:
+    if len(_grad_mode_stack.stack) > 1:
         return _grad_mode_stack.stack.pop()
+
+
+class _GradContext:
+    """
+    梯度计算模式上下文管理器（模块级别，可复用）
+
+    支持通过 mode 参数控制是否启用梯度计算，
+    同时实现了 __call__ 方法以支持装饰器语法。
+    """
+
+    __slots__ = ('mode',)
+
+    def __init__(self, mode_val):
+        """
+        初始化上下文管理器
+
+        参数：
+            mode_val (bool): 梯度计算模式，True 启用，False 禁用
+        """
+        self.mode = mode_val
+
+    def __enter__(self):
+        """
+        进入上下文，应用新模式
+
+        返回：
+            self: 上下文管理器实例
+        """
+        is_grad_enabled()  # 确保栈已初始化
+        _push_grad_mode(self.mode)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        退出上下文，恢复之前的梯度状态
+
+        参数：
+            exc_type: 异常类型
+            exc_val: 异常值
+            exc_tb: 异常追踪信息
+
+        返回：
+            bool: False 表示不抑制异常
+        """
+        _pop_grad_mode()
+        return False
+
+    def __call__(self, func_to_wrap):
+        """
+        使上下文管理器可以作为装饰器使用
+
+        参数：
+            func_to_wrap: 要包装的函数
+
+        返回：
+            包装后的函数
+        """
+        @functools.wraps(func_to_wrap)
+        def wrapper(*args, **kwargs):
+            with _GradContext(self.mode):
+                return func_to_wrap(*args, **kwargs)
+        return wrapper
 
 
 def no_grad(func=None):
     """
     上下文管理器，用于暂时禁用梯度计算
-    
+
     在这个上下文中，所有计算将不会追踪梯度，类似于 PyTorch 的 no_grad()。
     适用于推理阶段，可显著减少内存使用并加速计算。
-    
+
     也可以作为函数装饰器使用，禁用被装饰函数内所有计算的梯度追踪。
-    
+
     参数：
         func: 可选，如果提供，则将 no_grad 作为装饰器应用于该函数
-    
+
     返回：
         如果未提供 func，则返回上下文管理器实例
         如果提供了 func，则返回装饰后的函数
-    
+
     示例：
         # 作为上下文管理器使用
         with no_grad():
             # 这段代码中的计算不会追踪梯度
             y = model(x)
-        
+
         # 作为装饰器使用
         @no_grad
         def inference(x):
             # 函数内的计算不会追踪梯度
             return model(x)
     """
-    class _NoGradContext:
-        """禁用梯度计算的上下文管理器"""
-        
-        def __enter__(self):
-            """进入上下文，保存当前梯度状态并禁用梯度"""
-            self.prev = is_grad_enabled()
-            _push_grad_mode(False)
-            return self
-        
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            """退出上下文，恢复之前的梯度状态"""
-            _pop_grad_mode()
-            return False
-    
-    # 如果func为None，返回上下文管理器实例
-    if func is None:
-        return _NoGradContext()
-    
-    # 否则，作为装饰器使用
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        with _NoGradContext():
-            return func(*args, **kwargs)
-    return wrapper
+    return set_grad_enabled(False, func)
 
 
 def enable_grad(func=None):
     """
     上下文管理器，用于暂时启用梯度计算
-    
+
     在这个上下文中，所有计算将追踪梯度，类似于 PyTorch 的 enable_grad()。
     可用于在 no_grad 上下文中临时启用梯度计算。
-    
+
     也可以作为函数装饰器使用，确保被装饰函数内的计算追踪梯度。
-    
+
     参数：
         func: 可选，如果提供，则将 enable_grad 作为装饰器应用于该函数
-    
+
     返回：
         如果未提供 func，则返回上下文管理器实例
         如果提供了 func，则返回装饰后的函数
-    
+
     示例：
         # 作为上下文管理器使用
         with no_grad():
@@ -206,7 +248,7 @@ def enable_grad(func=None):
                 y = model(x)
                 y.backward()
             # 回到禁用梯度的状态
-        
+
         # 作为装饰器使用
         @enable_grad
         def train_step(x, y):
@@ -216,63 +258,40 @@ def enable_grad(func=None):
             loss.backward()
             return loss
     """
-    class _EnableGradContext:
-        """启用梯度计算的上下文管理器"""
-        
-        def __enter__(self):
-            """进入上下文，保存当前梯度状态并启用梯度"""
-            self.prev = is_grad_enabled()
-            _push_grad_mode(True)
-            return self
-        
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            """退出上下文，恢复之前的梯度状态"""
-            _pop_grad_mode()
-            return False
-    
-    # 如果func为None，返回上下文管理器实例
-    if func is None:
-        return _EnableGradContext()
-    
-    # 否则，作为装饰器使用
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        with _EnableGradContext():
-            return func(*args, **kwargs)
-    return wrapper
+    return set_grad_enabled(True, func)
 
 
 def set_grad_enabled(mode=True, func=None):
     """
     上下文管理器，用于设置梯度计算模式
-    
+
     类似于 PyTorch 的 set_grad_enabled()，可以显式地启用或禁用梯度计算。
     支持作为上下文管理器或装饰器使用，提供最灵活的梯度控制方式。
-    
+
     参数：
         mode (bool): 如果为 True，则启用梯度计算；如果为 False，则禁用梯度计算
         func: 可选，当作为装饰器使用时传入的函数
-    
+
     返回：
         如果 func 为 None，返回上下文管理器实例
         如果提供了 func 参数，返回包装后的函数
-    
+
     示例：
         # 作为上下文管理器使用
         with set_grad_enabled(False):
             # 这段代码中的计算不会追踪梯度
             y = model(x)
-        
+
         with set_grad_enabled(True):
             # 这段代码中的计算会追踪梯度
             y = model(x)
             y.backward()
-        
+
         # 作为装饰器使用
         @set_grad_enabled(False)
         def inference(x):
             return model(x)
-        
+
         @set_grad_enabled(True)
         def train(x, y):
             pred = model(x)
@@ -280,73 +299,13 @@ def set_grad_enabled(mode=True, func=None):
             loss.backward()
             return loss
     """
-    class _SetGradContext:
-        """
-        可配置的梯度计算上下文管理器
-        
-        支持通过 mode 参数控制是否启用梯度计算，
-        同时实现了 __call__ 方法以支持装饰器语法。
-        """
-        
-        def __init__(self, mode_val):
-            """
-            初始化上下文管理器
-            
-            参数：
-                mode_val (bool): 梯度计算模式，True 启用，False 禁用
-            """
-            self.mode = mode_val
-            
-        def __enter__(self):
-            """
-            进入上下文，保存当前梯度状态并应用新模式
-            
-            返回：
-                self: 上下文管理器实例
-            """
-            self.prev = is_grad_enabled()
-            _push_grad_mode(self.mode)
-            return self
-        
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            """
-            退出上下文，恢复之前的梯度状态
-            
-            参数：
-                exc_type: 异常类型
-                exc_val: 异常值
-                exc_tb: 异常追踪信息
-            
-            返回：
-                bool: False 表示不抑制异常
-            """
-            _pop_grad_mode()
-            return False
-        
-        def __call__(self, func_to_wrap):
-            """
-            使上下文管理器可以作为装饰器使用
-            
-            参数：
-                func_to_wrap: 要包装的函数
-            
-            返回：
-                包装后的函数
-            """
-            @functools.wraps(func_to_wrap)
-            def wrapper(*args, **kwargs):
-                with _SetGradContext(self.mode):
-                    return func_to_wrap(*args, **kwargs)
-            return wrapper
-    
     # 如果func为None，返回上下文管理器实例
-    # 这个实例现在同时支持上下文管理器和装饰器语法
     if func is None:
-        return _SetGradContext(mode)
-    
+        return _GradContext(mode)
+
     # 如果提供了func参数，直接返回包装后的函数
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        with _SetGradContext(mode):
+        with _GradContext(mode):
             return func(*args, **kwargs)
     return wrapper
