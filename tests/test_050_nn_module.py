@@ -1590,28 +1590,41 @@ def test_hook_functions():
         # 测试16: 反向预处理钩子 - 修改梯度
         print("测试反向预处理钩子 - 修改梯度...")
         try:
-            module = CustomModule(10, 5)
+            # 使用简单的线性模块以便计算预期梯度
+            class SimpleLinearModule(Module):
+                def __init__(self, in_features, out_features):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((out_features, in_features)))
+
+                def forward(self, x):
+                    return x @ self.weight.T
+
+            module = SimpleLinearModule(10, 5)
             backward_pre_hook_called = False
-            grad_modified = False
-            
+
             def backward_pre_hook(module, grad_output):
-                nonlocal backward_pre_hook_called, grad_modified
+                nonlocal backward_pre_hook_called
                 backward_pre_hook_called = True
-                # 修改梯度
-                modified_grad = (grad_output[0] * 2,)
-                grad_modified = True
-                return modified_grad
-            
+                # 修改梯度：将输出梯度乘以2
+                return tuple(g * 2 for g in grad_output)
+
             module.register_full_backward_pre_hook(backward_pre_hook)
-            
+
             # 执行前向和反向传播
-            input_data = rm.randn(2, 10, requires_grad=True)
+            input_data = rm.ones((2, 10), requires_grad=True)
             output = module(input_data)
             loss = output.sum()
             loss.backward()
-            
-            passed = backward_pre_hook_called and grad_modified
-            stats.add_result("反向预处理钩子 - 修改梯度", passed, f"钩子被调用: {backward_pre_hook_called}, 梯度被修改: {grad_modified}")
+
+            # 验证钩子被调用
+            # 验证输入梯度正确（预处理钩子x2影响反向传播）
+            # 预期梯度：weight.sum() * 2 (pre-hook修改) = 5 * 2 = 10
+            expected_grad = 10.0
+            grad_correct = rm.allclose(input_data.grad, rm.full_like(input_data, expected_grad))
+
+            passed = backward_pre_hook_called and grad_correct
+            stats.add_result("反向预处理钩子 - 修改梯度", passed,
+                           f"钩子被调用: {backward_pre_hook_called}, 输入梯度正确: {grad_correct}")
         except Exception as e:
             print(f"测试16失败: {e}")
             stats.add_result("反向预处理钩子 - 修改梯度", False, f"异常: {e}")
@@ -1815,28 +1828,41 @@ def test_hook_functions():
         # 新增测试: 反向钩子 - 修改梯度
         print("测试反向钩子 - 修改梯度...")
         try:
-            module = CustomModule(10, 5)
+            # 使用简单的线性模块以便计算预期梯度
+            class SimpleLinearModule2(Module):
+                def __init__(self, in_features, out_features):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((out_features, in_features)))
+
+                def forward(self, x):
+                    return x @ self.weight.T
+
+            module = SimpleLinearModule2(10, 5)
             hook_called = False
-            grad_modified = False
-            
+
             def backward_hook(module, grad_input, grad_output):
-                nonlocal hook_called, grad_modified
+                nonlocal hook_called
                 hook_called = True
-                # 修改梯度
-                modified_grad = (grad_input[0] * 2,)
-                grad_modified = True
-                return modified_grad
-            
+                # 修改梯度：将输入梯度乘以2
+                return tuple(g * 2 if g is not None else None for g in grad_input)
+
             module.register_full_backward_hook(backward_hook)
-            
+
             # 执行前向和反向传播
-            input_data = rm.randn(2, 10, requires_grad=True)
+            input_data = rm.ones((2, 10), requires_grad=True)
             output = module(input_data)
             loss = output.sum()
             loss.backward()
-            
-            passed = hook_called and grad_modified
-            stats.add_result("反向钩子 - 修改梯度", passed, f"钩子被调用: {hook_called}, 梯度被修改: {grad_modified}")
+
+            # 验证钩子被调用
+            # 验证输入梯度正确（反向钩子x2修改输入梯度）
+            # 预期梯度：weight.sum() * 2 (backward hook修改) = 5 * 2 = 10
+            expected_grad = 10.0
+            grad_correct = rm.allclose(input_data.grad, rm.full_like(input_data, expected_grad))
+
+            passed = hook_called and grad_correct
+            stats.add_result("反向钩子 - 修改梯度", passed,
+                           f"钩子被调用: {hook_called}, 输入梯度正确: {grad_correct}")
         except Exception as e:
             print(f"测试失败: {e}")
             stats.add_result("反向钩子 - 修改梯度", False, f"异常: {e}")
@@ -2956,16 +2982,206 @@ def test_hook_functions():
                            len(module._multi_outputs_map) == 0)
             
             passed = hook_called_correct and grad_correct and cache_cleaned
-            stats.add_result("多次前向传播 + 反向钩子 + 分别backward", passed, 
+            stats.add_result("多次前向传播 + 反向钩子 + 分别backward", passed,
                            f"钩子调用{hook_called}次(预期3), 梯度正确: {grad_correct}, 缓存清理: {cache_cleaned}")
         except Exception as e:
             print(f"测试失败: {e}")
             stats.add_result("多次前向传播 + 反向钩子 + 分别backward", False, f"异常: {e}")
-        
+
+        # ========== 从test_both_hooks_modify_gradients.py补充的测试场景 ==========
+
+        # 补充测试1: 预处理钩子修改输出梯度(x2) + 反向钩子不修改输入梯度
+        print("测试预处理钩子修改输出梯度 + 反向钩子不修改...")
+        try:
+            class BothHooksModel1(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+
+                def forward(self, x):
+                    return x @ self.weight.T
+
+            module = BothHooksModel1()
+            pre_hook_called = False
+            backward_hook_called = False
+
+            def pre_hook(module, grad_output):
+                nonlocal pre_hook_called
+                pre_hook_called = True
+                return tuple(g * 2 for g in grad_output)
+
+            def backward_hook(module, grad_input, grad_output):
+                nonlocal backward_hook_called
+                backward_hook_called = True
+                return None  # 不修改
+
+            module.register_full_backward_pre_hook(pre_hook)
+            module.register_full_backward_hook(backward_hook)
+
+            input_data = rm.ones((2, 10), requires_grad=True)
+            output = module(input_data)
+            loss = output.sum()
+            loss.backward()
+
+            # 验证两个钩子都被调用
+            hooks_called = pre_hook_called and backward_hook_called
+            # 验证输入梯度正确（预处理钩子x2影响反向传播）
+            expected_grad = 10.0  # weight.sum() * 2 (pre-hook修改)
+            grad_correct = rm.allclose(input_data.grad, rm.full_like(input_data, expected_grad))
+
+            passed = hooks_called and grad_correct
+            stats.add_result("预处理修改输出梯度 + 反向钩子不修改", passed,
+                           f"预处理钩子调用: {pre_hook_called}, 反向钩子调用: {backward_hook_called}, 梯度正确: {grad_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("预处理修改输出梯度 + 反向钩子不修改", False, f"异常: {e}")
+
+        # 补充测试2: 预处理钩子不修改输出梯度 + 反向钩子修改输入梯度(x3)
+        print("测试预处理钩子不修改 + 反向钩子修改输入梯度...")
+        try:
+            class BothHooksModel2(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+
+                def forward(self, x):
+                    return x @ self.weight.T
+
+            module = BothHooksModel2()
+            pre_hook_called = False
+            backward_hook_called = False
+
+            def pre_hook(module, grad_output):
+                nonlocal pre_hook_called
+                pre_hook_called = True
+                return None  # 不修改
+
+            def backward_hook(module, grad_input, grad_output):
+                nonlocal backward_hook_called
+                backward_hook_called = True
+                return tuple(g * 3 if g is not None else None for g in grad_input)
+
+            module.register_full_backward_pre_hook(pre_hook)
+            module.register_full_backward_hook(backward_hook)
+
+            input_data = rm.ones((2, 10), requires_grad=True)
+            output = module(input_data)
+            loss = output.sum()
+            loss.backward()
+
+            # 验证两个钩子都被调用
+            hooks_called = pre_hook_called and backward_hook_called
+            # 验证输入梯度正确（反向钩子x3修改）
+            expected_grad = 15.0  # weight.sum() * 3 (backward hook修改)
+            grad_correct = rm.allclose(input_data.grad, rm.full_like(input_data, expected_grad))
+
+            passed = hooks_called and grad_correct
+            stats.add_result("预处理不修改 + 反向钩子修改输入梯度", passed,
+                           f"预处理钩子调用: {pre_hook_called}, 反向钩子调用: {backward_hook_called}, 梯度正确: {grad_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("预处理不修改 + 反向钩子修改输入梯度", False, f"异常: {e}")
+
+        # 补充测试3: 预处理钩子修改输出梯度(x2) + 反向钩子修改输入梯度(x3)
+        print("测试预处理钩子修改输出梯度 + 反向钩子修改输入梯度...")
+        try:
+            class BothHooksModel3(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+
+                def forward(self, x):
+                    return x @ self.weight.T
+
+            module = BothHooksModel3()
+            pre_hook_called = False
+            backward_hook_called = False
+
+            def pre_hook(module, grad_output):
+                nonlocal pre_hook_called
+                pre_hook_called = True
+                return tuple(g * 2 for g in grad_output)
+
+            def backward_hook(module, grad_input, grad_output):
+                nonlocal backward_hook_called
+                backward_hook_called = True
+                return tuple(g * 3 if g is not None else None for g in grad_input)
+
+            module.register_full_backward_pre_hook(pre_hook)
+            module.register_full_backward_hook(backward_hook)
+
+            input_data = rm.ones((2, 10), requires_grad=True)
+            output = module(input_data)
+            loss = output.sum()
+            loss.backward()
+
+            # 验证两个钩子都被调用
+            hooks_called = pre_hook_called and backward_hook_called
+            # 验证输入梯度正确（预处理x2 * 反向x3 = x6）
+            expected_grad = 30.0  # weight.sum() * 2 * 3
+            grad_correct = rm.allclose(input_data.grad, rm.full_like(input_data, expected_grad))
+
+            passed = hooks_called and grad_correct
+            stats.add_result("预处理修改输出梯度 + 反向钩子修改输入梯度", passed,
+                           f"预处理钩子调用: {pre_hook_called}, 反向钩子调用: {backward_hook_called}, 梯度正确: {grad_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("预处理修改输出梯度 + 反向钩子修改输入梯度", False, f"异常: {e}")
+
+        # 补充测试4: 多输出模块 + 两种钩子都修改
+        print("测试多输出模块 + 两种钩子都修改...")
+        try:
+            class MultiOutputBothHooksModel(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight1 = Parameter(rm.ones((5, 10)))
+                    self.weight2 = Parameter(rm.ones((5, 10)))
+
+                def forward(self, x):
+                    out1 = x @ self.weight1.T
+                    out2 = x @ self.weight2.T
+                    return out1, out2
+
+            module = MultiOutputBothHooksModel()
+            pre_hook_called = False
+            backward_hook_called = False
+
+            def pre_hook(module, grad_output):
+                nonlocal pre_hook_called
+                pre_hook_called = True
+                return tuple(g * 2 for g in grad_output)
+
+            def backward_hook(module, grad_input, grad_output):
+                nonlocal backward_hook_called
+                backward_hook_called = True
+                return tuple(g * 3 if g is not None else None for g in grad_input)
+
+            module.register_full_backward_pre_hook(pre_hook)
+            module.register_full_backward_hook(backward_hook)
+
+            input_data = rm.ones((2, 10), requires_grad=True)
+            out1, out2 = module(input_data)
+            loss = out1.sum() + out2.sum()
+            loss.backward()
+
+            # 验证两个钩子都被调用
+            hooks_called = pre_hook_called and backward_hook_called
+            # 验证输入梯度正确（两个输出都参与，预处理x2 * 反向x3 = x6）
+            # 每个输出贡献 weight.sum() = 10，两个输出共20，再x3 = 60
+            expected_grad = 60.0
+            grad_correct = rm.allclose(input_data.grad, rm.full_like(input_data, expected_grad))
+
+            passed = hooks_called and grad_correct
+            stats.add_result("多输出模块 + 两种钩子都修改", passed,
+                           f"预处理钩子调用: {pre_hook_called}, 反向钩子调用: {backward_hook_called}, 梯度正确: {grad_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("多输出模块 + 两种钩子都修改", False, f"异常: {e}")
+
     except Exception as e:
         print(f"钩子函数测试出现异常: {e}")
         stats.add_result("钩子函数测试异常", False, str(e))
-    
+
     finally:
         stats.end_function()
 
