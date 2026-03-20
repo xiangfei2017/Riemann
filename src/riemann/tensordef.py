@@ -4335,12 +4335,13 @@ class BackwardHookManager:
                 break
         
         if multi_outputs is not None:
-            # 当前tensor是多输出模块的一部分，检查所有相关输出的梯度
+            # 当前tensor是多输出模块的一部分，检查所有需要梯度的输出的梯度
             for out in multi_outputs:
-                if out.grad_value is None or out.rcv_grad_count > 0:
-                    # 多输出梯度未收集齐，返回空列表
-                    return []
-            # 所有多输出梯度已收集齐，返回所有多输出
+                if out.requires_grad:
+                    if out.grad_value is None or out.rcv_grad_count > 0:
+                        # 多输出梯度未收集齐，返回空列表
+                        return []
+            # 所有需要梯度的输出梯度已收集齐，返回所有多输出
             return list(multi_outputs)
         else:
             # 单输出模块或多次前向传播的情况，返回[tensor]
@@ -4365,8 +4366,9 @@ class BackwardHookManager:
             return False
         
         has_input_requires_grad = False
-        for output_id in module._forward_inputs_map:
-            forward_inputs = module._forward_inputs_map.get(output_id, ())
+        # 优化：直接使用output_id访问字典，不需要.get()默认值
+        # 因为output_id就是从module._forward_inputs_map的键中遍历出来的
+        for output_id, forward_inputs in module._forward_inputs_map.items():
             for inp in forward_inputs:
                 if inp.requires_grad:
                     has_input_requires_grad = True
@@ -4407,23 +4409,28 @@ class BackwardHookManager:
             return False
         
         # 从输出节点的grad_value获取梯度（不是从_module_output_grads_clone）
+        # 注意：前面已经检查过 grad_value 不是 None，所以这里可以直接使用
         grad_value = output_tensor.grad_value
-        grad_output_tuple = (grad_value,) if grad_value is not None else (zeros_like_tensor,)
+        grad_output_tuple = (grad_value,)
         
         hooks_called = False
-        hook_result = None
+        current_grad_output = grad_output_tuple
         for hook in module._backward_pre_hooks.values():
-            hook_result = hook(module, grad_output_tuple)
+            hook_result = hook(module, current_grad_output)
             hooks_called = True
+            # 如果钩子返回了值，更新 current_grad_output 供下一个钩子使用
+            if hook_result is not None:
+                current_grad_output = hook_result if isinstance(hook_result, tuple) else (hook_result,)
         
-        # 处理钩子返回值：直接更新输出节点的grad_value
-        if hooks_called and hook_result is not None:
-            if isinstance(hook_result, (tuple, list)) and len(hook_result) > 0:
-                new_grad = hook_result[0]
+        # 处理最后一个钩子的返回值：直接更新输出节点的grad_value
+        # 检查是否有任何钩子返回了值（通过比较元组身份）
+        if hooks_called and current_grad_output is not grad_output_tuple:
+            if isinstance(current_grad_output, (tuple, list)) and len(current_grad_output) > 0:
+                new_grad = current_grad_output[0]
                 if new_grad is not None:
                     output_tensor.grad_value = new_grad
             else:
-                new_grad = hook_result
+                new_grad = current_grad_output
                 if new_grad is not None:
                     output_tensor.grad_value = new_grad
         
@@ -4447,42 +4454,48 @@ class BackwardHookManager:
         返回:
             bool: 是否成功处理
         """
-        # 检查所有输出是否都已收集完梯度
+        # 检查所有需要梯度的输出是否都已收集完梯度
+        # 同时收集需要梯度的输出的梯度
+        grad_outputs = []
         for output_tensor in multi_outputs:
             if output_tensor.requires_grad:
                 if output_tensor.grad_value is None or output_tensor.rcv_grad_count > 0:
                     return False
-        
-        # 按照multi_outputs的顺序收集梯度（从输出节点的grad_value获取）
-        grad_outputs = []
-        for output_tensor in multi_outputs:
-            if output_tensor.grad_value is not None:
                 grad_outputs.append(output_tensor.grad_value)
-            else:
-                grad_outputs.append(zeros_like(output_tensor, requires_grad=False))
+        
+        # 如果没有需要梯度的输出，直接标记为已处理并返回
+        if not grad_outputs:
+            for output_tensor in multi_outputs:
+                out_id = id(output_tensor)
+                self._backward_pre_hooks_processed.add((id(module), out_id))
+            return True
         
         grad_output_tuple = tuple(grad_outputs)
         
-        # 调用所有预处理钩子
+        # 调用所有预处理钩子，支持链式处理
         hooks_called = False
-        hook_result = None
+        current_grad_output = grad_output_tuple
         
         for hook in module._backward_pre_hooks.values():
-            hook_result = hook(module, grad_output_tuple)
+            hook_result = hook(module, current_grad_output)
             hooks_called = True
+            # 如果钩子返回了值，更新 current_grad_output 供下一个钩子使用
+            if hook_result is not None:
+                current_grad_output = hook_result if isinstance(hook_result, tuple) else (hook_result,)
         
-        # 处理钩子返回值，直接更新输出节点的grad_value
-        if hooks_called and hook_result is not None:
-            if isinstance(hook_result, (tuple, list)):
+        # 处理最后一个钩子的返回值，直接更新输出节点的grad_value
+        # 检查是否有任何钩子返回了值（通过比较元组身份）
+        if hooks_called and current_grad_output is not grad_output_tuple:
+            if isinstance(current_grad_output, (tuple, list)):
                 for i, output_tensor in enumerate(multi_outputs):
-                    if i < len(hook_result):
-                        if hook_result[i] is None:
+                    if i < len(current_grad_output):
+                        if current_grad_output[i] is None:
                             output_tensor.grad_value = zeros_like(output_tensor, requires_grad=False)
                         else:
-                            output_tensor.grad_value = hook_result[i]
+                            output_tensor.grad_value = current_grad_output[i]
             else:
-                for output_tensor in multi_outputs:
-                    output_tensor.grad_value = hook_result
+                # 如果返回的不是元组/列表，只更新第一个输出（与PyTorch行为一致）
+                multi_outputs[0].grad_value = current_grad_output
         
         # 更新_module_output_grads_clone，确保backward_hook能获取修改后的梯度
         for output_tensor in multi_outputs:
@@ -4492,9 +4505,10 @@ class BackwardHookManager:
             else:
                 module._module_output_grads_clone[out_id] = None
         
-        # 使用multi_outputs中的第一个输出的id作为标记
-        first_output_id = id(multi_outputs[0])
-        self._backward_pre_hooks_processed.add((id(module), first_output_id))
+        # 标记所有多输出为已处理（修复：之前只标记第一个输出）
+        for output_tensor in multi_outputs:
+            out_id = id(output_tensor)
+            self._backward_pre_hooks_processed.add((id(module), out_id))
         return True
     
     def process_backward_pre_hooks(self, modules: set) -> None:
@@ -4567,8 +4581,13 @@ class BackwardHookManager:
         
         # 检查是否至少有一个输入需要梯度
         # 只检查当前backward涉及的输出节点（在_module_output_grads_clone中的）
+        # 修复：对于多次前向传播，只检查尚未处理过的输出的输入
         has_input_requires_grad = False
         for output_id in module._module_output_grads_clone:
+            # 跳过已经处理过的输出
+            if (id(module), output_id) in self._backward_hooks_processed:
+                continue
+            
             forward_inputs = module._forward_inputs_map.get(output_id, ())
             for inp in forward_inputs:
                 if inp.requires_grad:
@@ -4643,17 +4662,23 @@ class BackwardHookManager:
                 first_output_id = output_id
             
             # 检查该多输出组是否已处理
-            if first_output_id in processed_first_ids:
+            # 修复：对于多输出模块，只处理一次（使用processed_first_ids）
+            # 对于单输出模块，每次前向传播分别处理
+            is_multi_output = len(multi_outputs) > 1 if multi_outputs else False
+            if is_multi_output and first_output_id in processed_first_ids:
                 # 标记该输出为已处理
                 self._backward_hooks_processed.add((id(module), output_id))
                 continue
             
+            # 修复：与PyTorch行为一致，grad_inputs包含所有输入的梯度
+            # 对于requires_grad=False的输入，PyTorch传递全0的梯度而不是None
             grad_inputs = []
             for inp in forward_inputs:
                 if inp.requires_grad:
                     grad_inputs.append(inp.grad_value)
                 else:
-                    grad_inputs.append(None)
+                    # 对于不需要梯度的输入，传递全0的梯度（与PyTorch行为一致）
+                    grad_inputs.append(zeros_like(inp, requires_grad=False))
             
             grad_outputs = []
             if multi_outputs is not None:
@@ -4669,19 +4694,28 @@ class BackwardHookManager:
             for hook in module._backward_hooks.values():
                 hook_result = hook(module, grad_input_tuple, grad_output_tuple)
                 if hook_result is not None:
-                    if isinstance(hook_result, (tuple, list)):
-                        for i, inp in enumerate(forward_inputs):
-                            if i < len(hook_result):
-                                if hook_result[i] is not None:
-                                    # hook_result[i]不是None，修改第i个输入的梯度
-                                    inp.grad_value = hook_result[i]
-                                else:
-                                    # hook_result[i]是None，将梯度设为0（与PyTorch行为一致）
-                                    inp.grad_value = zeros_like(inp, requires_grad=False)
-                    else:
-                        for inp in forward_inputs:
-                            # hook_result不是tuple或list，修改所有输入的梯度
-                            inp.grad_value = hook_result
+                    # 修复：验证hook_result是否为tuple/list，与PyTorch行为一致
+                    if not isinstance(hook_result, (tuple, list)):
+                        raise RuntimeError(
+                            f"Backward hook returned an invalid number of grad_input, "
+                            f"got 1 (non-tuple), but expected {len(forward_inputs)}"
+                        )
+                    
+                    # 验证返回的grad_input数量是否匹配
+                    if len(hook_result) != len(forward_inputs):
+                        raise RuntimeError(
+                            f"Backward hook returned an invalid number of grad_input, "
+                            f"got {len(hook_result)}, but expected {len(forward_inputs)}"
+                        )
+                    
+                    for i, inp in enumerate(forward_inputs):
+                        if i < len(hook_result):
+                            if hook_result[i] is not None:
+                                # hook_result[i]不是None，修改第i个输入的梯度
+                                inp.grad_value = hook_result[i]
+                            else:
+                                # hook_result[i]是None，将梯度设为0（与PyTorch行为一致）
+                                inp.grad_value = zeros_like(inp, requires_grad=False)
             
             # 标记该多输出组的所有输出为已处理
             if multi_outputs is not None:
@@ -4691,7 +4725,9 @@ class BackwardHookManager:
             else:
                 self._backward_hooks_processed.add((id(module), output_id))
             
-            processed_first_ids.add(first_output_id)
+            # 修复：只对多输出模块使用processed_first_ids
+            if is_multi_output:
+                processed_first_ids.add(first_output_id)
     
     def process_backward_hooks(self, modules: set):
         """
@@ -4785,6 +4821,9 @@ class BackwardHookManager:
         _modules_to_cleanup 和 _module_output_ids_to_cleanup 在 wait_for_backward_pre_hook_ready 
         中已经被填充，包含了所有需要清理的模块和对应的 output_id，无需再次遍历计算图。
         
+        优化：
+        1. 先收集需要保留的键（在_forward_inputs_map中的），避免重复检查
+        2. 使用集合差集操作一次性找出需要删除的键
         """
         for module, output_ids in self._module_output_ids_to_cleanup.items():
             # 清理 _forward_inputs_map
@@ -4792,15 +4831,20 @@ class BackwardHookManager:
                 if key in output_ids:
                     del module._forward_inputs_map[key]
             
+            # 优化：收集需要保留的键（仍在_forward_inputs_map中的）
+            remaining_keys = set(module._forward_inputs_map.keys())
+            
             # 清理 _module_output_tensors（只保留仍在 _forward_inputs_map 中的）
-            for key in list(module._module_output_tensors.keys()):
-                if key not in module._forward_inputs_map:
-                    del module._module_output_tensors[key]
+            # 优化：直接遍历需要删除的键，而不是遍历整个字典
+            keys_to_remove_tensors = set(module._module_output_tensors.keys()) - remaining_keys
+            for key in keys_to_remove_tensors:
+                del module._module_output_tensors[key]
             
             # 清理 _module_output_grads_clone（只保留仍在 _forward_inputs_map 中的）
-            for key in list(module._module_output_grads_clone.keys()):
-                if key not in module._forward_inputs_map:
-                    del module._module_output_grads_clone[key]
+            # 优化：直接遍历需要删除的键
+            keys_to_remove_grads = set(module._module_output_grads_clone.keys()) - remaining_keys
+            for key in keys_to_remove_grads:
+                del module._module_output_grads_clone[key]
             
             # 清理 _multi_outputs_map
             for first_id in list(module._multi_outputs_map.keys()):
