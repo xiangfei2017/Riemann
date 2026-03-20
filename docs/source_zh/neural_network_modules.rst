@@ -3,586 +3,681 @@
 
 Riemann 通过 ``riemann.nn`` 包提供了一套全面的神经网络模块。这些模块是创建和训练神经网络的构建块。
 
-快速开始
---------
+本章节将详细讲解如何使用 Riemann 搭建、训练和评估一个完整的神经网络。我们将以 **MNIST手写数字识别** 为例，演示从数据准备到模型评估的完整流程。
 
-本章节将详细讲解如何使用 Riemann 搭建、训练和评估一个完整的神经网络，包括数据集准备、网络构建、训练过程和推理评估等步骤。
+步骤1：数据准备
+----------------
 
-数据集准备
-~~~~~~~~~~
+在构建神经网络之前，需要准备好数据集。Riemann 提供了 ``Dataset`` 和 ``DataLoader`` 接口用于数据加载和处理。
 
-在使用 Riemann 构建神经网络之前，首先需要准备数据集。Riemann 提供了 `Dataset` 接口，用于定义数据加载和处理的标准方法。
+理解 Dataset
+~~~~~~~~~~~~
 
-Dataset 接口介绍
-^^^^^^^^^^^^^^^^
-
-`Dataset` 是一个抽象基类，用于表示数据集。要创建自定义数据集，你需要继承 `Dataset` 类并实现以下两个核心方法：
+``Dataset`` 是用于表示数据集的抽象基类。它定义了两个子类必须实现的核心方法：
 
 - ``__len__()``: 返回数据集的样本数量
 - ``__getitem__(idx)``: 根据索引返回一个样本
 
-构建自定义数据集
-^^^^^^^^^^^^^^^^^^
+**自定义数据集**
 
-以下是创建自定义数据集的详细示例：
-
-.. code-block:: python
-
-    import riemann as rm
-    import numpy as np
-    from riemann.utils.data import Dataset, DataLoader
-
-    # 自定义数据集类
-    class SimpleDataset(Dataset):
-        def __init__(self, num_samples=1000):
-            """
-            初始化数据集
-            
-            :param num_samples: 数据集样本数量
-            """
-            # 生成随机输入数据
-            self.inputs = rm.randn(num_samples, 10)
-            # 生成对应的目标值（简单线性映射）
-            weights = rm.randn(10, 2)
-            biases = rm.randn(2)
-            self.targets = self.inputs @ weights + biases
-            
-        def __len__(self):
-            """
-            返回数据集的样本数量
-            """
-            return len(self.inputs)
-        
-        def __getitem__(self, idx):
-            """
-            根据索引返回一个样本
-            
-            :param idx: 样本索引
-            :return: 输入数据和目标值的元组
-            """
-            return self.inputs[idx], self.targets[idx]
-
-    # 创建数据集实例
-    train_dataset = SimpleDataset(1000)
-    test_dataset = SimpleDataset(200)
-
-    # 查看数据集信息
-    print(f"训练集大小: {len(train_dataset)}")
-    print(f"测试集大小: {len(test_dataset)}")
-
-    # 获取单个样本
-    sample_input, sample_target = train_dataset[0]
-    print(f"样本输入形状: {sample_input.shape}")
-    print(f"样本目标形状: {sample_target.shape}")
-
-高级数据集示例
-^^^^^^^^^^^^^^^^
-
-以下是一个更复杂的数据集示例，包含数据预处理和变换：
+如果你需要处理自己的数据，可以通过继承 ``Dataset`` 类并实现上述两个方法来创建自定义数据集。例如：
 
 .. code-block:: python
 
-    class ImageDataset(Dataset):
-        def __init__(self, image_paths, labels, transform=None):
-            """
-            图像数据集
-            
-            :param image_paths: 图像路径列表
-            :param labels: 标签列表
-            :param transform: 数据变换函数（可选）
-            """
-            self.image_paths = image_paths
+    from riemann.utils.data import Dataset
+    
+    class MyDataset(Dataset):
+        def __init__(self, data, labels, transform=None):
+            self.data = data
             self.labels = labels
             self.transform = transform
         
         def __len__(self):
-            return len(self.image_paths)
+            return len(self.data)
         
         def __getitem__(self, idx):
-            # 这里应该是实际的图像加载代码
-            # 为了示例，我们生成随机数据
-            image = rm.randn(3, 32, 32)  # 模拟 3x32x32 的 RGB 图像
+            sample = self.data[idx]
             label = self.labels[idx]
             
-            # 应用数据变换
             if self.transform:
-                image = self.transform(image)
+                sample = self.transform(sample)
             
-            return image, label
+            return sample, label
 
-使用 DataLoader
+**使用内置数据集**
+
+Riemann 为常见任务提供了内置数据集，简化了数据加载过程。对于计算机视觉任务，可以使用 ``riemann.vision.datasets`` 中的数据集。本示例将直接使用 Riemann 提供的 MNIST 手写数字数据集：
+
+.. code-block:: python
+
+    from riemann.vision.datasets import MNIST
+
+使用 Transforms 进行数据变换
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``transforms`` 用于数据预处理和增强。可以使用 ``transforms.Compose`` 组合多个变换操作：
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 定义数据变换
+    transform = transforms.Compose([
+        transforms.ToTensor(),           # 将图像转换为张量
+        transforms.Normalize((0.1307,), (0.3081,))  # 使用均值和标准差进行归一化
+    ])
+
+**关键概念：**
+
+- ``ToTensor()``: 将 PIL Image 或 numpy 数组转换为张量，并将像素值从 [0, 255] 缩放到 [0.0, 1.0]
+- ``Normalize(mean, std)``: 使用均值和标准差对张量进行归一化: ``output = (input - mean) / std``
+
+加载 MNIST 数据集
+~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    # 加载训练集和测试集
+    train_dataset = MNIST(
+        root='./data',      # 数据存储/加载目录
+        train=True,         # True 表示训练集，False 表示测试集
+        transform=transform # 要应用的数据变换
+    )
+    
+    test_dataset = MNIST(
+        root='./data',
+        train=False,
+        transform=transform
+    )
+    
+    print(f"训练集大小: {len(train_dataset)}")
+    print(f"测试集大小: {len(test_dataset)}")
+
+使用 DataLoader 进行批量处理
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``DataLoader`` 用于批量加载数据，支持数据打乱和自动批处理。它是连接 Dataset 和训练循环的桥梁，能够高效地将数据组织成批次供模型训练使用。
+
+**为什么需要 DataLoader？**
+
+在神经网络训练中，我们通常不会一次性将所有数据输入模型，而是采用**批次训练（Batch Training）**的方式：
+
+1. **内存效率**：大规模数据集可能无法一次性加载到内存中，批次处理可以分块加载数据
+2. **训练稳定性**：小批次数据的梯度估计噪声有助于逃离局部最优，大批量数据的梯度估计更稳定
+3. **硬件利用率**：现代 GPU/CPU 对矩阵运算有高度优化，批次处理可以充分利用并行计算能力
+4. **收敛速度**：适当的批次大小可以加速模型收敛
+
+**示例代码：**
+
+.. code-block:: python
+
+    from riemann.utils.data import DataLoader
+
+    # 创建训练数据加载器
+    train_loader = DataLoader(
+        dataset=train_dataset,
+        batch_size=100,     # 每批次的样本数量
+        shuffle=True        # 每个 epoch 打乱数据
+    )
+    
+    # 创建测试数据加载器
+    test_loader = DataLoader(
+        dataset=test_dataset,
+        batch_size=1,       # 测试时逐个处理样本
+        shuffle=False       # 测试数据不需要打乱
+    )
+
+**关键参数：**
+
+- ``dataset``: 要加载数据的数据集
+- ``batch_size``: 每批加载的样本数。训练时通常设置为 32、64、100 等；测试时可设置为 1 或更大的值
+- ``shuffle``: 设置为 True 以在每个 epoch 重新打乱数据顺序，有助于防止模型记住数据顺序，提高泛化能力
+
+步骤2：构建神经网络
+--------------------
+
+Riemann 中的神经网络通过继承 ``nn.Module`` 并实现 ``forward`` 方法来构建。
+
+理解 nn.Module
 ~~~~~~~~~~~~~~~
 
-`DataLoader` 用于批量加载数据，支持多线程数据加载、数据打乱和自动批处理。
+``nn.Module`` 是所有神经网络模块的基类。它提供了：
 
-DataLoader 参数说明
-^^^^^^^^^^^^^^^^^^^
+- **参数管理**: 自动跟踪可学习参数
+- **子模块管理**: 支持嵌套模块
+- **设备管理**: 支持 CPU/GPU 执行
+- **训练/评估模式**: ``train()`` 和 ``eval()`` 方法
 
-`DataLoader` 接受以下主要参数：
+定义网络架构
+~~~~~~~~~~~~
 
-- ``dataset``: 要加载的数据集实例
-- ``batch_size``: 每个批次的样本数量，默认 1
-- ``shuffle``: 是否在每个 epoch 开始时打乱数据，默认 False
-- ``num_workers``: 用于数据加载的子进程数，默认 0（主进程加载）
-- ``drop_last``: 如果数据集大小不能被批次大小整除，是否丢弃最后一个不完整的批次，默认 False
-- ``pin_memory``: 是否将加载的数据复制到 CUDA 固定内存中，加速数据传输到 GPU，默认 False
-- ``timeout``: 数据加载超时时间，默认 0
-- ``worker_init_fn``: 每个工作进程初始化时调用的函数，默认 None
-- ``multiprocessing_context``: 多进程上下文，默认 None
+对于 MNIST 分类任务，我们构建一个简单的前馈神经网络。在深入代码之前，让我们先理解每个组件的作用。
 
-DataLoader 使用示例
-^^^^^^^^^^^^^^^^^^^^
+**网络组件详解**
 
-.. code-block:: python
+1. **Sequential 容器**
 
-    # 创建 DataLoader
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=32, 
-        shuffle=True, 
-        num_workers=2,
-        drop_last=True
-    )
+``nn.Sequential`` 是一个按顺序执行模块的容器。它将多个层按顺序堆叠，数据会依次通过每一层。使用 Sequential 的好处是代码简洁、结构清晰，特别适合简单的顺序网络。
 
-    test_loader = DataLoader(
-        test_dataset, 
-        batch_size=32, 
-        shuffle=False,
-        num_workers=1
-    )
+2. **Flatten 层**
 
-    # 遍历 DataLoader
-    print("遍历训练数据加载器:")
-    for batch_idx, (inputs, targets) in enumerate(train_loader):
-        print(f"Batch {batch_idx}: Input shape {inputs.shape}, Target shape {targets.shape}")
-        if batch_idx == 2:  # 只打印前3个批次
-            break
+``nn.Flatten`` 用于展平输入张量。MNIST 图像是 28×28 像素的二维图像，但全连接层需要一维向量输入。Flatten 将形状为 ``(batch_size, 1, 28, 28)`` 的张量转换为 ``(batch_size, 784)``，其中 784 = 28 × 28。
 
-    # 在训练循环中使用
-    print("\n在训练循环中使用:")
-    num_epochs = 2
-    for epoch in range(num_epochs):
-        print(f"Epoch {epoch+1}/{num_epochs}")
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
-            # 这里是训练代码
-            if batch_idx % 10 == 0:  # 每10个批次打印一次
-                print(f"  Batch {batch_idx}/{len(train_loader)}")
-            # 实际训练中，这里会执行前向传播、损失计算、反向传播等
-            break  # 为了示例，只执行一个批次
+3. **Linear 层（全连接层）**
 
-使用 pin_memory 加速
-^^^^^^^^^^^^^^^^^^^^
+``nn.Linear(in_features, out_features)`` 是全连接层，执行线性变换：``output = input @ weight.T + bias``
 
-如果使用 GPU 训练，可以启用 `pin_memory` 来加速数据传输：
+- 权重矩阵 ``weight`` 的形状为 ``(out_features, in_features)``
+- 偏置向量 ``bias`` 的形状为 ``(out_features,)``
+- 这些参数会在训练过程中自动学习和更新
 
-.. code-block:: python
+4. **激活函数（ReLU）**
 
-    # 为 GPU 训练优化的 DataLoader
-    gpu_train_loader = DataLoader(
-        train_dataset, 
-        batch_size=32, 
-        shuffle=True, 
-        num_workers=2,
-        pin_memory=True  # 启用固定内存
-    )
+``nn.ReLU()`` 是修正线性单元激活函数，定义为：``f(x) = max(0, x)``
 
-    # 在训练循环中
-    if rm.cuda.is_available():
-        device = rm.device('cuda')
-        for inputs, targets in gpu_train_loader:
-            # 数据已经在固定内存中，传输到 GPU 会更快
-            inputs, targets = inputs.to(device), targets.to(device)
-            # 训练步骤...
+- **作用**：引入非线性，使网络能够学习复杂的模式。如果没有激活函数，多层线性变换等价于单层线性变换，无法学习非线性关系
+- **优点**：计算简单、缓解梯度消失问题、加速收敛
 
-构建神经网络
-~~~~~~~~~~~~~
+5. **损失函数（CrossEntropyLoss）**
 
-神经网络是由多个层组成的模型，用于学习数据中的模式。在 Riemann 中，我们使用 ``nn.Module`` 类来构建神经网络。
+``nn.CrossEntropyLoss`` 是多分类任务的损失函数，它结合了 LogSoftmax 和 NLLLoss（负对数似然损失）：
 
-神经网络构建步骤:
+- **作用**：衡量模型预测与真实标签之间的差异
+- **计算**：``loss = -log(softmax(output)[target_class])``
+- **目标**：通过最小化损失函数，使模型预测更接近真实标签
 
-1. **导入必要的模块**：导入 ``riemann.nn`` 模块，它包含了各种网络层和激活函数
-2. **定义网络类**：继承 ``nn.Module`` 类
-3. **初始化网络层**：在 ``__init__`` 方法中定义网络的各个层
-4. **定义前向传播**：在 ``forward`` 方法中定义数据如何通过网络流动
-5. **创建网络实例**：实例化定义的网络类
+6. **优化器（Adam）**
 
-基础网络构建示例
-^^^^^^^^^^^^^^^^^
+``opt.Adam`` 是一种自适应学习率优化算法：
+
+- **作用**：根据计算出的梯度更新网络参数，使损失函数逐渐减小
+- **原理**：结合动量（Momentum）和 RMSProp 的优点，为每个参数维护独立的学习率
+- **参数**：
+  - ``lr`` (learning rate): 学习率，控制参数更新的步长
+  - ``betas``: 动量系数，控制梯度累积的速度
+  - ``weight_decay``: L2 正则化系数，防止过拟合
+
+**代码实现：**
 
 .. code-block:: python
 
     import riemann.nn as nn
+    import riemann.optim as opt
 
-    class SimpleNet(nn.Module):
+    class Classifier(nn.Module):
+        """
+        MNIST 手写数字分类器
+        
+        网络架构：
+        - 输入层: 784 个神经元 (28x28 像素展平)
+        - 隐藏层: 200 个神经元，使用 ReLU 激活
+        - 输出层: 10 个神经元 (对应数字 0-9)
+        """
         def __init__(self):
-            """
-            初始化简单的全连接神经网络
+            super().__init__()
             
-            网络结构：
-            - 输入层：10 个特征
-            - 隐藏层 1：50 个神经元，使用 ReLU 激活函数
-            - 隐藏层 2：20 个神经元，使用 ReLU 激活函数
-            - 输出层：2 个神经元（适用于回归任务）
-            """
-            super(SimpleNet, self).__init__()
-            # 定义网络层
-            self.fc1 = nn.Linear(10, 50)  # 输入层到第一个隐藏层
-            self.relu = nn.ReLU()          # 激活函数
-            self.fc2 = nn.Linear(50, 20)   # 第一个隐藏层到第二个隐藏层
-            self.fc3 = nn.Linear(20, 2)    # 第二个隐藏层到输出层
-        
-        def forward(self, x):
-            """
-            定义前向传播过程
+            # 使用 Sequential 容器定义网络层
+            self.model = nn.Sequential(
+                nn.Flatten(),           # 将 (batch, 1, 28, 28) 展平为 (batch, 784)
+                nn.Linear(784, 200),    # 输入层到隐藏层：784维 -> 200维
+                nn.ReLU(),              # 激活函数：引入非线性
+                nn.Linear(200, 10)      # 隐藏层到输出层：200维 -> 10维（10个数字类别）
+            )
             
-            :param x: 输入数据，形状为 [batch_size, 10]
-            :return: 输出数据，形状为 [batch_size, 2]
-            """
-            # 前向传播
-            x = self.fc1(x)  # 通过第一个全连接层
-            x = self.relu(x) # 应用 ReLU 激活函数
-            x = self.fc2(x)  # 通过第二个全连接层
-            x = self.relu(x) # 应用 ReLU 激活函数
-            x = self.fc3(x)  # 通过输出层
-            return x
-
-    # 创建网络实例
-    model = SimpleNet()
-    print(model)  # 打印网络结构
-
-分类网络示例
-^^^^^^^^^^^^
-
-对于分类任务，我们需要调整输出层和激活函数：
-
-.. code-block:: python
-
-    class ClassificationNet(nn.Module):
-        def __init__(self, num_classes=10):
-            """
-            初始化分类神经网络
+            # 定义多分类任务的损失函数
+            self.loss_func = nn.CrossEntropyLoss()
             
-            :param num_classes: 分类任务的类别数量
+            # 使用 Adam 算法定义优化器
+            self.optimizer = opt.Adam(
+                self.parameters(),      # 要优化的参数（所有 Linear 层的 weight 和 bias）
+                lr=0.001,               # 学习率：控制参数更新的步长
+                betas=(0.9, 0.999),     # 动量系数
+                weight_decay=0.0001     # L2 正则化：防止过拟合
+            )
+        
+        def forward(self, inputs):
             """
-            super(ClassificationNet, self).__init__()
-            self.fc1 = nn.Linear(10, 64)
-            self.relu = nn.ReLU()
-            self.fc2 = nn.Linear(64, 32)
-            self.fc3 = nn.Linear(32, num_classes)  # 输出层大小等于类别数
+            前向传播
+            
+            参数:
+                inputs: 形状为 (batch_size, 1, 28, 28) 的张量
+            
+            返回:
+                形状为 (batch_size, 10) 的张量 - 未归一化的 logits
+            """
+            return self.model(inputs)
+
+**关键概念总结：**
+
+- ``nn.Sequential``: 按顺序执行模块的容器，简化网络定义
+- ``nn.Flatten``: 展平多维输入，适配全连接层
+- ``nn.Linear``: 全连接层，包含可学习的权重和偏置
+- ``nn.ReLU``: 非线性激活函数，使网络能够学习复杂模式
+- ``nn.CrossEntropyLoss``: 分类损失函数，衡量预测与真实值的差异
+- ``opt.Adam``: 自适应优化器，自动调整参数更新步长
+
+步骤3：训练网络
+----------------
+
+训练涉及多次迭代数据集（epoch），计算预测、计算损失并更新参数。
+
+实现训练步骤
+~~~~~~~~~~~~
+
+.. code-block:: python
+
+    class Classifier(nn.Module):
+        # ... 上面的 __init__ 和 forward 方法 ...
         
-        def forward(self, x):
-            x = self.fc1(x)
-            x = self.relu(x)
-            x = self.fc2(x)
-            x = self.relu(x)
-            x = self.fc3(x)
-            # 注意：对于分类任务，我们通常在损失函数中处理激活函数
-            # 使用 CrossEntropyLoss 时，不需要在这里应用 softmax
-            return x
+        def train_step(self, inputs, targets):
+            """
+            执行一步训练
+            
+            参数:
+                inputs: 一批图像，形状为 (batch_size, 1, 28, 28)
+                targets: 一批标签，形状为 (batch_size,)
+            
+            返回:
+                loss: 标量损失值
+            """
+            # 前向传播：计算预测
+            outputs = self.forward(inputs)
+            
+            # 计算损失
+            loss = self.loss_func(outputs, targets)
+            
+            # 反向传播：计算梯度
+            self.optimizer.zero_grad(True)  # 清除之前的梯度
+            loss.backward()                  # 计算梯度
+            
+            # 更新参数
+            self.optimizer.step()
+            
+            return loss
 
-使用优化器
-~~~~~~~~~~~
-
-优化器用于根据损失函数的梯度更新网络参数，从而使模型逐渐学习到更好的表示。
-
-常用优化器
-^^^^^^^^^^
-
-Riemann 提供了多种优化器，每种都有其特点和适用场景：
-
-- **SGD**：随机梯度下降，基础优化器
-- **Adam**：自适应矩估计，结合了动量和自适应学习率
-- **RMSprop**：均方根传播，适用于递归神经网络
-- **Adagrad**：自适应学习率，适用于稀疏数据
-
-优化器使用示例
-^^^^^^^^^^^^^^^
-
-.. code-block:: python
-
-    from riemann.optim import SGD, Adam, RMSprop
-
-    # 创建 SGD 优化器
-    # lr: 学习率，控制参数更新的步长
-    # momentum: 动量，加速优化过程
-    optimizer = SGD(model.parameters(), lr=0.01, momentum=0.9)
-
-    # 或者使用 Adam 优化器
-    # betas: 用于计算梯度和梯度平方的移动平均值的系数
-    # weight_decay: 权重衰减，用于正则化
-    # optimizer = Adam(model.parameters(), lr=0.001, betas=(0.9, 0.999), weight_decay=0.0001)
-
-    # 或者使用 RMSprop 优化器
-    # optimizer = RMSprop(model.parameters(), lr=0.001, alpha=0.99, eps=1e-08)
-
-学习率调度
-^^^^^^^^^^
-
-学习率是一个重要的超参数，通常需要随着训练的进行而调整：
+完整的训练循环
+~~~~~~~~~~~~~~
 
 .. code-block:: python
 
-    # 简单的学习率调度示例
-    initial_lr = 0.01
-    optimizer = SGD(model.parameters(), lr=initial_lr, momentum=0.9)
-
-    # 在训练过程中调整学习率
-    for epoch in range(num_epochs):
-        # 每 5 个 epoch 学习率减半
-        if epoch % 5 == 0 and epoch > 0:
-            for param_group in optimizer.param_groups:
-                param_group['lr'] *= 0.5
+    # 创建模型实例
+    model = Classifier()
+    
+    # 训练配置
+    epochs = 3
+    
+    # 训练循环
+    for epoch in range(epochs):
+        model.train()  # 设置模型为训练模式
+        epoch_loss = 0.0
+        num_batches = len(train_loader)
         
-        # 训练代码...
-        print(f"Current learning rate: {optimizer.param_groups[0]['lr']}")
+        # 遍历批次
+        for batch_idx, batch in enumerate(train_loader):
+            img_tensors, target_tensors = batch
+            
+            # 执行训练步骤
+            loss = model.train_step(img_tensors, target_tensors)
+            epoch_loss += loss.item()
+            
+            # 每100个批次打印进度
+            if batch_idx % 100 == 0:
+                print(f'Epoch {epoch+1}/{epochs}, '
+                      f'Batch {batch_idx}/{num_batches}, '
+                      f'Loss: {loss.item():.4f}')
+        
+        # 计算该 epoch 的平均损失
+        avg_loss = epoch_loss / num_batches
+        print(f'Epoch {epoch+1}/{epochs} 完成, 平均损失: {avg_loss:.4f}')
 
-定义损失函数
-~~~~~~~~~~~~~
+**训练过程说明：参数如何一步一步学习**
 
-损失函数用于衡量模型预测与真实值之间的差异，是模型优化的目标。
+神经网络的训练本质上是一个**优化问题**：通过不断调整网络参数（权重和偏置），使损失函数的值最小化。让我们详细看看这个过程：
 
-损失函数选择指南
-^^^^^^^^^^^^^^^^^
+**1. 前向传播（Forward Propagation）**
 
-.. list-table:: 损失函数选择指南
-   :widths: 20 30 50
-   :header-rows: 1
+输入数据从输入层经过隐藏层传递到输出层，逐层计算得到预测结果：
 
-   * - 任务类型
-     - 推荐损失函数
-     - 适用场景
-   * - 回归任务
-     - MSELoss
-     - 预测连续值，如房价、温度等
-   * - 回归任务
-     - L1Loss
-     - 对异常值不敏感的回归任务
-   * - 回归任务
-     - HuberLoss
-     - 结合 MSE 和 L1 的优点，对异常值鲁棒
-   * - 分类任务
-     - CrossEntropyLoss
-     - 多分类任务，输出为类别概率
-   * - 分类任务
-     - BCEWithLogitsLoss
-     - 二分类任务，输出为0或1的概率
+- 输入图像经过 Flatten 展平为 784 维向量
+- 通过第一个 Linear 层：``h1 = x @ W1.T + b1`` (784维 -> 200维)
+- 经过 ReLU 激活：``h1_relu = max(0, h1)``
+- 通过第二个 Linear 层：``output = h1_relu @ W2.T + b2`` (200维 -> 10维)
+- 输出 10 个 logits，代表每个数字（0-9）的预测分数
 
-损失函数使用示例
-^^^^^^^^^^^^^^^^^
+**2. 损失计算（Loss Computation）**
 
-.. code-block:: python
+计算预测结果与真实标签之间的差异：
 
-    import riemann.nn as nn
+- 使用 CrossEntropyLoss 计算损失值
+- 损失值越大，表示预测与真实值差距越大
+- 训练目标就是最小化这个损失值
 
-    # 对于回归任务
-    # MSELoss: 均方误差损失，计算预测值与真实值之差的平方的平均值
-    criterion = nn.MSELoss()
+**3. 反向传播（Backward Propagation）**
 
-    # 对于分类任务
-    # CrossEntropyLoss: 交叉熵损失，结合了 log_softmax 和 nll_loss
-    # criterion = nn.CrossEntropyLoss()
+计算损失函数对每个参数的梯度（偏导数）：
 
-    # 对于二分类任务
-    # BCEWithLogitsLoss: 带 logits 的二元交叉熵损失
-    # criterion = nn.BCEWithLogitsLoss()
+- 从输出层开始，逐层向后计算梯度
+- 使用链式法则：``∂L/∂W = ∂L/∂output * ∂output/∂W``
+- 梯度告诉我们：如何调整参数才能使损失减小
+- 梯度为正，表示增大该参数会增大损失；梯度为负则相反
 
-    # 对于对异常值敏感的回归任务
-    # HuberLoss: Huber 损失，在误差较小时使用 MSE，误差较大时使用 L1
-    # criterion = nn.HuberLoss(delta=1.0)
+**4. 参数更新（Parameter Update）**
 
-训练网络
+优化器根据梯度更新参数：
+
+- **梯度下降原理**：``W_new = W_old - lr * gradient``
+- ``lr`` 是学习率，控制更新步长
+- Adam 优化器还会考虑历史梯度信息，自适应调整每个参数的学习率
+- 更新后，网络参数变得更优，预测能力更强
+
+**训练循环的本质**
+
+通过成千上万次的"前向传播 → 计算损失 → 反向传播 → 更新参数"循环，网络逐渐学会从输入图像中提取特征并正确分类。这个过程类似于学生通过不断练习和纠正错误来提高成绩。
+
+步骤4：评估与推理
+------------------
+
+训练完成后，在测试集上评估模型以衡量其泛化性能。
+
+评估方法
 ~~~~~~~~
 
-训练网络是一个迭代过程，包括前向传播、损失计算、反向传播和参数更新四个主要步骤。
-
-完整训练循环详解
-^^^^^^^^^^^^^^^^^
-
 .. code-block:: python
 
-    num_epochs = 10  # 训练轮数
-    
-    for epoch in range(num_epochs):
-        # 设置模型为训练模式
-        # 这会启用 dropout 和 batch normalization 等训练特有的行为
-        model.train()
+    class Classifier(nn.Module):
+        # ... 前面的方法 ...
         
-        running_loss = 0.0  # 累计损失
-        
-        # 遍历数据加载器
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
-            # 1. 清零梯度
-            # 每次迭代前必须清零梯度，否则梯度会累积
-            optimizer.zero_grad()
+        def evaluate(self, dataloader):
+            """
+            评估模型性能
             
-            # 2. 前向传播
-            # 将输入数据通过网络，得到预测值
-            outputs = model(inputs)
+            参数:
+                dataloader: 提供测试数据的 DataLoader
             
-            # 3. 计算损失
-            # 衡量预测值与真实值之间的差异
-            loss = criterion(outputs, targets)
+            返回:
+                accuracy: 分类准确率 (0-1)
+                avg_loss: 数据集上的平均损失
+            """
+            total_loss = 0
+            correct = 0
+            total = 0
             
-            # 4. 反向传播
-            # 计算损失对所有可学习参数的梯度
-            loss.backward()
+            for batch in dataloader:
+                img_tensors, target_tensors = batch
+                
+                # 前向传播
+                outputs = self.forward(img_tensors)
+                
+                # 计算损失
+                loss = self.loss_func(outputs, target_tensors)
+                total_loss += loss.item()
+                
+                # 计算准确率
+                predicted = outputs.argmax(dim=1)  # 获取预测的类别
+                total += target_tensors.size(0)
+                correct += (predicted == target_tensors).sum().item()
             
-            # 5. 更新参数
-            # 根据计算出的梯度更新网络参数
-            optimizer.step()
-            
-            # 累加损失
-            running_loss += loss.item()
-            
-            # 打印批次信息
-            if batch_idx % 10 == 0:
-                print(f"Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
-        
-        # 计算并打印每个 epoch 的平均损失
-        avg_loss = running_loss / len(train_loader)
-        print(f"Epoch [{epoch+1}/{num_epochs}], Average Loss: {avg_loss:.4f}")
+            accuracy = correct / total
+            avg_loss = total_loss / len(dataloader)
+            return accuracy, avg_loss
 
-训练技巧
-^^^^^^^^
-
-1. **早停**：当验证损失不再下降时停止训练，防止过拟合
-2. **正则化**：使用权重衰减、dropout 等方法防止过拟合
-3. **批量归一化**：加速训练并提高模型稳定性
-4. **梯度裁剪**：防止梯度爆炸，特别是在循环神经网络中
-5. **混合精度训练**：使用半精度浮点数加速训练
-
-推理与评估
-~~~~~~~~~~~
-
-模型训练完成后，需要在测试集上评估其性能，确保模型能够 generalization到未见数据。
-
-模型评估步骤
-^^^^^^^^^^^^
-
-1. **设置模型为评估模式**：禁用 dropout 和 batch normalization 的训练行为
-2. **使用 no_grad 上下文**：禁用梯度计算，节省内存和计算资源
-3. **遍历测试数据**：计算模型在测试集上的性能指标
-4. **计算评估指标**：根据任务类型选择合适的指标
-
-评估示例
-^^^^^^^^
+运行评估
+~~~~~~~~
 
 .. code-block:: python
 
     # 设置模型为评估模式
     model.eval()
     
-    # 评估指标
-    test_loss = 0.0
-    correct = 0
-    total = 0
-    
-    # 使用 no_grad 上下文，禁用梯度计算
-    with rm.no_grad():
-        for inputs, targets in test_loader:
-            # 前向传播
-            outputs = model(inputs)
-            
-            # 计算损失
-            loss = criterion(outputs, targets)
-            test_loss += loss.item()
-            
-            # 对于分类任务，计算准确率
-            # _, predicted = rm.max(outputs, dim=1)
-            # total += targets.size(0)
-            # correct += (predicted == targets).sum().item()
-    
-    # 计算平均损失
-    avg_test_loss = test_loss / len(test_loader)
-    print(f"Test Loss: {avg_test_loss:.4f}")
-    
-    # 对于分类任务，计算准确率
-    # accuracy = 100 * correct / total
-    # print(f"Test Accuracy: {accuracy:.2f}%")
+    # 在测试集上评估
+    test_accuracy, test_loss = model.evaluate(test_loader)
+    print(f'测试准确率: {test_accuracy:.4f}')
+    print(f'测试损失: {test_loss:.4f}')
 
-保存和加载模型
-^^^^^^^^^^^^^^
+**关键点：**
 
-训练好的模型可以保存到磁盘，以便后续使用：
+- ``model.eval()``: 将模型设置为评估模式（禁用 dropout 等）
+- ``outputs.argmax(dim=1)``: 获取最大值所在的索引（预测的类别）
+- 评估过程不应修改模型参数
 
-.. code-block:: python
+**准确率与哪些因素有关？**
 
-    # 保存模型
-    rm.save(model.state_dict(), 'model.pth')
-    print("Model saved successfully!")
+模型的准确率（Accuracy）是衡量模型性能的重要指标，表示预测正确的样本占总样本的比例。准确率受多种因素影响：
 
-    # 加载模型
-    # 创建模型实例
-    loaded_model = SimpleNet()
-    # 加载保存的参数
-    loaded_model.load_state_dict(rm.load('model.pth'))
-    # 设置为评估模式
-    loaded_model.eval()
-    print("Model loaded successfully!")
+**1. 网络架构因素**
 
-    # 使用加载的模型进行推理
-    with rm.no_grad():
-        # 示例输入
-        sample_input = rm.randn(1, 10)
-        # 模型预测
-        prediction = loaded_model(sample_input)
-        print(f"Sample prediction: {prediction}")
+- **网络深度和宽度**：层数更多、神经元更多的网络通常有更强的表达能力，但也更容易过拟合
+- **激活函数选择**：ReLU、Sigmoid、Tanh 等不同激活函数影响网络的学习能力和收敛速度
+- **层间连接方式**：全连接、卷积、循环等不同结构适用于不同类型的数据
 
-其它说明
---------
+**2. 训练相关因素**
 
-使用 CUDA
-~~~~~~~~~
+- **训练轮数（Epochs）**：训练不足会导致欠拟合，训练过多可能导致过拟合
+- **批次大小（Batch Size）**：影响梯度估计的准确性和训练稳定性
+- **学习率（Learning Rate）**：过大导致震荡不收敛，过小导致收敛缓慢
+- **优化器选择**：SGD、Adam、RMSprop 等不同优化器有不同的收敛特性
 
-如果系统支持 CUDA，可以将模型和数据移至 GPU 上运行：
+**3. 数据相关因素**
+
+- **数据质量**：噪声、错误标注会降低模型性能
+- **数据量**：更多的训练数据通常能带来更好的泛化能力
+- **数据分布**：训练集和测试集分布不一致会导致性能下降
+- **数据预处理**：归一化、数据增强等预处理手段对准确率有显著影响
+
+**4. 正则化因素**
+
+- **L1/L2 正则化**：防止过拟合，提高泛化能力
+- **Dropout**：随机丢弃神经元，减少共适应
+- **早停（Early Stopping）**：在验证集性能开始下降前停止训练
+
+**5. 初始化因素**
+
+- **权重初始化**：良好的初始化（如 Xavier、He 初始化）可以加速收敛并提高最终性能
+
+理解这些因素有助于你在实际应用中诊断问题并优化模型性能。
+
+步骤5：完整示例
+----------------
+
+以下是 MNIST 手写数字识别的完整可运行代码：
 
 .. code-block:: python
 
-    # 检查 CUDA 是否可用
-    if rm.cuda.is_available():
-        device = rm.device('cuda')
-        print("Using CUDA")
-    else:
-        device = rm.device('cpu')
-        print("Using CPU")
+    import sys
+    import os
+    import time
+    
+    # 导入 Riemann 模块
+    import riemann.nn as nn
+    import riemann.optim as opt
+    from riemann.vision.datasets import MNIST
+    from riemann.vision import transforms
+    from riemann.utils.data import DataLoader
 
-    # 将模型移至设备
-    model.to(device)
 
-    # 在训练循环中，将数据也移至设备
-    for inputs, targets in train_loader:
-        inputs, targets = inputs.to(device), targets.to(device)
-        # 训练步骤...
+    class Classifier(nn.Module):
+        """MNIST 手写数字分类器"""
+        
+        def __init__(self):
+            super().__init__()
+            
+            # 网络架构
+            self.model = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(784, 200),
+                nn.ReLU(),
+                nn.Linear(200, 10)
+            )
+            
+            # 损失函数和优化器
+            self.loss_func = nn.CrossEntropyLoss()
+            self.optimizer = opt.Adam(
+                self.parameters(),
+                lr=0.001,
+                betas=(0.9, 0.999),
+                weight_decay=0.0001
+            )
+        
+        def forward(self, inputs):
+            return self.model(inputs)
+        
+        def train_step(self, inputs, targets):
+            outputs = self.forward(inputs)
+            loss = self.loss_func(outputs, targets)
+            self.optimizer.zero_grad(True)
+            loss.backward()
+            self.optimizer.step()
+            return loss
+        
+        def evaluate(self, dataloader):
+            total_loss = 0
+            correct = 0
+            total = 0
+            
+            for batch in dataloader:
+                img_tensors, target_tensors = batch
+                outputs = self.forward(img_tensors)
+                
+                loss = self.loss_func(outputs, target_tensors)
+                total_loss += loss.item()
+                
+                predicted = outputs.argmax(dim=1)
+                total += target_tensors.size(0)
+                correct += (predicted == target_tensors).sum().item()
+            
+            accuracy = correct / total
+            avg_loss = total_loss / len(dataloader)
+            return accuracy, avg_loss
 
-神经网络基本组件
-~~~~~~~~~~~~~~~~
 
-- **输入层**：接收原始数据
-- **隐藏层**：提取数据特征，层数和神经元数量决定了模型的表达能力
-- **输出层**：产生最终预测结果
-- **激活函数**：引入非线性，使网络能够学习复杂映射
-- **损失函数**：衡量预测与真实值的差异
-- **优化器**：根据损失函数的梯度更新网络参数
+    def main():
+        print("MNIST 手写数字识别")
+        
+        # 步骤1：数据准备
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+        
+        print("加载数据集...")
+        train_dataset = MNIST(root='./data', train=True, transform=transform)
+        test_dataset = MNIST(root='./data', train=False, transform=transform)
+        
+        train_loader = DataLoader(dataset=train_dataset, batch_size=100, shuffle=True)
+        test_loader = DataLoader(dataset=test_dataset, batch_size=1, shuffle=False)
+        
+        print(f"训练集大小: {len(train_dataset)}")
+        print(f"测试集大小: {len(test_dataset)}")
+        
+        # 步骤2：创建模型
+        print("\n初始化模型...")
+        model = Classifier()
+        
+        # 步骤3：训练
+        print("\n开始训练...")
+        epochs = 3
+        train_start_time = time.time()
+        
+        for epoch in range(epochs):
+            model.train()
+            epoch_loss = 0.0
+            num_batches = len(train_loader)
+            
+            for batch_idx, batch in enumerate(train_loader):
+                img_tensors, target_tensors = batch
+                loss = model.train_step(img_tensors, target_tensors)
+                epoch_loss += loss.item()
+                
+                if batch_idx % 100 == 0:
+                    print(f'Epoch {epoch+1}/{epochs}, '
+                          f'Batch {batch_idx}/{num_batches}, '
+                          f'Loss: {loss.item():.4f}')
+            
+            avg_loss = epoch_loss / num_batches
+            print(f'Epoch {epoch+1}/{epochs} 完成, '
+                  f'平均损失: {avg_loss:.4f}')
+            
+            # 步骤4：评估
+            model.eval()
+            test_accuracy, test_loss = model.evaluate(test_loader)
+            print(f'测试准确率: {test_accuracy:.4f}, '
+                  f'测试损失: {test_loss:.4f}')
+            print('-' * 50)
+        
+        train_end_time = time.time()
+        print(f"训练总时间: {train_end_time - train_start_time:.2f} 秒")
 
-激活函数选择
-~~~~~~~~~~~~~
 
-- **ReLU**：适用于大多数场景，计算高效，缓解梯度消失问题
-- **LeakyReLU**：解决 ReLU 的 "死亡神经元" 问题
-- **Sigmoid**：适用于二分类任务的输出层
-- **Softmax**：适用于多分类任务的输出层
-- **Tanh**：输出范围在 [-1, 1]，比 Sigmoid 有更好的梯度特性
-- **GELU**：在 Transformer 模型中表现优异
+    if __name__ == "__main__":
+        main()
 
-损失函数选择
-~~~~~~~~~~~~~
+预期输出
+~~~~~~~~
 
-- **MSELoss**：适用于回归任务
-- **L1Loss**：对异常值不敏感，适用于某些回归任务
-- **CrossEntropyLoss**：适用于多分类任务
-- **BCEWithLogitsLoss**：适用于二分类任务
-- **HuberLoss**：结合了 MSE 和 L1 的优点，对异常值鲁棒
+运行完整示例时，你应该看到类似以下的输出：
+
+.. code-block:: text
+
+    MNIST 手写数字识别
+    加载数据集...
+    训练集大小: 60000
+    测试集大小: 10000
+    
+    初始化模型...
+    
+    开始训练...
+    Epoch 1/3, Batch 0/600, Loss: 2.3124
+    Epoch 1/3, Batch 100/600, Loss: 0.5231
+    Epoch 1/3, Batch 200/600, Loss: 0.3412
+    Epoch 1/3, Batch 300/600, Loss: 0.2894
+    Epoch 1/3, Batch 400/600, Loss: 0.2543
+    Epoch 1/3, Batch 500/600, Loss: 0.1987
+    Epoch 1/3 完成, 平均损失: 0.3124
+    测试准确率: 0.9123, 测试损失: 0.2987
+    --------------------------------------------------
+    Epoch 2/3, Batch 0/600, Loss: 0.1876
+    Epoch 2/3, Batch 100/600, Loss: 0.1654
+    ...
+    测试准确率: 0.9456, 测试损失: 0.1876
+    --------------------------------------------------
+    Epoch 3/3 完成
+    测试准确率: 0.9567, 测试损失: 0.1456
+    --------------------------------------------------
+    训练总时间: 45.23 秒
+
+关键概念总结
+------------
+
+Dataset 和 DataLoader
+~~~~~~~~~~~~~~~~~~~~~
+
+- **Dataset**: 数据表示的抽象基类，需要实现 ``__len__`` 和 ``__getitem__``
+- **DataLoader**: 高效处理批处理、打乱和加载数据
+- **Transforms**: 数据增强和归一化的预处理流程
+
+神经网络组件
+~~~~~~~~~~~~
+
+- **nn.Module**: 所有神经网络模块的基类
+- **nn.Sequential**: 按顺序堆叠层的容器
+- **nn.Linear**: 全连接层
+- **nn.ReLU**: 引入非线性的激活函数
+- **nn.CrossEntropyLoss**: 多分类任务的损失函数
+
+训练过程
+~~~~~~~~
+
+- **前向传播**: 计算模型预测
+- **损失计算**: 衡量预测与目标之间的差异
+- **反向传播**: 通过反向传播计算梯度
+- **优化器步骤**: 更新模型参数
+
+评估
+~~~~
+
+- **model.eval()**: 将模型设置为评估模式
+- **argmax**: 从输出 logits 获取预测的类别
+- **准确率**: 正确预测的百分比
 
 Module 类与容器
 ===============
@@ -635,7 +730,7 @@ Module 类主要方法
      - 返回直接子模块的迭代器
      - ``for child in model.children(): print(child)``
    * - ``modules()``
-     - 返回所有子模块（包括自身）的迭代器
+     - 返回所有子模块的迭代器（包括自身）
      - ``for module in model.modules(): print(module)``
    * - ``named_modules(prefix='', recurse=True)``
      - 返回带名称的模块迭代器
@@ -656,50 +751,26 @@ Module 类主要方法
      - 将模块移动到 CPU 设备
      - ``model.cpu()``
    * - ``zero_grad(set_to_none=False)``
-     - 清空所有参数的梯度
+     - 清除所有参数的梯度
      - ``model.zero_grad()``
    * - ``requires_grad_(requires_grad=True)``
-     - 设置参数是否需要计算梯度
+     - 设置参数是否需要梯度
      - ``model.requires_grad_(False)  # 冻结参数``
    * - ``state_dict(destination=None, prefix='', keep_vars=False)``
-     - 返回模块的状态字典
+     - 返回模块状态字典
      - ``state = model.state_dict()``
+   * - ``load_state_dict(state_dict)``
+     - 将状态字典加载到模块
+     - ``model.load_state_dict(state)``
    * - ``register_parameter(name, param)``
-     - 注册参数到模块
-     - ``self.register_parameter('weight', Parameter(rm.randn(10, 5)))``
+     - 向模块注册参数
+     - ``self.register_parameter('weight', nn.Parameter(rm.randn(10, 5)))``
    * - ``register_buffer(name, tensor)``
-     - 注册缓冲区到模块
+     - 向模块注册缓冲区
      - ``self.register_buffer('running_mean', rm.zeros(10))``
    * - ``add_module(name, module)``
      - 显式添加子模块
-     - ``self.add_module('linear', Linear(10, 5))``
-   * - ``_get_name()``
-     - 获取模块类名
-     - ``print(model._get_name())  # 输出类名``
-   * - ``register_parameters_batch(**parameters)``
-     - 批量注册参数
-     - ``self.register_parameters_batch(weight=Parameter(rm.randn(10, 5)), bias=Parameter(rm.zeros(5)))``
-   * - ``register_buffers_batch(**buffers)``
-     - 批量注册缓冲区
-     - ``self.register_buffers_batch(running_mean=rm.zeros(10), running_var=rm.ones(10))``
-   * - ``clear_cache()``
-     - 清除属性访问缓存
-     - ``model.clear_cache()``
-   * - ``enable_cache(enabled=True)``
-     - 启用或禁用属性缓存
-     - ``model.enable_cache(False)``
-   * - ``register_forward_pre_hook(hook)``
-     - 注册前向传播前钩子，在forward方法调用前执行
-     - ``handle = model.register_forward_pre_hook(lambda module, input: print(f'Input: {input}'))``
-   * - ``register_forward_hook(hook)``
-     - 注册前向传播钩子，在forward方法调用后执行
-     - ``handle = model.register_forward_hook(lambda module, input, output: print(f'Output: {output}'))``
-   * - ``register_full_backward_pre_hook(hook)``
-     - 注册反向传播前钩子，在反向传播开始前执行
-     - ``handle = model.register_full_backward_pre_hook(lambda module, grad_output: print(f'Grad output: {grad_output}'))``
-   * - ``register_full_backward_hook(hook)``
-     - 注册反向传播钩子，在反向传播完成后执行
-     - ``handle = model.register_full_backward_hook(lambda module, grad_input, grad_output: print(f'Grad input: {grad_input}'))``
+     - ``self.add_module('linear', nn.Linear(10, 5))``
 
 创建自定义模块
 ----------------
@@ -728,35 +799,10 @@ Module 类主要方法
     model = MyNetwork()
     print(model)
 
-Parameter 类
-------------
-
-``Parameter`` 类用于包装张量，使其成为模块的可学习参数：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    class CustomLayer(nn.Module):
-        def __init__(self, in_features, out_features):
-            super(CustomLayer, self).__init__()
-            # 创建可学习参数
-            self.weight = nn.Parameter(rm.randn(out_features, in_features))
-            self.bias = nn.Parameter(rm.zeros(out_features))
-        
-        def forward(self, x):
-            return x @ self.weight.T + self.bias
-
-    # 使用自定义层
-    layer = CustomLayer(10, 5)
-    print(layer.weight.shape)  # (5, 10)
-    print(layer.bias.shape)    # (5,)
-
 容器类
 ------
 
-Riemann 提供了几种容器类来组织和管理模块：
+Riemann 提供了多个容器类来组织和管理模块：
 
 Sequential
 ~~~~~~~~~~
@@ -781,7 +827,7 @@ Sequential
         nn.Linear(20, 5)
     )
     
-    # 方法2：使用关键字参数（PyTorch 风格）
+    # 方法2：使用关键字参数
     model = nn.Sequential(
         linear1=nn.Linear(10, 20),
         relu=nn.ReLU(),
@@ -796,17 +842,17 @@ Sequential
 ModuleList
 ~~~~~~~~~~
 
-``ModuleList`` 容器存储模块列表，允许通过索引访问，适用于需要动态控制前向传播的场景：
+``ModuleList`` 容器存储模块列表，支持按索引访问，适用于需要动态控制前向传播的场景：
 
 **参数**：
 
-- ``modules``：模块列表（可选）
+- ``modules``: 模块列表（可选）
 
 **主要方法**：
 
-- ``append(module)``：添加模块
-- ``extend(modules)``：扩展模块列表
-- ``insert(index, module)``：插入模块
+- ``append(module)``: 添加模块
+- ``extend(modules)``: 扩展模块列表
+- ``insert(index, module)``: 插入模块
 
 **使用示例**：
 
@@ -837,16 +883,16 @@ ModuleList
 ModuleDict
 ~~~~~~~~~~
 
-``ModuleDict`` 容器使用字典存储模块，允许通过键访问，适用于需要根据条件选择不同模块的场景：
+``ModuleDict`` 容器使用字典存储模块，支持按键访问，适用于需要根据条件选择不同模块的场景：
 
 **参数**：
 
-- ``modules``：模块字典（可选）
+- ``modules``: 模块字典（可选）
 
 **主要方法**：
 
-- ``update(modules)``：更新模块字典
-- ``pop(key)``：移除并返回指定键的模块
+- ``update(modules)``: 更新模块字典
+- ``pop(key)``: 移除并返回指定键的模块
 
 **使用示例**：
 
@@ -869,7 +915,7 @@ ModuleDict
     x = rm.randn(32, 10)
     x = layers['linear1'](x)
     x = layers['relu'](x)
-    x = layers['dropout'](x)  # 使用新添加的模块
+    x = layers['dropout'](x)
     x = layers['linear2'](x)
     
     print(x.shape)  # [32, 5]
@@ -877,65 +923,7 @@ ModuleDict
 ParameterList
 ~~~~~~~~~~~~~
 
-``ParameterList`` 容器专门用于存储参数列表，允许通过索引访问，适用于需要管理多个参数的场景：
-
-**构造函数参数**：
-
-- ``parameters`` (iterable, optional)：参数的迭代器。可以是列表、元组、生成器或任何可迭代对象，
-  其中的元素必须是 ``Parameter`` 对象。如果为 ``None``，则创建空列表。默认值：``None``
-
-**主要方法**：
-
-- ``append(parameter)``：在列表末尾添加参数
-  
-  - **参数**：
-    
-    - ``parameter`` (Parameter)：要添加的参数，必须是 ``Parameter`` 类型
-    
-  - **说明**：参数会被自动注册到模块中，注册名称为当前列表长度的字符串形式 (如 ``'0'``、``'1'``、``'2'`` 等)
-  
-  - **异常**：
-    
-    - ``TypeError``：如果 ``parameter`` 不是 ``Parameter`` 对象
-
-- ``extend(parameters)``：扩展参数列表
-  
-  - **参数**：
-    
-    - ``parameters`` (iterable)：包含 ``Parameter`` 对象的迭代器
-    
-  - **说明**：将多个参数添加到参数列表的末尾，每个参数会依次调用 ``append()`` 方法
-  
-  - **异常**：
-    
-    - ``TypeError``：如果 ``parameters`` 中的任何元素不是 ``Parameter`` 对象
-
-- ``__getitem__(idx)``：索引访问参数
-  
-  - **参数**：
-    
-    - ``idx`` (int)：参数索引，必须是整数，支持负数索引 (如 ``-1`` 表示最后一个参数)
-    
-  - **返回**：
-    
-    - ``Parameter``：指定索引处的参数
-    
-  - **异常**：
-    
-    - ``IndexError``：如果索引超出范围
-    - ``TypeError``：如果 ``idx`` 不是整数类型
-
-- ``__len__()``：获取参数列表长度
-  
-  - **返回**：
-    
-    - ``int``：参数列表中参数的数量
-
-- ``__iter__()``：迭代器支持
-  
-  - **返回**：
-    
-    - ``iterator``：参数的迭代器，支持 ``for`` 循环遍历
+``ParameterList`` 容器专门用于存储参数列表：
 
 **使用示例**：
 
@@ -944,147 +932,23 @@ ParameterList
     import riemann as rm
     import riemann.nn as nn
     
-    # 创建空参数列表
-    params = nn.ParameterList()
-    print(len(params))  # 0
-    
-    # 从列表创建
+    # 创建参数列表
     params = nn.ParameterList([
         nn.Parameter(rm.randn(10, 20)),
         nn.Parameter(rm.randn(20))
     ])
-    print(len(params))  # 2
-    
-    # 从生成器创建
-    params = nn.ParameterList(nn.Parameter(rm.randn(i, i+1)) for i in range(3))
-    print(len(params))  # 3
     
     # 添加更多参数
     params.append(nn.Parameter(rm.randn(20, 5)))
-    params.append(nn.Parameter(rm.randn(5)))
-    print(len(params))  # 5
     
-    # 批量添加参数
-    new_params = [nn.Parameter(rm.randn(5, 3)), nn.Parameter(rm.randn(3))]
-    params.extend(new_params)
-    print(len(params))  # 7
-    
-    # 索引访问 (支持负数索引)
-    weight1 = params[0]      # 第一个参数
-    bias1 = params[1]        # 第二个参数
-    last_param = params[-1]  # 最后一个参数
-    
-    # 迭代访问
-    for i, param in enumerate(params):
-        print(f"Parameter {i}: {param.shape}")
-    
-    # 验证参数已注册
-    for name, param in params.named_parameters():
-        print(f"{name}: {param.shape}")
-    
-    # 在模块中使用
-    class MultiLayerNetwork(nn.Module):
-        def __init__(self):
-            super(MultiLayerNetwork, self).__init__()
-            self.params = nn.ParameterList([
-                nn.Parameter(rm.randn(10, 20)),
-                nn.Parameter(rm.randn(20)),
-                nn.Parameter(rm.randn(20, 5)),
-                nn.Parameter(rm.randn(5))
-            ])
-        
-        def forward(self, x):
-            x = x @ self.params[0] + self.params[1]
-            x = x @ self.params[2] + self.params[3]
-            return x
-    
-    model = MultiLayerNetwork()
-    x = rm.randn(32, 10)
-    output = model(x)
-    print(output.shape)  # [32, 5]
+    # 索引访问
+    weight = params[0]
+    bias = params[1]
 
 ParameterDict
 ~~~~~~~~~~~~~
 
-``ParameterDict`` 容器专门用于存储参数字典，允许通过键访问，适用于需要按名称管理参数的场景：
-
-**构造函数参数**：
-
-- ``parameters`` (dict, optional)：参数的字典。键必须是字符串类型，值必须是 ``Parameter`` 对象。
-  如果为 ``None``，则创建空的参数字典。默认值：``None``
-
-**主要方法**：
-
-- ``__setitem__(key, parameter)``：设置参数
-  
-  - **参数**：
-    
-    - ``key`` (str)：参数键，必须是字符串类型
-    - ``parameter`` (Parameter)：要设置的参数，必须是 ``Parameter`` 类型
-    
-  - **说明**：参数会被自动注册到模块中，注册名称为指定的键
-  
-  - **异常**：
-    
-    - ``TypeError``：如果 ``key`` 不是字符串类型，或 ``parameter`` 不是 ``Parameter`` 对象
-
-- ``__getitem__(key)``：按键获取参数
-  
-  - **参数**：
-    
-    - ``key`` (str)：参数键，必须是字符串类型
-    
-  - **返回**：
-    
-    - ``Parameter``：指定键的参数
-    
-  - **异常**：
-    
-    - ``KeyError``：如果指定的键不存在于字典中
-    - ``TypeError``：如果 ``key`` 不是字符串类型
-
-- ``update(parameters)``：更新参数字典
-  
-  - **参数**：
-    
-    - ``parameters`` (dict)：包含 ``Parameter`` 对象的字典，键必须是字符串类型
-    
-  - **说明**：对于字典中的每个键值对，会调用 ``__setitem__`` 方法添加参数。
-    如果键已存在，会覆盖原有参数
-  
-  - **异常**：
-    
-    - ``TypeError``：如果 ``parameters`` 不是字典类型，或键不是字符串，或值不是 ``Parameter`` 对象
-
-- ``keys()``：获取所有参数键
-  
-  - **返回**：
-    
-    - ``dict_keys``：参数键的视图，包含所有字符串类型的键
-
-- ``items()``：获取所有参数项
-  
-  - **返回**：
-    
-    - ``dict_items``：参数项的视图，包含 ``(key, Parameter)`` 元组
-
-- ``values()``：获取所有参数值
-  
-  - **返回**：
-    
-    - ``dict_values``：参数值的视图，包含所有 ``Parameter`` 对象
-
-- ``__iter__()``：迭代器支持
-  
-  - **返回**：
-    
-    - ``iterator``：参数键 (字符串类型) 的迭代器
-
-- ``__len__()``：获取参数字典长度
-  
-  - **返回**：
-    
-    - ``int``：参数字典中参数的数量
+``ParameterDict`` 容器专门用于存储参数字典：
 
 **使用示例**：
 
@@ -1093,163 +957,25 @@ ParameterDict
     import riemann as rm
     import riemann.nn as nn
     
-    # 创建空参数字典
-    params = nn.ParameterDict()
-    print(len(params))  # 0
-    
-    # 从字典创建
+    # 创建参数字典
     params = nn.ParameterDict({
         'w1': nn.Parameter(rm.randn(10, 20)),
         'b1': nn.Parameter(rm.randn(20)),
         'w2': nn.Parameter(rm.randn(20, 5)),
         'b2': nn.Parameter(rm.randn(5))
     })
-    print(len(params))  # 4
-    
-    # 动态添加参数
-    params['scale'] = nn.Parameter(rm.randn(1))
-    params['shift'] = nn.Parameter(rm.randn(1))
-    print(len(params))  # 6
-    
-    # 批量添加/更新参数
-    params.update({
-        'new_w': nn.Parameter(rm.randn(5, 3)),
-        'new_b': nn.Parameter(rm.randn(3))
-    })
-    print(len(params))  # 8
-    
-    # 覆盖已有参数
-    params.update({'w1': nn.Parameter(rm.randn(10, 20))})
     
     # 按键访问
     weight1 = params['w1']
     bias1 = params['b1']
-    
-    # 使用变量名作为键
-    w_key = 'encoder_weight'
-    params[w_key] = nn.Parameter(rm.randn(20, 10))
-    encoder_w = params[w_key]
-    
-    # 迭代访问键
-    for name in params:
-        print(f"Key: {name}")
-    
-    # 迭代访问键值对
-    for name, param in params.items():
-        print(f"{name}: {param.shape}")
-    
-    # 迭代访问值
-    for param in params.values():
-        print(f"Shape: {param.shape}")
-    
-    # 成员检查
-    print('w1' in params.keys())  # True
-    print('nonexistent' in params.keys())  # False
-    
-    # 验证参数已注册
-    for name, param in params.named_parameters():
-        print(f"{name}: {param.shape}")
-    
-    # 在模块中使用
-    class NamedParameterNetwork(nn.Module):
-        def __init__(self):
-            super(NamedParameterNetwork, self).__init__()
-            self.params = nn.ParameterDict({
-                'encoder_w': nn.Parameter(rm.randn(10, 20)),
-                'encoder_b': nn.Parameter(rm.randn(20)),
-                'decoder_w': nn.Parameter(rm.randn(20, 5)),
-                'decoder_b': nn.Parameter(rm.randn(5))
-            })
-        
-        def forward(self, x):
-            x = x @ self.params['encoder_w'] + self.params['encoder_b']
-            x = x @ self.params['decoder_w'] + self.params['decoder_b']
-            return x
-    
-    model = NamedParameterNetwork()
-    x = rm.randn(32, 10)
-    output = model(x)
-    print(output.shape)  # [32, 5]
-
-容器类的选择
-~~~~~~~~~~~~
-
-- **Sequential**：适用于简单的线性网络，代码简洁
-- **ModuleList**：适用于需要动态调整模块顺序或数量的场景
-- **ModuleDict**：适用于需要根据条件选择不同模块的场景
-- **ParameterList**：适用于需要管理多个参数的场景
-- **ParameterDict**：适用于需要按名称管理参数的场景
-
-混合使用容器类
-~~~~~~~~~~~~~~
-
-可以根据网络结构的复杂度，混合使用不同的容器类：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    class ComplexNetwork(nn.Module):
-        def __init__(self):
-            super(ComplexNetwork, self).__init__()
-            
-            # 使用 Sequential 定义特征提取器
-            self.feature_extractor = nn.Sequential(
-                nn.Linear(100, 50),
-                nn.ReLU(),
-                nn.Linear(50, 25),
-                nn.ReLU()
-            )
-            
-            # 使用 ModuleList 定义多个分类头
-            self.classifiers = nn.ModuleList([
-                nn.Linear(25, 10),  # 分类任务1
-                nn.Linear(25, 5),   # 分类任务2
-                nn.Linear(25, 1)    # 回归任务
-            ])
-            
-            # 使用 ModuleDict 定义不同的激活函数
-            self.activations = nn.ModuleDict({
-                'relu': nn.ReLU(),
-                'sigmoid': nn.Sigmoid(),
-                'softmax': nn.Softmax(dim=1)
-            })
-        
-        def forward(self, x, task_type):
-            x = self.feature_extractor(x)
-            
-            if task_type == 'classification1':
-                x = self.classifiers[0](x)
-                x = self.activations['softmax'](x)
-            elif task_type == 'classification2':
-                x = self.classifiers[1](x)
-                x = self.activations['softmax'](x)
-            elif task_type == 'regression':
-                x = self.classifiers[2](x)
-                x = self.activations['relu'](x)
-            
-            return x
-
-    # 使用混合容器网络
-    model = ComplexNetwork()
-    x = rm.randn(32, 100)
-    
-    # 执行分类任务1
-    output1 = model(x, 'classification1')
-    print(f"Classification1 output shape: {output1.shape}")  # [32, 10]
-    
-    # 执行回归任务
-    output3 = model(x, 'regression')
-    print(f"Regression output shape: {output3.shape}")      # [32, 1]
 
 激活函数
 ========
 
-激活函数是神经网络中的重要组成部分，它们引入非线性特性，使网络能够学习复杂的函数映射。Riemann 提供了多种激活函数，适用于不同的场景和任务。
+激活函数是神经网络中的重要组件，引入非线性特性使网络能够学习复杂的函数映射。
 
 激活函数列表
---------------
+------------
 
 .. list-table:: Riemann 支持的激活函数
    :widths: 15 20 25 25 15
@@ -1257,32 +983,19 @@ ParameterDict
 
    * - 函数名
      - 描述
-     - 适用场景
+     - 应用场景
      - 参数含义
-     - 注意事项
+     - 备注
    * - ``ReLU``
      - 修正线性单元，输出 max(0, x)
      - 大多数深度学习模型的默认选择
      - 无参数
-     - 可能产生 "死亡神经元" 问题
+     - 可能产生"死亡神经元"问题
    * - ``LeakyReLU``
-     - 带泄漏的 ReLU，负区间有小斜率
+     - 带泄露的 ReLU，负区域有小斜率
      - 解决 ReLU 的死亡神经元问题
-     - ``negative_slope``: 负区间斜率，默认 0.01
-     - 计算开销略高于 ReLU
-   * - ``RReLU``
-     - 随机泄漏 ReLU，训练时斜率随机
-     - 作为正则化手段，防止过拟合
-     - ``lower``: 斜率下限，默认 1/8
-       ``upper``: 斜率上限，默认 1/3
-       ``training``: 是否为训练模式
-     - 测试时使用固定斜率
-   * - ``PReLU``
-     - 参数化 ReLU，斜率可学习
-     - 需要学习负区间斜率的场景
-     - ``num_parameters``: 可学习参数数量，默认 1
-       ``init``: 初始斜率值，默认 0.25
-     - 可能导致过拟合，需要谨慎使用
+     - ``negative_slope``: 负区域斜率，默认 0.01
+     - 计算成本略高于 ReLU
    * - ``Sigmoid``
      - S 型激活函数，输出 (0, 1)
      - 二分类任务的输出层
@@ -1292,72 +1005,22 @@ ParameterDict
      - 双曲正切函数，输出 (-1, 1)
      - RNN 等序列模型
      - 无参数
-     - 仍存在梯度消失问题，但比 Sigmoid 轻
+     - 仍有梯度消失问题，但比 Sigmoid 轻
    * - ``Softmax``
      - 归一化指数函数，输出概率分布
      - 多分类任务的输出层
      - ``dim``: 计算维度，默认 -1
-     - 通常与交叉熵损失一起使用
-   * - ``LogSoftmax``
-     - Softmax 的对数形式
-     - 与 NLLLoss 一起使用，提高数值稳定性
-     - ``dim``: 计算维度，默认 -1
-     - 输出为对数概率
+     - 通常与交叉熵损失配合使用
    * - ``GELU``
      - 高斯误差线性单元
      - Transformer 模型的默认选择
      - 无参数
-     - 计算开销较高
-   * - ``Softplus``
-     - ReLU 的平滑近似
-     - 需要平滑激活函数的场景
-     - ``beta``: 曲线陡峭度，默认 1.0
-       ``threshold``: 线性近似阈值，默认 20.0
-     - 计算开销较高
-
-激活函数使用示例
-------------------
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建各种激活函数
-    relu = nn.ReLU()
-    leaky_relu = nn.LeakyReLU(negative_slope=0.01)
-    prelu = nn.PReLU(num_parameters=1)
-    sigmoid = nn.Sigmoid()
-    tanh = nn.Tanh()
-    softmax = nn.Softmax(dim=1)
-    gelu = nn.GELU()
-    log_softmax = nn.LogSoftmax(dim=1)
-    softplus = nn.Softplus(beta=1.0)
-    rrelu = nn.RReLU(lower=0.1, upper=0.3)
-    
-    # 测试输入
-    x = rm.randn(4, 10)
-    
-    # 使用激活函数
-    output_relu = relu(x)
-    output_leaky = leaky_relu(x)
-    output_prelu = prelu(x)
-    output_sigmoid = sigmoid(x)
-    output_tanh = tanh(x)
-    output_softmax = softmax(x)
-    output_gelu = gelu(x)
-    output_log_softmax = log_softmax(x)
-    output_softplus = softplus(x)
-    output_rrelu = rrelu(x)
-    
-    # 验证输出形状
-    print(f"ReLU output shape: {output_relu.shape}")  # [4, 10]
-    print(f"Softmax output sum: {rm.sum(output_softmax, dim=1)}")  # 应接近 [1, 1, 1, 1]
+     - 计算成本较高
 
 损失函数
 ========
 
-损失函数用于衡量模型预测值与真实目标值之间的差异，是模型训练的核心组成部分。Riemann 提供了多种损失函数，适用于不同类型的任务。
+损失函数用于衡量模型预测与真实目标值之间的差异，是模型训练的核心组件。
 
 损失函数列表
 ------------
@@ -1368,125 +1031,45 @@ ParameterDict
 
    * - 函数名
      - 描述
-     - 适用场景
+     - 应用场景
      - 参数含义
-     - 注意事项
+     - 备注
    * - ``MSELoss``
      - 均方误差损失
      - 回归任务
-     - ``size_average``: 已弃用
-       ``reduce``: 已弃用
-       ``reduction``: 聚合方式，默认 'mean'
+     - ``reduction``: 聚合方式，默认 'mean'
      - 对异常值敏感
    * - ``L1Loss``
      - L1 损失（绝对误差）
      - 对异常值不敏感的回归任务
-     - ``size_average``: 已弃用
-       ``reduce``: 已弃用
-       ``reduction``: 聚合方式，默认 'mean'
-     - 梯度在原点不连续
-   * - ``SmoothL1Loss``
-     - 平滑 L1 损失，结合 MSE 和 L1 的优点
-     - 目标检测等任务
-     - ``size_average``: 已弃用
-       ``reduce``: 已弃用
-       ``reduction``: 聚合方式，默认 'mean'
-       ``beta``: 平滑阈值，默认 1.0
-     - 计算开销适中
+     - ``reduction``: 聚合方式，默认 'mean'
+     - 在原点处梯度不连续
    * - ``CrossEntropyLoss``
-     - 交叉熵损失，结合了 log_softmax 和 nll_loss
+     - 交叉熵损失，结合 log_softmax 和 nll_loss
      - 多分类任务
      - ``weight``: 类别权重
-       ``size_average``: 已弃用
-       ``ignore_index``: 忽略的目标值，默认 -100
-       ``reduce``: 已弃用
+       ``ignore_index``: 忽略的目标值
        ``reduction``: 聚合方式，默认 'mean'
-       ``label_smoothing``: 标签平滑程度，默认 0.0
      - 输入为原始 logits，不需要 softmax
    * - ``BCEWithLogitsLoss``
      - 带 logits 的二元交叉熵损失
      - 二分类任务
      - ``weight``: 样本权重
-       ``size_average``: 已弃用
-       ``reduce``: 已弃用
-       ``reduction``: 聚合方式，默认 'mean'
        ``pos_weight``: 正类权重
      - 输入为原始 logits，不需要 sigmoid
    * - ``HuberLoss``
      - Huber 损失，对异常值鲁棒
      - 对异常值敏感的回归任务
      - ``delta``: 阈值，默认 1.0
-       ``size_average``: 已弃用
-       ``reduce``: 已弃用
-       ``reduction``: 聚合方式，默认 'mean'
-     - 计算开销适中
-   * - ``NLLLoss``
-     - 负对数似然损失
-     - 与 LogSoftmax 一起使用的分类任务
-     - ``weight``: 类别权重
-       ``size_average``: 已弃用
-       ``ignore_index``: 忽略的目标值，默认 -100
-       ``reduce``: 已弃用
-       ``reduction``: 聚合方式，默认 'mean'
-     - 输入为对数概率
+     - 计算成本适中
 
-损失函数使用示例
-------------------
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建各种损失函数
-    mse_loss = nn.MSELoss()
-    l1_loss = nn.L1Loss()
-    smooth_l1_loss = nn.SmoothL1Loss(beta=1.0)
-    cross_entropy_loss = nn.CrossEntropyLoss()
-    bce_with_logits_loss = nn.BCEWithLogitsLoss()
-    huber_loss = nn.HuberLoss(delta=1.0)
-    nll_loss = nn.NLLLoss()
-    
-    # 回归任务测试数据
-    reg_preds = rm.randn(4, 1)
-    reg_targets = rm.randn(4, 1)
-    
-    # 分类任务测试数据
-    cls_preds = rm.randn(4, 10)
-    cls_targets = rm.randint(0, 10, (4,))
-    
-    # 二分类任务测试数据
-    binary_preds = rm.randn(4, 1)
-    binary_targets = rm.randint(0, 2, (4, 1)).float()
-    
-    # 计算各种损失
-    loss_mse = mse_loss(reg_preds, reg_targets)
-    loss_l1 = l1_loss(reg_preds, reg_targets)
-    loss_smooth_l1 = smooth_l1_loss(reg_preds, reg_targets)
-    loss_ce = cross_entropy_loss(cls_preds, cls_targets)
-    loss_bce = bce_with_logits_loss(binary_preds, binary_targets)
-    loss_huber = huber_loss(reg_preds, reg_targets)
-    
-    # 计算 NLLLoss（需要先计算 log_softmax）
-    log_softmax = nn.LogSoftmax(dim=1)
-    logits = log_softmax(cls_preds)
-    loss_nll = nll_loss(logits, cls_targets)
-    
-    # 打印损失值
-    print(f"MSE Loss: {loss_mse.item():.4f}")
-    print(f"L1 Loss: {loss_l1.item():.4f}")
-    print(f"Cross Entropy Loss: {loss_ce.item():.4f}")
-    print(f"BCE With Logits Loss: {loss_bce.item():.4f}")
-
-基本网络层
+基础网络层
 ==========
 
-基本网络层是构建神经网络的基础组件，包括全连接层、dropout 层、展平层等。这些层在各种神经网络架构中都有广泛的应用。
+线性层 (Linear)
+---------------
 
-线性层（Linear）
-----------------
-
-线性层（也称为全连接层）对输入数据执行仿射变换：
+线性层（又称全连接层）对输入数据进行仿射变换：
 
 **参数**：
 - ``in_features``: 输入特征维度
@@ -1504,17 +1087,17 @@ ParameterDict
     linear = nn.Linear(in_features=20, out_features=10)
     
     # 前向传播
-    x = rm.randn(32, 20)  # 32 个样本的批次
+    x = rm.randn(32, 20)
     output = linear(x)
     print(output.shape)  # [32, 10]
 
 Dropout 层
 ----------
 
-Dropout 层通过随机失活神经元来防止过拟合：
+Dropout 层通过随机停用神经元来防止过拟合：
 
 **参数**：
-- ``p``: 失活概率，默认 0.5
+- ``p``: Dropout 概率，默认 0.5
 
 **使用示例**：
 
@@ -1528,22 +1111,17 @@ Dropout 层通过随机失活神经元来防止过拟合：
     
     # 前向传播（训练模式）
     x = rm.randn(4, 16)
+    dropout.train()
     output_train = dropout(x)
     
     # 前向传播（评估模式）
     dropout.eval()
     output_eval = dropout(x)
-    
-    print(output_train.shape)  # [4, 16]
-    print(output_eval.shape)   # [4, 16]
 
-展平层（Flatten）
-------------------
+Flatten 层
+----------
 
-展平层将多维张量展平为二维张量（批次维度保持不变）：
-
-**参数**：
-- 无参数
+Flatten 层将输入张量展平：
 
 **使用示例**：
 
@@ -1552,937 +1130,9 @@ Dropout 层通过随机失活神经元来防止过拟合：
     import riemann as rm
     import riemann.nn as nn
     
-    # 创建展平层
     flatten = nn.Flatten()
     
-    # 前向传播
-    x = rm.randn(4, 16, 8, 8)  # 4 个样本，16 通道，8x8 特征图
+    # 将 (batch, 1, 28, 28) 展平为 (batch, 784)
+    x = rm.randn(32, 1, 28, 28)
     output = flatten(x)
-    print(output.shape)  # [4, 1024] (16*8*8)
-
-批量归一化层（BatchNorm1d）
----------------------------
-
-批量归一化层对输入进行归一化，加速训练并提高模型稳定性：
-
-**参数**：
-- ``num_features``: 特征数量
-- ``eps``: 数值稳定性参数，默认 1e-5
-- ``momentum``: 动量参数，默认 0.1
-- ``affine``: 是否使用可学习的仿射参数，默认 True
-- ``track_running_stats``: 是否跟踪运行统计信息，默认 True
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建批量归一化层
-    batch_norm = nn.BatchNorm1d(num_features=16)
-    
-    # 前向传播
-    x = rm.randn(4, 16)  # 4 个样本，16 特征
-    output = batch_norm(x)
-    print(output.shape)  # [4, 16]
-
-卷积网络相关模块
-================
-
-卷积网络是处理图像、语音等网格结构数据的强大工具。Riemann 提供了丰富的卷积和池化层，支持 1D、2D 和 3D 数据。
-
-卷积层
-------
-
-卷积层通过滑动窗口提取局部特征，是卷积神经网络的核心组件。
-
-Conv1d
-~~~~~~
-
-一维卷积层，适用于序列数据如音频、文本等：
-
-**参数**：
-
-- ``in_channels``: 输入通道数
-- ``out_channels``: 输出通道数
-- ``kernel_size``: 卷积核大小
-- ``stride``: 步长，默认 1
-- ``padding``: 填充，默认 0
-- ``dilation``: 膨胀率，默认 1
-- ``groups``: 分组卷积组数，默认 1
-- ``bias``: 是否使用偏置，默认 True
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建一维卷积层
-    conv1d = nn.Conv1d(in_channels=16, out_channels=32, kernel_size=3, padding=1)
-    
-    # 前向传播
-    x = rm.randn(10, 16, 50)  # [batch_size, channels, length]
-    output = conv1d(x)
-    print(output.shape)  # [10, 32, 50] (有填充)
-
-Conv2d
-~~~~~~
-
-二维卷积层，适用于图像数据：
-
-**参数**：
-
-- ``in_channels``: 输入通道数
-- ``out_channels``: 输出通道数
-- ``kernel_size``: 卷积核大小
-- ``stride``: 步长，默认 1
-- ``padding``: 填充，默认 0
-- ``dilation``: 膨胀率，默认 1
-- ``groups``: 分组卷积组数，默认 1
-- ``bias``: 是否使用偏置，默认 True
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建二维卷积层
-    conv2d = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, padding=1)
-    
-    # 前向传播
-    x = rm.randn(4, 3, 32, 32)  # [batch_size, channels, height, width]
-    output = conv2d(x)
-    print(output.shape)  # [4, 16, 32, 32] (有填充)
-
-Conv3d
-~~~~~~
-
-三维卷积层，适用于 3D 数据如视频、医学影像等：
-
-**参数**：
-
-- ``in_channels``: 输入通道数
-- ``out_channels``: 输出通道数
-- ``kernel_size``: 卷积核大小
-- ``stride``: 步长，默认 1
-- ``padding``: 填充，默认 0
-- ``dilation``: 膨胀率，默认 1
-- ``groups``: 分组卷积组数，默认 1
-- ``bias``: 是否使用偏置，默认 True
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建三维卷积层
-    conv3d = nn.Conv3d(in_channels=3, out_channels=16, kernel_size=3, padding=1)
-    
-    # 前向传播
-    x = rm.randn(2, 3, 16, 16, 16)  # [batch_size, channels, depth, height, width]
-    output = conv3d(x)
-    print(output.shape)  # [2, 16, 16, 16, 16] (有填充)
-
-池化层
-------
-
-池化层用于减少特征图的空间维度，同时保留重要信息。
-
-MaxPool1d
-~~~~~~~~~
-
-一维最大池化层：
-
-**参数**：
-
-- ``kernel_size``: 池化核大小
-- ``stride``: 步长，默认 kernel_size
-- ``padding``: 填充，默认 0
-- ``dilation``: 膨胀率，默认 1
-- ``ceil_mode``: 是否使用向上取整，默认 False
-- ``return_indices``: 是否返回最大值索引，默认 False
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建一维最大池化层
-    max_pool1d = nn.MaxPool1d(kernel_size=2, stride=2)
-    
-    # 前向传播
-    x = rm.randn(4, 16, 50)  # [batch_size, channels, length]
-    output = max_pool1d(x)
-    print(output.shape)  # [4, 16, 25]
-
-MaxPool2d
-~~~~~~~~~
-
-二维最大池化层：
-
-**参数**：
-
-- ``kernel_size``: 池化核大小
-- ``stride``: 步长，默认 kernel_size
-- ``padding``: 填充，默认 0
-- ``dilation``: 膨胀率，默认 1
-- ``ceil_mode``: 是否使用向上取整，默认 False
-- ``return_indices``: 是否返回最大值索引，默认 False
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建二维最大池化层
-    max_pool2d = nn.MaxPool2d(kernel_size=2, stride=2)
-    
-    # 前向传播
-    x = rm.randn(4, 16, 32, 32)  # [batch_size, channels, height, width]
-    output = max_pool2d(x)
-    print(output.shape)  # [4, 16, 16, 16]
-
-MaxPool3d
-~~~~~~~~~
-
-三维最大池化层：
-
-**参数**：
-
-- ``kernel_size``: 池化核大小
-- ``stride``: 步长，默认 kernel_size
-- ``padding``: 填充，默认 0
-- ``dilation``: 膨胀率，默认 1
-- ``ceil_mode``: 是否使用向上取整，默认 False
-- ``return_indices``: 是否返回最大值索引，默认 False
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建三维最大池化层
-    max_pool3d = nn.MaxPool3d(kernel_size=2, stride=2)
-    
-    # 前向传播
-    x = rm.randn(2, 16, 16, 16, 16)  # [batch_size, channels, depth, height, width]
-    output = max_pool3d(x)
-    print(output.shape)  # [2, 16, 8, 8, 8]
-
-AvgPool1d
-~~~~~~~~~
-
-一维平均池化层：
-
-**参数**：
-
-- ``kernel_size``: 池化核大小
-- ``stride``: 步长，默认 kernel_size
-- ``padding``: 填充，默认 0
-- ``ceil_mode``: 是否使用向上取整，默认 False
-- ``count_include_pad``: 是否包含填充值，默认 True
-- ``divisor_override``: 自定义除数，默认 None
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建一维平均池化层
-    avg_pool1d = nn.AvgPool1d(kernel_size=2, stride=2)
-    
-    # 前向传播
-    x = rm.randn(4, 16, 50)  # [batch_size, channels, length]
-    output = avg_pool1d(x)
-    print(output.shape)  # [4, 16, 25]
-
-AvgPool2d
-~~~~~~~~~
-
-二维平均池化层：
-
-**参数**：
-
-- ``kernel_size``: 池化核大小
-- ``stride``: 步长，默认 kernel_size
-- ``padding``: 填充，默认 0
-- ``ceil_mode``: 是否使用向上取整，默认 False
-- ``count_include_pad``: 是否包含填充值，默认 True
-- ``divisor_override``: 自定义除数，默认 None
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建二维平均池化层
-    avg_pool2d = nn.AvgPool2d(kernel_size=2, stride=2)
-    
-    # 前向传播
-    x = rm.randn(4, 16, 32, 32)  # [batch_size, channels, height, width]
-    output = avg_pool2d(x)
-    print(output.shape)  # [4, 16, 16, 16]
-
-AvgPool3d
-~~~~~~~~~
-
-三维平均池化层：
-
-**参数**：
-
-- ``kernel_size``: 池化核大小
-- ``stride``: 步长，默认 kernel_size
-- ``padding``: 填充，默认 0
-- ``ceil_mode``: 是否使用向上取整，默认 False
-- ``count_include_pad``: 是否包含填充值，默认 True
-- ``divisor_override``: 自定义除数，默认 None
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建三维平均池化层
-    avg_pool3d = nn.AvgPool3d(kernel_size=2, stride=2)
-    
-    # 前向传播
-    x = rm.randn(2, 16, 16, 16, 16)  # [batch_size, channels, depth, height, width]
-    output = avg_pool3d(x)
-    print(output.shape)  # [2, 16, 8, 8, 8]
-
-Transformer
-===========
-
-Transformer 是一种基于自注意力机制的深度学习架构，最初用于自然语言处理任务，现已成为序列建模的主流方法。Riemann 提供了完整的 Transformer 组件，与 PyTorch 接口兼容。
-
-MultiheadAttention
-------------------
-
-多头注意力机制，允许模型同时关注来自不同表示子空间的信息。
-
-**功能描述**：
-实现多头注意力机制，通过并行计算多组注意力权重来捕获输入序列的不同方面特征。
-
-**参数**：
-
-- ``embed_dim`` (int): 输入和输出向量的维度大小，必须能被 ``num_heads`` 整除
-- ``num_heads`` (int): 多头注意力中使用的头部数量
-- ``dropout`` (float, optional): 训练过程中对注意力权重应用的 dropout 概率，默认为 0.0
-- ``bias`` (bool, optional): 是否在投影层中添加偏置项，默认为 True
-- ``add_bias_kv`` (bool, optional): 是否在 key 和 value 序列的末尾添加可学习的偏置项，默认为 False
-- ``add_zero_attn`` (bool, optional): 是否在注意力权重中添加一列零，默认为 False
-- ``kdim`` (int, optional): key 向量的维度，默认为 None（使用 embed_dim）
-- ``vdim`` (int, optional): value 向量的维度，默认为 None（使用 embed_dim）
-- ``batch_first`` (bool, optional): 输入输出的形状格式，默认为 False（seq_len, batch_size, embed_dim）
-
-**注意事项**：
-
-- ``embed_dim`` 必须能被 ``num_heads`` 整除
-- 当 ``batch_first=True`` 时，输入形状为 (batch_size, seq_len, embed_dim)
-- 支持自注意力和交叉注意力两种模式
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建多头注意力层
-    mha = nn.MultiheadAttention(embed_dim=512, num_heads=8, dropout=0.1)
-    
-    # 自注意力模式
-    query = rm.randn(10, 32, 512)  # [seq_len, batch_size, embed_dim]
-    key = query
-    value = query
-    output, attn_weights = mha(query, key, value)
-    print(output.shape)  # [10, 32, 512]
-    
-    # 交叉注意力模式
-    query = rm.randn(10, 32, 512)  # 目标序列
-    key = rm.randn(20, 32, 512)    # 源序列
-    value = rm.randn(20, 32, 512)  # 源序列
-    output, attn_weights = mha(query, key, value)
-    print(output.shape)  # [10, 32, 512]
-    
-    # 使用 batch_first=True
-    mha_bf = nn.MultiheadAttention(embed_dim=512, num_heads=8, batch_first=True)
-    query = rm.randn(32, 10, 512)  # [batch_size, seq_len, embed_dim]
-    output, _ = mha_bf(query, query, query)
-    print(output.shape)  # [32, 10, 512]
-
-TransformerEncoderLayer
------------------------
-
-Transformer 编码器的单个层，由自注意力机制和前馈网络组成。
-
-**功能描述**：
-实现 Transformer 编码器的单个层，包含多头自注意力子层和前馈神经网络子层，每个子层后都有残差连接和层归一化。
-
-**参数**：
-
-- ``d_model`` (int): 输入和输出特征的维度大小
-- ``nhead`` (int): 多头注意力中使用的头部数量
-- ``dim_feedforward`` (int, optional): 前馈网络中隐藏层的维度大小，默认为 2048
-- ``dropout`` (float, optional): 训练过程中对各层输出应用的 dropout 概率，默认为 0.1
-- ``activation`` (str, optional): 前馈网络中使用的激活函数类型，'relu' 或 'gelu'，默认为 'relu'
-- ``layer_norm_eps`` (float, optional): 层归一化中使用的 epsilon 值，默认为 1e-05
-- ``batch_first`` (bool, optional): 输入输出的形状格式，默认为 False
-- ``norm_first`` (bool, optional): 是否使用 Pre-LN 模式，默认为 False（Post-LN 模式）
-- ``bias`` (bool, optional): 是否在所有线性层中添加偏置项，默认为 True
-
-**注意事项**：
-
-- ``norm_first=False`` 时使用 Post-LN 模式（原始 Transformer 论文）：先进行注意力/前馈计算，然后残差连接，最后层归一化
-- ``norm_first=True`` 时使用 Pre-LN 模式：先层归一化，然后进行注意力/前馈计算，最后残差连接
-- Pre-LN 模式通常训练更稳定
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建 Transformer 编码器层（Post-LN 模式）
-    encoder_layer = nn.TransformerEncoderLayer(
-        d_model=512, nhead=8, dim_feedforward=2048, dropout=0.1
-    )
-    
-    # 前向传播
-    src = rm.randn(10, 32, 512)  # [seq_len, batch_size, d_model]
-    output = encoder_layer(src)
-    print(output.shape)  # [10, 32, 512]
-    
-    # 使用 Pre-LN 模式
-    encoder_layer_prenorm = nn.TransformerEncoderLayer(
-        d_model=512, nhead=8, norm_first=True
-    )
-    output = encoder_layer_prenorm(src)
-    print(output.shape)  # [10, 32, 512]
-
-TransformerDecoderLayer
------------------------
-
-Transformer 解码器的单个层，由自注意力机制、交叉注意力机制和前馈网络组成。
-
-**功能描述**：
-实现 Transformer 解码器的单个层，包含三个子层：掩码多头自注意力、多头交叉注意力和前馈神经网络，每个子层后都有残差连接和层归一化。
-
-**参数**：
-
-- ``d_model`` (int): 输入和输出特征的维度大小
-- ``nhead`` (int): 多头注意力中使用的头部数量
-- ``dim_feedforward`` (int, optional): 前馈网络中隐藏层的维度大小，默认为 2048
-- ``dropout`` (float, optional): 训练过程中对各层输出应用的 dropout 概率，默认为 0.1
-- ``activation`` (str, optional): 前馈网络中使用的激活函数类型，'relu' 或 'gelu'，默认为 'relu'
-- ``layer_norm_eps`` (float, optional): 层归一化中使用的 epsilon 值，默认为 1e-05
-- ``batch_first`` (bool, optional): 输入输出的形状格式，默认为 False
-- ``norm_first`` (bool, optional): 是否使用 Pre-LN 模式，默认为 False
-- ``bias`` (bool, optional): 是否在所有线性层中添加偏置项，默认为 True
-
-**注意事项**：
-
-- 解码器层需要同时接收目标序列（tgt）和编码器输出（memory）
-- 自注意力使用掩码防止关注未来位置（用于自回归生成）
-- 交叉注意力用于关注编码器输出的信息
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建 Transformer 解码器层
-    decoder_layer = nn.TransformerDecoderLayer(
-        d_model=512, nhead=8, dim_feedforward=2048, dropout=0.1
-    )
-    
-    # 前向传播
-    tgt = rm.randn(20, 32, 512)     # [tgt_len, batch_size, d_model] 目标序列
-    memory = rm.randn(10, 32, 512)  # [src_len, batch_size, d_model] 编码器输出
-    output = decoder_layer(tgt, memory)
-    print(output.shape)  # [20, 32, 512]
-
-TransformerEncoder
-------------------
-
-由 N 个 TransformerEncoderLayer 层堆叠而成的 Transformer 编码器。
-
-**功能描述**：
-将输入序列通过多个编码器层进行特征提取，每个编码器层都包含自注意力机制和前馈网络。
-
-**参数**：
-
-- ``encoder_layer`` (TransformerEncoderLayer): 单个编码器层实例，将被克隆 num_layers 次
-- ``num_layers`` (int): 编码器层的数量
-- ``norm`` (Module, optional): 最后的层归一化层，默认为 None
-
-**注意事项**：
-
-- 编码器层会被深拷贝，因此传入的 encoder_layer 不会被修改
-- 可以添加最终的层归一化来稳定输出
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建编码器层
-    encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
-    
-    # 创建编码器（6层）
-    transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
-    
-    # 前向传播
-    src = rm.randn(10, 32, 512)  # [seq_len, batch_size, d_model]
-    output = transformer_encoder(src)
-    print(output.shape)  # [10, 32, 512]
-    
-    # 带最终层归一化的编码器
-    encoder_norm = nn.LayerNorm(512)
-    transformer_encoder_norm = nn.TransformerEncoder(
-        encoder_layer, num_layers=6, norm=encoder_norm
-    )
-    output = transformer_encoder_norm(src)
-    print(output.shape)  # [10, 32, 512]
-
-TransformerDecoder
-------------------
-
-由 N 个 TransformerDecoderLayer 层堆叠而成的 Transformer 解码器。
-
-**功能描述**：
-
-将目标序列通过多个解码器层进行特征提取，每个解码器层都包含自注意力、交叉注意力和前馈网络。
-
-**参数**：
-
-- ``decoder_layer`` (TransformerDecoderLayer): 单个解码器层实例，将被克隆 num_layers 次
-- ``num_layers`` (int): 解码器层的数量
-- ``norm`` (Module, optional): 最后的层归一化层，默认为 None
-
-**注意事项**：
-
-- 解码器需要编码器的输出（memory）作为交叉注意力的输入
-- 适用于序列到序列的生成任务
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建解码器层
-    decoder_layer = nn.TransformerDecoderLayer(d_model=512, nhead=8)
-    
-    # 创建解码器（6层）
-    transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
-    
-    # 前向传播
-    tgt = rm.randn(20, 32, 512)     # [tgt_len, batch_size, d_model] 目标序列
-    memory = rm.randn(10, 32, 512)  # [src_len, batch_size, d_model] 编码器输出
-    output = transformer_decoder(tgt, memory)
-    print(output.shape)  # [20, 32, 512]
-
-Transformer
------------
-
-完整的 Transformer 模型，包含编码器和解码器。
-
-**功能描述**：
-实现完整的 Transformer 架构，是编码器-解码器结构的端到端实现，适用于序列到序列的任务，如机器翻译、文本摘要等。
-
-**参数**：
-
-- ``d_model`` (int, optional): 编码器/解码器输入的特征维度，默认为 512
-- ``nhead`` (int, optional): 多头注意力模型中的头数，默认为 8
-- ``num_encoder_layers`` (int, optional): 编码器中子编码器层的数量，默认为 6
-- ``num_decoder_layers`` (int, optional): 解码器中子解码器层的数量，默认为 6
-- ``dim_feedforward`` (int, optional): 前馈网络模型的维度，默认为 2048
-- ``dropout`` (float, optional): dropout 值，默认为 0.1
-- ``activation`` (str, optional): 编码器/解码器中间层的激活函数，'relu' 或 'gelu'，默认为 'relu'
-- ``custom_encoder`` (Module, optional): 自定义编码器，默认为 None
-- ``custom_decoder`` (Module, optional): 自定义解码器，默认为 None
-- ``layer_norm_eps`` (float, optional): 层归一化组件中的 eps 值，默认为 1e-05
-- ``batch_first`` (bool, optional): 输入输出张量是否为 (batch, seq, feature) 格式，默认为 False
-- ``norm_first`` (bool, optional): 是否在其他注意力和前馈操作之前执行 LayerNorm，默认为 False
-- ``bias`` (bool, optional): Linear 和 LayerNorm 层是否学习加性偏置，默认为 True
-
-**注意事项**：
-
-- 如果提供了 ``custom_encoder`` 或 ``custom_decoder``，将使用自定义模块替代默认的编码器/解码器
-- 完整的 Transformer 适用于序列到序列的任务
-- 对于仅编码器任务（如 BERT），可以只使用 TransformerEncoder
-- 对于仅解码器任务（如 GPT），可以只使用 TransformerDecoder
-
-**使用示例**：
-
-.. code-block:: python
-
-    import riemann as rm
-    import riemann.nn as nn
-    
-    # 创建完整的 Transformer 模型
-    transformer_model = nn.Transformer(
-        d_model=512,
-        nhead=8,
-        num_encoder_layers=6,
-        num_decoder_layers=6,
-        dim_feedforward=2048,
-        dropout=0.1
-    )
-    
-    # 前向传播
-    src = rm.randn(10, 32, 512)     # [src_len, batch_size, d_model] 源序列
-    tgt = rm.randn(20, 32, 512)     # [tgt_len, batch_size, d_model] 目标序列
-    output = transformer_model(src, tgt)
-    print(output.shape)  # [20, 32, 512]
-    
-    # 使用 batch_first=True
-    transformer_model_bf = nn.Transformer(
-        d_model=512, nhead=8, batch_first=True
-    )
-    src = rm.randn(32, 10, 512)     # [batch_size, src_len, d_model]
-    tgt = rm.randn(32, 20, 512)     # [batch_size, tgt_len, d_model]
-    output = transformer_model_bf(src, tgt)
-    print(output.shape)  # [32, 20, 512]
-
-示例
-====
-
-用于图像分类的简单 CNN
------------------------
-
-.. code-block:: python
-
-    # 本示例展示了如何使用卷积神经网络（CNN）训练CIFAR10图像分类模型
-    # 包括模型定义、数据加载与预处理、训练循环、模型评估和单个样本推理
-
-    import riemann as r
-    from riemann.vision.datasets import CIFAR10
-    from riemann.vision.transforms import *
-    from riemann.nn import *
-    from riemann.optim import SGD
-    from tqdm import tqdm
-
-    # 加载数据
-    # 训练集使用数据增强，测试集不使用
-    train_transform = Compose([
-        RandomHorizontalFlip(),  # 随机水平翻转
-        ToTensor(),
-        Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10实际标准化参数
-    ])
-
-    test_transform = Compose([
-        ToTensor(),
-        Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10实际标准化参数
-    ])
-
-    train_dataset = CIFAR10(root='data', train=True, transform=train_transform)
-    test_dataset = CIFAR10(root='data', train=False, transform=test_transform)
-
-    # 减小批次大小和数据量以加快测试
-    train_loader = r.utils.DataLoader(train_dataset, batch_size=100, shuffle=True)
-    test_loader = r.utils.DataLoader(test_dataset, batch_size=1, shuffle=False)
-
-    # 创建模型、损失函数和优化器
-    model = Sequential(
-        Conv2d(3, 16, kernel_size=3, padding=1),
-        ReLU(),
-        MaxPool2d(kernel_size=2, stride=2),
-        Flatten(),
-        Linear(16 * 16 * 16, 10)
-    )
-    criterion = CrossEntropyLoss()
-    optimizer = SGD(model.parameters(), lr=0.01)
-
-    # 训练循环
-    for epoch in range(3):  # 训练3代
-        total_loss = 0
-        # 使用tqdm显示进度条
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/3")
-        
-        for batch_idx, (data, target) in enumerate(progress_bar):
-            # 前向传播
-            output = model(data)
-            loss = criterion(output, target)   # 计算输出与目标标签间的损失
-            
-            # 反向传播和优化器更新
-            optimizer.zero_grad()   # 清空训练参数的梯度
-            loss.backward()         # 计算loss对训练参数的梯度
-            optimizer.step()        # 更新训练参数
-            
-            total_loss += loss.item()
-            
-            # 更新进度条显示当前损失
-            progress_bar.set_postfix({"Loss": f"{loss.item():.4f}"})
-        
-        avg_loss = total_loss/len(train_loader)
-        print(f"Epoch {epoch+1}, Average Loss: {avg_loss:.4f}")
-
-    # 模型评估（推理测试）
-    model.eval()  # 设置为评估模式
-    correct = 0
-    total = 0
-
-    # 使用tqdm显示测试进度
-    test_progress_bar = tqdm(test_loader, desc="Testing")
-
-    with r.no_grad():  # 禁用梯度计算
-        for data, target in test_progress_bar:
-            # 前向传播
-            outputs = model(data)
-            
-            # 获取预测结果
-            predicted = outputs.argmax(dim=1)  # 获取每个样本的预测类别
-            total += target.size(0)  # 累加测试样本数
-            correct += (predicted == target).sum().item() # 累加正确预测的样本数
-            
-            # 更新进度条显示当前准确率
-            current_accuracy = 100 * correct / total
-            test_progress_bar.set_postfix({"Accuracy": f"{current_accuracy:.2f}%"})
-
-    # 输出最终测试准确率
-    test_accuracy = 100 * correct / total
-    print(f"测试集准确率: {test_accuracy:.2f}% ({correct}/{total})")
-
-    # 单个样本推理示例
-    sample_data, sample_target = next(iter(test_loader))
-    sample_output = model(sample_data[:1])  # 只取第一个样本
-    predicted_class = sample_output.argmax(dim=1)
-    print(f"样本预测类别: {predicted_class.item()}, 实际类别: {sample_target[0].item()}")
-
-    print("CNN训练和推理测试完成！")
-
-用于时间序列预测的 Transformer
--------------------------------
-
-.. code-block:: python
-
-    # 本示例展示了如何使用 Transformer 模型进行时间序列预测
-    # 包括数据准备、模型构建、训练和预测
-
-    import riemann as rm
-    import riemann.nn as nn
-    from riemann.optim import Adam
-    from riemann.utils.data import Dataset, DataLoader
-    import numpy as np
-
-    # 生成时间序列数据
-    def generate_time_series_data(num_samples, seq_length, pred_length):
-        """
-        生成时间序列数据
-        
-        :param num_samples: 样本数量
-        :param seq_length: 输入序列长度
-        :param pred_length: 预测序列长度
-        :return: 输入序列和目标序列
-        """
-        # 生成正弦波数据作为示例
-        t = np.linspace(0, 100, num_samples + seq_length + pred_length)
-        data = np.sin(t) + 0.1 * np.random.randn(len(t))
-        
-        inputs = []
-        targets = []
-        
-        for i in range(num_samples):
-            inputs.append(data[i:i+seq_length])
-            targets.append(data[i+seq_length:i+seq_length+pred_length])
-        
-        return np.array(inputs), np.array(targets)
-
-    # 自定义时间序列数据集
-    class TimeSeriesDataset(Dataset):
-        def __init__(self, num_samples=1000, seq_length=50, pred_length=10):
-            self.inputs, self.targets = generate_time_series_data(
-                num_samples, seq_length, pred_length
-            )
-            # 转换为 Riemann 张量
-            self.inputs = rm.tensor(self.inputs, dtype=rm.float32)
-            self.targets = rm.tensor(self.targets, dtype=rm.float32)
-            
-        def __len__(self):
-            return len(self.inputs)
-        
-        def __getitem__(self, idx):
-            return self.inputs[idx], self.targets[idx]
-
-    # 简化的Transformer时间序列预测模型（仅使用编码器）
-    class TransformerTimeSeriesModel(nn.Module):
-        def __init__(self, input_dim=1, d_model=64, nhead=4, 
-                     num_layers=2, dim_feedforward=128, pred_length=10):
-            """
-            Transformer 时间序列预测模型（简化版）
-            
-            仅使用Transformer编码器，将序列映射到预测值
-            
-            :param input_dim: 输入特征维度
-            :param d_model: Transformer 模型维度
-            :param nhead: 多头注意力头数
-            :param num_layers: 编码器层数
-            :param dim_feedforward: 前馈网络维度
-            :param pred_length: 预测序列长度
-            """
-            super(TransformerTimeSeriesModel, self).__init__()
-            
-            self.d_model = d_model
-            self.pred_length = pred_length
-            
-            # 输入嵌入层：将输入维度映射到 d_model 维度
-            self.input_embedding = nn.Linear(input_dim, d_model)
-            
-            # 位置编码参数（可学习的位置编码）
-            self.pos_encoding = nn.Parameter(rm.randn(100, d_model) * 0.01)
-            
-            # Transformer 编码器
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=d_model, 
-                nhead=nhead, 
-                dim_feedforward=dim_feedforward,
-                dropout=0.1,
-                batch_first=True
-            )
-            self.transformer_encoder = nn.TransformerEncoder(
-                encoder_layer, 
-                num_layers=num_layers
-            )
-            
-            # 输出层：将 d_model 维度映射到 pred_length * input_dim
-            self.output_layer = nn.Linear(d_model, pred_length * input_dim)
-            
-        def forward(self, src):
-            """
-            前向传播
-            
-            :param src: 输入序列 [batch_size, src_len, input_dim]
-            :return: 预测序列 [batch_size, pred_length, input_dim]
-            """
-            batch_size, src_len, input_dim = src.shape
-            
-            # 输入嵌入
-            src = self.input_embedding(src)  # [batch_size, src_len, d_model]
-            
-            # 添加位置编码
-            src = src + self.pos_encoding[:src_len, :].unsqueeze(0)
-            
-            # 编码器
-            memory = self.transformer_encoder(src)  # [batch_size, src_len, d_model]
-            
-            # 取最后一个时间步的输出
-            last_output = memory[:, -1, :]  # [batch_size, d_model]
-            
-            # 输出层
-            output = self.output_layer(last_output)  # [batch_size, pred_length * input_dim]
-            
-            # 重塑为 [batch_size, pred_length, input_dim]
-            output = output.view(batch_size, self.pred_length, input_dim)
-            
-            return output
-
-    # 创建数据集和数据加载器
-    train_dataset = TimeSeriesDataset(num_samples=1000, seq_length=50, pred_length=10)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-
-    # 创建模型
-    model = TransformerTimeSeriesModel(
-        input_dim=1, 
-        d_model=64, 
-        nhead=4, 
-        num_layers=2,
-        dim_feedforward=128,
-        pred_length=10
-    )
-
-    # 定义损失函数和优化器
-    criterion = nn.MSELoss()
-    optimizer = Adam(model.parameters(), lr=0.001)
-
-    # 训练循环
-    num_epochs = 10
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0.0
-        
-        for batch_idx, (inputs, targets) in enumerate(train_loader):
-            # 添加特征维度
-            inputs = inputs.unsqueeze(-1)  # [batch_size, seq_len, 1]
-            targets = targets.unsqueeze(-1)  # [batch_size, pred_len, 1]
-            
-            # 清零梯度
-            optimizer.zero_grad()
-            
-            # 前向传播
-            outputs = model(inputs)
-            
-            # 计算损失
-            loss = criterion(outputs, targets)
-            
-            # 反向传播
-            loss.backward()
-            
-            # 更新参数
-            optimizer.step()
-            
-            total_loss += loss.item()
-        
-        avg_loss = total_loss / len(train_loader)
-        print(f"Epoch [{epoch+1}/{num_epochs}], Average Loss: {avg_loss:.4f}")
-
-    # 预测示例
-    model.eval()
-    with rm.no_grad():
-        # 获取一个测试样本
-        test_input, test_target = train_dataset[0]
-        test_input = test_input.unsqueeze(0).unsqueeze(-1)  # [1, seq_len, 1]
-        
-        # 进行预测
-        prediction = model(test_input)
-        
-        print(f"\n输入序列形状: {test_input.shape}")
-        print(f"预测序列形状: {prediction.shape}")
-        print(f"真实目标形状: {test_target.shape}")
-        
-        # 计算预测误差
-        test_target = test_target.unsqueeze(-1)
-        error = rm.mean((prediction - test_target) ** 2).item()
-        print(f"预测均方误差: {error:.6f}")
-        
-        # 打印目标值和预测值
-        print("\n===== Prediction Results Comparison =====")
-        print(f"{'Step':<10} {'Target':<15} {'Prediction':<15} {'Error':<15}")
-        print("-" * 55)
-        
-        pred_values = prediction.squeeze().tolist()
-        target_values = test_target.squeeze().tolist()
-        
-        for i in range(len(target_values)):
-            target_val = target_values[i]
-            pred_val = pred_values[i] if isinstance(pred_values, list) else pred_values
-            diff = target_val - pred_val
-            print(f"{i+1:<10} {target_val:<15.6f} {pred_val:<15.6f} {diff:<15.6f}")
-        
-        print("-" * 55)
+    print(output.shape)  # [32, 784]
