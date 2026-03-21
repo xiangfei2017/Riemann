@@ -1,23 +1,29 @@
 """
-CIFAR-10图像识别极简卷积神经网络示例（预处理版）
+CIFAR-10图像识别卷积神经网络示例（LeNet版）
 
-本示例展示了如何使用Riemann深度学习框架构建一个极简的卷积神经网络，
-用于CIFAR-10图像分类任务。本版本进行了以下优化：
-1. 极简网络结构，最少参数量
-2. 极少训练epoch数量，快速验证
-3. 预处理数据集，避免训练时变换，提升性能
-4. 最小化数据加载和处理流程
+本示例展示了如何使用Riemann深度学习框架构建一个现代LeNet卷积神经网络，
+用于CIFAR-10图像分类任务。
 
 主要组件：
-    - MinimalConvNet: 极简的卷积神经网络模型
+    - LeNet: 现代LeNet卷积神经网络模型
+        * 3个卷积层 + 3个全连接层
+        * 使用Dropout防止过拟合
+        * 针对32x32输入优化
     - EasyCIFAR10: 预处理的CIFAR10数据集
-    - 最简单的数据预处理
-    - 极少的训练epoch数
-    - 极简的网络结构: 1个卷积层 + 1个全连接层
+    - 数据预处理: 归一化和标准化
+
+网络结构:
+     Conv(3->32) -> ReLU -> MaxPool
+     Conv(32->64) -> ReLU -> MaxPool
+     Conv(64->128) -> ReLU -> MaxPool
+     Flatten
+     FC(2048->256) -> ReLU -> Dropout
+     FC(256->128) -> ReLU -> Dropout
+     FC(128->10)
 
 使用方法:
     运行本脚本将自动加载CIFAR-10数据集，
-    快速训练模型并在测试集上评估性能。
+    训练模型并在测试集上评估性能。
 """
 
 import os
@@ -102,19 +108,17 @@ class EasyCIFAR10(datasets.CIFAR10):
         return self.data_list[index]
 
 
-class MinimalConvNet(nn.Module):
+class LeNet(nn.Module):
     """
-    极简的CIFAR-10图像分类卷积神经网络
+    现代 LeNet 卷积神经网络用于 CIFAR-10 图像分类
     
-    本模型进行了以下极简化：
-    1. 只使用1个卷积层
-    2. 最少通道数量
-    3. 简化池化操作
-    4. 使用最简单的全连接层
-    
-    网络结构:
-        - 卷积层: Conv(3->16) -> ReLU -> MaxPool
-        - 全连接层: Linear(16*16*16->10)
+    网络结构（针对 32x32 输入优化）:
+        - 卷积层1: Conv(3->32, 3x3) -> ReLU -> MaxPool(2x2)  # 32x32 -> 16x16
+        - 卷积层2: Conv(32->64, 3x3) -> ReLU -> MaxPool(2x2) # 16x16 -> 8x8
+        - 卷积层3: Conv(64->128, 3x3) -> ReLU -> MaxPool(2x2) # 8x8 -> 4x4
+        - 全连接层1: Linear(128*4*4 -> 256) -> ReLU -> Dropout(0.5)
+        - 全连接层2: Linear(256 -> 128) -> ReLU -> Dropout(0.5)
+        - 输出层: Linear(128 -> 10)
     
     方法:
         forward(inputs): 前向传播计算
@@ -123,48 +127,67 @@ class MinimalConvNet(nn.Module):
     """
     def __init__(self):
         """
-        初始化分类器模型
+        初始化 LeNet 模型
         
         创建网络各层、损失函数和优化器。
-        网络结构使用最简单的卷积层和全连接层。
         """
         super().__init__()
-    
-        # 定义极简的卷积神经网络结构
-        self.conv = nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
-        self.relu = nn.ReLU()
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)  # 32x32 -> 16x16
         
-        # 全连接层
-        self.fc = nn.Linear(16 * 16 * 16, 10)
+        # 卷积层部分
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1)
+        
+        self.relu = nn.ReLU()
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        
+        # 全连接层部分
+        self.fc1 = nn.Linear(128 * 4 * 4, 256)
+        self.fc2 = nn.Linear(256, 128)
+        self.fc3 = nn.Linear(128, 10)
+        self.dropout = nn.Dropout(0.5)
 
         # 交叉熵损失函数，适用于多分类任务
         self.loss_func = nn.CrossEntropyLoss()
-        # 优化器将在设备移动后初始化，确保它引用正确设备上的参数
 
     def forward(self, inputs):
         """
         前向传播计算
         
-        将输入数据通过网络模型，得到预测输出。
-        输入数据会经过一个卷积层和一个全连接层。
-        
         参数:
             inputs (Tensor): 输入张量，形状为(batch_size, 3, 32, 32)
-                           表示一批CIFAR-10彩色图像数据
         
         返回:
             Tensor: 输出张量，形状为(batch_size, 10)
-                   表示每个样本属于10个类别的未归一化对数概率
         """
-        # 卷积、激活和池化
-        x = self.conv(inputs)
+        # 卷积层1: 32x32 -> 16x16
+        x = self.conv1(inputs)
         x = self.relu(x)
         x = self.pool(x)
         
-        # 展平并全连接
-        x = x.reshape(x.shape[0], -1)  # 展平
-        x = self.fc(x)
+        # 卷积层2: 16x16 -> 8x8
+        x = self.conv2(x)
+        x = self.relu(x)
+        x = self.pool(x)
+        
+        # 卷积层3: 8x8 -> 4x4
+        x = self.conv3(x)
+        x = self.relu(x)
+        x = self.pool(x)
+        
+        # 展平
+        x = x.reshape(x.shape[0], -1)
+        
+        # 全连接层
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        
+        x = self.fc2(x)
+        x = self.relu(x)
+        x = self.dropout(x)
+        
+        x = self.fc3(x)
         return x
     
     def train_step(self, inputs, targets):
@@ -292,7 +315,7 @@ def main():
     
     # 创建模型
     print("\n初始化模型...")
-    model = MinimalConvNet()
+    model = LeNet()
     
     # 将模型移动到指定设备
     model.to(device)

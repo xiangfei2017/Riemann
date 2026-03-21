@@ -340,12 +340,14 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
     # 训练时随机生成alpha，测试时用平均值作为alpha
+    # 使用标量alpha + 广播，避免创建与输入同shape的大张量
     arrlib = x._get_array_lib()
     if training:
-        alpha = arrlib.random.uniform(low=lower, high=upper, size=x.data.shape)
+        # 只生成一个随机标量，利用广播机制
+        alpha = arrlib.random.uniform(low=lower, high=upper)
     else:
-        alpha = (lower + upper) / 2.0 * arrlib.ones_like(x.data)
-    alpha = alpha.astype(x.dtype)
+        alpha = (lower + upper) / 2.0
+    alpha = arrlib.array(alpha, dtype=x.dtype)
 
     # 前向计算
     data = arrlib.where(x.data > 0, x.data, alpha * x.data)
@@ -385,10 +387,12 @@ def gelu(x: TN) -> TN:
 
 def _gelu_backward(result_tensor: TN, i: int) -> TN:
     """GELU导数计算，使用与PyTorch兼容的实现"""
-    x_data = result_tensor.fromvars[0].data
+    x = result_tensor.fromvars[0]
+    x_data = x.data
+    arrlib = x._get_array_lib()
 
-    c = np.sqrt(2. / np.pi, dtype=x_data.dtype)
-    tanh_term = np.tanh(c * (x_data + 0.044715 * x_data**3))
+    c = arrlib.sqrt(2. / arrlib.pi, dtype=x_data.dtype)
+    tanh_term = arrlib.tanh(c * (x_data + 0.044715 * x_data**3))
     grad = 0.5 * (1. + tanh_term) + 0.5 * x_data * (1. - tanh_term**2.) * c * (1. + 0.134145*x_data**2.)
     return result_tensor.grad_value * grad
 
@@ -414,11 +418,10 @@ def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
         log(1. + exp(scaled_x)) / beta  # 不满足条件时的值（位置参数）
     )
 
-# 修改nll_loss函数，使其在non-reduction模式下与PyTorch保持一致
-# PyTorch在non-reduction模式下保留所有样本位置，只是将被忽略样本的损失值设为0
-def nll_loss(input: TN, target: TN, weight: Optional[TN] = None, 
+# 在non-reduction模式下保留所有样本位置，只是将被忽略样本的损失值设为0
+def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
              ignore_index: int = -100, reduction: str = 'mean') -> TN:
-    if not isinstance(input, TN): 
+    if not isinstance(input, TN):
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
 
     # 维度校验
@@ -429,44 +432,41 @@ def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
 
     original_shape = input.shape
     original_target_shape = target.shape
-    
-    # 高维输入处理（对齐PyTorch维度逻辑）
+
+    # 优化1：延迟高维处理到真正需要时
+    needs_shape_restore = (input.ndim > 2 and reduction == 'none')
+
     if input.ndim > 2:
-        # 保存原始形状，用于non-reduction模式下恢复
-        # input_flat_shape = (-1, input.shape[1])
-        # target_flat_shape = (-1,)
-        
         input = input.reshape(input.shape[0], input.shape[1], -1)  # (N, C, D)
-        input = input.transpose(1, 2).reshape(-1, input.shape[1])  # (N*D, C) → 分类维度为dim=1
-        target = target.reshape(-1).type(int64)
-    
+        input = input.transpose(1, 2).reshape(-1, input.shape[1])  # (N*D, C)
+        target = target.reshape(-1)  #  优化2：移除不必要的 .type(int64)
+
     # 创建忽略索引掩码
     mask = (target != ignore_index)
-    valid_samples = sum(mask).type(input.dtype)  # 有效样本数，保持与input相同的dtype
-    
+    valid_samples = sum(mask).type(input.dtype)
+
     # 处理边界情况：没有有效样本时
     if valid_samples == 0:
         if reduction == 'none':
             # 返回与输入形状匹配的零张量
-            if input.ndim > 2:
-                return zeros_like(target)
+            if needs_shape_restore:
+                return zeros(original_target_shape, dtype=input.dtype, device=input.device)
             else:
-                return zeros(input.shape[0],input.dtype,device=input.device)
+                return zeros(input.shape[0], input.dtype, device=input.device)
         elif reduction == 'sum':
-            return tensor(0.0, dtype=input.dtype,device=input.device)
+            return tensor(0.0, dtype=input.dtype, device=input.device)
         elif reduction == 'mean':
             # PyTorch在这种情况下返回nan（除以零）
-            return tensor(float('nan'),dtype=input.dtype,device=input.device)
-    
-    # 核心计算 - 计算所有样本的损失
-    # 对于被忽略的样本，target值可能超出范围，使用临时target避免越界
+            return tensor(float('nan'), dtype=input.dtype, device=input.device)
+
+    # 优化2：只创建一次zeros_like并复用
     temp_zeros = zeros_like(target)
     temp_target = where(mask, target, temp_zeros)
-    target_expanded = temp_target.unsqueeze(1)
-    
-    selected_log_probs = input.gather(1, target_expanded).squeeze(1)
+
+    # 核心计算
+    selected_log_probs = input.gather(1, temp_target.unsqueeze(1)).squeeze(1)
     loss = -selected_log_probs
-    
+
     # 权重处理
     weight_sum = None
     if weight is not None:
@@ -474,19 +474,17 @@ def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
             raise ValueError('weight must be 1D tensor')
         if weight.shape[0] != original_shape[1]:
             raise ValueError(f'weight size ({weight.shape}) must match number of classes ({original_shape[1]})')
-        
+
         # 获取对应类别的权重并直接应用到损失
         class_weights = weight.gather(0, temp_target)
         loss = loss * class_weights
         weight_sum = sum(class_weights * mask)
-    
-    # 应用ignore_index掩码 - 复用temp_zeros避免重复分配
-    loss = where(mask, loss, temp_zeros)
-    
-    # 根据reduction模式返回结果
+
+    # 优化4：根据reduction模式选择性应用掩码
     if reduction == 'none':
-        # non-reduction模式：恢复原始形状（如果需要）
-        if input.ndim > 2:
+        # non-reduction模式：应用掩码并恢复原始形状
+        loss = where(mask, loss, temp_zeros)  # 复用temp_zeros
+        if needs_shape_restore:  # 只在需要时恢复形状
             loss = loss.reshape(original_target_shape)
         return loss
     elif reduction == 'sum':
@@ -676,7 +674,6 @@ def cross_entropy(input: TN, target: TN, weight: Optional[TN] = None,
         )
     
     # 标签平滑处理 - 优化版本（无one-hot编码）
-    num_classes = input.shape[1]
     epsilon = label_smoothing
     
     # 创建安全的临时target，确保所有值都在有效范围内
@@ -686,8 +683,7 @@ def cross_entropy(input: TN, target: TN, weight: Optional[TN] = None,
     log_probs = log_softmax(input, dim=1)
     
     # 获取目标类别的log概率（使用gather，避免one-hot编码）
-    target_expanded = temp_target.unsqueeze(1)
-    target_log_probs = log_probs.gather(1, target_expanded).squeeze(1)
+    target_log_probs = log_probs.gather(1, temp_target.unsqueeze(1)).squeeze(1)
     
     # 标签平滑交叉熵计算 - 根据是否有权重选择不同路径
     target_weights = None
@@ -698,76 +694,81 @@ def cross_entropy(input: TN, target: TN, weight: Optional[TN] = None,
         # loss = -Σ_j smooth_target[j] * weight[j] * log_probs[j]
         #      = -(1-ε) * weight[target] * log_probs[target] - ε/C * Σ_j weight[j] * log_probs[j]
         target_weights = weight.gather(0, temp_target.view(-1))
-        weighted_entropy_term = sum(log_probs * weight.view(1, -1), dim=1) / num_classes
+        # 优化：使用mean替代sum/num_classes，避免重复计算类别数
+        weighted_entropy_term = (log_probs * weight.unsqueeze(0)).mean(dim=1)
         loss = -((1.0 - epsilon) * target_log_probs * target_weights + epsilon * weighted_entropy_term)
     else:
         # 基本标签平滑计算：
-        # H = -(1-ε) * log(p_target) - ε * Σ log(p) / C
-        entropy_term = sum(log_probs, dim=1) / num_classes
+        # H = -(1-ε) * log(p_target) - ε * mean(log(p))
+        # 优化：使用mean替代sum/num_classes，语义更清晰且避免除法
+        entropy_term = log_probs.mean(dim=1)
         loss = -((1.0 - epsilon) * target_log_probs + epsilon * entropy_term)
-    
-    # 应用ignore_index掩码（合并处理）
-    loss = where(mask, loss, zeros_like(loss))
-    
-    # 应用reduction参数
+
+    # 根据reduction模式选择性应用掩码和计算
     if reduction == 'none':
-        return loss
+        # none模式：需要应用掩码保持形状
+        return where(mask, loss, zeros_like(loss))
     elif reduction == 'sum':
-        return loss.sum()
+        # sum模式：直接对mask后的损失求和，无需预先where
+        return (loss * mask).sum()
     elif reduction == 'mean':
-        valid_count = sum(mask.type(input.dtype))
+        # 只转换一次mask类型并复用
+        mask_typed = mask.type(input.dtype)
+        valid_count = sum(mask_typed)
         if valid_count > 0:
             if weight is not None:
                 # 直接使用之前计算的target_weights，无需重复检查
-                weight_sum = sum(target_weights.view(loss.shape) * mask.type(input.dtype))
+                weight_sum = sum(target_weights.view(loss.shape) * mask_typed)
                 if weight_sum > 0:
-                    return loss.sum() / weight_sum
+                    return (loss * mask).sum() / weight_sum
                 else:
                     return zeros_like(loss.sum())
             else:
-                return loss.sum() / valid_count
+                return (loss * mask).sum() / valid_count
         else:
             return zeros_like(loss.sum())
     else:
         raise ValueError(f"Invalid reduction: {reduction}")
 
-def binary_cross_entropy_with_logits(input: TN, target: TN, weight: Optional[TN] = None, 
-                                    size_average=None, reduce=None, 
-                                    reduction: str = 'mean', 
+def binary_cross_entropy_with_logits(input: TN, target: TN, weight: Optional[TN] = None,
+                                    size_average=None, reduce=None,
+                                    reduction: str = 'mean',
                                     pos_weight: Optional[TN] = None) -> TN:
     """
     计算带logits的二分类交叉熵损失
     接口与torch.nn.functional.binary_cross_entropy_with_logits一致
     """
-    if not isinstance(input, TN): 
+    if not isinstance(input, TN):
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
-    if not isinstance(target, TN): 
+    if not isinstance(target, TN):
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
 
     # 处理旧版参数
     if size_average is not None or reduce is not None:
         reduction = _get_reduction(size_average, reduce)
-    
-    # 数值稳定性处理：避免log(0)问题 - 预计算公共部分
-    abs_input = abs(input)
-    log_1p_exp_neg_abs = log(1.0 + exp(-abs_input))
-    max_val = where(-input > 0, -input, 0.0)
-    
-    # 根据是否有pos_weight选择不同的计算路径
+
+    # 优化：根据是否有pos_weight选择不同的计算路径
     if pos_weight is not None:
-        # 带正类权重的路径：只计算一次sigmoid
-        sig = sigmoid(input)
-        loss_pos = pos_weight * (-log(sig))
-        loss_neg = -log(1.0 - sig)
+        # 优化1：使用 softplus 替代 sigmoid + log，更数值稳定且高效
+        # log(sigmoid(x)) = -softplus(-x)
+        # log(1-sigmoid(x)) = -softplus(x)
+        loss_pos = pos_weight * softplus(-input)   # = -log(sigmoid(input))
+        loss_neg = softplus(input)                  # = -log(1-sigmoid(input))
         loss = target * loss_pos + (1.0 - target) * loss_neg
     else:
+        #  优化2：延迟计算到真正需要时
+        # 数值稳定性处理：避免log(0)问题
+        abs_input = abs(input)
+        log_1p_exp_neg_abs = log(1.0 + exp(-abs_input))
+        max_val = where(-input > 0, -input, 0.0)
+
         # 基本路径：使用数值稳定的交叉熵计算
         loss = input - input * target + max_val + log_1p_exp_neg_abs
-    
+
     # 应用样本权重
     if weight is not None:
         loss = loss * weight
-    
+
     # 根据reduction参数聚合结果
     if reduction == 'none':
         return loss
@@ -1077,19 +1078,17 @@ def unfold2d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
     w_starts = arrlib.arange(W_out) * stride[1]
     h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
     w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
-    
-    kh, kw = kernel_size
-    
+
     # 生成所有内核位置的坐标偏移 (kh, kw)
     kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
-    
+
     # 生成所有输出位置的坐标网格 (H_out, W_out)
     h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
-    
+
     # 计算所有需要提取的高度和宽度索引，形状为 (kh, kw, H_out, W_out)
     all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kh_indices[:, :, arrlib.newaxis, arrlib.newaxis]
     all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kw_indices[:, :, arrlib.newaxis, arrlib.newaxis]
-    
+
     # 一次性提取所有展开块，避免双重循环，直接得到形状 (N, C, kh, kw, H_out, W_out)
     unfolded_blocks = padded_input[:, :, all_h_indices, all_w_indices]
     
@@ -1422,20 +1421,28 @@ def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
 
     # 处理分组卷积
     if groups > 1:
-        # 将输入和权重分成groups组
+        # 优化：使用批量矩阵乘法替代Python循环
+        # 将输入reshape为 (N, groups, C_in_per_group*K, L_out)
         unfolded_input = unfolded_input._reshape(N, groups, C_in_per_group * K, L_out)
+        # 将权重reshape为 (groups, C_out//groups, C_in_per_group*K)
         weight_reshaped = weight._reshape(groups, C_out // groups, C_in_per_group * K)
-        
-        # 对每个组进行矩阵乘法
-        output = zeros((N, groups, C_out // groups, L_out), dtype=input.dtype,device=input.device)
-        for g in range(groups):
-            # weight_reshaped[g]形状: (C_out_per_group, C_in_per_group*K)
-            # unfolded_input[:, g, :, :]形状: (N, C_in_per_group*K, L_out)
-            # 矩阵乘法后直接得到: (N, C_out_per_group, L_out)
-            index = (slice(None), g, slice(None), slice(None))
-            output.setat_(index, weight_reshaped[g] @ unfolded_input[index])
 
-        # 合并所有组的结果
+        # 优化策略：将N和groups维度合并，使用批量矩阵乘法
+        # unfolded_input: (N, groups, C_in_per_group*K, L_out) -> (N*groups, C_in_per_group*K, L_out)
+        unfolded_reshaped = unfolded_input._reshape(N * groups, C_in_per_group * K, L_out)
+
+        # weight_reshaped: (groups, C_out//groups, C_in_per_group*K)
+        # 需要扩展为 (N*groups, C_out//groups, C_in_per_group*K)
+        # 先unsqueeze为 (1, groups, C_out//groups, C_in_per_group*K) 然后扩展到 N
+        weight_expanded = weight_reshaped.unsqueeze(0).expand(N, -1, -1, -1)
+        weight_reshaped2 = weight_expanded._reshape(N * groups, C_out // groups, C_in_per_group * K)
+
+        # 批量矩阵乘法: (N*groups, C_out//groups, C_in*K) @ (N*groups, C_in*K, L_out)
+        # 结果: (N*groups, C_out//groups, L_out)
+        output = weight_reshaped2 @ unfolded_reshaped
+
+        # reshape回 (N, groups, C_out//groups, L_out) 然后合并为 (N, C_out, L_out)
+        output = output._reshape(N, groups, C_out // groups, L_out)
         output = output._reshape(N, C_out, L_out)
     else:
         # 将权重reshape为 (C_out, C_in*K)
@@ -1523,22 +1530,28 @@ def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         
     # 处理分组卷积
     if groups > 1:
-        # 将输入和权重分成groups组,每组为一个矩阵，滑窗内通道数据的列向量化为矩阵的列，矩阵列数为滑窗数目
+        # 优化：使用批量矩阵乘法替代Python循环
+        # 将输入reshape为 (N, groups, C_in_per_group*K_h*K_w, H_out*W_out)
         unfolded_result = unfolded_input._reshape(N, groups, C_in_per_group * K_h * K_w, H_out * W_out)
+        # 将权重reshape为 (groups, C_out//groups, C_in_per_group*K_h*K_w)
         weight_reshaped = weight._reshape(groups, C_out // groups, C_in_per_group * K_h * K_w)
-        
-        # 对每个组进行矩阵乘法
-        output = zeros((N, groups, C_out // groups, H_out * W_out), dtype=input.dtype,device=input.device)
-        for g in range(groups):
-            # 直接使用批量矩阵乘法，避免冗余转置
-            # weight_reshaped[g]形状: (C_out_per_group, C_in_per_group*K_h*K_w)
-            # unfolded_input[:, g, :, :]形状: (N, C_in_per_group*K_h*K_w, L)
-            # 矩阵乘法后直接得到: (N, C_out_per_group, L)
-            # output[:, g, :, :] = matmul(weight_reshaped[g], unfolded_input[:, g, :, :])
-            index = (slice(None), g, slice(None), slice(None))
-            output.setat_(index, weight_reshaped[g] @ unfolded_result[index])
 
-        # 合并所有组的结果
+        # 优化策略：将N和groups维度合并，使用批量矩阵乘法
+        # unfolded_result: (N, groups, C_in_per_group*K_h*K_w, L) -> (N*groups, C_in_per_group*K_h*K_w, L)
+        unfolded_reshaped = unfolded_result._reshape(N * groups, C_in_per_group * K_h * K_w, H_out * W_out)
+
+        # weight_reshaped: (groups, C_out//groups, C_in_per_group*K_h*K_w)
+        # 需要扩展为 (N*groups, C_out//groups, C_in_per_group*K_h*K_w)
+        # 先reshape为 (1, groups, C_out//groups, C_in_per_group*K_h*K_w) 然后扩展到 N
+        weight_expanded = weight_reshaped.unsqueeze(0).expand(N, -1, -1, -1)
+        weight_reshaped2 = weight_expanded._reshape(N * groups, C_out // groups, C_in_per_group * K_h * K_w)
+
+        # 批量矩阵乘法: (N*groups, C_out//groups, C_in*K_h*K_w) @ (N*groups, C_in*K_h*K_w, L)
+        # 结果: (N*groups, C_out//groups, L)
+        output = weight_reshaped2 @ unfolded_reshaped
+
+        # reshape回 (N, groups, C_out//groups, L) 然后合并为 (N, C_out, L)
+        output = output._reshape(N, groups, C_out // groups, H_out * W_out)
         output = output._reshape(N, C_out, H_out * W_out)
     else:
         # 将展开后输入reshape为形状 (N, C_in*K_h*K_w, H_out*W_out)
@@ -1631,22 +1644,28 @@ def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
         
     # 处理分组卷积
     if groups > 1:
-        # 将输入和权重分成groups组,每组为一个矩阵，滑窗内通道数据的列向量化为矩阵的列，矩阵列数为滑窗数目
+        # 优化：使用批量矩阵乘法替代Python循环
+        # 将输入reshape为 (N, groups, C_in_per_group*K_d*K_h*K_w, D_out*H_out*W_out)
         unfolded_result = unfolded_input._reshape(N, groups, C_in_per_group * K_d * K_h * K_w, D_out * H_out * W_out)
+        # 将权重reshape为 (groups, C_out//groups, C_in_per_group*K_d*K_h*K_w)
         weight_reshaped = weight._reshape(groups, C_out // groups, C_in_per_group * K_d * K_h * K_w)
-        
-        # 对每个组进行矩阵乘法
-        output = zeros((N, groups, C_out // groups, D_out * H_out * W_out), dtype=input.dtype,device=input.device)
-        for g in range(groups):
-            # 直接使用批量矩阵乘法，避免冗余转置
-            # weight_reshaped[g]形状: (C_out_per_group, C_in_per_group*K_d*K_h*K_w)
-            # unfolded_input[:, g, :, :]形状: (N, C_in_per_group*K_d*K_h*K_w, L)
-            # 矩阵乘法后直接得到: (N, C_out_per_group, L)
-            # output[:, g, :, :] = matmul(weight_reshaped[g], unfolded_input[:, g, :, :])
-            index = (slice(None), g, slice(None), slice(None))
-            output.setat_(index, weight_reshaped[g] @ unfolded_result[index])
 
-        # 合并所有组的结果
+        # 优化策略：将N和groups维度合并，使用批量矩阵乘法
+        # unfolded_result: (N, groups, C_in_per_group*K_d*K_h*K_w, L) -> (N*groups, C_in_per_group*K_d*K_h*K_w, L)
+        unfolded_reshaped = unfolded_result._reshape(N * groups, C_in_per_group * K_d * K_h * K_w, D_out * H_out * W_out)
+
+        # weight_reshaped: (groups, C_out//groups, C_in_per_group*K_d*K_h*K_w)
+        # 需要扩展为 (N*groups, C_out//groups, C_in_per_group*K_d*K_h*K_w)
+        # 先unsqueeze为 (1, groups, C_out//groups, C_in_per_group*K_d*K_h*K_w) 然后扩展到 N
+        weight_expanded = weight_reshaped.unsqueeze(0).expand(N, -1, -1, -1)
+        weight_reshaped2 = weight_expanded._reshape(N * groups, C_out // groups, C_in_per_group * K_d * K_h * K_w)
+
+        # 批量矩阵乘法: (N*groups, C_out//groups, C_in*K_d*K_h*K_w) @ (N*groups, C_in*K_d*K_h*K_w, L)
+        # 结果: (N*groups, C_out//groups, L)
+        output = weight_reshaped2 @ unfolded_reshaped
+
+        # reshape回 (N, groups, C_out//groups, L) 然后合并为 (N, C_out, L)
+        output = output._reshape(N, groups, C_out // groups, D_out * H_out * W_out)
         output = output._reshape(N, C_out, D_out * H_out * W_out)
     else:
         # 将展开后输入reshape为形状 (N, C_in*K_d*K_h*K_w, D_out*H_out*W_out)
@@ -1727,11 +1746,14 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     
     # 为1D池化实现展开操作
     # 先对输入进行填充
+    arrlib = input._get_array_lib()
     if padding != 0:
         # 使用非原地操作创建填充后的输入，确保计算图完整
         # 创建左右填充张量，使用负无穷大填充以正确计算边界窗口的最大值
-        left_pad = full((N, C, padding), fill_value=-np.inf, dtype=input.dtype,device=input.device)
-        right_pad = full((N, C, padding), fill_value=-np.inf, dtype=input.dtype,device=input.device)
+        # 优化：使用 arrlib 获取 inf 值，避免 numpy 依赖
+        neg_inf = -arrlib.inf
+        left_pad = full((N, C, padding), fill_value=neg_inf, dtype=input.dtype,device=input.device)
+        right_pad = full((N, C, padding), fill_value=neg_inf, dtype=input.dtype,device=input.device)
         # 沿时间维度拼接填充和原始输入
         padded_input = concatenate((left_pad, input, right_pad), dim=2)
     else:
@@ -1739,10 +1761,10 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     
     # 展开输入 - 优化版本
     # 直接生成形状为 (N*C, L_out, K) 的张量，避免多次转置和重塑
-    arrlib = input._get_array_lib()
     l_starts = arrlib.arange(L_out) * stride
     k_range = arrlib.arange(K) * dilation
-    all_indices = l_starts[:, np.newaxis] + k_range
+    # 优化：使用 arrlib.newaxis 替代 np.newaxis，避免 GPU/CPU 数据传输
+    all_indices = l_starts[:, arrlib.newaxis] + k_range
     all_indices = arrlib.clip(all_indices, 0, padded_input.shape[2] - 1)
     
     # 使用高级索引提取所有内核块，然后直接重塑为 (N*C, L_out, K)
@@ -1827,15 +1849,19 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     # 获取输入形状
     N, C, H_in, W_in = input.shape
     kh, kw = kernel_size
-    
+
+    # 优化：使用 arrlib 获取 inf 值，避免 Python 标量
+    arrlib = input._get_array_lib()
+    neg_inf = -arrlib.inf
+
     # 使用unfold2d函数展开输入为(N, C, kernel_size[0], kernel_size[1], H_out, W_out)
     # 支持ceil_mode、check_pad，并获取H_out和W_out
-    unfolded_input, H_out, W_out = unfold2d(input, 
-                                            kernel_size=kernel_size, 
-                                            dilation=dilation, 
-                                            padding=padding, 
-                                            padvalue=float('-inf'), 
-                                            stride=stride, 
+    unfolded_input, H_out, W_out = unfold2d(input,
+                                            kernel_size=kernel_size,
+                                            dilation=dilation,
+                                            padding=padding,
+                                            padvalue=neg_inf,
+                                            stride=stride,
                                             ceil_mode=ceil_mode,
                                             check_pad=True)
     
@@ -1858,7 +1884,7 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         indices_reshaped = indices_data.reshape(N*C, H_out*W_out)
         
         # 创建网格坐标 (H_out, W_out)
-        arrlib = input._get_array_lib()
+        # arrlib 已在前面获取
         grid_y, grid_x = arrlib.meshgrid(arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
         grid_y = grid_y.reshape(1, H_out*W_out).repeat(N*C, axis=0)
         grid_x = grid_x.reshape(1, H_out*W_out).repeat(N*C, axis=0)
@@ -1923,15 +1949,19 @@ def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     # 获取输入形状
     N, C, D_in, H_in, W_in = input.shape
     kd, kh, kw = kernel_size
-    
+
+    # 优化：使用 arrlib 获取 inf 值，避免 Python 标量
+    arrlib = input._get_array_lib()
+    neg_inf = -arrlib.inf
+
     # 使用unfold3d函数展开输入为(N, C, kd, kh, kw, D_out, H_out, W_out)
     # 支持ceil_mode、check_pad，并获取D_out、H_out和W_out
-    unfolded_input, D_out, H_out, W_out = unfold3d(input, 
-                                                    kernel_size=kernel_size, 
-                                                    dilation=dilation, 
-                                                    padding=padding, 
-                                                    padvalue=float('-inf'), 
-                                                    stride=stride, 
+    unfolded_input, D_out, H_out, W_out = unfold3d(input,
+                                                    kernel_size=kernel_size,
+                                                    dilation=dilation,
+                                                    padding=padding,
+                                                    padvalue=neg_inf,
+                                                    stride=stride,
                                                     ceil_mode=ceil_mode,
                                                     check_pad=True)
     
@@ -1954,7 +1984,7 @@ def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         indices_reshaped = indices_data.reshape(N*C, D_out*H_out*W_out)
         
         # 创建网格坐标 (D_out, H_out, W_out)
-        arrlib = input._get_array_lib()
+        # arrlib 已在前面获取
         grid_d, grid_h, grid_w = arrlib.meshgrid(arrlib.arange(D_out), arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
         grid_d = grid_d.reshape(1, D_out*H_out*W_out).repeat(N*C, axis=0)
         grid_h = grid_h.reshape(1, D_out*H_out*W_out).repeat(N*C, axis=0)
@@ -2084,7 +2114,7 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # 不包含填充区域时，使用实际元素数作为除数
         # 创建一个与输入相同的张量来计算有效区域
         input_mask = ones_like(input)
-        
+
         # 对掩码进行填充，与输入的填充方式相同
         if padding != 0 or ceil_mode:
             mask_padded_shape = (N, C, final_padded_length)
@@ -2093,17 +2123,17 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
             mask_padded_input.setat_(mask_data_index, input_mask)
         else:
             mask_padded_input = input_mask
-        
+
         # 使用与输入相同的优化方式展开掩码
         # 先创建形状为 (N, C, L_out, K) 的临时张量
         mask_unfolded_temp = mask_padded_input[:, :, all_indices]
-        
+
         # 直接重塑为 (N*C, L_out, K) 形状，避免不必要的转置
         mask_unfolded_reshaped = mask_unfolded_temp._reshape(N * C, L_out, K)
-        
+
         # 计算每个输出位置的有效元素数
         effective_counts = mask_unfolded_reshaped.sum(dim=2)
-        
+
         # 计算平均值，使用有效元素数作为除数
         avg_values = unfolded_input_reshaped.sum(dim=2) / effective_counts
     else:
@@ -2171,18 +2201,18 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     
     N, C, H_in, W_in = input.shape
     kh, kw = kernel_size
-        
+
     # 使用unfold2d函数提取滑动块，展开为(N, C, kernel_size[0], kernel_size[1], H_out, W_out)
     # 支持ceil_mode、check_pad，并获取H_out和W_out
-    unfolded_input, H_out, W_out = unfold2d(input, 
-                                            kernel_size=kernel_size, 
+    unfolded_input, H_out, W_out = unfold2d(input,
+                                            kernel_size=kernel_size,
                                             dilation=dilation,
-                                            padding=padding, 
-                                            padvalue=0.0, 
-                                            stride=stride, 
+                                            padding=padding,
+                                            padvalue=0.0,
+                                            stride=stride,
                                             ceil_mode=ceil_mode,
                                             check_pad=True)
-    
+
     # 直接返回池化函数所需的形状 (N*C, kh*kw, H_out*W_out)
     # 只需要一次reshape即可
     unfolded_result = unfolded_input._reshape(N*C, kh*kw, H_out*W_out)
@@ -2196,14 +2226,14 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # 不包含填充区域时，使用实际元素数作为除数
         # 创建一个与输入相同的张量来计算有效区域
         input_mask = ones_like(input)
-        
+
         # 对掩码进行unfold操作，与输入的unfold操作相同，直接返回池化所需形状
-        unfolded_mask, H_out, W_out = unfold2d(input_mask, 
-                                            kernel_size=kernel_size, 
-                                            dilation=dilation, 
-                                            padding=padding, 
-                                            padvalue=0.0, 
-                                            stride=stride, 
+        unfolded_mask, H_out, W_out = unfold2d(input_mask,
+                                            kernel_size=kernel_size,
+                                            dilation=dilation,
+                                            padding=padding,
+                                            padvalue=0.0,
+                                            stride=stride,
                                             ceil_mode=ceil_mode)
         
         unfolded_mask_reshaped = unfolded_mask._reshape(N*C, kh*kw, H_out*W_out)
@@ -2293,18 +2323,18 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
     
     N, C, D_in, H_in, W_in = input.shape
     kd, kh, kw = kernel_size
-        
+
     # 使用unfold3d函数提取滑动块，展开为(N, C, kd, kh, kw, D_out, H_out, W_out)
     # 支持ceil_mode、check_pad，并获取D_out、H_out和W_out
-    unfolded_input, D_out, H_out, W_out = unfold3d(input, 
-                                                  kernel_size=kernel_size, 
+    unfolded_input, D_out, H_out, W_out = unfold3d(input,
+                                                  kernel_size=kernel_size,
                                                   dilation=dilation,
-                                                  padding=padding, 
-                                                  padvalue=0.0, 
-                                                  stride=stride, 
+                                                  padding=padding,
+                                                  padvalue=0.0,
+                                                  stride=stride,
                                                   ceil_mode=ceil_mode,
                                                   check_pad=True)
-    
+
     # 直接返回池化函数所需的形状 (N*C, kd*kh*kw, D_out*H_out*W_out)
     # 只需要一次reshape即可
     unfolded_result = unfolded_input._reshape(N*C, kd*kh*kw, D_out*H_out*W_out)
@@ -2318,14 +2348,14 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # 不包含填充区域时，使用实际元素数作为除数
         # 创建一个与输入相同的张量来计算有效区域
         input_mask = ones_like(input)
-        
+
         # 对掩码进行unfold操作，与输入的unfold操作相同，直接返回池化所需形状
-        unfolded_mask, D_out, H_out, W_out = unfold3d(input_mask, 
-                                                      kernel_size=kernel_size, 
-                                                      dilation=dilation, 
-                                                      padding=padding, 
-                                                      padvalue=0.0, 
-                                                      stride=stride, 
+        unfolded_mask, D_out, H_out, W_out = unfold3d(input_mask,
+                                                      kernel_size=kernel_size,
+                                                      dilation=dilation,
+                                                      padding=padding,
+                                                      padvalue=0.0,
+                                                      stride=stride,
                                                       ceil_mode=ceil_mode)
         
         unfolded_mask_reshaped = unfolded_mask._reshape(N*C, kd*kh*kw, D_out*H_out*W_out)

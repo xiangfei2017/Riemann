@@ -102,34 +102,6 @@ def is_grad_enabled():
         return _grad_mode_stack.stack[-1]
 
 
-def _push_grad_mode(mode):
-    """
-    将新的梯度计算模式压入栈
-    
-    内部辅助函数，用于在进入梯度控制上下文时保存新的梯度计算模式。
-    调用此函数前，应确保栈已初始化（通过调用 is_grad_enabled()）。
-    
-    参数：
-        mode (bool): 新的梯度计算模式，True 表示启用，False 表示禁用
-    """
-    _grad_mode_stack.stack.append(mode)
-
-
-def _pop_grad_mode():
-    """
-    弹出栈顶的梯度计算模式
-
-    内部辅助函数，用于在退出梯度控制上下文时恢复之前的梯度计算模式。
-    只有当栈中元素数量大于 1 时才会弹出，确保始终保留一个默认模式。
-    调用此函数前，应确保栈已初始化（通过调用 is_grad_enabled()）。
-
-    返回：
-        bool 或 None: 被弹出的梯度计算模式，如果无法弹出则返回 None
-    """
-    if len(_grad_mode_stack.stack) > 1:
-        return _grad_mode_stack.stack.pop()
-
-
 class _GradContext:
     """
     梯度计算模式上下文管理器（模块级别，可复用）
@@ -156,8 +128,13 @@ class _GradContext:
         返回：
             self: 上下文管理器实例
         """
-        is_grad_enabled()  # 确保栈已初始化
-        _push_grad_mode(self.mode)
+        # 内联：确保栈已初始化并压入新模式
+        try:
+            stack = _grad_mode_stack.stack
+        except AttributeError:
+            _grad_mode_stack.stack = [True]
+            stack = _grad_mode_stack.stack
+        stack.append(self.mode)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -172,7 +149,10 @@ class _GradContext:
         返回：
             bool: False 表示不抑制异常
         """
-        _pop_grad_mode()
+        # 内联：弹出栈顶模式（保留至少一个默认模式）
+        stack = _grad_mode_stack.stack
+        if len(stack) > 1:
+            stack.pop()
         return False
 
     def __call__(self, func_to_wrap):

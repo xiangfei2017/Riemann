@@ -116,35 +116,39 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     
     # 获取总输出和总输入的元素数量
     # total_output_elements = builtins.sum(int(np.prod(shape)) for shape in output_shapes)
-    total_input_elements = builtins.sum(int(np.prod(shape)) for shape in input_shapes)
-    
+    # 优化：预计算 input_sizes，避免重复计算
+    input_sizes = [int(np.prod(shape)) for shape in input_shapes]
+    total_input_elements = builtins.sum(input_sizes)
+
     # 创建结果存储
     jacobian_results: List[TN] = []
-    
+
     # 对每个输出计算梯度
     current_output_idx = 0
     for i, out in enumerate(outputs):
         num_outputs = int(np.prod(out.shape))
-        
+
         # 统一使用TN张量操作方式实现，不再区分create_graph分支
         # 创建零张量作为雅可比矩阵的初始值 - 确保与out在同一设备上
         jac_shape = output_shapes[i] + (total_input_elements,)
         jac_tensor = zeros(*jac_shape, dtype=out.dtype, device=out.device)
         jac_tensor.requires_grad = create_graph
-        
-        # 对每个输出元素计算梯度
-        for j in range(num_outputs):
-            # 创建one-hot向量作为grad_outputs - 使用tensor操作
-            grad_output = zeros_like(out)
-            # 直接使用numpy的unravel_index，因为它只是一个索引计算函数，不涉及数据操作
-            idx = np.unravel_index(j, out.shape)
 
-            # 使用setat设置值
-            grad_output = grad_output.setat(idx, 1.0)
-            
+        # 优化：预分配 grad_output 基张量，避免循环内重复创建
+        base_grad_output = zeros_like(out)
+
+        # 优化：预计算所有 unravel_index，避免循环内重复计算
+        all_indices = [np.unravel_index(j, out.shape) for j in range(num_outputs)]
+
+        # 对每个输出元素计算梯度
+        for j, idx in enumerate(all_indices):
+            # 使用预分配的基张量，通过 setat 创建 one-hot 向量
+            # 注意：setat 创建新张量，不影响高阶导数计算
+            grad_output = base_grad_output.setat(idx, 1.0)
+
             # 计算梯度 - 正确传递create_graph参数
             grads = grad(out, inputs, grad_outputs=grad_output, create_graph=create_graph, allow_unused = not strict)
-            
+
             # 填充雅可比矩阵 - 使用非原地操作
             current_input_idx = 0
             for g in grads:
@@ -153,12 +157,12 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                 grad_flat = g.reshape(-1)
                 # 将j位置转换回多维索引
                 jac_idx = idx + (slice(current_input_idx, current_input_idx + grad_flat.data.size),)
-                
+
                 # 直接使用setat操作更新jac_tensor，不再需要mask和temp_grad
                 jac_tensor = jac_tensor.setat(jac_idx, grad_flat)
-                
+
                 current_input_idx += grad_flat.data.size
-        
+
         jacobian_results.append(jac_tensor)
         current_output_idx += num_outputs
     # end of for i, out in enumerate(outputs)
@@ -175,7 +179,8 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
             return jacobian_results[0]
         else:
             # 3. 多输入单输出：返回与输入结构匹配的元组
-            input_sizes = [int(np.prod(shape)) for shape in input_shapes]
+            # 优化：使用预计算的 input_sizes
+            # input_sizes 已在前面计算
             result_list: List[TN] = []
             start_idx = 0
             for size, shape in zip(input_sizes, input_shapes):
@@ -196,8 +201,9 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         else:
             # 4. 多输入多输出：对于每个输出，返回与输入结构匹配的元组
             result_list: List[Tuple[TN, ...]] = []  # type: ignore
-            input_sizes = [int(np.prod(shape)) for shape in input_shapes]
-            
+            # 优化：使用预计算的 input_sizes
+            # input_sizes 已在前面计算
+
             for jac, output_shape in zip(jacobian_results, output_shapes):
                 output_result_list: List[TN] = []
                 start_idx = 0
@@ -444,44 +450,50 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
                     # 创建一个与输出形状相同的零张量用于累加贡献
                     input_contribution = zeros_like(out, requires_grad=True)
 
+                    # 优化：预分配 grad_output 基张量，避免循环内重复创建
+                    base_grad_output = zeros_like(out)
+
+                    # 优化：预计算所有 unravel_index，避免循环内重复计算
+                    all_indices = [np.unravel_index(j, out.shape) for j in range(out.data.size)]  # type: ignore
+
                     # 对于每个输出元素，计算该输入对其的贡献
-                    for j in range(out.data.size):  # type: ignore
-                        # 创建one-hot向量作为grad_outputs
-                        grad_output = zeros_like(out)
-                        flat_idx = np.unravel_index(j, out.shape)  # type: ignore
-                        grad_output[flat_idx] = 1.0
-                        
+                    for j, flat_idx in enumerate(all_indices):
+                        # 使用预分配的基张量创建 one-hot 向量
+                        grad_output = base_grad_output.setat(flat_idx, 1.0)
+
                         # 计算梯度
                         grads = grad(out, inp, grad_outputs=grad_output, create_graph=create_graph, allow_unused=True)[0]  # type: ignore
-                        
+
                         if strict and grads is None:
                             raise RuntimeError(f"At least one of the outputs is independent of input {i}")
-                        
+
                         if grads is not None:
                             # 计算当前元素的贡献
                             contribution = (grads * vec).sum()
-                            
-                            # 创建掩码并更新贡献张量
-                            mask = zeros_like(out)  # type: ignore
-                            mask[flat_idx] = 1.0
-                            input_contribution = input_contribution * (1.0 - mask) + contribution * mask
+
+                            # 优化：直接使用 setat 更新，避免创建掩码张量
+                            input_contribution = input_contribution.setat(flat_idx, contribution)
                 else:
                     # 不创建计算图时的优化版本
                     input_contribution = zeros_like(out)  # type: ignore
-                    
+
+                    # 优化：预分配 grad_output 基张量，避免循环内重复创建
+                    base_grad_output = zeros_like(out)  # type: ignore
+
+                    # 优化：预计算所有 unravel_index，避免循环内重复计算
+                    all_indices = [np.unravel_index(j, out.shape) for j in range(out.data.size)]  # type: ignore
+
                     # 对于每个输出元素，计算该输入对其的贡献
-                    for j in range(out.data.size):  # type: ignore
-                        # 创建one-hot向量作为grad_outputs
-                        grad_output = zeros_like(out)  # type: ignore
-                        flat_idx = np.unravel_index(j, out.shape)  # type: ignore
-                        grad_output[flat_idx] = 1.0
-                        
+                    for j, flat_idx in enumerate(all_indices):
+                        # 使用预分配的基张量创建 one-hot 向量
+                        grad_output = base_grad_output.setat(flat_idx, 1.0)
+
                         # 计算梯度
                         grads = grad(out, inp, grad_outputs=grad_output, create_graph=False, allow_unused=True)[0]  # type: ignore
-                        
+
                         if strict and grads is None:
                             raise RuntimeError(f"At least one of the outputs is independent of input {i}")
-                        
+
                         if grads is not None:
                             # 直接计算贡献并设置到对应位置
                             contribution = (grads.data * vec.data).sum()
@@ -692,7 +704,8 @@ def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | List[T
                 raise RuntimeError(f"Output is independent of input {i}")
     
     # 计算内积
-    dot_product: TN = tensor(0.0, dtype=func_output.dtype, device=func_output.device, requires_grad=True)
+    # 优化：使用 zeros_like 替代 tensor(0.0, ...)
+    dot_product = zeros_like(func_output, requires_grad=True)
     for grad_out, vec in zip(grads, v):
         if grad_out is not None:
             dot_product = dot_product + (grad_out * vec).sum()

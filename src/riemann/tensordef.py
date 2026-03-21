@@ -139,7 +139,8 @@ class TN:
             retains_grad (bool): 是否保留梯度，默认为False
             rcv_grad_count (int): 在计算图中可接收梯度的计数，计算梯度时临时使用
             grad_value (TN): 用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
-            _module: 存储创建此张量的模块（用于反向传播钩子）
+            _output_of (list): 记录产生该输出张量的模块列表 [module, ...]，用于反向传播钩子机制
+            _module_input_of (list): 记录该张量作为哪些模块的输入及该模块对应的输出 [(module, module_output), ...]，用于反向传播钩子机制
         """
         #tensor函数构造对象时，data引用一个numpy或cupy数组
         self.data: np.ndarray = None    # type: ignore
@@ -7353,7 +7354,11 @@ def _matmul_grad_left(result_tensor:TN, i:int)->TN:
     left_tensor:TN = result_tensor.fromvars[i]
     right_tensor:TN = result_tensor.fromvars[i+1]
     grad_value = result_tensor.grad_value
-    
+
+    # 检查 grad_value 是否为 None
+    if grad_value is None:
+        return None
+
     left_ndim = left_tensor.data.ndim
     right_ndim = right_tensor.data.ndim
     
@@ -7366,10 +7371,12 @@ def _matmul_grad_left(result_tensor:TN, i:int)->TN:
         # 行向量乘矩阵结果还是行向量，result_tensor.grad扩充中行向量扩维为(1,n)
         new_grad = grad_value.unsqueeze(-2)  # 扩维为二维
         mat_grad = new_grad @ right_tensor.mT.conj()
-        
+
         # 计算需要求和的轴
         sum_axes = tuple(range(right_ndim - 1))
-        return sum(mat_grad, dim=sum_axes, keepdim=False)
+        if sum_axes:  # 避免对空元组求和导致标量化
+            return sum(mat_grad, dim=sum_axes, keepdim=False)
+        return mat_grad
     
     # 3. 多维矩阵与一维向量的情况
     if left_ndim > 1 and right_ndim == 1:
