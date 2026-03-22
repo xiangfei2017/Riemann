@@ -4049,6 +4049,11 @@ class TN:
             返回：
                 vars_received_grad: 已收集完梯度、可入栈的源变量集合
             """
+            # 以下注释代码用于调测时检测异常情况，确保开始反向传播的节点都有梯度值
+            # if item.grad_value is None:
+            #     warnings.warn(f'item has no grad_value, skip propagate_grad_to_sources')
+            #     return set()
+            
             fromvars = item.fromvars
             gradfuncs = item.gradfuncs
 
@@ -4057,9 +4062,8 @@ class TN:
                 fn = gradfuncs[i]
                 
                 if var.requires_grad:
-                    if item.grad_value is not None:                            
-                        rcv_grad_value: TN = fn(item, i)
-                        var._add_received_grad_value(rcv_grad_value)
+                    rcv_grad_value: TN = fn(item, i)
+                    var._add_received_grad_value(rcv_grad_value)
                     var.rcv_grad_count -= 1
                     
                     if var.rcv_grad_count == 0:
@@ -4076,9 +4080,9 @@ class TN:
                 item: TN = stack.pop(-1)
                 
                 # 以下代码调测时用于检查栈内节点是否都是已收到梯度的节点或梯度没有被异常置None
-                # if item.grad_value is None:
-                #     warnings.warn(f'item poped from stack has no grad_value, skip backward')
-                #     continue
+                if item.grad_value is None:
+                    warnings.warn(f'item poped from stack has no grad_value, skip backward')
+                    continue
 
                 if item.is_leaf:
                     item._save_grad(create_graph)
@@ -4320,7 +4324,6 @@ class BackwardHookManager:
             return [tensor]
         
         # 找到当前tensor所属的钩子模块（如果有）
-        # 优化：使用统一的_backward_hook_cache字典
         tensor_module = None
         for module in hook_modules:
             if id(tensor) in module._backward_hook_cache:
@@ -4339,13 +4342,13 @@ class BackwardHookManager:
         module = tensor_module
 
         # 检查当前tensor的梯度是否已收集
-        # 优化：仅需检查rcv_grad_count，因为rcv_grad_count==0意味着grad_value已设置
+        # 仅需检查rcv_grad_count，因为rcv_grad_count==0意味着grad_value已设置
         if tensor.rcv_grad_count > 0:
             # 当前tensor的梯度未收集齐，返回空列表
             return []
 
         # 对于多输出模块，需要检查是否所有输出的梯度都已收集
-        # 优化：从_backward_hook_cache中获取multi_group信息
+        # 从_backward_hook_cache中获取multi_group信息
         cache_entry = module._backward_hook_cache.get(id(tensor))
         multi_outputs = cache_entry.get('multi_group') if cache_entry else None
 
@@ -4373,6 +4376,8 @@ class BackwardHookManager:
         1. 模块注册了反向预处理钩子
         2. 至少有一个输入需要梯度，或者模块有参数
            - 如果没有输入需要梯度且模块没有参数，不调用钩子
+           - 因为只有存在输入或参数需要梯度时，反向预处理钩子才能有意义，
+             否则没有梯度可以修改
 
         缓存使用：
             - 使用module._backward_hook_cache遍历所有输出条目
@@ -4388,7 +4393,6 @@ class BackwardHookManager:
             return False
 
         has_input_requires_grad = False
-        # 优化：使用统一的_backward_hook_cache字典
         for output_id, cache_entry in module._backward_hook_cache.items():
             forward_inputs = cache_entry.get('inputs', ())
             for inp in forward_inputs:
@@ -4402,7 +4406,7 @@ class BackwardHookManager:
             return True
         
         # 没有输入需要梯度，检查模块是否有参数
-        return len(module._parameters) > 0
+        return module.has_parameter()
     
     def _process_single_output_pre_hook(self, module, output_id: int) -> bool:
         """
@@ -4876,9 +4880,8 @@ class BackwardHookManager:
                     if self._check_backward_hooks_ready(module):
                         # 模块准备好调用反向钩子，添加到backward_hook_modules
                         backward_hook_modules.add(module)
-                        # 模块输入节点在反向钩子调用后可以入栈
+                        # 模块输入节点在反向钩子调用后才可以入栈
                         # 只添加grad_value已准备好的输入节点
-                        # 优化：使用_backward_hook_cache替代_forward_inputs_map
                         for output_id, cache_entry in module._backward_hook_cache.items():
                             forward_inputs = cache_entry.get('inputs', ())
                             for inp in forward_inputs:
@@ -7428,10 +7431,6 @@ def _matmul_grad_left(result_tensor:TN, i:int)->TN:
     right_tensor:TN = result_tensor.fromvars[i+1]
     grad_value = result_tensor.grad_value
 
-    # 检查 grad_value 是否为 None
-    if grad_value is None:
-        return None
-
     left_ndim = left_tensor.data.ndim
     right_ndim = right_tensor.data.ndim
     
@@ -7475,10 +7474,6 @@ def _matmul_grad_right(result_tensor:TN, i:int)->TN:
     left_tensor:TN = result_tensor.fromvars[i-1]
     right_tensor:TN = result_tensor.fromvars[i]
     grad_value = result_tensor.grad_value
-    
-    # 检查 grad_value 是否为 None
-    if grad_value is None:
-        return None
     
     left_ndim = left_tensor.data.ndim
     right_ndim = right_tensor.data.ndim
@@ -9717,10 +9712,10 @@ def fwbw_all_zero(x:TN)->TN:
 
     if ret.requires_grad:
         ret.fromvars = (x,)
-        ret.params = (x,)
+        ret.params = ()
 
         def _fwbw_all_zero_backward(result:TN, i)->TN:
-            return zeros_like(x)*result
+            return zeros_like(result.fromvars[i])
         ret.gradfuncs = (_fwbw_all_zero_backward,)
     
     return ret
