@@ -3259,6 +3259,95 @@ def test_hook_functions():
             traceback.print_exc()
             stats.add_result("多个反向预处理钩子级联调用", False, f"异常: {e}")
 
+        # 新增测试: 多个反向预处理钩子 + 反向钩子级联验证
+        print("测试多个反向预处理钩子与反向钩子级联...")
+        try:
+            class SimpleLinearModule(Module):
+                def __init__(self, in_features, out_features):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((in_features, out_features)))
+
+                def forward(self, x):
+                    return x @ self.weight
+
+            module = SimpleLinearModule(5, 3)
+            
+            # 记录各钩子收到的梯度值
+            pre_hook1_grad = None
+            pre_hook2_grad = None
+            pre_hook3_grad = None
+            backward_hook_grad = None
+
+            def pre_hook1(module, grad_output):
+                nonlocal pre_hook1_grad
+                pre_hook1_grad = grad_output[0].clone() if grad_output[0] is not None else None
+                # 修改梯度：乘以2
+                modified = tuple(g * 2 if g is not None else None for g in grad_output)
+                return modified
+
+            def pre_hook2(module, grad_output):
+                nonlocal pre_hook2_grad
+                pre_hook2_grad = grad_output[0].clone() if grad_output[0] is not None else None
+                # 验证收到的是pre_hook1修改后的梯度（应该是2）
+                # 再修改：加3
+                modified = tuple(g + 3 if g is not None else None for g in grad_output)
+                return modified
+
+            def pre_hook3(module, grad_output):
+                nonlocal pre_hook3_grad
+                pre_hook3_grad = grad_output[0].clone() if grad_output[0] is not None else None
+                # 验证收到的是pre_hook2修改后的梯度（应该是2+3=5）
+                # 再修改：减1
+                modified = tuple(g - 1 if g is not None else None for g in grad_output)
+                return modified
+
+            def backward_hook(module, grad_input, grad_output):
+                nonlocal backward_hook_grad
+                backward_hook_grad = grad_output[0].clone() if grad_output[0] is not None else None
+                # 验证收到的是pre_hook3修改后的梯度（应该是5-1=4）
+                return None
+
+            # 注册钩子：3个预处理钩子 + 1个反向钩子
+            module.register_full_backward_pre_hook(pre_hook1)
+            module.register_full_backward_pre_hook(pre_hook2)
+            module.register_full_backward_pre_hook(pre_hook3)
+            module.register_full_backward_hook(backward_hook)
+
+            # 执行前向和反向传播
+            # 输入形状(2,5)，输出形状(2,3)
+            input_data = rm.ones((2, 5), requires_grad=True)
+            output = module(input_data)
+            loss = output.sum()
+            loss.backward()
+
+            # 验证各钩子收到的梯度值
+            # 原始输出梯度 = 1（因为loss是sum）
+            # pre_hook1收到: 1, 返回: 1*2 = 2
+            # pre_hook2收到: 2, 返回: 2+3 = 5
+            # pre_hook3收到: 5, 返回: 5-1 = 4
+            # backward_hook收到: 4
+            
+            pre_hook1_received_correct = rm.allclose(pre_hook1_grad, rm.ones_like(pre_hook1_grad))
+            pre_hook2_received_correct = rm.allclose(pre_hook2_grad, rm.full_like(pre_hook2_grad, 2.0))
+            pre_hook3_received_correct = rm.allclose(pre_hook3_grad, rm.full_like(pre_hook3_grad, 5.0))
+            backward_hook_received_correct = rm.allclose(backward_hook_grad, rm.full_like(backward_hook_grad, 4.0))
+
+            passed = (pre_hook1_received_correct and 
+                     pre_hook2_received_correct and 
+                     pre_hook3_received_correct and 
+                     backward_hook_received_correct)
+
+            stats.add_result("多个反向预处理钩子与反向钩子级联", passed,
+                           f"pre_hook1收到1: {pre_hook1_received_correct}, "
+                           f"pre_hook2收到2: {pre_hook2_received_correct}, "
+                           f"pre_hook3收到5: {pre_hook3_received_correct}, "
+                           f"backward_hook收到4: {backward_hook_received_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            import traceback
+            traceback.print_exc()
+            stats.add_result("多个反向预处理钩子与反向钩子级联", False, f"异常: {e}")
+
         # 新增测试: 多输出模块 - 部分输出requires_grad=False
         print("测试多输出模块 - 部分输出requires_grad=False...")
         try:
@@ -3755,24 +3844,29 @@ def test_hook_functions():
 
         # ========== 新增：复杂场景测试（3输入3输出，部分输出不参与损失）==========
         print("测试复杂场景 - 3输入3输出模块，部分输出不参与损失...")
+        print("  (注意：此测试使用不同形状的输入，验证fwbw_all_zero转换机制)")
         try:
             class ThreeInputThreeOutputModule(Module):
                 """3输入3输出模块
                 
-                - 输出1 = 输入1 * weight1
+                - 输出1 = 输入1 * weight1 (形状不同)
                 - 输出2 = (输入2 + 输入3) * weight2
                 - 输出3 = (输入2 + 输入3) * weight3
+                
+                关键测试点：三个输入形状不同(2,3,4)，输出形状也不同
+                这可以验证Module.__call__中的fwbw_all_zero转换是否生效
+                如果直接用sumall而不转换，会因形状不匹配而报错
                 """
                 def __init__(self):
                     super().__init__()
-                    self.weight1 = Parameter(rm.ones(3))
-                    self.weight2 = Parameter(rm.ones(3))
-                    self.weight3 = Parameter(rm.ones(3))
+                    self.weight1 = Parameter(rm.ones(2))  # 对应输入1形状(2,)
+                    self.weight2 = Parameter(rm.ones(3))  # 对应输入2形状(3,)
+                    self.weight3 = Parameter(rm.ones(4))  # 对应输入3形状(4,)
                 
                 def forward(self, x1, x2, x3):
-                    out1 = x1 * self.weight1
-                    out2 = (x2 + x3) * self.weight2
-                    out3 = (x2 + x3) * self.weight3
+                    out1 = x1 * self.weight1  # 形状(2,)
+                    out2 = x2 * self.weight2  # 形状(3,)
+                    out3 = x3 * self.weight3  # 形状(4,)
                     return out1, out2, out3
 
             module = ThreeInputThreeOutputModule()
@@ -3798,13 +3892,20 @@ def test_hook_functions():
             module.register_full_backward_pre_hook(backward_pre_hook)
             module.register_full_backward_hook(backward_hook)
 
-            # 输入数据
-            x1 = rm.tensor([1., 2., 3.], requires_grad=True)
-            x2 = rm.tensor([4., 5., 6.], requires_grad=True)
-            x3 = rm.tensor([7., 8., 9.], requires_grad=True)
+            # 输入数据 - 使用不同形状，验证fwbw_all_zero转换机制
+            # 如果直接用sumall(out1, out2, out3)会因形状不同而报错
+            # fwbw_all_zero转换后可以将不同形状转为标量0，再求和
+            x1 = rm.tensor([1., 2.], requires_grad=True)           # 形状(2,)
+            x2 = rm.tensor([4., 5., 6.], requires_grad=True)       # 形状(3,)
+            x3 = rm.tensor([7., 8., 9., 10.], requires_grad=True)  # 形状(4,)
 
             # 前向传播
             out1, out2, out3 = module(x1, x2, x3)
+            
+            # 验证输出形状
+            assert out1.shape == (2,), f"out1形状应为(2,)，实际为{out1.shape}"
+            assert out2.shape == (3,), f"out2形状应为(3,)，实际为{out2.shape}"
+            assert out3.shape == (4,), f"out3形状应为(4,)，实际为{out3.shape}"
 
             # 损失函数只使用输出2和输出3
             loss = out2.sum() + out3.sum()
@@ -3818,12 +3919,12 @@ def test_hook_functions():
 
             # 2. 输入1的梯度应该是全0（通过zero_sum机制传播）
             x1_grad_correct = (x1.grad is not None and 
-                              x1.grad.shape == (3,) and 
-                              rm.allclose(x1.grad, rm.zeros(3)))
+                              x1.grad.shape == (2,) and 
+                              rm.allclose(x1.grad, rm.zeros(2)))
 
             # 3. 输入2和输入3的梯度应该不为None且有值
             x2_grad_correct = (x2.grad is not None and x2.grad.shape == (3,))
-            x3_grad_correct = (x3.grad is not None and x3.grad.shape == (3,))
+            x3_grad_correct = (x3.grad is not None and x3.grad.shape == (4,))
 
             # 4. 反向预处理钩子中，输出1的grad_output应该是None
             pre_hook_grad_output_correct = (pre_hook_grad_output is not None and 
@@ -3836,7 +3937,7 @@ def test_hook_functions():
             backward_hook_grad_input_correct = (backward_hook_grad_input is not None and
                                                len(backward_hook_grad_input) == 3 and
                                                backward_hook_grad_input[0] is not None and
-                                               rm.allclose(backward_hook_grad_input[0], rm.zeros(3)))
+                                               rm.allclose(backward_hook_grad_input[0], rm.zeros(2)))
 
             passed = (hooks_called and 
                      x1_grad_correct and 

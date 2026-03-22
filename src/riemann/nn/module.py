@@ -993,18 +993,17 @@ class Module:
                 # 收到梯度，导致反向钩子因梯度收集条件不满足而永远无法被调用。
                 #
                 # 解决方案：通过"零值梯度注入"机制确保所有输出都能收到梯度
-                # 1. 将所有需要梯度的输出相加后乘以0，得到一个不影响前向结果的零值
+                # 1. 将所有需要梯度的输出用fwbw_all_zero()转换后求和，得到一个不影响前向结果的零值
                 # 2. 将这个零值加到每个需要梯度的输出上
                 # 3. 这样所有输出都通过相加操作连接在一起，形成梯度共享
                 # 4. 反向传播时，即使某个输出不直接参与损失计算，也能通过相加操作
                 #    收到零值梯度，从而触发反向钩子的调用
-                tn_outputs = [out for out in output if isinstance(out, TN) and out.requires_grad]
+                tn_outputs = [fwbw_all_zero(out) for out in output if isinstance(out, TN) and out.requires_grad]
                 if tn_outputs:
-                    # 计算零值梯度：将所有需要梯度的输出相加后乘以0
+                    # 计算零值梯度：将所有需要梯度的输出相加
                     # 前向结果为零，不影响原输出的值
-                    output_sum = sumall(*tn_outputs)
-                    zero_sum = output_sum * 0.0
-
+                    zero_sum = sumall(*tn_outputs)
+                    
                     # 将零值梯度注入到每个需要梯度的输出中
                     # 这样所有输出都参与了计算图，确保梯度能传播到每个输出
                     modified_output = []

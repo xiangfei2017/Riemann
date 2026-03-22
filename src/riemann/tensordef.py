@@ -4186,22 +4186,19 @@ class BackwardHookManager:
     反向传播钩子管理器
 
     统一管理模块的反向传播预处理钩子和反向钩子处理逻辑，实现：
-    1. 模块输出梯度的缓存
+    1. 模块输出梯度的副本缓存
     2. 反向预处理钩子的调用时机控制（模块输出梯度收集完成后调用）
-    3. 反向钩子的调用时机控制（模块输入输出梯度都收集完成后调用）
+    3. 反向钩子的调用时机控制（模块输入梯度都收集完成后调用）
     4. 缓存数据的集中清理
 
     设计原则：
     - 模块输出的梯度都收集完成后，才能调用反向预处理钩子
-    - 模块输入、输出的梯度都收集完成后，才能调用反向钩子
+    - 模块输入的梯度都收集完成后，才能调用反向钩子
     - 支持多输入多输出、模块嵌套、多模块共享输入等场景
 
     缓存结构优化：
     - 使用Module._backward_hook_cache统一存储所有反向钩子所需信息
-    - 替代原有的4个独立字典：_forward_inputs_map、_module_output_tensors、
-      _module_output_grads_clone、_multi_outputs_map
     - 结构：{输出张量ID: {'inputs': ..., 'tensor': ..., 'grad_clone': ..., 'multi_group': ...}}
-    - 优势：简化代码、提高查询效率、减少维护成本
     """
     
     def __init__(self):
@@ -9703,3 +9700,27 @@ def trunc(x:TN)->TN:
     ret = tensor(arrlib.trunc(x.data),device=x.device)
     return ret
 
+def fwbw_all_zero(x:TN)->TN:
+    """
+    前向计算返回值标量张量0.0，反向梯度计算返回形状与输入相同的全0张量
+    当希望将张量x加入计算图，但又要求不影响计算图的前向计算函数值和反向传播梯度值时，
+    用a = a + fwbw_all_zero(x)“无损修改“a，但将x加入了计算图
+
+    返回:
+        标量张量0.0
+    """
+    
+    ret = tensor(
+        0.0, dtype=x.dtype, device=x.device,
+        requires_grad=is_grad_enabled() and x.requires_grad
+    )
+
+    if ret.requires_grad:
+        ret.fromvars = (x,)
+        ret.params = (x,)
+
+        def _fwbw_all_zero_backward(result:TN, i)->TN:
+            return zeros_like(x)*result
+        ret.gradfuncs = (_fwbw_all_zero_backward,)
+    
+    return ret
