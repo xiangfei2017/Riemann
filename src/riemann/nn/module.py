@@ -345,24 +345,34 @@ class Module:
             _backward_hooks (dict): 存储反向传播钩子的字典
                 键为钩子句柄ID，值为钩子函数
                 钩子函数签名: hook(module, grad_input, grad_output) -> modified_grad_input or None
-        
+
         反向传播缓存（用于支持反向钩子机制）:
-            _forward_inputs_map (dict): 存储每次前向调用的输入信息
-                键: 输出张量的id，值: 前向输入元组 (input_tensor1, input_tensor2, ...)
-                用途: 反向传播时确定模块的输入，用于计算grad_input
-            
-            _module_output_grads_clone (dict): 存储模块输出梯度的clone副本
-                键: 输出张量的id，值: 该输出梯度的clone
-                用途: 反向钩子需要访问原始的grad_output，防止被预处理钩子修改
-            
-            _module_output_tensors (dict): 存储模块输出张量对象
-                键: 输出张量的id，值: 输出张量本身
-                用途: 反向传播时快速获取输出张量的grad_value和requires_grad等属性
-            
-            _multi_outputs_map (dict): 存储多输出模块的所有输出张量
-                键: 第一个输出张量的id，值: 所有输出张量的元组 (output1, output2, ...)
-                用途: 识别哪些输出属于同一前向调用，确保收集齐所有梯度后才调用钩子
-            
+            _backward_hook_cache (dict): 统一存储反向钩子所需的所有信息
+                优化：将4个独立的缓存字典(_forward_inputs_map, _module_output_tensors,
+                _module_output_grads_clone, _multi_outputs_map)合并为1个字典，简化代码并提高查询效率
+
+                键: 输出张量的id
+                值: 包含以下字段的字典:
+                    - 'inputs': 前向输入元组 (input_tensor1, input_tensor2, ...)
+                      用途: 反向传播时确定模块的输入，用于计算grad_input
+                    - 'tensor': 输出张量本身
+                      用途: 反向传播时快速获取输出张量的grad_value和requires_grad等属性
+                    - 'grad_clone': 该输出梯度的clone副本 或 None
+                      用途: 反向钩子需要访问原始的grad_output，防止被预处理钩子修改
+                    - 'multi_group': 多输出组元组 (output1, output2, ...) 或 None
+                      用途: 识别哪些输出属于同一前向调用，确保收集齐所有梯度后才调用钩子
+                      单输出模块为None，多输出模块每个输出都记录相同的元组（方案A）
+
+                示例:
+                    # 单输出模块
+                    {id(output1): {'inputs': (input1,), 'tensor': output1, 'grad_clone': None, 'multi_group': None}}
+
+                    # 多输出模块（output1和output2属于同一前向调用）
+                    {
+                        id(output1): {'inputs': (input1,), 'tensor': output1, 'grad_clone': None, 'multi_group': (output1, output2)},
+                        id(output2): {'inputs': (input1,), 'tensor': output2, 'grad_clone': None, 'multi_group': (output1, output2)}
+                    }
+
             注意: 反向钩子的调用状态由BackwardHookManager统一管理，不在Module中维护
         
         模式标志:
@@ -397,10 +407,9 @@ class Module:
         self._backward_hooks = {}      # {钩子ID: hook_fn}，反向传播后钩子，可修改输入梯度
 
         # 反向传播缓存（用于支持反向钩子机制）
-        self._forward_inputs_map = {}        # {输出张量ID: (输入张量,)}，记录前向输入
-        self._module_output_tensors = {}     # {输出张量ID: 输出张量}，缓存输出张量对象
-        self._module_output_grads_clone = {} # {输出张量ID: 梯度副本}，缓存输出梯度供反向钩子使用
-        self._multi_outputs_map = {}         # {首个输出ID: (输出1, 输出2)}，多输出模块映射
+        # 优化：将4个独立的缓存字典合并为1个统一的字典，简化代码并提高查询效率
+        # 结构：{输出张量ID: {'inputs': (输入张量,), 'tensor': 输出张量, 'grad_clone': 梯度副本, 'multi_group': (输出1, 输出2, ...) 或 None}}
+        self._backward_hook_cache = {}
 
         # 训练模式标志
         self.training = True      
@@ -952,8 +961,8 @@ class Module:
                         result = (result,)
                     args = result
         
-        # 如果模块注册了反向钩子，clone输入以避免多模块共享输入时的梯度聚合问题
-        # 这样可以确保反向钩子只处理本模块产生的梯度，与PyTorch行为一致
+        # 如果模块注册了反向钩子，clone输入可以将多模块共享输入改造为不共享输入
+        # 用于避免多模块共享输入时的梯度聚合问题，确保只要本模块将梯度都传播给输入了，反向钩子就会被调用
         if self._backward_hooks:
             args = tuple(arg.clone() if isinstance(arg, TN) else arg for arg in args)
         
@@ -976,43 +985,77 @@ class Module:
             forward_input_tensors = [arg for arg in args if isinstance(arg, TN)]
             forward_inputs = tuple(forward_input_tensors)
             
-            if isinstance(output, TN):
-                already_in_output_of = any(m is self for m in output._output_of)
-                if not already_in_output_of:
-                    output._output_of.append(self)
-                # 单输出模块，直接记录映射关系
-                self._forward_inputs_map[id(output)] = forward_inputs
-                self._module_output_tensors[id(output)] = output
-                
-                for inp in forward_inputs:
-                    already_in_input_of = any(m is self and o is output for m, o in inp._module_input_of)
-                    if not already_in_input_of:
-                        inp._module_input_of.append((self, output))
-            elif isinstance(output, (tuple, list)):
+            if isinstance(output, (tuple, list)):
+                # 处理多输出模块的反向钩子调用问题
+                # 
+                # 问题场景：当模块有多个输出时，如果某些输出不直接参与损失函数计算
+                # (例如：out1不用于loss，out2用于loss)，则out1及其依赖的输入永远不会
+                # 收到梯度，导致反向钩子因梯度收集条件不满足而永远无法被调用。
+                #
+                # 解决方案：通过"零值梯度注入"机制确保所有输出都能收到梯度
+                # 1. 将所有需要梯度的输出相加后乘以0，得到一个不影响前向结果的零值
+                # 2. 将这个零值加到每个需要梯度的输出上
+                # 3. 这样所有输出都通过相加操作连接在一起，形成梯度共享
+                # 4. 反向传播时，即使某个输出不直接参与损失计算，也能通过相加操作
+                #    收到零值梯度，从而触发反向钩子的调用
+                tn_outputs = [out for out in output if isinstance(out, TN) and out.requires_grad]
+                if tn_outputs:
+                    # 计算零值梯度：将所有需要梯度的输出相加后乘以0
+                    # 前向结果为零，不影响原输出的值
+                    output_sum = sumall(*tn_outputs)
+                    zero_sum = output_sum * 0.0
+
+                    # 将零值梯度注入到每个需要梯度的输出中
+                    # 这样所有输出都参与了计算图，确保梯度能传播到每个输出
+                    modified_output = []
+                    for out in output:
+                        if isinstance(out, TN) and out.requires_grad:
+                            modified_output.append(out + zero_sum)
+                        else:
+                            modified_output.append(out)
+                    output = type(output)(modified_output)
+
                 all_outputs = tuple([out for out in output if isinstance(out, TN)])
-                
                 if all_outputs:
-                    first_output_id = id(all_outputs[0])
-                    
-                    for out in all_outputs:
-                        already_in_output_of = any(m is self for m in out._output_of)
-                        if not already_in_output_of:
-                            out._output_of.append(self)
-                    
-                    for out in all_outputs:
-                        self._forward_inputs_map[id(out)] = forward_inputs
-                        self._module_output_tensors[id(out)] = out
-                    
-                    # 多输出模块，记录第一个输出ID到所有输出的映射
-                    self._multi_outputs_map[first_output_id] = all_outputs
-                    
-                    for out in all_outputs:
-                        for inp in forward_inputs:
-                            already_in_input_of = any(m is self and o is out for m, o in inp._module_input_of)
-                            if not already_in_input_of:
-                                inp._module_input_of.append((self, out))
-        
+                    self._setup_backward_hook_metadata(all_outputs, forward_inputs, is_multi_output=True)
+            elif isinstance(output, TN):
+                self._setup_backward_hook_metadata((output,), forward_inputs, is_multi_output=False)
+
         return output
+
+    def _setup_backward_hook_metadata(self, outputs: tuple, forward_inputs: tuple, is_multi_output: bool = False):
+        """
+        设置反向钩子所需的元数据
+
+        为输出张量设置模块引用，并在_backward_hook_cache中记录前向输入、多输出组等信息，
+        以便反向传播时能够正确调用反向钩子。
+
+        Args:
+            outputs: 输出张量元组（单输出时为长度为1的元组）
+            forward_inputs: 前向输入张量元组
+            is_multi_output: 是否为多输出模块
+        """
+        multi_group = outputs if is_multi_output else None
+        
+        for out in outputs:
+            already_in_output_of = any(m is self for m in out._output_of)
+            if not already_in_output_of:
+                out._output_of.append(self)
+            
+            # 使用统一的缓存字典记录映射关系
+            self._backward_hook_cache[id(out)] = {
+                'inputs': forward_inputs,
+                'tensor': out,
+                'grad_clone': None,  # 将在反向传播时填充
+                'multi_group': multi_group  # 多输出组信息（单输出时为None）
+            }
+        
+        # 为每个输入记录模块引用
+        for out in outputs:
+            for inp in forward_inputs:
+                already_in_input_of = any(m is self and o is out for m, o in inp._module_input_of)
+                if not already_in_input_of:
+                    inp._module_input_of.append((self, out))
 
     def parameters(self, recurse=True):
         """

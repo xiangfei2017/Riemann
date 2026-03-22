@@ -1506,13 +1506,13 @@ def test_hook_functions():
         try:
             module3 = TestMultiInput()
             hook_called3 = False
-            grad_input_all_not_none = False
+            grad_input_all_none = False
 
             def backward_hook3(module, grad_input, grad_output):
-                nonlocal hook_called3, grad_input_all_not_none
+                nonlocal hook_called3, grad_input_all_none
                 hook_called3 = True
-                # 修复：与PyTorch行为一致，requires_grad=False的输入传递全0梯度而不是None
-                grad_input_all_not_none = all(g is not None for g in grad_input)
+                # 与PyTorch行为一致：当所有输入requires_grad=False时，传递None
+                grad_input_all_none = all(g is None for g in grad_input)
                 assert isinstance(grad_input, tuple)
                 assert len(grad_input) == 2  # 两个输入
 
@@ -1525,9 +1525,9 @@ def test_hook_functions():
             loss3 = out3.sum()
             loss3.backward()
 
-            # 修复：验证所有grad_input都不是None（与PyTorch行为一致）
-            passed3 = hook_called3 and grad_input_all_not_none
-            stats.add_result("反向钩子 - 多输入，全部 requires_grad=False", passed3, f"钩子被调用: {hook_called3}, 所有grad_input不为None: {grad_input_all_not_none}")
+            # 与PyTorch行为一致：当所有输入requires_grad=False且模块无参数时，钩子被调用且grad_input为None
+            passed3 = hook_called3 and grad_input_all_none
+            stats.add_result("反向钩子 - 多输入，全部 requires_grad=False", passed3, f"钩子被调用: {hook_called3}, 所有grad_input为None: {grad_input_all_none}")
         except Exception as e:
             print(f"测试12失败: {e}")
             stats.add_result("反向钩子 - 多输入，全部 requires_grad=False", False, f"异常: {e}")
@@ -2982,10 +2982,8 @@ def test_hook_functions():
             expected_grad = rm.ones((2, 5)) @ module.weight.data * 3
             grad_correct = tensor_allclose(input_data.grad, expected_grad)
             
-            # 验证缓存清理完毕
-            cache_cleaned = (len(module._forward_inputs_map) == 0 and 
-                           len(module._module_output_grads_clone) == 0 and
-                           len(module._multi_outputs_map) == 0)
+            # 验证缓存清理完毕（优化：使用统一的_backward_hook_cache字典）
+            cache_cleaned = len(module._backward_hook_cache) == 0
             
             passed = hook_called_correct and grad_correct and cache_cleaned
             stats.add_result("多次前向传播 + 反向钩子 + 分别backward", passed,
@@ -3504,6 +3502,359 @@ def test_hook_functions():
         except Exception as e:
             print(f"测试失败: {e}")
             stats.add_result("部分输入requires_grad=False时grad_input不为None", False, f"异常: {e}")
+
+        # ========== 新增：缓存清理验证测试 ==========
+
+        # 测试1: 单次前向传播后缓存清理验证
+        print("测试单次前向传播后缓存清理...")
+        try:
+            class CacheTestModule1(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+
+                def forward(self, x):
+                    return x @ self.weight.T
+
+            module = CacheTestModule1()
+            hook_called = False
+
+            def backward_hook_cache(module, grad_input, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return grad_input
+
+            module.register_full_backward_hook(backward_hook_cache)
+
+            # 前向传播前缓存应为空
+            cache_before = len(module._backward_hook_cache)
+
+            input_data = rm.ones((2, 10), requires_grad=True)
+            output = module(input_data)
+
+            # 前向传播后缓存应有条目
+            cache_after_forward = len(module._backward_hook_cache)
+
+            loss = output.sum()
+            loss.backward()
+
+            # 反向传播后缓存应被清理
+            cache_after_backward = len(module._backward_hook_cache)
+
+            passed = (cache_before == 0 and
+                     cache_after_forward > 0 and
+                     cache_after_backward == 0 and
+                     hook_called)
+            stats.add_result("单次前向传播后缓存清理", passed,
+                           f"前向前: {cache_before}, 前向后: {cache_after_forward}, 反向后: {cache_after_backward}, 钩子调用: {hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("单次前向传播后缓存清理", False, f"异常: {e}")
+
+        # 测试2: 多次前向传播后缓存清理验证
+        print("测试多次前向传播后缓存清理...")
+        try:
+            class CacheTestModule2(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+
+                def forward(self, x):
+                    return x @ self.weight.T
+
+            module = CacheTestModule2()
+            hook_call_count = 0
+
+            def backward_hook_multi(module, grad_input, grad_output):
+                nonlocal hook_call_count
+                hook_call_count += 1
+                return grad_input
+
+            module.register_full_backward_hook(backward_hook_multi)
+
+            input_data = rm.ones((2, 10), requires_grad=True)
+
+            # 三次前向传播
+            output1 = module(input_data)
+            cache_after_1st = len(module._backward_hook_cache)
+
+            output2 = module(input_data)
+            cache_after_2nd = len(module._backward_hook_cache)
+
+            output3 = module(input_data)
+            cache_after_3rd = len(module._backward_hook_cache)
+
+            # 分别对不同输出调用backward
+            loss2 = output2.sum()
+            loss2.backward()
+            cache_after_2nd_backward = len(module._backward_hook_cache)
+
+            loss1 = output1.sum()
+            loss1.backward()
+            cache_after_1st_backward = len(module._backward_hook_cache)
+
+            loss3 = output3.sum()
+            loss3.backward()
+            cache_after_3rd_backward = len(module._backward_hook_cache)
+
+            # 验证：每次backward后对应缓存被清理，最终缓存为空
+            passed = (cache_after_3rd == 3 and  # 三次前向传播后应有3个条目
+                     cache_after_2nd_backward == 2 and  # 第二个backward后剩2个
+                     cache_after_1st_backward == 1 and  # 第一个backward后剩1个
+                     cache_after_3rd_backward == 0 and  # 第三个backward后应为0
+                     hook_call_count == 3)  # 钩子应被调用3次
+            stats.add_result("多次前向传播后缓存清理", passed,
+                           f"3次前向后: {cache_after_3rd}, 2nd反向后: {cache_after_2nd_backward}, "
+                           f"1st反向后: {cache_after_1st_backward}, 3rd反向后: {cache_after_3rd_backward}, "
+                           f"钩子调用: {hook_call_count}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("多次前向传播后缓存清理", False, f"异常: {e}")
+
+        # 测试3: 多输出模块缓存清理验证
+        print("测试多输出模块缓存清理...")
+        try:
+            class MultiOutputCacheModule(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((10, 5)))
+
+                def forward(self, x):
+                    return x @ self.weight, x @ self.weight * 2
+
+            module = MultiOutputCacheModule()
+            hook_called = False
+
+            def backward_hook_multi_out(module, grad_input, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return grad_input
+
+            module.register_full_backward_hook(backward_hook_multi_out)
+
+            input_data = rm.ones((2, 10), requires_grad=True)
+            out1, out2 = module(input_data)
+
+            # 多输出模块有两个输出，每个输出在缓存中有独立条目
+            # 但multi_group字段将它们关联在一起
+            cache_after_forward = len(module._backward_hook_cache)
+
+            loss = out1.sum() + out2.sum()
+            loss.backward()
+
+            cache_after_backward = len(module._backward_hook_cache)
+
+            passed = (cache_after_forward == 2 and  # 多输出模块有两个输出，两个缓存条目
+                     cache_after_backward == 0 and
+                     hook_called)
+            stats.add_result("多输出模块缓存清理", passed,
+                           f"前向后: {cache_after_forward}, 反向后: {cache_after_backward}, 钩子调用: {hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("多输出模块缓存清理", False, f"异常: {e}")
+
+        # 测试4: 嵌套模块缓存清理验证
+        print("测试嵌套模块缓存清理...")
+        try:
+            class InnerCacheModule(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = Parameter(rm.ones((5, 10)))
+
+                def forward(self, x):
+                    return x @ self.weight.T
+
+            class OuterCacheModule(Module):
+                def __init__(self):
+                    super().__init__()
+                    self.inner = InnerCacheModule()
+
+                def forward(self, x):
+                    return self.inner(x)
+
+            outer = OuterCacheModule()
+            inner_hook_called = False
+            outer_hook_called = False
+
+            def inner_hook(module, grad_input, grad_output):
+                nonlocal inner_hook_called
+                inner_hook_called = True
+                return grad_input
+
+            def outer_hook(module, grad_input, grad_output):
+                nonlocal outer_hook_called
+                outer_hook_called = True
+                return grad_input
+
+            outer.inner.register_full_backward_hook(inner_hook)
+            outer.register_full_backward_hook(outer_hook)
+
+            input_data = rm.ones((2, 10), requires_grad=True)
+            output = outer(input_data)
+
+            # 前向传播后两个模块都应有缓存
+            inner_cache_before = len(outer.inner._backward_hook_cache)
+            outer_cache_before = len(outer._backward_hook_cache)
+
+            loss = output.sum()
+            loss.backward()
+
+            # 反向传播后两个模块的缓存都应被清理
+            inner_cache_after = len(outer.inner._backward_hook_cache)
+            outer_cache_after = len(outer._backward_hook_cache)
+
+            passed = (inner_cache_before > 0 and
+                     outer_cache_before > 0 and
+                     inner_cache_after == 0 and
+                     outer_cache_after == 0 and
+                     inner_hook_called and
+                     outer_hook_called)
+            stats.add_result("嵌套模块缓存清理", passed,
+                           f"内部模块: 前{inner_cache_before}->后{inner_cache_after}, "
+                           f"外部模块: 前{outer_cache_before}->后{outer_cache_after}, "
+                           f"钩子调用: 内{inner_hook_called}/外{outer_hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("嵌套模块缓存清理", False, f"异常: {e}")
+
+        # 测试5: 无参数模块缓存清理验证
+        print("测试无参数模块缓存清理...")
+        try:
+            class NoParamCacheModule(Module):
+                def forward(self, x):
+                    return x * 2
+
+            module = NoParamCacheModule()
+            hook_called = False
+
+            def backward_hook_no_param(module, grad_input, grad_output):
+                nonlocal hook_called
+                hook_called = True
+                return grad_input
+
+            module.register_full_backward_hook(backward_hook_no_param)
+
+            input_data = rm.ones((2, 10), requires_grad=True)
+            output = module(input_data)
+
+            cache_after_forward = len(module._backward_hook_cache)
+
+            loss = output.sum()
+            loss.backward()
+
+            cache_after_backward = len(module._backward_hook_cache)
+
+            passed = (cache_after_forward > 0 and
+                     cache_after_backward == 0 and
+                     hook_called)
+            stats.add_result("无参数模块缓存清理", passed,
+                           f"前向后: {cache_after_forward}, 反向后: {cache_after_backward}, 钩子调用: {hook_called}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            stats.add_result("无参数模块缓存清理", False, f"异常: {e}")
+
+        # ========== 新增：复杂场景测试（3输入3输出，部分输出不参与损失）==========
+        print("测试复杂场景 - 3输入3输出模块，部分输出不参与损失...")
+        try:
+            class ThreeInputThreeOutputModule(Module):
+                """3输入3输出模块
+                
+                - 输出1 = 输入1 * weight1
+                - 输出2 = (输入2 + 输入3) * weight2
+                - 输出3 = (输入2 + 输入3) * weight3
+                """
+                def __init__(self):
+                    super().__init__()
+                    self.weight1 = Parameter(rm.ones(3))
+                    self.weight2 = Parameter(rm.ones(3))
+                    self.weight3 = Parameter(rm.ones(3))
+                
+                def forward(self, x1, x2, x3):
+                    out1 = x1 * self.weight1
+                    out2 = (x2 + x3) * self.weight2
+                    out3 = (x2 + x3) * self.weight3
+                    return out1, out2, out3
+
+            module = ThreeInputThreeOutputModule()
+            pre_hook_called = False
+            backward_hook_called = False
+            pre_hook_grad_output = None
+            backward_hook_grad_input = None
+            backward_hook_grad_output = None
+
+            def backward_pre_hook(module, grad_output):
+                nonlocal pre_hook_called, pre_hook_grad_output
+                pre_hook_called = True
+                pre_hook_grad_output = grad_output
+                return grad_output
+
+            def backward_hook(module, grad_input, grad_output):
+                nonlocal backward_hook_called, backward_hook_grad_input, backward_hook_grad_output
+                backward_hook_called = True
+                backward_hook_grad_input = grad_input
+                backward_hook_grad_output = grad_output
+                return None
+
+            module.register_full_backward_pre_hook(backward_pre_hook)
+            module.register_full_backward_hook(backward_hook)
+
+            # 输入数据
+            x1 = rm.tensor([1., 2., 3.], requires_grad=True)
+            x2 = rm.tensor([4., 5., 6.], requires_grad=True)
+            x3 = rm.tensor([7., 8., 9.], requires_grad=True)
+
+            # 前向传播
+            out1, out2, out3 = module(x1, x2, x3)
+
+            # 损失函数只使用输出2和输出3
+            loss = out2.sum() + out3.sum()
+
+            # 反向传播
+            loss.backward()
+
+            # 验证结果
+            # 1. 两个钩子都应该被调用
+            hooks_called = pre_hook_called and backward_hook_called
+
+            # 2. 输入1的梯度应该是全0（通过zero_sum机制传播）
+            x1_grad_correct = (x1.grad is not None and 
+                              x1.grad.shape == (3,) and 
+                              rm.allclose(x1.grad, rm.zeros(3)))
+
+            # 3. 输入2和输入3的梯度应该不为None且有值
+            x2_grad_correct = (x2.grad is not None and x2.grad.shape == (3,))
+            x3_grad_correct = (x3.grad is not None and x3.grad.shape == (3,))
+
+            # 4. 反向预处理钩子中，输出1的grad_output应该是None
+            pre_hook_grad_output_correct = (pre_hook_grad_output is not None and 
+                                           len(pre_hook_grad_output) == 3 and
+                                           pre_hook_grad_output[0] is None and
+                                           pre_hook_grad_output[1] is not None and
+                                           pre_hook_grad_output[2] is not None)
+
+            # 5. 反向钩子中，输入1的grad_input应该是全0张量
+            backward_hook_grad_input_correct = (backward_hook_grad_input is not None and
+                                               len(backward_hook_grad_input) == 3 and
+                                               backward_hook_grad_input[0] is not None and
+                                               rm.allclose(backward_hook_grad_input[0], rm.zeros(3)))
+
+            passed = (hooks_called and 
+                     x1_grad_correct and 
+                     x2_grad_correct and 
+                     x3_grad_correct and
+                     pre_hook_grad_output_correct and
+                     backward_hook_grad_input_correct)
+
+            stats.add_result("复杂场景 - 3输入3输出部分输出不参与损失", passed,
+                           f"钩子调用: {hooks_called}, x1.grad正确: {x1_grad_correct}, "
+                           f"x2.grad正确: {x2_grad_correct}, x3.grad正确: {x3_grad_correct}, "
+                           f"pre_hook_grad_output正确: {pre_hook_grad_output_correct}, "
+                           f"backward_hook_grad_input正确: {backward_hook_grad_input_correct}")
+        except Exception as e:
+            print(f"测试失败: {e}")
+            import traceback
+            traceback.print_exc()
+            stats.add_result("复杂场景 - 3输入3输出部分输出不参与损失", False, f"异常: {e}")
 
     except Exception as e:
         print(f"钩子函数测试出现异常: {e}")
