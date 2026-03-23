@@ -132,6 +132,16 @@ class StatisticsCollector:
             # 保存当前函数的测试用例
             self.function_test_details[self.current_function] = self.current_test_details.copy()
     
+    def raise_if_failed(self):
+        """检查当前函数是否有失败的测试，如果有则抛出AssertionError"""
+        if self.current_function:
+            function_stats = self.function_stats.get(self.current_function, {})
+            total = function_stats.get("total", 0)
+            passed = function_stats.get("passed", 0)
+            if passed < total:
+                failed_count = total - passed
+                raise AssertionError(f"{self.current_function} 中有 {failed_count} 个测试用例失败")
+    
     def _get_display_width(self, text):
         """计算字符串的显示宽度，中文字符算2个宽度，英文字符算1个宽度"""
         width = 0
@@ -364,6 +374,7 @@ def test_parameters_management():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 缓冲区管理测试 ====================
 def test_buffers_management():
@@ -426,6 +437,7 @@ def test_buffers_management():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 子模块管理测试 ====================
 def test_submodules_management():
@@ -494,6 +506,7 @@ def test_submodules_management():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 状态管理测试 ====================
 def test_state_management():
@@ -537,6 +550,7 @@ def test_state_management():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 模式控制测试 ====================
 def test_mode_control():
@@ -582,6 +596,7 @@ def test_mode_control():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 梯度管理测试 ====================
 def test_gradient_management():
@@ -637,6 +652,7 @@ def test_gradient_management():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 类型转换测试 ====================
 def test_type_conversion():
@@ -684,6 +700,7 @@ def test_type_conversion():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 函数应用测试 ====================
 def test_apply_function():
@@ -739,6 +756,7 @@ def test_apply_function():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 字符串表示测试 ====================
 def test_string_representation():
@@ -788,6 +806,7 @@ def test_string_representation():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 模块复制测试 ====================
 def test_module_copying():
@@ -846,6 +865,7 @@ def test_module_copying():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 属性管理测试 ====================
 def test_attribute_management():
@@ -902,6 +922,7 @@ def test_attribute_management():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 前向传播测试 ====================
 def test_forward_propagation():
@@ -1087,6 +1108,7 @@ def test_to_method():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== 钩子函数测试 ====================
 def test_hook_functions():
@@ -3963,6 +3985,7 @@ def test_hook_functions():
 
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
 # ==================== ParameterList测试 ====================
 def test_parameter_list():
@@ -4063,8 +4086,9 @@ def test_parameter_list():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
-# ==================== ParameterDict测试 ====================
+# ==================== ParameterList测试 ====================
 def test_parameter_dict():
     """测试ParameterDict类的功能"""
     stats.start_function("ParameterDict测试")
@@ -4193,8 +4217,9 @@ def test_parameter_dict():
     
     finally:
         stats.end_function()
+        stats.raise_if_failed()
 
-# ==================== 主测试函数 ====================
+# ==================== 测试运行入口 ====================
 def run_all_tests():
     """运行所有测试"""
     print(f"{Colors.BOLD}Riemann nn.Module 全功能测试套件{Colors.ENDC}")
