@@ -672,6 +672,6 @@ python test_010_grad.py
 
 ## 联系方式
 
-作者: Fei Xiang
+作者: 项飞
 Github: https://github.com/xiangfei2017
 Gitee: https://gitee.com/xfcode2021
