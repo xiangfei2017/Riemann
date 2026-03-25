@@ -77,31 +77,33 @@ _default_device = None
 class Device:
     """
     Represents a device (CPU or CUDA GPU).
-    
+
     Args:
-        type_or_device (str or int): A device type ('cpu' or 'cuda') or a device index.
+        type (str): A device type ('cpu' or 'cuda').
+        index (int, optional): The index of the device. Only valid for 'cuda' type.
     """
-    
-    def __init__(self, device:str|int='cpu'):
-        if isinstance(device, int):
-            self.type = 'cuda'
-            self.index = device
-        elif isinstance(device, str):
-            if ':' in device:
-                self.type, idx_str = device.split(':')
-                self.index = int(idx_str)
+
+    def __init__(self, type: str, index: int | None = None):
+        if not isinstance(type, str):
+            raise ValueError(f"Invalid device type: {type}")
+
+        self.type = type
+
+        if ':' in self.type:
+            # 支持字符串形式如 'cuda:0'
+            self.type, idx_str = self.type.split(':')
+            self.index = int(idx_str)
+        elif index is not None:
+            # 显式传入index参数
+            self.index = index
+        elif self.type == 'cuda':
+            # 检查是否在CUDA上下文中，如果是则使用当前设备索引
+            if CUPY_AVAILABLE and is_in_cuda_context():
+                self.index = current_device()
             else:
-                self.type = device
-                if self.type == 'cuda':
-                    # 检查是否在CUDA上下文中，如果是则使用当前设备索引
-                    if CUPY_AVAILABLE and is_in_cuda_context():
-                        self.index = current_device()
-                    else:
-                        self.index = 0
-                else:
-                    self.index = None
+                self.index = 0
         else:
-            raise ValueError(f"Invalid device type: {device}")
+            self.index = None
         
         if self.type == 'cuda' and not CUPY_AVAILABLE:
             raise RuntimeError("CUDA is not available")
@@ -111,8 +113,6 @@ class Device:
         
         # 检查CUDA设备索引有效性
         if self.type == 'cuda':
-            if self.index is None:
-                self.index = 0
             # 检查索引是否在有效范围内
             device_num = device_count()
             if self.index >= device_num or self.index < 0:
@@ -120,7 +120,10 @@ class Device:
     
     def __eq__(self, other):
         if not isinstance(other, Device):
-            other = Device(other)
+            if isinstance(other, int):
+                other = Device('cuda', other)
+            else:
+                other = Device(other)
         return self.type == other.type and self.index == other.index
     
     def __str__(self):

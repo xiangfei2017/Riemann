@@ -246,11 +246,11 @@ class CUDAUnitTest(unittest.TestCase):
         """测试多设备上下文管理（子用例）"""
         num_devices = cuda.device_count()
         if num_devices >= 2:
-            with cuda.Device(0):
+            with cuda.Device('cuda', 0):
                 tensor0 = rm.tensor([1, 2, 3])
                 self.assertEqual(tensor0.device.index, 0)
-        
-            with cuda.Device(1):
+
+            with cuda.Device('cuda', 1):
                 tensor1 = rm.tensor([4, 5, 6])
                 self.assertEqual(tensor1.device.index, 1)
     
@@ -814,9 +814,9 @@ class CUDAUnitTest(unittest.TestCase):
         # 创建 CPU 设备对象
         cpu_device = cuda.Device('cpu')
         self.assertEqual(cpu_device.type, 'cpu', "CPU 设备类型不正确")
-        
-        # 创建 CUDA 设备对象（使用索引）
-        cuda_device = cuda.Device(0)
+
+        # 创建 CUDA 设备对象（使用type和index参数）
+        cuda_device = cuda.Device('cuda', 0)
         self.assertEqual(cuda_device.type, 'cuda', "CUDA 设备类型不正确")
         self.assertEqual(cuda_device.index, 0, "CUDA 设备索引不正确")
         
