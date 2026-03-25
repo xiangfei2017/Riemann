@@ -3866,7 +3866,6 @@ def test_hook_functions():
 
         # ========== 新增：复杂场景测试（3输入3输出，部分输出不参与损失）==========
         print("测试复杂场景 - 3输入3输出模块，部分输出不参与损失...")
-        print("  (注意：此测试使用不同形状的输入，验证fwbw_all_zero转换机制)")
         try:
             class ThreeInputThreeOutputModule(Module):
                 """3输入3输出模块

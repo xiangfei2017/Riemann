@@ -1000,8 +1000,12 @@ class TN:
         
         if device is None:
             device = "cuda"
-        
-        return self.to(device=Device(device))
+        elif isinstance(device, int):
+            device = Device('cuda', device)
+        else:
+            device = Device(device)
+
+        return self.to(device=device)
     
     @property
     def is_cuda(self):
@@ -1206,21 +1210,67 @@ class TN:
     
     def _merge_indices(self, base_index, current_index):
         """
-        基于坐标转换的索引合并函数（重构版本）
-        
+        基于坐标转换的索引合并函数
+
+        该函数用于将视图张量上的操作索引合并到基础张量的索引空间中。
+        当对视图张量执行索引操作时，需要将视图坐标系中的索引转换为
+        基础张量坐标系中的等效索引。
+
         思路：将索引视为坐标，通过numpy向量化操作实现从视图坐标系到基张量坐标系的坐标转换
-        重构目标：更清晰的结构、更少的重复代码、更好的可读性
         
         参数:
-            base_index: 视图的基础索引（在基张量坐标系中的坐标）
-            current_index: 当前操作的索引（在视图坐标系中的坐标）
-            
+            base_index (tuple): 视图的基础索引（在基张量坐标系中的坐标）。
+                可以是整数、切片、数组或它们的组合。
+                例如：(slice(2, 8), slice(3, 7)) 表示视图在基础张量中的位置
+            current_index (tuple or scalar): 当前操作的索引（在视图坐标系中的坐标）。
+                可以是整数、切片、整数数组、布尔数组或它们的组合。
+                例如：(slice(1, 3), 2) 表示在视图上的操作位置
+
         返回:
-            combined_index: 合并后的索引（在基张量坐标系中的坐标）
+            tuple: 合并后的索引（在基张量坐标系中的坐标）。
+                返回的索引可以直接用于访问基础张量的数据。
+
+        示例:
+            >>> # 假设 base 是形状为 (10, 10) 的张量
+            >>> view = base[2:8, 3:7]  # 创建视图，base_index = (slice(2, 8), slice(3, 7))
+            >>> # 在视图上执行操作 view[1:3, 1] = value
+            >>> # current_index = (slice(1, 3), 1)
+            >>> combined = view._merge_indices(view._view_index, (slice(1, 3), 1))
+            >>> # combined = (slice(3, 5), 4)  # 在基础张量中的等效位置
+
+        支持的索引类型:
+            - 整数索引：单个元素访问，支持负数索引
+            - 切片索引：范围访问，支持 start:stop:step 语法
+            - 整数数组索引： fancy indexing，支持数组和列表
+            - 布尔数组索引：条件索引，选择满足条件的元素
+            - 混合索引：上述类型的任意组合
+
+        注意事项:
+            - 整数索引会将该维度从视图中移除（降维）
+            - 布尔数组索引的维度必须与视图对应维度匹配
+            - 数组索引中的负索引会被转换为正索引
+            - 支持省略号 (...) 索引，会自动展开为适当数量的全切片
         """
         # 辅助函数：检查是否为布尔类型索引
         def _is_boolean_index(index):
             return isinstance(index, np.ndarray) and index.dtype == bool
+
+        # 辅助函数：检查是否为CuPy数组
+        def _is_cupy_array(arr):
+            return cp is not None and isinstance(arr, cp.ndarray)
+
+        # 辅助函数：获取数组库（numpy或cupy）
+        def _get_array_lib(arr):
+            return cp if _is_cupy_array(arr) else np
+
+        # 辅助函数：处理数组中的负索引
+        def _handle_negative_indices(arr, dim_size):
+            """处理数组中的负索引，返回处理后的数组"""
+            lib = _get_array_lib(arr)
+            if lib.any(arr < 0):
+                arr = arr.copy()
+                arr[arr < 0] += dim_size
+            return arr
         
         def _normalize_neg_index(index, dim_size):
             """
@@ -1296,32 +1346,18 @@ class TN:
         # 辅助函数：处理基础索引为数组的情况
         def _process_base_array_index(base_idx, view_dim):
             dim_size = _get_base_dim_size(view_dim)
-            
+
             # 根据索引类型选择合适的数组库
-            if cp and isinstance(base_idx, cp.ndarray):
-                base_idx_arr = base_idx
-                is_cupy = True
-            else:
-                base_idx_arr = np.asarray(base_idx)
-                is_cupy = False
-            
+            base_idx_arr = base_idx if _is_cupy_array(base_idx) else np.asarray(base_idx)
+            lib = _get_array_lib(base_idx_arr)
+
             if np.issubdtype(base_idx_arr.dtype, np.bool_):
                 # 布尔数组 -> 整数数组
-                if is_cupy:
-                    base_idx_arr = cp.where(base_idx_arr)[0]
-                else:
-                    base_idx_arr = np.where(base_idx_arr)[0]
-            
-            # 处理负索引
-            if is_cupy:
-                if cp.any(base_idx_arr < 0):
-                    base_idx_arr = base_idx_arr.copy()
-                    base_idx_arr[base_idx_arr < 0] += dim_size
-            else:
-                if np.any(base_idx_arr < 0):
-                    base_idx_arr = base_idx_arr.copy()
-                    base_idx_arr[base_idx_arr < 0] += dim_size
-            
+                base_idx_arr = lib.where(base_idx_arr)[0]
+
+            # 处理负索引（使用提取的辅助函数）
+            base_idx_arr = _handle_negative_indices(base_idx_arr, dim_size)
+
             return base_idx_arr, len(base_idx_arr)
         
         # 辅助函数：处理基础索引为切片的情况
@@ -1400,31 +1436,29 @@ class TN:
         
         # 第六步：处理布尔数组索引
         if _is_boolean_index(current_index):
-            # 根据索引类型选择合适的where函数
-            if cp and isinstance(current_index, cp.ndarray):
-                bool_indices = cp.where(current_index)
-            else:
-                bool_indices = np.where(current_index)
+            # 使用提取的辅助函数获取数组库
+            lib = _get_array_lib(current_index)
+            bool_indices = lib.where(current_index)
             if len(bool_indices) != len(view_dims):
                 raise ValueError(f"Boolean index dimension mismatch: {len(bool_indices)} vs {len(view_dims)}")
-            
+
             combined_coords = list(base_index)
             for i, (view_dim, bool_idx) in enumerate(zip(view_dims, bool_indices)):
                 base_idx = base_index[view_dim]
-                
+
                 if isinstance(base_idx, slice):
                     # 切片 -> 布尔索引：线性变换
                     _, _, _, step, _ = _process_base_slice_index(base_idx, view_dim)
                     norm_base = _normalize_neg_index(base_idx, _get_base_dim_size(view_dim))
                     start = norm_base.start if norm_base.start is not None else 0
                     combined_coords[view_dim] = start + bool_idx * step
-                elif isinstance(base_idx, (np.ndarray, list)) or (cp and isinstance(base_idx, cp.ndarray)):
+                elif isinstance(base_idx, (np.ndarray, list)) or _is_cupy_array(base_idx):
                     # 数组 -> 布尔索引：查表
                     base_arr, _ = _process_base_array_index(base_idx, view_dim)
                     combined_coords[view_dim] = base_arr[bool_idx]
                 else:
                     raise NotImplementedError(f"Unsupported base index type: {type(base_idx)}")
-            
+
             return tuple(combined_coords)
         
         # 第七步：常规索引合并逻辑
@@ -1450,7 +1484,7 @@ class TN:
             # 根据基础索引类型选择处理方式
             if isinstance(base_idx, slice):
                 base_start, base_stop, base_step, step_val, view_dim_size = _process_base_slice_index(base_idx, view_dim)
-            elif isinstance(base_idx, (np.ndarray, list)) or (cp and isinstance(base_idx, cp.ndarray)):
+            elif isinstance(base_idx, (np.ndarray, list)) or _is_cupy_array(base_idx):
                 base_idx_arr, view_dim_size = _process_base_array_index(base_idx, view_dim)
             else:
                 raise NotImplementedError(f"Unsupported base index type: {type(base_idx)}")
@@ -1463,11 +1497,15 @@ class TN:
                 if isinstance(base_idx, slice):
                     # 切片 -> 整数：线性变换
                     actual_idx = base_start + norm_curr_idx * step_val
-                    if actual_idx >= base_stop:
+                    # 检查边界：下界和上界
+                    if actual_idx < base_start or actual_idx >= base_stop:
                         raise IndexError(f"Index {norm_curr_idx} out of bounds for view dimension size {view_dim_size}")
                     combined_coords[view_dim] = actual_idx
                 else:
                     # 数组 -> 整数：直接查表
+                    # 检查边界
+                    if norm_curr_idx < 0 or norm_curr_idx >= view_dim_size:
+                        raise IndexError(f"Index {norm_curr_idx} out of bounds for view dimension size {view_dim_size}")
                     combined_coords[view_dim] = base_idx_arr[norm_curr_idx]
             
             elif isinstance(norm_curr_idx, slice):
@@ -1500,36 +1538,21 @@ class TN:
                     # 数组 -> 切片：直接索引映射数组
                     combined_coords[view_dim] = base_idx_arr[norm_curr_idx]
             
-            elif isinstance(norm_curr_idx, (np.ndarray, list)) or (cp and isinstance(norm_curr_idx, cp.ndarray)):
-                # 根据索引类型选择合适的数组库
-                if cp and isinstance(norm_curr_idx, cp.ndarray):
-                    curr_idx_arr = norm_curr_idx
-                else:
-                    curr_idx_arr = np.asarray(norm_curr_idx)
-                
+            elif isinstance(norm_curr_idx, (np.ndarray, list)) or _is_cupy_array(norm_curr_idx):
+                # 使用提取的辅助函数获取数组库
+                curr_idx_arr = norm_curr_idx if _is_cupy_array(norm_curr_idx) else np.asarray(norm_curr_idx)
+                lib = _get_array_lib(curr_idx_arr)
+
                 if np.issubdtype(curr_idx_arr.dtype, np.bool_):
                     # 布尔数组 -> 整数数组
-                    # 根据数组类型选择合适的where函数
-                    if cp and isinstance(curr_idx_arr, cp.ndarray):
-                        bool_indices = cp.where(curr_idx_arr)[0]
-                    else:
-                        bool_indices = np.where(curr_idx_arr)[0]
+                    bool_indices = lib.where(curr_idx_arr)[0]
                     if len(bool_indices) == 0:
-                        # 根据数组类型选择合适的空数组创建方式
-                        if cp and isinstance(curr_idx_arr, cp.ndarray):
-                            combined_coords[view_dim] = cp.array([], dtype=int)
-                        else:
-                            combined_coords[view_dim] = np.array([], dtype=int)
+                        combined_coords[view_dim] = lib.array([], dtype=int)
                         continue
                     curr_idx_arr = bool_indices
-                
+
                 # 确保索引在有效范围内
-                # 根据数组类型选择合适的any函数
-                if cp and isinstance(curr_idx_arr, cp.ndarray):
-                    out_of_bounds = cp.any(curr_idx_arr >= view_dim_size)
-                else:
-                    out_of_bounds = np.any(curr_idx_arr >= view_dim_size)
-                if out_of_bounds:
+                if lib.any(curr_idx_arr >= view_dim_size):
                     raise IndexError(f"Array index out of bounds for view dimension size {view_dim_size}")
                 
                 if isinstance(base_idx, slice):
@@ -2554,18 +2577,18 @@ class TN:
         right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
-        
+
         if self.data.ndim == 0 or right_tensor.data.ndim == 0:
             raise RuntimeError('both arguments to matmul need to be at least 1D')
 
         # requires_grad属性在运算时传递到结果tensor
         requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
         ret = tensor(self.data @ right_tensor.data, device=dev, requires_grad=requires_grad)
-        
+
         if requires_grad:
-            ret.fromvars=(self,right_tensor) 
+            ret.fromvars=(self,right_tensor)
             ret.gradfuncs=(_matmul_grad_left,_matmul_grad_right)
-        
+
         return ret
 
     # '@'运算，右值为self，左值为TN，numpy数组，list，tuple，整数或浮点数
@@ -3114,6 +3137,10 @@ class TN:
         else:
             raise TypeError("dim must be None, an integer, or a tuple of integers")
         
+        # 如果处理后没有需要挤压的维度，直接返回原张量
+        if not new_dim:
+            return self
+
         # 根据原始张量的数据类型选择使用np或cp
         arrlib = self._get_array_lib()
 
@@ -3121,9 +3148,9 @@ class TN:
         new_dim = tuple(new_dim)  # type: ignore
         newarr = arrlib.squeeze(self.data, axis=new_dim)
         ret = TN()
-        ret.data = newarr        
+        ret.data = newarr
         ret.requires_grad = (is_grad_enabled() and self.requires_grad)
-        
+
         if ret.requires_grad:
             ret.fromvars = (self,)
             ret.parms = (new_dim,)
@@ -4080,9 +4107,9 @@ class TN:
                 item: TN = stack.pop(-1)
                 
                 # 以下代码调测时用于检查栈内节点是否都是已收到梯度的节点或梯度没有被异常置None
-                if item.grad_value is None:
-                    warnings.warn(f'item poped from stack has no grad_value, skip backward')
-                    continue
+                # if item.grad_value is None:
+                #     warnings.warn(f'item poped from stack has no grad_value, skip backward')
+                #     continue
 
                 if item.is_leaf:
                     item._save_grad(create_graph)
@@ -4125,8 +4152,7 @@ class TN:
                     hook_manager.process_backward_hooks(backward_hook_modules)
                 
                 # 待入栈节点入栈（vars_to_stack已经包含了所有可入栈的节点）
-                for var in vars_to_stack:
-                    stack.append(var)
+                stack.extend(vars_to_stack)
             # end of while stack
 
         # 清理钩子模块的缓存
@@ -4184,6 +4210,10 @@ class TN:
         
         return current_grad
 
+    def attach_zero_grad_sources(self:TN, sources:tuple|list):
+        return attach_zero_grad_sources(self,sources)
+
+# end of class TN
 
 class BackwardHookManager:
     """
@@ -5057,18 +5087,21 @@ def _get_device(device:str|int|Device=None)->Device:
     """ 
 
     if device is not None:
-        # 先将字符串或Device对象统一转换为Device对象
+        # 先将字符串、整数或Device对象统一转换为Device对象
         if isinstance(device, Device):
             return_device = device
-        elif isinstance(device, (str,int)):
+        elif isinstance(device, str):
             return_device = Device(device)
+        elif isinstance(device, int):
+            # 整数表示cuda设备索引
+            return_device = Device('cuda', device)
         else:
             raise RuntimeError(f"Invalid device type: {type(device).__name__}")
     else:
         # device参数为None，优先级：device上下文 > 默认设备
         if cp and is_in_cuda_context():
             # 当前线程在CUDA设备上下文中，使用当前CUDA设备
-            return_device = Device(cp.cuda.runtime.getDevice())
+            return_device = Device('cuda', cp.cuda.runtime.getDevice())
         else:
             # 否则使用默认设备
             return_device = get_default_device()
@@ -5216,42 +5249,73 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
             raise RuntimeError('Only floating point tensors can require gradients')
     return tsobj
 
-def from_numpy(arr:np.ndarray)->TN:
+def from_numpy(arr: np.ndarray | cp.ndarray, device: str | int | Device | None = None) -> TN:
     """
-    从numpy数组创建张量，与原数组共享内存。
-    
-    该函数将现有的numpy数组转换为Riemann张量对象，与numpy数组共享底层数据内存。
-    这意味着对张量的修改会影响原始numpy数组，反之亦然。
-    
+    从numpy或cupy数组创建张量，与原数组共享内存。
+
+    该函数将现有的numpy或cupy数组转换为Riemann张量对象，与输入数组共享底层数据内存。
+    这意味着对张量的修改会影响原始数组，反之亦然。
+
     参数:
-        arr: numpy数组，必须包含数值类型的数据
-    
+        arr: numpy或cupy数组，必须包含数值类型的数据。
+            如果是cupy数组，默认在CUDA设备上创建张量。
+        device (optional): 指定设备，可以是：
+            - None: 自动推断设备（numpy数组->CPU，cupy数组->CUDA）
+            - 'cpu': CPU设备
+            - 'cuda' 或 'cuda:N': CUDA设备
+            - Device对象: 指定设备对象
+            默认为None，自动根据输入数组类型推断。
+
     返回值:
-        TN: 新创建的张量对象，与输入的numpy数组共享内存
-    
+        TN: 新创建的张量对象，与输入的数组共享内存
+
     异常:
-        TypeError: 当输入不是numpy数组或数组包含非数值类型数据时抛出
-    
+        TypeError: 当输入不是numpy/cupy数组或数组包含非数值类型数据时抛出
+        RuntimeError: 当指定的CUDA设备不可用时抛出
+
     示例:
         >>> import numpy as np
+        >>> # 从numpy数组创建CPU张量
         >>> arr = np.array([1.0, 2.0, 3.0])
         >>> x = from_numpy(arr)
         >>> x[0] = 0  # 修改张量会影响原始numpy数组
         >>> print(arr)  # 输出: [0. 2. 3.]
-    
+
+        >>> # 从cupy数组创建CUDA张量（自动推断设备）
+        >>> import cupy as cp
+        >>> arr_cuda = cp.array([1.0, 2.0, 3.0])
+        >>> x_cuda = from_numpy(arr_cuda)  # 自动在cuda:0上创建
+
+        >>> # 显式指定设备
+        >>> x_cpu = from_numpy(arr, device='cpu')
+        >>> x_cuda = from_numpy(arr, device='cuda:0')
+
     注意事项:
         1. 创建的张量默认requires_grad=False，不追踪梯度
-        2. 张量与原始numpy数组共享内存，修改一方会影响另一方
+        2. 张量与原始数组共享内存，修改一方会影响另一方
         3. 输入数组必须是数值类型（整数、浮点数、复数等）
+        4. 当传入cupy数组时，如果显式指定device='cpu'，会尝试将数据转移到CPU
+        5. 当传入numpy数组时，如果显式指定device='cuda'，会尝试将数据转移到CUDA
     """
     array_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)  # type: ignore
     if not isinstance(arr, array_type):
         raise TypeError("array need to be numpy or cupy array")
-    
+
     if not is_numeric_array(arr):
         raise TypeError("dtype of array need to be numberic")
-    
-    return tensor(arr)
+
+    # 自动推断设备
+    if device is None:
+        if cp and isinstance(arr, cp.ndarray):
+            # cupy数组，使用CUDA设备
+            device = Device('cuda', arr.device.id)
+        else:
+            # numpy数组，使用CPU设备
+            device = Device('cpu')
+    else:
+        device = _get_device(device)
+
+    return tensor(arr, device=device)
 
 def _validate_shape(shape:tuple|list):
     '''
@@ -6589,21 +6653,29 @@ def _get_broadcast_axis(big_shape,small_shape):
         ValueError: 当两个数组形状不兼容（无法进行广播）时抛出
     """
     # 右对齐缺失的维度
-    len_of_bigshape= len(big_shape)
+    len_of_bigshape = len(big_shape)
     dims = len_of_bigshape - len(small_shape)
-    axis_list=[i for i in range(dims)]
-
-    for i in range(dims,len_of_bigshape):
+    
+    # 使用生成器表达式避免创建中间列表，直接转换为元组
+    # 前dims个轴总是需要广播（因为small_shape缺少这些维度）
+    prefix = range(dims)
+    
+    # 计算剩余维度中需要广播的轴
+    suffix = []
+    for i in range(dims, len_of_bigshape):
         j = i - dims
         # big_shape是计算结果数组，是广播后的shape，所以big_shape[i]>=small_shape[j]
         # 二者不等时，small_shape[j]一定是1，对应的i轴就需要广播
         if big_shape[i] != small_shape[j]:
-            if small_shape[j]==1:
-                axis_list.append(i)
+            if small_shape[j] == 1:
+                suffix.append(i)
             else:
-                raise ValueError(big_shape,small_shape)
-
-    return tuple(axis_list)
+                raise ValueError(big_shape, small_shape)
+    
+    # 合并结果并转换为元组
+    if suffix:
+        return tuple(prefix) + tuple(suffix)
+    return tuple(prefix)
 
 def _sum_backward(result_tensor:TN,i:int)->TN:
     dim, keepdims = result_tensor.parms[i]
@@ -7538,11 +7610,11 @@ def _matmul_grad_left(result_tensor:TN, i:int)->TN:
 
     left_ndim = left_tensor.data.ndim
     right_ndim = right_tensor.data.ndim
-    
+
     # 1. 一维向量与一维向量的情况
     if left_ndim == 1 and right_ndim == 1:
         return grad_value * right_tensor.conj()
-    
+
     # 2. 一维向量与多维矩阵的情况
     if left_ndim == 1 and right_ndim > 1:
         # 行向量乘矩阵结果还是行向量，result_tensor.grad扩充中行向量扩维为(1,n)
@@ -7554,24 +7626,24 @@ def _matmul_grad_left(result_tensor:TN, i:int)->TN:
         if sum_axes:  # 避免对空元组求和导致标量化
             return sum(mat_grad, dim=sum_axes, keepdim=False)
         return mat_grad
-    
+
     # 3. 多维矩阵与一维向量的情况
     if left_ndim > 1 and right_ndim == 1:
         # 结果如果是行向量，先列化，相当于转置，计算完成后恢复为行向量
         new_grad = grad_value.unsqueeze(-1)  # 扩维为二维
         new_right = right_tensor.unsqueeze(0).conj()  # 转换为(1,n)矩阵
-        
+
         return new_grad @ new_right
-    
+
     # 4. 多维矩阵与多维矩阵的一般情况
     # 比较left_tensor与result_tensor的shape中的广播维，获取需left_tensor广播轴序号的元组
     broadcast_axes = _get_broadcast_axis(result_tensor.data.shape[:-2], left_tensor.data.shape[:-2])
     mat_grad = grad_value @ right_tensor.mT.conj()
-    
+
     # 仅在需要广播时进行求和操作
     if broadcast_axes:
         return sum(mat_grad, dim=broadcast_axes, keepdim=False)
-    
+
     return mat_grad
 
 # 优化的矩阵乘法右梯度函数
@@ -7579,46 +7651,46 @@ def _matmul_grad_right(result_tensor:TN, i:int)->TN:
     left_tensor:TN = result_tensor.fromvars[i-1]
     right_tensor:TN = result_tensor.fromvars[i]
     grad_value = result_tensor.grad_value
-    
+
     left_ndim = left_tensor.data.ndim
     right_ndim = right_tensor.data.ndim
-    
+
     # 1. 一维向量与一维向量的情况
     if left_ndim == 1 and right_ndim == 1:
         return left_tensor.conj() * grad_value
-    
+
     # 2. 一维向量与多维矩阵的情况
     if left_ndim == 1 and right_ndim > 1:
         # 左行向量先列化，计算完成后恢复为行向量
         new_left = left_tensor.unsqueeze(1).conj()
         new_grad = grad_value.unsqueeze(-2)  # 插入倒数第二维
-        
+
         return new_left @ new_grad
-    
+
     # 3. 多维矩阵与一维向量的情况
     if left_ndim > 1 and right_ndim == 1:
         new_grad = grad_value.unsqueeze(-1)  # 扩维为二维
         mat_grad = left_tensor.mT.conj() @ new_grad
-        
+
         # 计算需要求和的轴
         sum_axes = tuple(range(left_ndim - 2))
         if sum_axes:  # 避免对空元组求和导致标量化
             mat_grad = sum(mat_grad, dim=sum_axes, keepdim=False)
-        
+
         # 如果结果是多维的，删除最后一个维度
         if mat_grad.data.ndim > 1:
             return mat_grad.squeeze(-1)
-        
+
         return mat_grad
-    
+
     # 4. 多维矩阵与多维矩阵的一般情况
     broadcast_axes = _get_broadcast_axis(result_tensor.data.shape[:-2], right_tensor.data.shape[:-2])
     mat_grad = left_tensor.mT.conj() @ grad_value
-    
+
     # 仅在需要广播时进行求和操作
     if broadcast_axes:
         return sum(mat_grad, dim=broadcast_axes, keepdim=False)
-    
+
     return mat_grad
 
 def _div_grad_left(result_tensor:TN, i:int)->TN:
@@ -8172,6 +8244,23 @@ def sign(x:TN)->TN:
     arrlib = x._get_array_lib()
     return tensor(arrlib.sign(x.data),device=x.device)
 
+def _where_backward(r, i):
+    """where函数的梯度计算函数（外部定义以避免重复创建闭包）"""
+    grad = r.grad_value * r.parms[i]
+    var = r.fromvars[i]
+    var_shape = var.shape
+    grad_shape = grad.shape
+
+    # 处理广播场景
+    if var_shape != grad_shape:
+        broadcast_axes = _get_broadcast_axis(grad_shape, var_shape)
+        grad = grad.sum(dim=broadcast_axes, keepdim=False)
+        grad = grad._reshape(var_shape)
+    
+    # 仅在类型不一致时进行转换
+    grad = grad.type(var.dtype)
+    return grad
+
 @overload
 def where(cond: TN, x: None, y: None) -> Tuple[TN, ...]:
     ...
@@ -8217,30 +8306,11 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
         ret.fromvars = (x, y)
         # 缓存条件掩码，避免在梯度计算中重复转换
         cond_mask = cond.data
+        # 使用1.0 - cond_mask获取反向掩码，简洁高效
         neg_cond_mask = 1.0 - cond_mask
         ret.parms = (cond_mask, neg_cond_mask)
-        
-        # 优化梯度计算，避免重复的类型转换，支持所有可广播场景
-        def grad_func(r, i):
-            # 使用缓存的条件掩码
-            grad = r.grad_value * ret.parms[i]
-            var = r.fromvars[i]
-            var_shape = var.shape
-            grad_shape = grad.shape
-
-            # 处理广播场景
-            if var_shape != grad_shape:
-                # 获取需要广播的轴
-                broadcast_axes = _get_broadcast_axis(grad_shape, var_shape)
-                # 对广播的轴进行求和
-                grad = grad.sum(dim=broadcast_axes, keepdim=False)
-                # 确保形状与原始张量一致
-                grad = grad._reshape(var_shape)
-            
-            # 确保梯度类型与var一致
-            return grad.type(var.dtype)
-        
-        ret.gradfuncs = (grad_func, grad_func)
+        # 使用外部定义的梯度函数，避免每次调用where都创建新的闭包
+        ret.gradfuncs = (_where_backward, _where_backward)
     
     return ret
 
@@ -9824,3 +9894,116 @@ def fwbw_all_zero(x:TN)->TN:
         ret.gradfuncs = (_fwbw_all_zero_backward,)
     
     return ret
+
+def attach_zero_grad_sources(self:TN, sources:tuple|list):
+    """
+    将多个张量作为来源张量依附到self张量上，不改变self的值，但self可以向这些张量传递0梯度。
+    
+    该函数用于将张量加入计算图，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
+    当调用backward时，self会向依附的来源张量传递全0梯度。
+    
+    参数:
+        sources: 要依附的来源张量集合，可以是tuple、list或set。
+                只有需要梯度(requires_grad=True)且不是self本身的张量才会被依附。
+        
+    返回:
+        self: 返回修改后的self张量，便于链式调用。
+        
+    示例:
+        >>> a = tensor([1.0, 2.0], requires_grad=True)
+        >>> b = tensor([3.0, 4.0], requires_grad=True)
+        >>> c = tensor([5.0, 6.0], requires_grad=True)
+        >>> c.attach_zero_grad_sources([a, b])  # 将a,b加入c的计算图
+        >>> # c的值不变，但backward时c会向a,b传递0梯度
+    """
+    def _zero_grad_backward(result:TN, i):
+        return zeros_like(result.fromvars[i])
+
+    var_list = []
+    func_list = []
+    requires_grad = False
+    for var in sources:
+        if var is not self and isinstance(var,TN) and var.requires_grad:
+            var_list.append(var)
+            func_list.append(_zero_grad_backward)
+            requires_grad = True
+    
+    if requires_grad:
+        fromvar_list = list(self.fromvars)
+        grad_func_list = list(self.gradfuncs)
+        fromvar_list.extend(var_list)
+        grad_func_list.extend(func_list)
+        self.fromvars = tuple(fromvar_list)
+        self.gradfuncs = tuple(grad_func_list)
+        self.requires_grad = requires_grad
+    
+    return self
+
+def share_grad_map(tensors:tuple|list):
+    """
+    将一组张量相互连接到一个共享的计算图中，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
+
+    该函数对输入的每个需要梯度的张量进行克隆，然后将所有其他张量作为零梯度来源
+    依附到克隆张量上。这样可以在保持张量值和原始梯度计算不变的同时，将所有张量相互连接到
+    一个共享的计算图中。对于原本不参与计算的张量，它们会收到0梯度而非None。
+
+    参数:
+        tensors: 输入张量序列，必须是tuple或list类型。
+                序列中的每个张量都会被处理：
+                - 需要梯度的张量会被克隆，并将所有其他张量作为零梯度来源依附到克隆张量
+                - 不需要梯度的张量或非TN对象保持原样
+    
+    返回:
+        与输入类型相同的张量序列（tuple或list）。
+        返回的张量与输入张量值相同，但计算图已相互连接。
+        注意：对于需要梯度的张量，返回的是克隆张量而非原始张量。
+
+    异常:
+        ValueError: 当tensors不是tuple或list类型时抛出。
+
+    示例:
+        >>> a = tensor([1.0, 2.0], requires_grad=True)
+        >>> b = tensor([3.0, 4.0], requires_grad=True)
+        >>> c = tensor([5.0, 6.0], requires_grad=True)
+        >>> 
+        >>> # 定义前向计算函数，只使用a和b
+        >>> def func(t):
+        ...     a, b, c = t
+        ...     return (a * b).sum()
+        >>> 
+        >>> # 映射前：c不参与计算，不会收到梯度
+        >>> y1 = func((a, b, c))
+        >>> y1.backward()
+        >>> print(f"a.grad={a.grad}, b.grad={b.grad}, c.grad={c.grad}")
+        a.grad=tensor([3., 4.]), b.grad=tensor([1., 2.]), c.grad=None
+        >>> 
+        >>> # 重置张量
+        >>> a = tensor([1.0, 2.0], requires_grad=True)
+        >>> b = tensor([3.0, 4.0], requires_grad=True)
+        >>> c = tensor([5.0, 6.0], requires_grad=True)
+        >>> 
+        >>> # 映射后：所有张量相互连接，c会收到0梯度
+        >>> a_new, b_new, c_new = share_grad_map((a, b, c))
+        >>> y2 = func((a_new, b_new, c_new))
+        >>> y2.backward()
+        >>> print(f"a.grad={a_new.grad}, b.grad={b_new.grad}, c.grad={c_new.grad}")
+        a.grad=tensor([3., 4.]), b.grad=tensor([1., 2.]), c.grad=tensor([0., 0.])
+        >>> 
+        >>> # 验证：前向值不变，a和b梯度不变，c从None变为0
+        >>> assert float(y1.data) == float(y2.data)
+        >>> assert (a_new.grad == tensor([3., 4.])).all()
+        >>> assert (b_new.grad == tensor([1., 2.])).all()
+        >>> assert (c_new.grad == tensor([0., 0.])).all()
+    """
+    if not isinstance(tensors,(tuple,list)):
+        raise ValueError("'tensors' need to be tuple or list of TN tensors")
+
+    target_list = []
+    for t in tensors:
+        if isinstance(t,TN) and t.requires_grad:
+            new_t = t.clone()
+            target_list.append(new_t.attach_zero_grad_sources(tensors))
+        else:
+            target_list.append(t)
+    
+    return type(tensors)(target_list)

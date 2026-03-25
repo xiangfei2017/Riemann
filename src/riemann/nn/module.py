@@ -986,41 +986,17 @@ class Module:
             forward_inputs = tuple(forward_input_tensors)
             
             if isinstance(output, (tuple, list)):
-                # 处理多输出模块的反向钩子调用问题
+                # 多输出模块的梯度共享处理
                 # 
-                # 问题场景：当模块有多个输出时，如果某些输出不直接参与损失函数计算
-                # (例如：out1不用于loss，out2用于loss)，则out1及其依赖的输入永远不会
-                # 收到梯度，导致反向钩子因梯度收集条件不满足而永远无法被调用。
+                # 问题：当模块有多个输出时，若某些输出不参与损失计算（如out1不用于loss，out2用于loss），
+                # 则out1及其依赖的输入收不到梯度，可能导致反向钩子无法被调用。
                 #
-                # 解决方案：通过"零值梯度注入"机制确保所有原输出和输入都能收到梯度
-                # 1. 将所有需要梯度的输出用fwbw_all_zero()转换后求和，得到一个不影响前向结果的零值
-                # 2. 将这个零值加到每个需要梯度的输出上
-                # 3. 这样所有输出都通过相加操作连接在一起，形成梯度共享
-                # 4. 反向传播时，即使某个输出不直接参与损失计算，也能将零值梯度传到原来的输出中，
-                #    梯度仅依赖该输出的输入也因此能收到梯度，从而确保触发反向钩子的调用
-                # 5. 虽然修改生成的新输出节点，仍然不一定参与前向计算，
-                #    但是通过"零值梯度注入"机制，确保所有原输出和输入都能收到梯度
+                # 解决：使用share_grad_map()将所有输出克隆并相互连接，使每个输出都能通过"零梯度连接"
+                # 收到梯度，确保反向钩子被正确触发。使用clone()避免破坏原计算图。
                 #
-                # 注意：不使用该机制，反向预处理钩子和反向钩子也能正常工作，
-                # 只是调用反向钩子时不参与loss前向计算的输入的梯度值为None，
-                # 比如：in1仅贡献out1，out1不参与前向的损失计算，调反向用钩子时，in1.grad_value为None
-                # 而pytorch在此场景梯度值为0，与riemann不一致, 
-                # 其实in1.grad_value为None更合理。此处通过"零值梯度注入"机制只是为了保持和pytorch的处理结果一致
-                tn_outputs = [fwbw_all_zero(out) for out in output if isinstance(out, TN) and out.requires_grad]
-                if tn_outputs:
-                    # 计算零值梯度：将所有需要梯度的输出相加
-                    # 前向结果为零，不影响原输出的值
-                    zero_sum = sumall(*tn_outputs)
-                    
-                    # 将零值梯度注入到每个需要梯度的输出中
-                    # 这样所有输出都参与了计算图，确保梯度能传播到每个输出
-                    modified_output = []
-                    for out in output:
-                        if isinstance(out, TN) and out.requires_grad:
-                            modified_output.append(out + zero_sum)
-                        else:
-                            modified_output.append(out)
-                    output = type(output)(modified_output)
+                # 注：此机制仅为兼容PyTorch行为：调用反向钩子时，未参与计算的输入返回0梯度
+                # 如不用share_grad_map转换output共享梯度，对未参与计算的输入梯度为None，其实这样更合理
+                output = share_grad_map(output)
 
                 all_outputs = tuple([out for out in output if isinstance(out, TN)])
                 if all_outputs:
