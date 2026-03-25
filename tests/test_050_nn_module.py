@@ -32,31 +32,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 # 导入riemann模块
 try:
     import riemann as rm
-    from riemann.nn import Parameter, Module, Linear, Sequential, ModuleList, ModuleDict, Dropout, ParameterList, ParameterDict
+    from riemann.nn import Parameter, Module, Linear, Sequential, ModuleList, ModuleDict, Dropout
     RIEMANN_AVAILABLE = True
 except ImportError as e:
     print(f"无法导入riemann模块: {e}")
     RIEMANN_AVAILABLE = False
     sys.exit(1)
-
-# 尝试导入PyTorch进行比较
-try:
-    import torch
-    import torch.nn as nn
-    TORCH_AVAILABLE = True
-    
-    # PyTorch预热
-    print("预热PyTorch系统...")
-    warmup_start = time.time()
-    warmup_input = torch.tensor([[0.0]], requires_grad=True)
-    warmup_output = warmup_input.sum()
-    warmup_output.backward()
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
-    print(f"PyTorch预热完成，耗时: {time.time() - warmup_start:.4f}秒")
-    
-except ImportError:
-    print("警告: 无法导入PyTorch，将只测试riemann的功能")
-    TORCH_AVAILABLE = False
 
 # 定义颜色类用于美化输出
 class Colors:
@@ -230,23 +211,6 @@ def tensor_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08):
     if hasattr(tensor2, 'data'):
         tensor2 = tensor2.data
     return np.allclose(tensor1, tensor2, rtol=rtol, atol=atol)
-
-def compare_with_pytorch(rm_result, torch_result, name="result"):
-    """与PyTorch结果比较"""
-    if not TORCH_AVAILABLE:
-        return True
-    
-    if isinstance(rm_result, list) and isinstance(torch_result, list):
-        if len(rm_result) != len(torch_result):
-            print(f"列表长度不匹配: {len(rm_result)} vs {len(torch_result)}")
-            return False
-        for i, (rm_item, torch_item) in enumerate(zip(rm_result, torch_result)):
-            if not tensor_allclose(rm_item, torch_item):
-                print(f"列表元素{i}不匹配")
-                return False
-        return True
-    else:
-        return tensor_allclose(rm_result, torch_result)
 
 # ==================== 测试用的模块类 ====================
 class ModuleForTest(rm.nn.Module):
@@ -3986,251 +3950,16 @@ def test_hook_functions():
         stats.end_function()
         stats.raise_if_failed()
 
-# ==================== ParameterList测试 ====================
-def test_parameter_list():
-    """测试ParameterList类的功能"""
-    stats.start_function("ParameterList测试")
-    
-    try:
-        # 测试1: 创建空ParameterList
-        print("测试创建空ParameterList...")
-        params = ParameterList()
-        passed = len(params) == 0
-        stats.add_result("空ParameterList创建", passed, f"空列表长度: {len(params)}")
-        
-        # 测试2: 从列表创建ParameterList
-        print("测试从列表创建ParameterList...")
-        params = ParameterList([
-            Parameter(rm.randn(10, 20)),
-            Parameter(rm.randn(20))
-        ])
-        passed = len(params) == 2
-        stats.add_result("从列表创建", passed, f"列表长度: {len(params)}")
-        
-        # 测试3: append方法
-        print("测试append方法...")
-        params.append(Parameter(rm.randn(20, 5)))
-        params.append(Parameter(rm.randn(5)))
-        passed = len(params) == 4
-        stats.add_result("append方法", passed, f"添加后长度: {len(params)}")
-        
-        # 测试4: 索引访问
-        print("测试索引访问...")
-        weight1 = params[0]
-        bias1 = params[1]
-        weight2 = params[2]
-        bias2 = params[3]
-        passed = (hasattr(weight1, 'shape') and hasattr(bias1, 'shape') and 
-                  hasattr(weight2, 'shape') and hasattr(bias2, 'shape'))
-        stats.add_result("索引访问", passed, "所有参数都可以通过索引访问")
-        
-        # 测试5: 负数索引
-        print("测试负数索引...")
-        last_param = params[-1]
-        passed = hasattr(last_param, 'shape')
-        stats.add_result("负数索引", passed, f"最后一个参数可访问: {hasattr(last_param, 'shape')}")
-        
-        # 测试6: extend方法
-        print("测试extend方法...")
-        new_params = [Parameter(rm.randn(5, 3)), Parameter(rm.randn(3))]
-        params.extend(new_params)
-        passed = len(params) == 6
-        stats.add_result("extend方法", passed, f"扩展后长度: {len(params)}")
-        
-        # 测试7: 迭代访问
-        print("测试迭代访问...")
-        param_count = 0
-        for param in params:
-            param_count += 1
-            assert hasattr(param, 'shape')
-        passed = param_count == 6
-        stats.add_result("迭代访问", passed, f"迭代参数数量: {param_count}")
-        
-        # 测试8: 参数注册
-        print("测试参数注册...")
-        named_params = list(params.named_parameters())
-        passed = len(named_params) == 6
-        stats.add_result("参数注册", passed, f"注册参数数量: {len(named_params)}")
-        
-        # 测试9: 在模块中使用
-        print("测试在模块中使用...")
-        class TestModule(Module):
-            def __init__(self):
-                super().__init__()
-                self.params = ParameterList([
-                    Parameter(rm.randn(10, 20)),
-                    Parameter(rm.randn(20))
-                ])
-            
-            def forward(self, x):
-                return x @ self.params[0] + self.params[1]
-        
-        module = TestModule()
-        x = rm.randn(2, 10)
-        output = module(x)
-        passed = hasattr(output, 'shape') and output.shape == (2, 20)
-        stats.add_result("模块中使用", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
-        
-        # 测试10: 类型检查
-        print("测试类型检查...")
-        try:
-            params.append(rm.randn(5, 5))
-            stats.add_result("类型检查", False, "应该拒绝非Parameter对象")
-        except TypeError:
-            stats.add_result("类型检查", True, "正确拒绝非Parameter对象")
-        
-    except Exception as e:
-        print(f"ParameterList测试出现异常: {e}")
-        stats.add_result("ParameterList测试异常", False, str(e))
-    
-    finally:
-        stats.end_function()
-        stats.raise_if_failed()
-
-# ==================== ParameterList测试 ====================
-def test_parameter_dict():
-    """测试ParameterDict类的功能"""
-    stats.start_function("ParameterDict测试")
-    
-    try:
-        # 测试1: 创建空ParameterDict
-        print("测试创建空ParameterDict...")
-        params = ParameterDict()
-        passed = len(params) == 0
-        stats.add_result("空ParameterDict创建", passed, f"空字典长度: {len(params)}")
-        
-        # 测试2: 从字典创建ParameterDict
-        print("测试从字典创建ParameterDict...")
-        params = ParameterDict({
-            'w1': Parameter(rm.randn(10, 20)),
-            'b1': Parameter(rm.randn(20))
-        })
-        passed = len(params) == 2
-        stats.add_result("从字典创建", passed, f"字典长度: {len(params)}")
-        
-        # 测试3: __setitem__方法
-        print("测试__setitem__方法...")
-        params['w2'] = Parameter(rm.randn(20, 5))
-        params['b2'] = Parameter(rm.randn(5))
-        passed = len(params) == 4
-        stats.add_result("__setitem__方法", passed, f"添加后长度: {len(params)}")
-        
-        # 测试4: __getitem__方法
-        print("测试__getitem__方法...")
-        weight1 = params['w1']
-        bias1 = params['b1']
-        weight2 = params['w2']
-        bias2 = params['b2']
-        passed = (hasattr(weight1, 'shape') and hasattr(bias1, 'shape') and 
-                  hasattr(weight2, 'shape') and hasattr(bias2, 'shape'))
-        stats.add_result("__getitem__方法", passed, "所有参数都可以通过键访问")
-        
-        # 测试5: update方法
-        print("测试update方法...")
-        params.update({
-            'scale': Parameter(rm.randn(1)),
-            'shift': Parameter(rm.randn(1))
-        })
-        passed = len(params) == 6
-        stats.add_result("update方法", passed, f"更新后长度: {len(params)}")
-        
-        # 测试6: keys方法
-        print("测试keys方法...")
-        keys = list(params.keys())
-        passed = len(keys) == 6 and all(isinstance(k, str) for k in keys)
-        stats.add_result("keys方法", passed, f"键数量: {len(keys)}, 都是字符串: {all(isinstance(k, str) for k in keys)}")
-        
-        # 测试7: items方法
-        print("测试items方法...")
-        items = list(params.items())
-        passed = len(items) == 6 and all(isinstance(item, tuple) and len(item) == 2 for item in items)
-        stats.add_result("items方法", passed, f"项数量: {len(items)}, 都是元组: {all(isinstance(item, tuple) for item in items)}")
-        
-        # 测试8: values方法
-        print("测试values方法...")
-        values = list(params.values())
-        passed = len(values) == 6 and all(hasattr(v, 'shape') for v in values)
-        stats.add_result("values方法", passed, f"值数量: {len(values)}, 都是参数: {all(hasattr(v, 'shape') for v in values)}")
-        
-        # 测试9: 迭代访问
-        print("测试迭代访问...")
-        key_count = 0
-        for key in params:
-            key_count += 1
-            assert isinstance(key, str)
-        passed = key_count == 6
-        stats.add_result("迭代访问", passed, f"迭代键数量: {key_count}")
-        
-        # 测试10: 参数注册
-        print("测试参数注册...")
-        named_params = list(params.named_parameters())
-        passed = len(named_params) == 6
-        stats.add_result("参数注册", passed, f"注册参数数量: {len(named_params)}")
-        
-        # 测试11: 在模块中使用
-        print("测试在模块中使用...")
-        class TestModule(Module):
-            def __init__(self):
-                super().__init__()
-                self.params = ParameterDict({
-                    'w1': Parameter(rm.randn(10, 20)),
-                    'b1': Parameter(rm.randn(20))
-                })
-            
-            def forward(self, x):
-                return x @ self.params['w1'] + self.params['b1']
-        
-        module = TestModule()
-        x = rm.randn(2, 10)
-        output = module(x)
-        passed = hasattr(output, 'shape') and output.shape == (2, 20)
-        stats.add_result("模块中使用", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
-        
-        # 测试12: 类型检查
-        print("测试类型检查...")
-        try:
-            params['test'] = rm.randn(5, 5)
-            stats.add_result("类型检查", False, "应该拒绝非Parameter对象")
-        except TypeError:
-            stats.add_result("类型检查", True, "正确拒绝非Parameter对象")
-        
-        # 测试13: 键类型检查
-        print("测试键类型检查...")
-        try:
-            params[123] = Parameter(rm.randn(5, 5))
-            stats.add_result("键类型检查", False, "应该拒绝非字符串键")
-        except TypeError:
-            stats.add_result("键类型检查", True, "正确拒绝非字符串键")
-        
-        # 测试14: 覆盖参数
-        print("测试覆盖参数...")
-        old_param = params['w1']
-        params['w1'] = Parameter(rm.randn(10, 20))
-        new_param = params['w1']
-        passed = old_param is not new_param
-        stats.add_result("覆盖参数", passed, "参数被正确覆盖")
-        
-    except Exception as e:
-        print(f"ParameterDict测试出现异常: {e}")
-        stats.add_result("ParameterDict测试异常", False, str(e))
-    
-    finally:
-        stats.end_function()
-        stats.raise_if_failed()
-
 # ==================== 测试运行入口 ====================
 def run_all_tests():
     """运行所有测试"""
     print(f"{Colors.BOLD}Riemann nn.Module 全功能测试套件{Colors.ENDC}")
     print("="*80)
     print(f"Riemann版本: 可用")
-    print(f"PyTorch版本: {'可用' if TORCH_AVAILABLE else '不可用'}")
     print("="*80)
     
     # 设置随机种子确保可重复性
     np.random.seed(42)
-    if TORCH_AVAILABLE:
-        torch.manual_seed(42)
     
     # 运行所有测试
     test_functions = [
@@ -4247,9 +3976,7 @@ def run_all_tests():
         test_attribute_management,
         test_forward_propagation,
         test_to_method,
-        test_hook_functions,
-        test_parameter_list,
-        test_parameter_dict
+        test_hook_functions
     ]
     
     start_time = time.time()

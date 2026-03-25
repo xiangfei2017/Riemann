@@ -3469,8 +3469,13 @@ class Sequential(Module):
             >>> seq = Sequential(modules)
         """
         super().__init__()
-        for idx, module in enumerate(modules):
-            self.add_module(str(idx), module)
+        # 处理单个字典参数的情况（OrderedDict或普通dict）
+        if len(modules) == 1 and isinstance(modules[0], dict):
+            for key, module in modules[0].items():
+                self.add_module(str(key), module)
+        else:
+            for idx, module in enumerate(modules):
+                self.add_module(str(idx), module)
 
     def forward(self, x):
         """
@@ -3497,6 +3502,83 @@ class Sequential(Module):
         for i, module in enumerate(self.children()):
             x = module(x)
         return x
+
+    def __iter__(self):
+        """
+        迭代器支持 (Iterator Support)
+        
+        返回子模块的迭代器，支持使用 for 循环遍历 Sequential 中的所有层。
+        
+        Returns:
+            iterator: 子模块的迭代器
+            
+        Examples:
+            >>> seq = Sequential(Linear(10, 20), ReLU(), Linear(20, 5))
+            >>> for layer in seq:
+            ...     print(layer)
+            >>> 
+            >>> # 注册钩子
+            >>> for layer in model:
+            ...     layer.register_forward_hook(hook_fn)
+            
+        Note:
+            - 迭代顺序与模块注册顺序一致
+            - 等价于 iter(self.children())
+        """
+        return iter(self.children())
+
+    def __len__(self):
+        """
+        返回子模块数量 (Return Number of Submodules)
+        
+        Returns:
+            int: Sequential 中包含的子模块数量
+            
+        Examples:
+            >>> seq = Sequential(Linear(10, 20), ReLU(), Linear(20, 5))
+            >>> len(seq)
+            3
+        """
+        return len(list(self.children()))
+
+    def __getitem__(self, idx):
+        """
+        索引访问子模块 (Index Access)
+        
+        支持通过整数索引访问 Sequential 中的子模块。
+        
+        Args:
+            idx (int): 子模块索引，从 0 开始
+            
+        Returns:
+            Module: 指定索引处的子模块
+            
+        Raises:
+            IndexError: 索引超出范围
+            TypeError: 索引不是整数
+            
+        Examples:
+            >>> seq = Sequential(Linear(10, 20), ReLU(), Linear(20, 5))
+            >>> layer1 = seq[0]  # 第一个 Linear 层
+            >>> layer2 = seq[1]  # ReLU 层
+            >>> layer3 = seq[2]  # 第二个 Linear 层
+            >>> 
+            >>> # 负数索引支持
+            >>> last_layer = seq[-1]  # 最后一个层
+            
+        Note:
+            - 索引从 0 开始
+            - 支持负数索引（-1 表示最后一个元素）
+            - 返回的是原始模块对象，不是副本
+        """
+        if not isinstance(idx, int):
+            raise TypeError(f"Sequential indices must be integers, not {type(idx)}")
+        modules = list(self.children())
+        if idx < 0:
+            idx = len(modules) + idx
+        if idx < 0 or idx >= len(modules):
+            raise IndexError(f"Sequential index {idx} out of range")
+        return modules[idx]
 
 # end of class Sequential
 
@@ -3621,7 +3703,7 @@ class ModuleList(Module):
         """
         索引访问模块 (Index Access)
         
-        支持整数索引访问模块列表中的模块。
+        支持整数索引访问模块列表中的模块，支持负数索引。
         
         Args:
             idx (int): 模块索引
@@ -3629,12 +3711,24 @@ class ModuleList(Module):
         Returns:
             Module: 指定索引处的模块
             
+        Raises:
+            TypeError: 如果 idx 不是整数
+            IndexError: 如果索引超出范围
+            
         Examples:
             >>> layers = ModuleList([Linear(10, 20), ReLU(), Linear(20, 5)])
             >>> layer = layers[1]  # 获取ReLU层
             >>> first_layer = layers[0]  # 获取第一个Linear层
+            >>> last_layer = layers[-1]  # 获取最后一个层（负数索引）
         """
-        return list(self._modules.values())[idx]
+        if not isinstance(idx, int):
+            raise TypeError(f"ModuleList indices must be integers, not {type(idx)}")
+        modules = list(self._modules.values())
+        if idx < 0:
+            idx = len(modules) + idx
+        if idx < 0 or idx >= len(modules):
+            raise IndexError(f"ModuleList index {idx} out of range")
+        return modules[idx]
 
     def __iter__(self):
         """
@@ -3667,6 +3761,169 @@ class ModuleList(Module):
         """
         return len(self._modules)
 
+    def insert(self, idx, module):
+        """
+        在指定位置插入模块 (Insert Module)
+        
+        在指定索引位置插入一个新模块，该位置及之后的模块向后移动。
+        
+        Args:
+            idx (int): 插入位置的索引，从 0 开始
+            module (Module): 要插入的模块
+            
+        Raises:
+            TypeError: 如果 idx 不是整数
+            IndexError: 如果 idx 超出范围（允许等于长度，表示在末尾添加）
+            
+        Examples:
+            >>> layers = ModuleList([Linear(10, 20), Linear(20, 5)])
+            >>> layers.insert(1, ReLU())  # 在两个 Linear 层之间插入 ReLU
+            >>> print(len(layers))  # 3
+            >>> 
+            >>> # 在开头插入
+            >>> layers.insert(0, Linear(5, 10))
+            >>> 
+            >>> # 在末尾插入（等同于 append）
+            >>> layers.insert(len(layers), Linear(5, 1))
+        """
+        if not isinstance(idx, int):
+            raise TypeError(f"ModuleList indices must be integers, not {type(idx)}")
+        if idx < 0 or idx > len(self._modules):
+            raise IndexError(f"ModuleList index {idx} out of range")
+        
+        # 将 idx 之后的模块向后移动
+        for i in range(len(self._modules) - 1, idx - 1, -1):
+            self._modules[str(i + 1)] = self._modules[str(i)]
+        
+        # 在 idx 位置插入新模块
+        self._modules[str(idx)] = module
+
+    def pop(self, idx=-1):
+        """
+        移除并返回指定位置的模块 (Pop Module)
+        
+        移除指定索引位置的模块并返回它。默认移除最后一个模块。
+        
+        Args:
+            idx (int, optional): 要移除的模块索引，默认 -1（最后一个）
+            
+        Returns:
+            Module: 被移除的模块
+            
+        Raises:
+            TypeError: 如果 idx 不是整数
+            IndexError: 如果 ModuleList 为空或索引超出范围
+            
+        Examples:
+            >>> layers = ModuleList([Linear(10, 20), ReLU(), Linear(20, 5)])
+            >>> last_layer = layers.pop()  # 移除并返回最后一个模块
+            >>> first_layer = layers.pop(0)  # 移除并返回第一个模块
+            >>> print(len(layers))  # 1
+        """
+        if not isinstance(idx, int):
+            raise TypeError(f"ModuleList indices must be integers, not {type(idx)}")
+        if len(self._modules) == 0:
+            raise IndexError("pop from empty ModuleList")
+        if idx < 0:
+            idx = len(self._modules) + idx
+        if idx < 0 or idx >= len(self._modules):
+            raise IndexError(f"ModuleList index {idx} out of range")
+        
+        # 获取要移除的模块
+        module = self._modules[str(idx)]
+        
+        # 将 idx 之后的模块向前移动
+        for i in range(idx, len(self._modules) - 1):
+            self._modules[str(i)] = self._modules[str(i + 1)]
+        
+        # 删除最后一个键（因为已经向前移动了）
+        del self._modules[str(len(self._modules) - 1)]
+        
+        return module
+
+    def clear(self):
+        """
+        清空模块列表 (Clear Module List)
+        
+        移除 ModuleList 中的所有模块。
+        
+        Examples:
+            >>> layers = ModuleList([Linear(10, 20), ReLU(), Linear(20, 5)])
+            >>> layers.clear()
+            >>> print(len(layers))  # 0
+            >>> 
+            >>> # 清空已空的列表不会报错
+            >>> layers.clear()  # 安全操作
+        """
+        self._modules.clear()
+
+    def index(self, module):
+        """
+        查找模块的索引 (Index of Module)
+        
+        返回指定模块在 ModuleList 中的索引位置。
+        
+        Args:
+            module (Module): 要查找的模块
+            
+        Returns:
+            int: 模块的索引位置
+            
+        Raises:
+            ValueError: 如果模块不在 ModuleList 中
+            
+        Examples:
+            >>> relu = ReLU()
+            >>> layers = ModuleList([Linear(10, 20), relu, Linear(20, 5)])
+            >>> idx = layers.index(relu)
+            >>> print(idx)  # 1
+        """
+        for i, m in enumerate(self._modules.values()):
+            if m is module:
+                return i
+        raise ValueError(f"{module} is not in ModuleList")
+
+    def remove(self, module):
+        """
+        移除指定模块 (Remove Module)
+        
+        从 ModuleList 中移除第一个匹配的模块。
+        
+        Args:
+            module (Module): 要移除的模块
+            
+        Raises:
+            ValueError: 如果模块不在 ModuleList 中
+            
+        Examples:
+            >>> relu = ReLU()
+            >>> layers = ModuleList([Linear(10, 20), relu, Linear(20, 5)])
+            >>> layers.remove(relu)
+            >>> print(len(layers))  # 2
+        """
+        idx = self.index(module)
+        self.pop(idx)
+
+    def __iadd__(self, modules):
+        """
+        就地扩展模块列表 (In-place Extend)
+        
+        使用 += 运算符就地扩展模块列表。
+        
+        Args:
+            modules (iterable): 包含 Module 对象的迭代器
+            
+        Returns:
+            ModuleList: 返回自身以支持链式操作
+            
+        Examples:
+            >>> layers = ModuleList([Linear(10, 20)])
+            >>> layers += [ReLU(), Linear(20, 5)]
+            >>> print(len(layers))  # 3
+        """
+        self.extend(modules)
+        return self
+
 # end of class
 
 class ModuleDict(Module):
@@ -3682,14 +3939,130 @@ class ModuleDict(Module):
         return self._modules[key]
 
     def update(self, modules):
-        if isinstance(modules, dict):
+        """
+        更新模块字典 (Update Module Dict)
+        
+        从另一个字典或ModuleDict更新当前模块字典。
+        
+        Args:
+            modules (dict or ModuleDict): 要更新的模块字典
+            
+        Raises:
+            TypeError: 如果 modules 不是字典或 ModuleDict 类型
+            
+        Examples:
+            >>> module_dict = ModuleDict({'fc1': Linear(10, 20)})
+            >>> module_dict.update({'fc2': Linear(20, 5), 'fc3': Linear(5, 1)})
+            >>> print(len(module_dict))  # 3
+            >>> 
+            >>> # 从另一个 ModuleDict 更新
+            >>> other = ModuleDict({'fc4': Linear(1, 10)})
+            >>> module_dict.update(other)
+        """
+        if isinstance(modules, (dict, ModuleDict)):
             for key, module in modules.items():
                 self[key] = module
         else:
-            raise TypeError("ModuleDict.update requires a dict")
+            raise TypeError("ModuleDict.update requires a dict or ModuleDict")
 
     def keys(self):
         return self._modules.keys()
+
+    def values(self):
+        """
+        获取所有模块值 (Get Values)
+
+        Returns:
+            dict_values: 模块值的视图
+
+        Examples:
+            >>> module_dict = ModuleDict({'fc1': Linear(10, 20), 'fc2': Linear(20, 5)})
+            >>> for module in module_dict.values():
+            ...     print(module)
+        """
+        return self._modules.values()
+
+    def items(self):
+        """
+        获取所有模块项 (Get Items)
+
+        Returns:
+            dict_items: 模块项的视图，包含(key, Module)元组
+
+        Examples:
+            >>> module_dict = ModuleDict({'fc1': Linear(10, 20), 'fc2': Linear(20, 5)})
+            >>> for name, module in module_dict.items():
+            ...     print(f"{name}: {module}")
+        """
+        return self._modules.items()
+
+    def __iter__(self):
+        """
+        迭代器支持 (Iterator Support)
+
+        返回模块字典键的迭代器。
+
+        Returns:
+            iterator: 模块键（字符串类型）的迭代器
+
+        Examples:
+            >>> module_dict = ModuleDict({'fc1': Linear(10, 20), 'fc2': Linear(20, 5)})
+            >>> for name in module_dict:
+            ...     print(name)
+        """
+        return iter(self._modules)
+
+    def __len__(self):
+        """
+        获取模块字典长度 (Get Length)
+
+        Returns:
+            int: 模块字典中模块的数量
+
+        Examples:
+            >>> module_dict = ModuleDict({'fc1': Linear(10, 20), 'fc2': Linear(20, 5)})
+            >>> print(len(module_dict))  # 2
+        """
+        return len(self._modules)
+
+    def pop(self, key):
+        """
+        移除并返回指定键的模块 (Pop Module)
+
+        移除指定键的模块并返回它。
+
+        Args:
+            key (str): 要移除的模块键
+
+        Returns:
+            Module: 被移除的模块
+
+        Raises:
+            KeyError: 如果键不存在
+
+        Examples:
+            >>> module_dict = ModuleDict({'fc1': Linear(10, 20), 'fc2': Linear(20, 5)})
+            >>> fc1 = module_dict.pop('fc1')
+            >>> print(len(module_dict))  # 1
+        """
+        if key not in self._modules:
+            raise KeyError(key)
+        module = self._modules[key]
+        del self._modules[key]
+        return module
+
+    def clear(self):
+        """
+        清空模块字典 (Clear Module Dict)
+
+        移除 ModuleDict 中的所有模块。
+
+        Examples:
+            >>> module_dict = ModuleDict({'fc1': Linear(10, 20), 'fc2': Linear(20, 5)})
+            >>> module_dict.clear()
+            >>> print(len(module_dict))  # 0
+        """
+        self._modules.clear()
 
 # end of class
 
@@ -3874,6 +4247,35 @@ class ParameterList(Module):
         if not isinstance(idx, int):
             raise TypeError(f"ParameterList indices must be integers, not {type(idx)}")
         return list(self._parameters.values())[idx]
+
+    def __setitem__(self, idx, parameter):
+        """
+        设置指定位置的参数 (Set Parameter)
+
+        替换指定索引位置的参数。
+
+        Args:
+            idx (int): 参数索引，从 0 开始
+            parameter (Parameter): 新的参数值
+
+        Raises:
+            TypeError: 如果 idx 不是整数或 parameter 不是 Parameter 对象
+            IndexError: 如果索引超出范围
+
+        Examples:
+            >>> params = ParameterList([Parameter(rm.randn(10, 20)), Parameter(rm.randn(20))])
+            >>> params[0] = Parameter(rm.randn(10, 30))  # 替换第一个参数
+            >>> params[1] = Parameter(rm.randn(30))  # 替换第二个参数
+        """
+        if not isinstance(idx, int):
+            raise TypeError(f"ParameterList indices must be integers, not {type(idx)}")
+        if not isinstance(parameter, Parameter):
+            raise TypeError(f"ParameterList only accepts Parameter objects, got {type(parameter)}")
+        if idx < 0:
+            idx = len(self._parameters) + idx
+        if idx < 0 or idx >= len(self._parameters):
+            raise IndexError(f"ParameterList index {idx} out of range")
+        self._parameters[str(idx)] = parameter
 
     def __iter__(self):
         """
@@ -4222,6 +4624,54 @@ class ParameterDict(Module):
             >>> print(len(params))  # 3
         """
         return len(self._parameters)
+
+    def pop(self, key):
+        """
+        移除并返回指定键的参数 (Pop Parameter)
+
+        移除指定键的参数并返回它。
+
+        Args:
+            key (str): 要移除的参数键
+
+        Returns:
+            Parameter: 被移除的参数
+
+        Raises:
+            KeyError: 如果键不存在
+            TypeError: 如果 key 不是字符串类型
+
+        Examples:
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5)),
+            ...     'bias': Parameter(rm.randn(5))
+            ... })
+            >>> weight = params.pop('weight')
+            >>> print(len(params))  # 1
+        """
+        if not isinstance(key, str):
+            raise TypeError(f"ParameterDict keys must be strings, not {type(key)}")
+        if key not in self._parameters:
+            raise KeyError(key)
+        parameter = self._parameters[key]
+        del self._parameters[key]
+        return parameter
+
+    def clear(self):
+        """
+        清空参数字典 (Clear Parameter Dict)
+
+        移除 ParameterDict 中的所有参数。
+
+        Examples:
+            >>> params = ParameterDict({
+            ...     'weight': Parameter(rm.randn(10, 5)),
+            ...     'bias': Parameter(rm.randn(5))
+            ... })
+            >>> params.clear()
+            >>> print(len(params))  # 0
+        """
+        self._parameters.clear()
 
 # end of class
 
