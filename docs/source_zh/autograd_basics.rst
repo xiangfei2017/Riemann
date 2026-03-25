@@ -1,4 +1,4 @@
-﻿自动求导基础
+自动求导基础
 ============
 
 Riemann 的自动微分引擎，允许自动计算张量操作的梯度。这对于训练神经网络和其他优化任务至关重要。
@@ -572,17 +572,28 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        print(f"梯度: {x.grad}")  # 将自动计算正确的梯度
 
 2. **使用 track_grad 装饰器**
-   使用 ``track_grad`` 装饰器来包装你的函数，并提供显式的梯度计算：
-   
+   使用 ``track_grad`` 装饰器来包装你的函数，并提供显式的梯度计算。
+
+   **梯度函数接口要求：**
+
+   传递给 ``track_grad`` 的梯度函数必须遵循以下接口要求：
+
+   - **参数**：必须接受与前向函数相同的参数（相同的名称和顺序）
+   - **返回值**：必须返回一个 tuple（元组），包含每个输入张量的梯度（偏导数）
+   - **元组元素**：每个元素对应相应输入张量的梯度。对于不需要梯度的张量，该位置返回 ``None``
+   - **梯度计算**：梯度应计算为输出对每个输入的偏导数
+
+   **单输入示例：**
+
    .. code-block:: python
 
        import riemann as rm
        import numpy as np
        
        def sigmoid_derivative(x):
-           """sigmoid 函数的梯度"""
+           """sigmoid 函数的梯度：返回包含一个元素的元组"""
            sig = 1. / (1. + np.exp(-x.data))
-           return (rm.tensor(sig * (1. - sig)),)
+           return (rm.tensor(sig * (1. - sig)),)  # 注意：必须返回元组
        
        @rm.track_grad(sigmoid_derivative)
        def custom_sigmoid(x):
@@ -596,9 +607,57 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        print(f"Sigmoid 输出: {y}")  # 应为 0.5
        print(f"Sigmoid 梯度: {x.grad}")  # 应为 0.25
 
+   **多输入示例：**
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       def multiply_derivative(x, y):
+           """乘法函数的梯度：d(xy)/dx = y, d(xy)/dy = x"""
+           return (y, x)  # 返回包含每个输入梯度的元组
+       
+       @rm.track_grad(multiply_derivative)
+       def custom_multiply(x, y):
+           """带梯度支持的自定义乘法函数"""
+           return x * y
+       
+       # 使用多个输入进行测试
+       x = rm.tensor(2.0, requires_grad=True)
+       y = rm.tensor(3.0, requires_grad=True)
+       z = custom_multiply(x, y)
+       z.backward()
+       print(f"z = {z}")  # 应为 6.0
+       print(f"dz/dx = {x.grad}")  # 应为 3.0 (y)
+       print(f"dz/dy = {y.grad}")  # 应为 2.0 (x)
+
 3. **使用 Function 类**
-   对于更复杂的情况，你可以继承 ``Function`` 类并实现 forward 和 backward 方法：
-   
+   对于更复杂的情况，你可以继承 ``Function`` 类并实现 ``forward`` 和 ``backward`` 静态方法。
+
+   **Function 类接口：**
+
+   要使用 ``Function`` 类创建自定义函数，必须实现两个静态方法：
+
+   **forward(ctx, *inputs)**
+
+   - **用途**：执行前向计算
+   - **参数**：
+     - ``ctx``：上下文对象，用于保存反向传播所需的信息。使用 ``ctx.save_for_backward()`` 保存反向传播需要的张量
+     - ``*inputs``：输入张量（可变数量的参数）
+   - **返回**：前向计算的输出张量
+   - **用法**：在此实现自定义计算逻辑，并使用 ``ctx.save_for_backward()`` 保存梯度计算所需的任何张量
+
+   **backward(ctx, grad_output)**
+
+   - **用途**：执行反向（梯度）计算
+   - **参数**：
+     - ``ctx``：上下文对象，包含前向传播期间保存的信息。通过 ``ctx.saved_tensors`` 访问保存的张量
+     - ``grad_output``：输出张量的梯度（来自计算图中后续层）
+   - **返回**：梯度元组，每个输入张量对应一个梯度。每个梯度应为 ``grad_output`` 与局部梯度（偏导数）的乘积
+   - **用法**：使用链式法则计算梯度：``grad_input = grad_output * local_gradient``
+
+   **示例：**
+
    .. code-block:: python
 
        import riemann as rm
@@ -607,23 +666,185 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        class CustomSigmoid(rm.autograd.Function):
            @staticmethod
            def forward(ctx, x):
-               """sigmoid 函数的前向计算"""
+               """sigmoid 函数的前向计算
+               
+               参数：
+                   ctx: 用于保存张量的上下文对象
+                   x: 输入张量
+               
+               返回：
+                   应用 sigmoid 后的输出张量
+               """
                sig = 1. / (1. + np.exp(-x.data))
-               ctx.save_for_backward(rm.tensor(sig))
+               ctx.save_for_backward(rm.tensor(sig))  # 保存用于反向传播
                return rm.tensor(sig)
            
            @staticmethod
            def backward(ctx, grad_output):
-               """sigmoid 函数的反向计算"""
-               sig, = ctx.saved_tensors
+               """sigmoid 函数的反向计算
+               
+               参数：
+                   ctx: 包含保存张量的上下文对象
+                   grad_output: 来自输出侧的梯度
+               
+               返回：
+                   关于输入的梯度
+               """
+               sig, = ctx.saved_tensors  # 检索保存的张量
+               # 链式法则：grad_input = grad_output * local_gradient
+               # sigmoid 的 local_gradient：sig * (1 - sig)
                return grad_output * sig * (1. - sig)
        
        # 测试 CustomSigmoid
        x = rm.tensor(0.0, requires_grad=True)
-       y = CustomSigmoid.apply(x)
+       y = CustomSigmoid.apply(x)  # 使用 apply() 调用函数
        y.backward()
        print(f"Sigmoid 输出: {y}")  # 应为 0.5
        print(f"Sigmoid 梯度: {x.grad}")  # 应为 0.25
+
+   **关键点：**
+
+   - 始终对 ``forward`` 和 ``backward`` 方法使用 ``@staticmethod`` 装饰器
+   - 在 ``forward`` 中使用 ``ctx.save_for_backward()`` 保存梯度计算所需的张量
+   - 在 ``backward`` 中通过 ``ctx.saved_tensors`` 访问保存的张量（返回元组）
+   - ``backward`` 方法必须返回一个元组，包含 ``forward`` 每个输入对应的梯度
+   - 使用 ``ClassName.apply(*inputs)`` 调用函数，而不是实例化类
+
+高级计算图操作
+--------------
+
+Riemann 提供了几个高级函数用于操作计算图，这些函数可以在不影响前向计算值或反向梯度值的情况下修改计算图。这些函数对于将原本不参与梯度计算的张量连接到计算图非常有用。
+
+fwbw_all_zero 函数
+~~~~~~~~~~~~~~~~~~
+
+``fwbw_all_zero`` 函数在前向传播中返回值为 0.0 的标量张量，在反向传播中返回与输入形状相同的全零张量。
+
+**用途：**
+使用此函数可以将张量添加到计算图中，而不会影响前向计算结果或反向梯度值。
+
+**使用方法：**
+将 ``fwbw_all_zero(x)`` 添加到任何张量，以"无损"方式将 ``x`` 包含到计算图中。
+
+**示例：**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    a = rm.tensor([1.0, 2.0], requires_grad=True)
+    x = rm.tensor([3.0, 4.0], requires_grad=True)
+    
+    # 将 x 添加到计算图中，但不改变 a 的值
+    a = a + rm.fwbw_all_zero(x)
+    
+    # a 的值保持不变，但 x 现在在计算图中
+    print(f"a = {a}")  # 输出: [1.0, 2.0]
+    
+    # 当调用 backward 时，x 将收到零梯度
+    a.sum().backward()
+    print(f"x.grad = {x.grad}")  # 输出: [0.0, 0.0]
+
+attach_zero_grad_sources 方法
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``attach_zero_grad_sources`` 方法将多个张量作为来源张量依附到目标张量。这不改变张量的值，但允许它在反向传播期间向这些来源传递零梯度。
+
+**用途：**
+将张量连接到计算图，使它们在调用 backward 时收到零梯度而不是 None。
+
+**参数：**
+- ``sources``：要依附的来源张量集合，可以是元组、列表或集合。只有 ``requires_grad=True`` 的张量（且不是张量本身）会被依附。
+
+**返回：**
+修改后的张量（self），便于链式调用。
+
+**示例：**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    a = rm.tensor([1.0, 2.0], requires_grad=True)
+    b = rm.tensor([3.0, 4.0], requires_grad=True)
+    c = rm.tensor([5.0, 6.0], requires_grad=True)
+    
+    # 将 a 和 b 依附到 c 的计算图
+    c.attach_zero_grad_sources([a, b])
+    
+    # c 的值不变，但 backward 会向 a 和 b 传递零梯度
+    result = (c * 2).sum()
+    result.backward()
+    
+    print(f"a.grad = {a.grad}")  # 输出: [0.0, 0.0]
+    print(f"b.grad = {b.grad}")  # 输出: [0.0, 0.0]
+    print(f"c.grad = {c.grad}")  # 输出: [2.0, 2.0]
+
+share_grad_map 函数
+~~~~~~~~~~~~~~~~~~~
+
+``share_grad_map`` 函数将一组张量连接到一个共享的计算图，而不改变现有前向计算值或反向梯度值。
+
+**用途：**
+确保组中的所有张量都参与计算图并收到梯度（对于不直接参与计算的张量为零），而不是 None。
+
+**参数：**
+- ``tensors``：要连接的张量元组或列表。必须是元组或列表（不是集合）以保持顺序。
+
+**返回：**
+具有相同值但连接到共享计算图的张量元组或列表。注意：``requires_grad=True`` 的张量会被克隆（不会被原地修改）。
+
+**行为：**
+- ``requires_grad=True`` 的张量会被克隆，并将所有其他张量作为零梯度来源依附到克隆张量
+- 不需要梯度的张量或非 TN 对象保持不变
+- 所有连接的张量互相接收零梯度
+
+**示例：**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    a = rm.tensor([1.0, 2.0], requires_grad=True)
+    b = rm.tensor([3.0, 4.0], requires_grad=True)
+    c = rm.tensor([5.0, 6.0], requires_grad=True)
+    
+    # 定义一个只使用 a 和 b 的函数
+    def func(a, b, c):
+        return (a * b).sum()
+    
+    # share_grad_map 之前：c 不参与，收到 None
+    y1 = func(a, b, c)
+    y1.backward()
+    print(f"c.grad = {c.grad}")  # 输出: None
+    
+    # 重置张量
+    a = rm.tensor([1.0, 2.0], requires_grad=True)
+    b = rm.tensor([3.0, 4.0], requires_grad=True)
+    c = rm.tensor([5.0, 6.0], requires_grad=True)
+    
+    # share_grad_map 之后：所有张量连接，c 收到零梯度
+    a_new, b_new, c_new = rm.share_grad_map((a, b, c))
+    y2 = func(a_new, b_new, c_new)
+    y2.backward()
+    print(f"c.grad = {c_new.grad}")  # 输出: [0.0, 0.0]
+    
+    # 验证：前向值相同，a 和 b 的梯度不变
+    assert float(y1.data) == float(y2.data)
+    assert (a_new.grad == rm.tensor([3., 4.])).all()
+    assert (b_new.grad == rm.tensor([1., 2.])).all()
+
+**使用场景：**
+
+这些函数在以下场景特别有用：
+
+1. **多任务学习**：当某些参数不参与特定任务的损失计算，但你希望它们收到零梯度而不是 None，以便进行梯度累积。
+
+2. **条件计算**：当某些张量在条件判断下被使用，但你希望无论条件如何都有一致的梯度行为。
+
+3. **梯度监控**：当你想要监控组中所有参数的梯度，即使那些不直接参与特定计算的参数。
+
+4. **参数共享**：当实现复杂的参数共享方案，其中所有共享参数应连接到同一个计算图。
 
 梯度检查
 -----------------

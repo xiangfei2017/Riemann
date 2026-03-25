@@ -345,6 +345,9 @@ Riemann provides a rich set of special tensor creation functions. The table belo
     * - ``linspace``
       - Creates a 1D tensor with specified number of evenly spaced values
       - ``linspace(0, 1, 5)``
+    * - ``from_numpy``
+      - Creates a tensor from a NumPy or CuPy array
+      - ``from_numpy(np_array)``
 
 **Usage examples**:
 
@@ -369,6 +372,11 @@ Riemann provides a rich set of special tensor creation functions. The table belo
     # Sequence tensors
     x = rm.arange(0, 10, 2)  # 0, 2, 4, 6, 8
     x = rm.linspace(0, 1, 5)  # 0, 0.25, 0.5, 0.75, 1.0
+
+    # From NumPy array
+    import numpy as np
+    np_array = np.array([1, 2, 3])
+    x = rm.from_numpy(np_array)
 
 Default Parameter Behavior for Special Tensors
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -801,6 +809,12 @@ Riemann provides various statistical functions for tensor analysis. Here are the
   * - ``argmin``
     - Return index of minimum value
     - ``rm.argmin(x)``
+  * - ``prod``
+    - Compute product of tensor elements
+    - ``rm.prod(x)``
+  * - ``dot``
+    - Compute dot product of two tensors
+    - ``rm.dot(x, y)``
 
 **Statistical Functions Example**
 
@@ -1337,6 +1351,9 @@ The following table lists all shape and dimension manipulation functions support
   * - ``hstack``
     - Horizontally stacks tensors, 1D tensors concatenated, multi-dimensional along axis 1
     - ``rm.hstack([x, y])``
+  * - ``split``
+    - Splits tensor into chunks along specified dimension
+    - ``rm.split(x, 2, dim=0)``
 
 Tensor Type Conversion
 ----------------------

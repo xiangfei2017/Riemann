@@ -573,17 +573,28 @@ Riemann provides three ways to implement custom functions with gradient tracking
        print(f"Gradient: {x.grad}")  # Will automatically compute correct gradient
 
 2. **Using track_grad Decorator**
-   Use the ``track_grad`` decorator to wrap your function and provide explicit gradient computation:
-   
+   Use the ``track_grad`` decorator to wrap your function and provide explicit gradient computation.
+
+   **Gradient Function Interface Requirements:**
+
+   The gradient function passed to ``track_grad`` must follow these interface requirements:
+
+   - **Parameters**: Must accept the same parameters as the forward function (same names and order)
+   - **Return Value**: Must return a ``tuple`` containing the gradient (partial derivative) for each input tensor
+   - **Tuple Elements**: Each element corresponds to the gradient of the respective input tensor. For tensors that don't require gradients, return ``None`` for that position
+   - **Gradient Calculation**: The gradient should be computed as the partial derivative of the output with respect to each input
+
+   **Example for single input:**
+
    .. code-block:: python
 
        import riemann as rm
        import numpy as np
        
        def sigmoid_derivative(x):
-           """Gradient function for sigmoid"""
+           """Gradient function for sigmoid: returns tuple with one element"""
            sig = 1. / (1. + np.exp(-x.data))
-           return (rm.tensor(sig * (1. - sig)),)
+           return (rm.tensor(sig * (1. - sig)),)  # Note: must return a tuple
        
        @rm.track_grad(sigmoid_derivative)
        def custom_sigmoid(x):
@@ -597,9 +608,57 @@ Riemann provides three ways to implement custom functions with gradient tracking
        print(f"Sigmoid output: {y}")  # Should be 0.5
        print(f"Sigmoid gradient: {x.grad}")  # Should be 0.25
 
+   **Example for multiple inputs:**
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       def multiply_derivative(x, y):
+           """Gradient function for multiplication: d(xy)/dx = y, d(xy)/dy = x"""
+           return (y, x)  # Returns tuple with gradient for each input
+       
+       @rm.track_grad(multiply_derivative)
+       def custom_multiply(x, y):
+           """Custom multiplication function with gradient support"""
+           return x * y
+       
+       # Test with multiple inputs
+       x = rm.tensor(2.0, requires_grad=True)
+       y = rm.tensor(3.0, requires_grad=True)
+       z = custom_multiply(x, y)
+       z.backward()
+       print(f"z = {z}")  # Should be 6.0
+       print(f"dz/dx = {x.grad}")  # Should be 3.0 (y)
+       print(f"dz/dy = {y.grad}")  # Should be 2.0 (x)
+
 3. **Using Function Class**
-   For more complex cases, you can subclass ``Function`` and implement both forward and backward methods:
-   
+   For more complex cases, you can subclass ``Function`` and implement both ``forward`` and ``backward`` static methods.
+
+   **Function Class Interface:**
+
+   To create a custom function using the ``Function`` class, you must implement two static methods:
+
+   **forward(ctx, *inputs)**
+
+   - **Purpose**: Performs the forward computation
+   - **Parameters**:
+     - ``ctx``: Context object used to save information for the backward pass. Use ``ctx.save_for_backward()`` to store tensors needed in backward
+     - ``*inputs``: Input tensors (variable number of arguments)
+   - **Returns**: Output tensor(s) of the forward computation
+   - **Usage**: Implement your custom computation logic here and save any tensors needed for gradient computation using ``ctx.save_for_backward()``
+
+   **backward(ctx, grad_output)**
+
+   - **Purpose**: Performs the backward (gradient) computation
+   - **Parameters**:
+     - ``ctx``: Context object containing information saved during forward pass. Access saved tensors via ``ctx.saved_tensors``
+     - ``grad_output``: Gradient of the output tensor (from subsequent layers in the computation graph)
+   - **Returns**: Tuple of gradients, one for each input tensor. Each gradient should be the product of ``grad_output`` and the local gradient (partial derivative)
+   - **Usage**: Compute gradients using the chain rule: ``grad_input = grad_output * local_gradient``
+
+   **Example:**
+
    .. code-block:: python
 
        import riemann as rm
@@ -608,23 +667,185 @@ Riemann provides three ways to implement custom functions with gradient tracking
        class CustomSigmoid(rm.autograd.Function):
            @staticmethod
            def forward(ctx, x):
-               """Forward computation for sigmoid"""
+               """Forward computation for sigmoid
+               
+               Args:
+                   ctx: Context object for saving tensors
+                   x: Input tensor
+               
+               Returns:
+                   Output tensor after applying sigmoid
+               """
                sig = 1. / (1. + np.exp(-x.data))
-               ctx.save_for_backward(rm.tensor(sig))
+               ctx.save_for_backward(rm.tensor(sig))  # Save for backward
                return rm.tensor(sig)
            
            @staticmethod
            def backward(ctx, grad_output):
-               """Backward computation for sigmoid"""
-               sig, = ctx.saved_tensors
+               """Backward computation for sigmoid
+               
+               Args:
+                   ctx: Context object with saved tensors
+                   grad_output: Gradient from output side
+               
+               Returns:
+                   Gradient with respect to input
+               """
+               sig, = ctx.saved_tensors  # Retrieve saved tensor
+               # Chain rule: grad_input = grad_output * local_gradient
+               # local_gradient for sigmoid: sig * (1 - sig)
                return grad_output * sig * (1. - sig)
        
        # Test CustomSigmoid
        x = rm.tensor(0.0, requires_grad=True)
-       y = CustomSigmoid.apply(x)
+       y = CustomSigmoid.apply(x)  # Use apply() to call the function
        y.backward()
        print(f"Sigmoid output: {y}")  # Should be 0.5
        print(f"Sigmoid gradient: {x.grad}")  # Should be 0.25
+
+   **Key Points:**
+
+   - Always use ``@staticmethod`` decorator for both ``forward`` and ``backward`` methods
+   - Use ``ctx.save_for_backward()`` in ``forward`` to save tensors needed for gradient computation
+   - Access saved tensors in ``backward`` via ``ctx.saved_tensors`` (returns a tuple)
+   - The ``backward`` method must return a tuple with one gradient for each input to ``forward``
+   - Call the function using ``ClassName.apply(*inputs)``, not by instantiating the class
+
+Advanced Computational Graph Manipulation
+-----------------------------------------
+
+Riemann provides several advanced functions for manipulating the computational graph without affecting forward computation values or backward gradient values. These functions are useful for connecting tensors to the computational graph that wouldn't otherwise participate in gradient computation.
+
+fwbw_all_zero Function
+~~~~~~~~~~~~~~~~~~~~~~
+
+The ``fwbw_all_zero`` function returns a scalar tensor with value 0.0 in forward pass and returns a zero tensor with the same shape as input in backward pass.
+
+**Purpose:**
+Use this function to add a tensor to the computational graph without affecting the forward computation result or backward gradient values.
+
+**Usage:**
+Add ``fwbw_all_zero(x)`` to any tensor to "non-destructively" include ``x`` in the computational graph.
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    a = rm.tensor([1.0, 2.0], requires_grad=True)
+    x = rm.tensor([3.0, 4.0], requires_grad=True)
+    
+    # Add x to the computational graph without changing a's value
+    a = a + rm.fwbw_all_zero(x)
+    
+    # a's value remains unchanged, but x is now in the graph
+    print(f"a = {a}")  # Output: [1.0, 2.0]
+    
+    # When backward is called, x will receive zero gradient
+    a.sum().backward()
+    print(f"x.grad = {x.grad}")  # Output: [0.0, 0.0]
+
+attach_zero_grad_sources Method
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``attach_zero_grad_sources`` method attaches multiple tensors as source tensors to a tensor. This doesn't change the tensor's value, but allows it to pass zero gradients to these sources during backward pass.
+
+**Purpose:**
+Connect tensors to the computational graph so they receive zero gradients instead of None when backward is called.
+
+**Parameters:**
+- ``sources``: A tuple, list, or set of tensors to attach. Only tensors with ``requires_grad=True`` (and not the tensor itself) will be attached.
+
+**Returns:**
+The modified tensor (self) for method chaining.
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    a = rm.tensor([1.0, 2.0], requires_grad=True)
+    b = rm.tensor([3.0, 4.0], requires_grad=True)
+    c = rm.tensor([5.0, 6.0], requires_grad=True)
+    
+    # Attach a and b to c's computational graph
+    c.attach_zero_grad_sources([a, b])
+    
+    # c's value is unchanged, but backward will pass zero gradients to a and b
+    result = (c * 2).sum()
+    result.backward()
+    
+    print(f"a.grad = {a.grad}")  # Output: [0.0, 0.0]
+    print(f"b.grad = {b.grad}")  # Output: [0.0, 0.0]
+    print(f"c.grad = {c.grad}")  # Output: [2.0, 2.0]
+
+share_grad_map Function
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``share_grad_map`` function connects a group of tensors to a shared computational graph without changing existing forward computation values or backward gradient values.
+
+**Purpose:**
+Ensure all tensors in a group participate in the computational graph and receive gradients (zero for tensors not directly involved in computation) rather than None.
+
+**Parameters:**
+- ``tensors``: A tuple or list of tensors to connect. Must be tuple or list (not set) to preserve order.
+
+**Returns:**
+A tuple or list of tensors with the same values but connected to a shared computational graph. Note: tensors with ``requires_grad=True`` are cloned (not modified in place).
+
+**Behavior:**
+- Tensors with ``requires_grad=True`` are cloned, and all other tensors are attached as zero-gradient sources to the cloned tensor
+- Tensors without gradients or non-TN objects remain unchanged
+- All connected tensors receive zero gradients from each other
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    a = rm.tensor([1.0, 2.0], requires_grad=True)
+    b = rm.tensor([3.0, 4.0], requires_grad=True)
+    c = rm.tensor([5.0, 6.0], requires_grad=True)
+    
+    # Define a function that only uses a and b
+    def func(a, b, c):
+        return (a * b).sum()
+    
+    # Before share_grad_map: c doesn't participate, receives None
+    y1 = func(a, b, c)
+    y1.backward()
+    print(f"c.grad = {c.grad}")  # Output: None
+    
+    # Reset tensors
+    a = rm.tensor([1.0, 2.0], requires_grad=True)
+    b = rm.tensor([3.0, 4.0], requires_grad=True)
+    c = rm.tensor([5.0, 6.0], requires_grad=True)
+    
+    # After share_grad_map: all tensors connected, c receives zero gradient
+    a_new, b_new, c_new = rm.share_grad_map((a, b, c))
+    y2 = func(a_new, b_new, c_new)
+    y2.backward()
+    print(f"c.grad = {c_new.grad}")  # Output: [0.0, 0.0]
+    
+    # Verify: forward values are identical, a and b gradients unchanged
+    assert float(y1.data) == float(y2.data)
+    assert (a_new.grad == rm.tensor([3., 4.])).all()
+    assert (b_new.grad == rm.tensor([1., 2.])).all()
+
+**Use Cases:**
+
+These functions are particularly useful in the following scenarios:
+
+1. **Multi-task Learning**: When some parameters don't participate in certain task's loss computation but you want them to receive zero gradients rather than None for gradient accumulation.
+
+2. **Conditional Computation**: When some tensors are conditionally used in forward pass but you want consistent gradient behavior regardless of the condition.
+
+3. **Gradient Monitoring**: When you want to monitor gradients of all parameters in a group, even those not directly involved in a specific computation.
+
+4. **Parameter Sharing**: When implementing complex parameter sharing schemes where all shared parameters should be connected to the same computational graph.
 
 Gradient Checking
 -----------------

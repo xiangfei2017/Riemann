@@ -670,6 +670,7 @@ The ``nn.Module`` class provides the following core functionalities:
 - **Device Management**: Supports moving modules to different devices (CPU/GPU)
 - **Forward Propagation**: Defines the data flow path through the network
 - **State Management**: Supports training/evaluation mode switching
+- **Hook Management**: Supports registering forward/backward hooks for debugging, feature extraction, and gradient modification
 
 Module Class Main Methods
 -------------------------
@@ -747,6 +748,54 @@ Module Class Main Methods
    * - ``add_module(name, module)``
      - Explicitly add submodule
      - ``self.add_module('linear', nn.Linear(10, 5))``
+   * - ``register_forward_pre_hook(hook)``
+     - Register forward pre-hook
+     - ``handle = model.register_forward_pre_hook(my_hook)``
+   * - ``register_forward_hook(hook)``
+     - Register forward post-hook
+     - ``handle = model.register_forward_hook(my_hook)``
+   * - ``register_full_backward_pre_hook(hook)``
+     - Register backward pre-hook
+     - ``handle = model.register_full_backward_pre_hook(my_hook)``
+   * - ``register_full_backward_hook(hook)``
+     - Register backward post-hook
+     - ``handle = model.register_full_backward_hook(my_hook)``
+   * - ``apply(fn)``
+     - Recursively apply function to all submodules
+     - ``model.apply(init_weights)``
+   * - ``get_parameter(target)``
+     - Get parameter by name
+     - ``param = model.get_parameter('layer1.weight')``
+   * - ``get_submodule(target)``
+     - Get submodule by name
+     - ``module = model.get_submodule('layer1.conv1')``
+   * - ``get_buffer(target)``
+     - Get buffer by name
+     - ``buffer = model.get_buffer('bn1.running_mean')``
+   * - ``has_parameter(target)``
+     - Check if parameter exists
+     - ``if model.has_parameter('weight'): ...``
+   * - ``has_buffer(target)``
+     - Check if buffer exists
+     - ``if model.has_buffer('running_mean'): ...``
+   * - ``set_parameter(name, param)``
+     - Set parameter by name
+     - ``model.set_parameter('weight', new_param)``
+   * - ``set_buffer(name, tensor)``
+     - Set buffer by name
+     - ``model.set_buffer('running_mean', new_tensor)``
+   * - ``delete_parameter(target)``
+     - Delete parameter by name
+     - ``model.delete_parameter('old_weight')``
+   * - ``delete_buffer(target)``
+     - Delete buffer by name
+     - ``model.delete_buffer('old_buffer')``
+   * - ``copy()``
+     - Create shallow copy of module
+     - ``new_model = model.copy()``
+   * - ``deepcopy()``
+     - Create deep copy of module
+     - ``new_model = model.deepcopy()``
 
 Creating Custom Modules
 -----------------------
@@ -1045,9 +1094,16 @@ Basic Network Layers
 Linear Layer (Linear)
 ---------------------
 
-Linear layer (also known as fully connected layer) performs affine transformation on input data:
+Linear layer (also known as fully connected layer) performs affine transformation on input data. It is one of the most fundamental layers in neural networks.
+
+**Purpose**:
+
+- Implements linear transformation: ``output = input @ weight.T + bias``
+- Commonly used for feature transformation, final classification layer, and dimension conversion in networks
+- Basic building block for constructing Multi-Layer Perceptrons (MLP)
 
 **Parameters**:
+
 - ``in_features``: Input feature dimension
 - ``out_features``: Output feature dimension
 - ``bias``: Whether to use bias, default True
@@ -1070,10 +1126,17 @@ Linear layer (also known as fully connected layer) performs affine transformatio
 Dropout Layer
 -------------
 
-Dropout layer prevents overfitting by randomly deactivating neurons:
+Dropout layer prevents overfitting by randomly deactivating neurons. It is a commonly used regularization technique.
+
+**Purpose**:
+
+- Prevents neural network overfitting and improves model generalization
+- Randomly sets some neuron outputs to zero during training, forcing the network to learn more robust feature representations
+- Commonly used after fully connected layers, especially in deep networks
 
 **Parameters**:
-- ``p``: Dropout probability, default 0.5
+
+- ``p``: Dropout probability, default 0.5, representing the probability of each neuron being dropped
 
 **Usage Example**:
 
@@ -1094,10 +1157,83 @@ Dropout layer prevents overfitting by randomly deactivating neurons:
     dropout.eval()
     output_eval = dropout(x)
 
+Dropout2d Layer
+---------------
+
+Dropout2d layer randomly drops entire feature maps at the channel level, suitable for convolutional neural networks.
+
+**Purpose**:
+
+- Specifically designed for regularization of 2D convolutional feature maps (shape ``(N, C, H, W)``)
+- Drops entire channels randomly rather than individual pixels, preserving spatial correlation of feature maps
+- Commonly used after convolutional layers to prevent overfitting in CNNs
+
+**Parameters**:
+
+- ``p``: Dropout probability, default 0.5
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create Dropout2d layer
+    dropout2d = nn.Dropout2d(p=0.5)
+    
+    # Forward pass (input shape [N, C, H, W])
+    x = rm.randn(4, 16, 32, 32)
+    dropout2d.train()
+    output = dropout2d(x)
+    print(output.shape)  # [4, 16, 32, 32]
+
+Dropout3d Layer
+---------------
+
+Dropout3d layer randomly drops entire 3D feature maps at the channel level, suitable for 3D convolutional neural networks.
+
+**Purpose**:
+
+- Specifically designed for regularization of 3D convolutional feature maps (shape ``(N, C, D, H, W)``)
+- Drops entire 3D feature volumes at the channel level
+- Commonly used in 3D convolutional networks for video processing, 3D medical imaging, etc.
+
+**Parameters**:
+
+- ``p``: Dropout probability, default 0.5
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create Dropout3d layer
+    dropout3d = nn.Dropout3d(p=0.5)
+    
+    # Forward pass (input shape [N, C, D, H, W])
+    x = rm.randn(4, 16, 8, 32, 32)
+    dropout3d.train()
+    output = dropout3d(x)
+    print(output.shape)  # [4, 16, 8, 32, 32]
+
 Flatten Layer
 -------------
 
-Flatten layer flattens the input tensor:
+Flatten layer flattens the input tensor within a specified dimension range.
+
+**Purpose**:
+
+- Flattens multi-dimensional tensors into 1D or lower-dimensional tensors, commonly used to connect convolutional and fully connected layers
+- Preserves batch dimension while merging spatial and channel dimensions into feature vectors
+- Bridge between convolutional and fully connected parts in CNN architectures
+
+**Parameters**:
+
+- ``start_dim``: Starting dimension for flattening, default 1
+- ``end_dim``: Ending dimension for flattening, default -1
 
 **Usage Example**:
 
@@ -1112,3 +1248,1709 @@ Flatten layer flattens the input tensor:
     x = rm.randn(32, 1, 28, 28)
     output = flatten(x)
     print(output.shape)  # [32, 784]
+
+BatchNorm1d Layer
+-----------------
+
+1D batch normalization layer, normalizes the channel dimension for 2D or 3D inputs.
+
+**Purpose**:
+
+- Accelerates neural network training convergence and allows larger learning rates
+- Reduces sensitivity to initialization and improves training stability
+- Provides some regularization effect, reducing dependence on Dropout
+- Commonly used after fully connected layers or 1D convolutional layers
+
+**Parameters**:
+
+- ``num_features``: Number of features (channel count C)
+- ``eps``: Small constant for numerical stability, default 1e-5
+- ``momentum``: Momentum for running statistics, default 0.1
+- ``affine``: Whether to use learnable affine parameters, default True
+- ``track_running_stats``: Whether to track running mean and variance, default True
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create BatchNorm1d layer
+    bn = nn.BatchNorm1d(num_features=100)
+    
+    # 2D input (N, C)
+    x = rm.randn(20, 100)
+    output = bn(x)
+    print(output.shape)  # [20, 100]
+    
+    # 3D input (N, C, L)
+    x = rm.randn(20, 100, 35)
+    output = bn(x)
+    print(output.shape)  # [20, 100, 35]
+
+BatchNorm2d Layer
+-----------------
+
+2D batch normalization layer, normalizes the channel dimension for 4D inputs ``(N, C, H, W)``.
+
+**Purpose**:
+
+- Specifically designed for 2D convolutional neural networks, normalizes each channel's feature map
+- Accelerates CNN training and improves model generalization
+- Key component for building modern CNNs (e.g., ResNet, DenseNet)
+- Usually placed after convolutional layers and before activation functions
+
+**Parameters**:
+
+- ``num_features``: Number of features (channel count C)
+- ``eps``: Small constant for numerical stability, default 1e-5
+- ``momentum``: Momentum for running statistics, default 0.1
+- ``affine``: Whether to use learnable affine parameters, default True
+- ``track_running_stats``: Whether to track running mean and variance, default True
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create BatchNorm2d layer
+    bn = nn.BatchNorm2d(num_features=64)
+    
+    # 4D input (N, C, H, W)
+    x = rm.randn(16, 64, 32, 32)
+    output = bn(x)
+    print(output.shape)  # [16, 64, 32, 32]
+
+BatchNorm3d Layer
+-----------------
+
+3D batch normalization layer, normalizes the channel dimension for 5D inputs ``(N, C, D, H, W)``.
+
+**Purpose**:
+
+- Specifically designed for 3D convolutional neural networks, such as video processing and 3D medical image analysis
+- Normalizes 3D feature volumes for each channel
+- Important component of 3D CNN architectures (e.g., C3D, I3D)
+
+**Parameters**:
+
+- ``num_features``: Number of features (channel count C)
+- ``eps``: Small constant for numerical stability, default 1e-5
+- ``momentum``: Momentum for running statistics, default 0.1
+- ``affine``: Whether to use learnable affine parameters, default True
+- ``track_running_stats``: Whether to track running mean and variance, default True
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create BatchNorm3d layer
+    bn = nn.BatchNorm3d(num_features=32)
+    
+    # 5D input (N, C, D, H, W)
+    x = rm.randn(8, 32, 4, 16, 16)
+    output = bn(x)
+    print(output.shape)  # [8, 32, 4, 16, 16]
+
+LayerNorm Layer
+---------------
+
+Layer normalization layer, normalizes all features of a single sample.
+
+**Purpose**:
+
+- Normalizes features of individual samples without relying on batch statistics
+- Suitable for scenarios with batch size of 1 or dynamically changing batch sizes
+- Core component of Transformer models, used as an alternative to BatchNorm
+- Widely used in natural language processing tasks
+
+**Parameters**:
+
+- ``normalized_shape``: Dimensions to normalize, can be an integer or tuple
+- ``eps``: Small constant for numerical stability, default 1e-5
+- ``affine``: Whether to use learnable affine parameters, default True
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create LayerNorm layer
+    ln = nn.LayerNorm(normalized_shape=128)
+    
+    # Input can be any shape, last dimension must match normalized_shape
+    x = rm.randn(20, 128)
+    output = ln(x)
+    print(output.shape)  # [20, 128]
+    
+    # Multi-dimensional input
+    x = rm.randn(20, 10, 128)
+    output = ln(x)
+    print(output.shape)  # [20, 10, 128]
+
+Embedding Layer
+---------------
+
+Embedding layer, converts integer indices to fixed-size dense vector representations.
+
+**Purpose**:
+
+- Maps discrete integer indices (such as word indices) to continuous vector representations
+- Basic component for processing categorical features and sequential data (such as text, user IDs)
+- Used as word embedding layer in NLP tasks
+- Supports padding index (padding_idx) not participating in gradient computation
+
+**Parameters**:
+
+- ``num_embeddings``: Number of embedding vectors (vocabulary size)
+- ``embedding_dim``: Dimension of each embedding vector
+- ``padding_idx``: Padding index, embedding vectors at this index do not participate in gradient computation, default None
+- ``max_norm``: Maximum norm of embedding vectors, re-normalized if exceeded, default None
+- ``norm_type``: p-value for norm calculation, default 2 (L2 norm)
+- ``scale_grad_by_freq``: Whether to scale gradients by frequency, default False
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create Embedding layer, vocabulary size 10000, embedding dimension 128
+    embedding = nn.Embedding(num_embeddings=10000, embedding_dim=128)
+    
+    # Input is integer indices
+    input_indices = rm.tensor([1, 5, 10, 100])
+    output = embedding(input_indices)
+    print(output.shape)  # [4, 128]
+    
+    # Using padding_idx
+    embedding_with_pad = nn.Embedding(10000, 128, padding_idx=0)
+    input_with_pad = rm.tensor([0, 1, 2, 0])  # 0 is the padding index
+    output = embedding_with_pad(input_with_pad)
+
+Module Hook Management
+======================
+
+Riemann provides a powerful module hook mechanism that allows users to insert custom logic during the forward and backward propagation of modules. The hook mechanism is a powerful tool for debugging, monitoring, and modifying network behavior.
+
+Hook Types Overview
+-------------------
+
+Riemann supports four types of module hooks, executed at different stages of forward and backward propagation:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 35 35
+
+   * - Hook Type
+     - Registration Method
+     - Execution Timing
+   * - Forward Pre-Hook
+     - ``register_forward_pre_hook``
+     - Called before ``forward`` method execution
+   * - Forward Hook
+     - ``register_forward_hook``
+     - Called after ``forward`` method execution
+   * - Full Backward Pre-Hook
+     - ``register_full_backward_pre_hook``
+     - Called at the start of backward propagation, before computing input gradients
+   * - Full Backward Hook
+     - ``register_full_backward_hook``
+     - Called at the end of backward propagation, after computing input gradients
+
+Hook Execution Order
+~~~~~~~~~~~~~~~~~~~~
+
+Hook execution order during forward propagation:
+
+.. code-block:: text
+
+    register_forward_pre_hook → forward → register_forward_hook
+
+Hook execution order during backward propagation:
+
+.. code-block:: text
+
+    register_full_backward_pre_hook → (compute grad_input) → register_full_backward_hook
+
+Forward Pre-Hook (register_forward_pre_hook)
+--------------------------------------------
+
+**Purpose**:
+
+- Modify or inspect input data before the module's forward computation
+- Implement input preprocessing, data validation, or debug information printing
+- Commonly used for dynamically adjusting input ranges, adding noise, or recording intermediate states
+
+**Hook Function Signature**:
+
+.. code-block:: python
+
+    hook(module, input) -> None or modified input
+
+**Parameters**:
+
+- ``module``: The module instance being called
+- ``input``: A tuple containing all input tensors (even a single input is wrapped in a tuple)
+
+**Return Value**:
+
+- ``None``: Indicates no modification to input, continue execution with original input
+- ``Tensor`` or ``tuple``: Returns modified input, which will replace the original input passed to ``forward``
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Define forward pre-hook: print input information
+    def print_input_hook(module, input):
+        print(f"Input shape for module {module._get_name()}: {input[0].shape}")
+        return None  # Do not modify input
+
+    # Define forward pre-hook: modify input
+    def double_input_hook(module, input):
+        # Multiply input by 2
+        return (input[0] * 2,)
+
+    # Create linear layer and register hooks
+    linear = nn.Linear(10, 5)
+    handle1 = linear.register_forward_pre_hook(print_input_hook)
+    handle2 = linear.register_forward_pre_hook(double_input_hook)
+
+    # Forward propagation
+    x = rm.ones(2, 10)
+    output = linear(x)  # Actually uses x * 2
+
+    # Remove hooks
+    handle1.remove()
+    handle2.remove()
+
+Forward Hook (register_forward_hook)
+------------------------------------
+
+**Purpose**:
+
+- Modify or inspect output data after the module's forward computation
+- Implement feature extraction, output monitoring, and debugging
+- Commonly used for recording intermediate layer features and analyzing activation distributions
+
+**Hook Function Signature**:
+
+.. code-block:: python
+
+    hook(module, input, output) -> None or modified output
+
+**Parameters**:
+
+- ``module``: The module instance being called
+- ``input``: A tuple containing all input tensors (original inputs received by ``forward``)
+- ``output``: The return value of ``forward`` method, which may be a single tensor or a tuple of tensors
+
+**Return Value**:
+
+- ``None``: Indicates no modification to output, use original output as module return value
+- ``Tensor`` or ``tuple``: Returns modified output, which will replace the original output
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Define forward hook: feature extractor
+    class FeatureExtractor:
+        def __init__(self):
+            self.features = []
+        
+        def hook(self, module, input, output):
+            self.features.append(output.clone())
+            return None
+
+    # Create model and register feature extraction hook
+    model = nn.Sequential(
+        nn.Linear(784, 256),
+        nn.ReLU(),
+        nn.Linear(256, 10)
+    )
+
+    extractor = FeatureExtractor()
+    handle = model[0].register_forward_hook(extractor.hook)
+
+    # Forward propagation
+    x = rm.randn(4, 784)
+    output = model(x)
+
+    # View extracted features
+    print(f"First layer output shape: {extractor.features[0].shape}")
+
+    # Remove hook
+    handle.remove()
+
+Full Backward Pre-Hook (register_full_backward_pre_hook)
+--------------------------------------------------------
+
+**Purpose**:
+
+- Modify or inspect output gradients (``grad_output``) at the start of backward propagation
+- Implement gradient clipping, gradient scaling, or gradient monitoring
+- Commonly used for preventing gradient explosion and adjusting gradient flow
+
+**Hook Function Signature**:
+
+.. code-block:: python
+
+    hook(module, grad_output) -> None or modified grad_output
+
+**Parameters**:
+
+- ``module``: The module instance in backward propagation
+- ``grad_output``: A tuple containing all output gradients
+  
+  - Single-output module: ``(grad_output_tensor,)``
+  - Multi-output module: ``(grad_output1, grad_output2, ...)``
+  - For outputs that don't require gradients, the corresponding position is ``None``
+
+**Return Value**:
+
+- ``None``: Indicates no modification to gradients, continue computation with original ``grad_output``
+- ``tuple``: Returns modified ``grad_output``, which will be used for subsequent gradient computation
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Define backward pre-hook: gradient clipping
+    def clip_grad_hook(module, grad_output):
+        # Clip gradients to prevent explosion
+        clipped = tuple(
+            g.clip(-1, 1) if g is not None else None 
+            for g in grad_output
+        )
+        return clipped
+
+    # Define backward pre-hook: print gradient information
+    def print_grad_hook(module, grad_output):
+        print(f"Output gradient shape: {grad_output[0].shape}")
+        print(f"Output gradient value range: [{grad_output[0].min()}, {grad_output[0].max()}]")
+        return None
+
+    # Create linear layer and register hook
+    linear = nn.Linear(10, 5)
+    handle = linear.register_full_backward_pre_hook(clip_grad_hook)
+
+    # Forward and backward propagation
+    x = rm.randn(2, 10)
+    x.requires_grad = True
+    output = linear(x)
+    output.sum().backward()  # Gradients will be clipped to [-1, 1] range
+
+    # Remove hook
+    handle.remove()
+
+Full Backward Hook (register_full_backward_hook)
+------------------------------------------------
+
+**Purpose**:
+
+- Modify or inspect input gradients (``grad_input``) at the end of backward propagation
+- Implement gradient monitoring, debugging, and visualization
+- Commonly used for analyzing gradient flow and detecting vanishing or exploding gradients
+
+**Hook Function Signature**:
+
+.. code-block:: python
+
+    hook(module, grad_input, grad_output) -> None or modified grad_input
+
+**Parameters**:
+
+- ``module``: The module instance in backward propagation
+- ``grad_input``: A tuple containing all input gradients
+  
+  - Single-input module: ``(grad_input_tensor,)``
+  - Multi-input module: ``(grad_input1, grad_input2, ...)``
+  - For inputs that don't require gradients, the corresponding position is ``None``
+
+- ``grad_output``: A tuple containing all output gradients (same as received by ``register_full_backward_pre_hook``)
+
+**Return Value**:
+
+- ``None``: Indicates no modification to gradients, continue propagation with original ``grad_input``
+- ``tuple``: Returns modified ``grad_input``, which will replace the original gradients propagated to the previous layer
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Define backward hook: gradient monitor
+    class GradientMonitor:
+        def __init__(self):
+            self.gradients = []
+        
+        def hook(self, module, grad_input, grad_output):
+            self.gradients.append({
+                'module': module._get_name(),
+                'grad_input': [g.clone() if g is not None else None for g in grad_input],
+                'grad_output': [g.clone() if g is not None else None for g in grad_output]
+            })
+            return None
+
+    # Create model and register gradient monitoring hooks
+    model = nn.Sequential(
+        nn.Linear(784, 256),
+        nn.ReLU(),
+        nn.Linear(256, 10)
+    )
+
+    monitor = GradientMonitor()
+    for layer in model:
+        layer.register_full_backward_hook(monitor.hook)
+
+    # Forward and backward propagation
+    x = rm.randn(4, 784)
+    x.requires_grad = True
+    output = model(x)
+    output.sum().backward()
+
+    # View recorded gradient information
+    for grad_info in monitor.gradients:
+        print(f"Module: {grad_info['module']}")
+        print(f"Input gradient shapes: {[g.shape if g is not None else None for g in grad_info['grad_input']]}")
+
+Hook Registration and Removal
+-----------------------------
+
+**Registering Hooks**:
+
+All hook registration methods return a ``RemovableHandle`` object that can be used to remove the hook later:
+
+.. code-block:: python
+
+    # Register hook and get handle
+    handle = module.register_forward_hook(hook_function)
+    
+    # Remove hook using handle
+    handle.remove()
+
+**Using Context Managers**:
+
+``RemovableHandle`` supports the context manager protocol, allowing automatic management of hook lifecycle using ``with`` statements:
+
+.. code-block:: python
+
+    with module.register_forward_hook(hook_function) as handle:
+        # Hook is active within this scope
+        output = module(input)
+        # Hook is automatically removed when exiting the with block
+
+**Managing Multiple Hooks**:
+
+A module can register multiple hooks of the same type, which are executed in registration order:
+
+.. code-block:: python
+
+    def hook1(module, input):
+        print("Hook 1")
+        return None
+    
+    def hook2(module, input):
+        print("Hook 2")
+        return None
+    
+    module.register_forward_pre_hook(hook1)
+    module.register_forward_pre_hook(hook2)
+    
+    # Execution order: hook1 -> hook2
+
+Typical Application Scenarios
+-----------------------------
+
+**1. Feature Visualization**:
+
+.. code-block:: python
+
+    # Register hook to capture feature maps from convolutional layer
+    activation = {}
+    def get_activation(name):
+        def hook(module, input, output):
+            activation[name] = output.detach()
+        return hook
+    
+    conv_layer.register_forward_hook(get_activation('conv1'))
+
+**2. Gradient Checking**:
+
+.. code-block:: python
+
+    # Check if gradients contain NaN or Inf
+    def check_grad_hook(module, grad_input, grad_output):
+        for g in grad_input:
+            if g is not None:
+                if rm.isnan(g).any() or rm.isinf(g).any():
+                    print(f"Warning: Gradients in {module._get_name()} contain NaN or Inf!")
+    
+    module.register_full_backward_hook(check_grad_hook)
+
+**3. Weight Statistics Monitoring**:
+
+.. code-block:: python
+
+    # Monitor weight distribution during training
+    def weight_stats_hook(module, input, output):
+        if hasattr(module, 'weight'):
+            w = module.weight.data
+            print(f"Weight mean: {w.mean():.4f}, std: {w.std():.4f}")
+    
+    module.register_forward_hook(weight_stats_hook)
+
+Notes
+-----
+
+1. **Hook Return Values**: If a hook doesn't need to modify data, it should return ``None`` to avoid unnecessary side effects
+
+2. **Multi-Input/Multi-Output Modules**:
+   
+   - For multi-input modules, ``input`` and ``grad_input`` contain tuples of all inputs/input gradients
+   - For multi-output modules, ``output`` and ``grad_output`` contain tuples of all outputs/output gradients
+   - Even if modifying only one, you need to return a complete tuple
+
+3. **Gradient Computation**:
+   
+   - Backward pre-hooks are called before ``grad_input`` computation; modifying ``grad_output`` affects subsequent gradient computation
+   - Backward hooks are called after ``grad_input`` computation; modifying ``grad_input`` affects gradients propagated to previous layers
+
+4. **Performance Considerations**:
+   
+   - Hooks add extra function call overhead; remove unnecessary hooks in production environments
+   - Avoid time-consuming operations in hooks, especially in training loops
+
+5. **Memory Management**:
+   
+   - Be careful about memory leaks when saving tensor references in hooks
+   - Use ``.clone()`` or ``.detach()`` to create copies, avoiding retaining computation graph references
+
+Convolutional Networks
+======================
+
+Convolutional Neural Networks (CNNs) are one of the most important and widely used architectures in deep learning, particularly suitable for processing grid-structured data such as images, videos, and sequential data. Riemann provides a complete set of convolutional network components, including 1D, 2D, and 3D convolution layers and pooling layers.
+
+Convolution Layers
+------------------
+
+Convolution layers extract local feature patterns by sliding learnable convolutional kernels over input data. Riemann supports three dimensions of convolution operations:
+
+.. list-table:: Convolution Layer Types
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Convolution Layer
+     - Applicable Data Types
+     - Typical Application Scenarios
+   * - ``Conv1d``
+     - 1D sequential data (N, C, L)
+     - Audio processing, text sequences, time series
+   * - ``Conv2d``
+     - 2D image data (N, C, H, W)
+     - Image classification, object detection, image segmentation
+   * - ``Conv3d``
+     - 3D volumetric data (N, C, D, H, W)
+     - Video analysis, medical imaging, 3D reconstruction
+
+Conv1d Layer
+~~~~~~~~~~~~
+
+**Purpose**:
+
+- Process 1D sequential data such as audio waveforms, text sequences, and time series
+- Capture local temporal dependencies and patterns
+- Used for n-gram feature extraction in natural language processing
+
+**Parameters**:
+
+- ``in_channels``: Number of input channels
+- ``out_channels``: Number of output channels (number of convolutional kernels)
+- ``kernel_size``: Size of the convolutional kernel
+- ``stride``: Convolution stride, default 1
+- ``padding``: Padding size, default 0
+- ``dilation``: Dilation rate, default 1
+- ``groups``: Number of groups, default 1 (standard convolution)
+- ``bias``: Whether to use bias, default True
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Audio signal processing
+    conv1d = nn.Conv1d(in_channels=1, out_channels=16, kernel_size=3, stride=1, padding=1)
+    audio = rm.randn(8, 1, 1000)  # batch=8, channels=1, samples=1000
+    output = conv1d(audio)
+    print(output.shape)  # [8, 16, 1000]
+
+Conv2d Layer
+~~~~~~~~~~~~
+
+**Purpose**:
+
+- Core component of CNN architecture for extracting local image features
+- Hierarchical feature extraction from low-level edge features to high-level semantic features
+- Supports standard convolution, grouped convolution, depthwise separable convolution, etc.
+
+**Parameters**:
+
+- ``in_channels``: Number of input channels (e.g., 3 for RGB images)
+- ``out_channels``: Number of output channels
+- ``kernel_size``: Convolutional kernel size (integer or tuple)
+- ``stride``: Convolution stride, default 1
+- ``padding``: Padding size, default 0
+- ``dilation``: Dilation rate for increasing receptive field, default 1
+- ``groups``: Number of groups, default 1
+- ``bias``: Whether to use bias, default True
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Standard image convolution
+    conv2d = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1)
+    image = rm.randn(4, 3, 224, 224)  # batch=4, RGB, height=224, width=224
+    output = conv2d(image)
+    print(output.shape)  # [4, 64, 224, 224]
+
+Conv3d Layer
+~~~~~~~~~~~~
+
+**Purpose**:
+
+- Process 3D data such as videos and medical images (MRI, CT)
+- Capture spatiotemporal features or 3D spatial features
+- Simultaneously capture temporal and spatial correlations in video analysis
+
+**Parameters**:
+
+- ``in_channels``: Number of input channels
+- ``out_channels``: Number of output channels
+- ``kernel_size``: Convolutional kernel size (integer or triple tuple)
+- ``stride``: Convolution stride, default 1
+- ``padding``: Padding size, default 0
+- ``dilation``: Dilation rate, default 1
+- ``groups``: Number of groups, default 1
+- ``bias``: Whether to use bias, default True
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Video data processing
+    conv3d = nn.Conv3d(in_channels=3, out_channels=16, kernel_size=3, stride=1, padding=1)
+    video = rm.randn(2, 3, 10, 64, 64)  # batch=2, RGB, frames=10, height=64, width=64
+    output = conv3d(video)
+    print(output.shape)  # [2, 16, 10, 64, 64]
+
+Pooling Layers
+--------------
+
+Pooling layers are used to reduce the spatial dimensions of feature maps, decrease computational cost, and provide translation invariance. Riemann provides two types of pooling operations: max pooling and average pooling.
+
+.. list-table:: Pooling Layer Types
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Pooling Layer
+     - Operation Type
+     - Characteristics
+   * - ``MaxPool1d/2d/3d``
+     - Maximum value in window
+     - Preserves salient features, robust to noise
+   * - ``AvgPool1d/2d/3d``
+     - Average value in window
+     - Smooth downsampling, preserves overall information
+
+MaxPool1d Layer
+~~~~~~~~~~~~~~~
+
+**Purpose**:
+
+- Apply 1D max pooling to sequence data, selecting the maximum value within the sliding window
+- Reduce sequence dimensionality while preserving the most salient features
+- Provide translation invariance for time series and sequential data
+
+**Parameters**:
+
+- ``kernel_size``: Pooling window size
+- ``stride``: Pooling stride, defaults to kernel_size
+- ``padding``: Padding size, default 0
+- ``dilation``: Dilation rate, default 1
+- ``ceil_mode``: Whether to use ceiling for output length calculation, default False
+- ``return_indices``: Whether to return the indices of maximum values, default False
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Sequence data downsampling
+    maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+    features = rm.randn(4, 16, 100)  # batch=4, channels=16, length=100
+    output = maxpool(features)
+    print(output.shape)  # [4, 16, 50]
+
+MaxPool2d Layer
+~~~~~~~~~~~~~~~
+
+**Purpose**:
+
+- Preserve the most salient features by selecting the maximum value in local regions
+- Provide translation invariance
+- Significantly reduce spatial dimensions and subsequent layer computational complexity
+
+**Parameters**:
+
+- ``kernel_size``: Pooling window size
+- ``stride``: Pooling stride, defaults to kernel_size
+- ``padding``: Padding size, default 0
+- ``dilation``: Dilation rate, default 1
+- ``ceil_mode``: Whether to use ceiling for output size calculation, default False
+- ``return_indices``: Whether to return the indices of maximum values, default False
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Standard image downsampling
+    maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
+    features = rm.randn(4, 64, 224, 224)
+    output = maxpool(features)
+    print(output.shape)  # [4, 64, 112, 112]
+
+MaxPool3d Layer
+~~~~~~~~~~~~~~~
+
+**Purpose**:
+
+- Apply 3D max pooling for volumetric data such as video and medical images
+- Reduce 3D spatial dimensions while preserving the most salient spatiotemporal features
+- Provide 3D translation invariance
+
+**Parameters**:
+
+- ``kernel_size``: Pooling window size (can be int or tuple of depth, height, width)
+- ``stride``: Pooling stride, defaults to kernel_size
+- ``padding``: Padding size, default 0
+- ``dilation``: Dilation rate, default 1
+- ``ceil_mode``: Whether to use ceiling for output size calculation, default False
+- ``return_indices``: Whether to return the indices of maximum values, default False
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Video data downsampling
+    maxpool = nn.MaxPool3d(kernel_size=2, stride=2)
+    features = rm.randn(4, 3, 16, 64, 64)  # batch=4, channels=3, frames=16, height=64, width=64
+    output = maxpool(features)
+    print(output.shape)  # [4, 3, 8, 32, 32]
+
+AvgPool1d Layer
+~~~~~~~~~~~~~~~
+
+**Purpose**:
+
+- Apply 1D average pooling to sequence data, computing the average within the sliding window
+- Provide smooth downsampling for sequential data
+- Preserve overall statistical information
+
+**Parameters**:
+
+- ``kernel_size``: Pooling window size
+- ``stride``: Pooling stride, defaults to kernel_size
+- ``padding``: Padding size, default 0
+- ``ceil_mode``: Whether to use ceiling, default False
+- ``count_include_pad``: Whether to include padding values in average calculation, default True
+- ``divisor_override``: Custom divisor for average computation, default None
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Smooth sequence downsampling
+    avgpool = nn.AvgPool1d(kernel_size=3, stride=2, padding=1)
+    features = rm.randn(4, 16, 100)  # batch=4, channels=16, length=100
+    output = avgpool(features)
+    print(output.shape)  # [4, 16, 50]
+
+AvgPool2d Layer
+~~~~~~~~~~~~~~~
+
+**Purpose**:
+
+- Provide smooth feature representation by computing the average of local regions
+- More robust to noise compared to max pooling
+- Preserve overall statistical information
+
+**Parameters**:
+
+- ``kernel_size``: Pooling window size
+- ``stride``: Pooling stride, defaults to kernel_size
+- ``padding``: Padding size, default 0
+- ``ceil_mode``: Whether to use ceiling, default False
+- ``count_include_pad``: Whether to include padding values in average calculation, default True
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Smooth downsampling
+    avgpool = nn.AvgPool2d(kernel_size=2, stride=2)
+    features = rm.randn(4, 64, 224, 224)
+    output = avgpool(features)
+    print(output.shape)  # [4, 64, 112, 112]
+
+AvgPool3d Layer
+~~~~~~~~~~~~~~~
+
+**Purpose**:
+
+- Apply 3D average pooling for volumetric data such as video and medical images
+- Provide smooth 3D downsampling while preserving overall spatiotemporal information
+- More robust to noise compared to 3D max pooling
+
+**Parameters**:
+
+- ``kernel_size``: Pooling window size (can be int or tuple of depth, height, width)
+- ``stride``: Pooling stride, defaults to kernel_size
+- ``padding``: Padding size, default 0
+- ``ceil_mode``: Whether to use ceiling, default False
+- ``count_include_pad``: Whether to include padding values in average calculation, default True
+- ``divisor_override``: Custom divisor for average computation, default None
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # 3D data smooth downsampling
+    avgpool = nn.AvgPool3d(kernel_size=2, stride=2)
+    features = rm.randn(4, 32, 16, 64, 64)  # batch=4, channels=32, depth=16, height=64, width=64
+    output = avgpool(features)
+    print(output.shape)  # [4, 32, 8, 32, 32]
+
+MNIST Handwritten Digit Recognition Example
+-------------------------------------------
+
+Below is a complete CNN model example for MNIST handwritten digit recognition, including full training and inference workflows:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    import riemann.optim as opt
+    from riemann.vision.datasets import MNIST
+    from riemann.vision import transforms
+    from riemann.utils.data import DataLoader
+    from riemann import cuda
+
+    class MNISTNet(nn.Module):
+        """MNIST Handwritten Digit Recognition Network"""
+        
+        def __init__(self):
+            super().__init__()
+            # Feature extraction layers
+            self.features = nn.Sequential(
+                # First convolution: 1@28x28 -> 32@28x28
+                nn.Conv2d(1, 32, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=2, stride=2),  # 32@14x14
+                
+                # Second convolution: 32@14x14 -> 64@14x14
+                nn.Conv2d(32, 64, kernel_size=3, padding=1),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=2, stride=2),  # 64@7x7
+            )
+            
+            # Classifier
+            self.classifier = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(64 * 7 * 7, 128),
+                nn.ReLU(),
+                nn.Dropout(0.5),
+                nn.Linear(128, 10)
+            )
+            
+            # Loss function
+            self.loss_func = nn.CrossEntropyLoss()
+        
+        def forward(self, x):
+            x = self.features(x)
+            x = self.classifier(x)
+            return x
+        
+        def train_step(self, inputs, targets):
+            """Single training step"""
+            outputs = self.forward(inputs)
+            loss = self.loss_func(outputs, targets)
+            self.optimizer.zero_grad(True)
+            loss.backward()
+            self.optimizer.step()
+            return loss
+        
+        def evaluate(self, dataloader, device):
+            """Evaluate model performance"""
+            total_loss = 0
+            correct = 0
+            total = 0
+            
+            for batch in dataloader:
+                img_tensors, target_tensors = batch
+                # Move data to device
+                img_tensors = img_tensors.to(device)
+                target_tensors = target_tensors.to(device)
+                
+                outputs = self.forward(img_tensors)
+                
+                # Compute loss
+                loss = self.loss_func(outputs, target_tensors)
+                total_loss += loss.item()
+                
+                # Compute accuracy
+                predicted = outputs.argmax(dim=1)
+                total += target_tensors.size(0)
+                correct += (predicted == target_tensors).sum().item()
+            
+            accuracy = correct / total
+            avg_loss = total_loss / len(dataloader)
+            return accuracy, avg_loss
+
+
+    def main():
+        """Main function: complete training and inference workflow"""
+        print("MNIST Handwritten Digit Recognition CNN Example")
+        
+        # Check CUDA availability
+        CUDA_AVAILABLE = cuda.CUPY_AVAILABLE
+        device = 'cuda' if CUDA_AVAILABLE else 'cpu'
+        print(f"Using device: {device}")
+        
+        # 1. Data preparation
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))  # Mean and std for MNIST
+        ])
+        
+        # Load datasets
+        train_dataset = MNIST(root='./data', train=True, transform=transform)
+        test_dataset = MNIST(root='./data', train=False, transform=transform)
+        
+        # Create data loaders (batch size 256 for better efficiency)
+        train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
+        
+        # 2. Create model and move to device
+        model = MNISTNet()
+        model.to(device)
+        print(f"Model structure:\n{model}")
+        
+        # Initialize optimizer (after moving model to device)
+        model.optimizer = opt.Adam(model.parameters(), lr=0.001)
+        
+        # 3. Train model
+        num_epochs = 5
+        print(f"\nStarting training for {num_epochs} epochs...")
+        
+        for epoch in range(num_epochs):
+            # Training phase
+            model.train()
+            train_loss = 0
+            for batch_idx, (images, labels) in enumerate(train_loader):
+                # Move data to device
+                images = images.to(device)
+                labels = labels.to(device)
+                
+                loss = model.train_step(images, labels)
+                train_loss += loss.item()
+                
+                if batch_idx % 50 == 0:
+                    print(f"Epoch [{epoch+1}/{num_epochs}], "
+                          f"Batch [{batch_idx}/{len(train_loader)}], "
+                          f"Loss: {loss.item():.4f}")
+            
+            # Evaluation phase
+            model.eval()
+            test_accuracy, test_loss = model.evaluate(test_loader, device)
+            avg_train_loss = train_loss / len(train_loader)
+            
+            print(f"Epoch [{epoch+1}/{num_epochs}] completed: "
+                  f"Train Loss: {avg_train_loss:.4f}, "
+                  f"Test Loss: {test_loss:.4f}, "
+                  f"Test Accuracy: {test_accuracy*100:.2f}%")
+        
+        # 4. Inference demonstration
+        print("\nInference demonstration:")
+        model.eval()
+        
+        # Get a batch of test data
+        test_images, test_labels = next(iter(test_loader))
+        # Move data to device
+        test_images = test_images.to(device)
+        test_labels = test_labels.to(device)
+        
+        # Forward propagation
+        with rm.no_grad():
+            outputs = model(test_images[:5])
+            predictions = outputs.argmax(dim=1)
+        
+        print(f"Predictions: {predictions.tolist()}")
+        print(f"True labels: {test_labels[:5].tolist()}")
+        print(f"Prediction accuracy: {(predictions == test_labels[:5]).sum().item() / 5 * 100:.2f}%")
+
+    if __name__ == "__main__":
+        main()
+
+CIFAR-10 Image Classification Example
+-------------------------------------
+
+Below is a complete CNN model example for CIFAR-10 image classification, including full training and inference workflows:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    import riemann.optim as opt
+    from riemann.vision.datasets import CIFAR10
+    from riemann.vision import transforms
+    from riemann.utils.data import DataLoader
+    from riemann import cuda
+
+    class CIFAR10Net(nn.Module):
+        """CIFAR-10 Image Classification Network (Simplified)"""
+        
+        def __init__(self):
+            super().__init__()
+            # Feature extraction layers (simplified, fewer conv layers)
+            self.features = nn.Sequential(
+                # First layer: 3@32x32 -> 32@16x16
+                nn.Conv2d(3, 32, kernel_size=3, padding=1),
+                nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+                nn.Dropout(0.25),
+                
+                # Second layer: 32@16x16 -> 64@8x8
+                nn.Conv2d(32, 64, kernel_size=3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+                nn.Dropout(0.25),
+                
+                # Third layer: 64@8x8 -> 128@4x4
+                nn.Conv2d(64, 128, kernel_size=3, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+                nn.Dropout(0.25),
+            )
+            
+            # Classifier
+            self.classifier = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(128 * 4 * 4, 256),
+                nn.BatchNorm1d(256),
+                nn.ReLU(),
+                nn.Dropout(0.5),
+                nn.Linear(256, 10)
+            )
+            
+            # Loss function
+            self.loss_func = nn.CrossEntropyLoss()
+        
+        def forward(self, x):
+            x = self.features(x)
+            x = self.classifier(x)
+            return x
+        
+        def train_step(self, inputs, targets):
+            """Single training step"""
+            outputs = self.forward(inputs)
+            loss = self.loss_func(outputs, targets)
+            self.optimizer.zero_grad(True)
+            loss.backward()
+            self.optimizer.step()
+            return loss
+        
+        def evaluate(self, dataloader, device):
+            """Evaluate model performance"""
+            total_loss = 0
+            correct = 0
+            total = 0
+            
+            for batch in dataloader:
+                img_tensors, target_tensors = batch
+                # Move data to device
+                img_tensors = img_tensors.to(device)
+                target_tensors = target_tensors.to(device)
+                
+                outputs = self.forward(img_tensors)
+                
+                # Compute loss
+                loss = self.loss_func(outputs, target_tensors)
+                total_loss += loss.item()
+                
+                # Compute accuracy
+                predicted = outputs.argmax(dim=1)
+                total += target_tensors.size(0)
+                correct += (predicted == target_tensors).sum().item()
+            
+            accuracy = correct / total
+            avg_loss = total_loss / len(dataloader)
+            return accuracy, avg_loss
+
+
+    def main():
+        """Main function: complete training and inference workflow"""
+        print("CIFAR-10 Image Classification CNN Example")
+        
+        # Check CUDA availability
+        CUDA_AVAILABLE = cuda.CUPY_AVAILABLE
+        device = 'cuda' if CUDA_AVAILABLE else 'cpu'
+        print(f"Using device: {device}")
+        
+        # 1. Data preparation
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # Normalize RGB channels
+        ])
+        
+        # Load datasets
+        train_dataset = CIFAR10(root='./data', train=True, transform=transform)
+        test_dataset = CIFAR10(root='./data', train=False, transform=transform)
+        
+        # Create data loaders (batch size 512 for better efficiency)
+        train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=512, shuffle=False)
+
+        # 2. Create model and move to device
+        model = CIFAR10Net()
+        model.to(device)
+        print(f"Model structure:\n{model}")
+
+        # Initialize optimizer (after moving model to device)
+        model.optimizer = opt.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+
+        # 3. Train model
+        num_epochs = 5
+        print(f"\nStarting training for {num_epochs} epochs...")
+        
+        best_accuracy = 0.0
+        for epoch in range(num_epochs):
+            # Training phase
+            model.train()
+            train_loss = 0
+            for batch_idx, (images, labels) in enumerate(train_loader):
+                # Move data to device
+                images = images.to(device)
+                labels = labels.to(device)
+                
+                loss = model.train_step(images, labels)
+                train_loss += loss.item()
+                
+                if batch_idx % 50 == 0:
+                    print(f"Epoch [{epoch+1}/{num_epochs}], "
+                          f"Batch [{batch_idx}/{len(train_loader)}], "
+                          f"Loss: {loss.item():.4f}")
+            
+            # Evaluation phase
+            model.eval()
+            test_accuracy, test_loss = model.evaluate(test_loader, device)
+            avg_train_loss = train_loss / len(train_loader)
+            
+            print(f"Epoch [{epoch+1}/{num_epochs}] completed: "
+                  f"Train Loss: {avg_train_loss:.4f}, "
+                  f"Test Loss: {test_loss:.4f}, "
+                  f"Test Accuracy: {test_accuracy*100:.2f}%")
+            
+            # Save best model
+            if test_accuracy > best_accuracy:
+                best_accuracy = test_accuracy
+                print(f"  -> Best model updated! Accuracy: {best_accuracy*100:.2f}%")
+        
+        print(f"\nTraining completed! Best test accuracy: {best_accuracy*100:.2f}%")
+        
+        # 4. Inference demonstration
+        print("\nInference demonstration:")
+        model.eval()
+        
+        # Get a batch of test data
+        test_images, test_labels = next(iter(test_loader))
+        # Move data to device
+        test_images = test_images.to(device)
+        test_labels = test_labels.to(device)
+        
+        # Class names
+        classes = ['airplane', 'automobile', 'bird', 'cat', 'deer',
+                   'dog', 'frog', 'horse', 'ship', 'truck']
+        
+        # Forward propagation
+        with rm.no_grad():
+            outputs = model(test_images[:5])
+            predictions = outputs.argmax(dim=1)
+        
+        print(f"Predicted classes: {[classes[p] for p in predictions.tolist()]}")
+        print(f"True classes: {[classes[t] for t in test_labels[:5].tolist()]}")
+        print(f"Prediction accuracy: {(predictions == test_labels[:5]).sum().item() / 5 * 100:.2f}%")
+
+    if __name__ == "__main__":
+        main()
+
+CNN Design Guidelines
+---------------------
+
+1. **Receptive Field Design**:
+   
+   - Stack multiple small convolutional kernels (e.g., 3x3) instead of large kernels to reduce parameters while maintaining the same receptive field
+   - Use dilated convolution to increase receptive field without adding parameters
+
+2. **Downsampling Strategy**:
+   
+   - Use pooling layers (MaxPool/AvgPool) or convolutions with stride > 1 for downsampling
+   - Downsampling gradually reduces feature map size and increases feature channels to extract higher-level features
+
+3. **Normalization and Regularization**:
+   
+   - Using BatchNorm after convolutional layers can accelerate training and improve model stability
+   - Use Dropout to prevent overfitting
+
+4. **Activation Function Selection**:
+   
+   - ReLU is the most commonly used activation function, computationally simple and effective for mitigating vanishing gradients
+   - LeakyReLU or GELU may perform better in deep networks
+
+Transformer
+===========
+
+Transformer is a deep learning architecture based on attention mechanisms, originally designed for natural language processing tasks but now widely applied in computer vision, speech recognition, and other fields. Riemann provides complete Transformer components compatible with PyTorch interfaces.
+
+Transformer Architecture Overview
+---------------------------------
+
+Transformer consists of two parts: Encoder and Decoder:
+
+- **Encoder**: Encodes the input sequence into a continuous representation (memory)
+- **Decoder**: Generates output sequences autoregressively based on the encoder's output and previously generated target sequences
+
+.. code-block:: text
+
+    Input Sequence → [Encoder] → Memory → [Decoder] → Output Sequence
+                          ↑_____________↓
+                           Cross Attention
+
+MultiheadAttention Mechanism
+----------------------------
+
+Multi-head attention is the core component of Transformer, allowing the model to simultaneously attend to information from different representation subspaces.
+
+**Principle**:
+
+Multi-head attention projects Query, Key, and Value inputs into multiple subspaces (heads), computes attention independently in each subspace, then concatenates the results and projects again:
+
+.. code-block:: text
+
+    MultiHead(Q, K, V) = Concat(head_1, ..., head_h) @ W^O
+    where head_i = Attention(Q @ W_i^Q, K @ W_i^K, V @ W_i^V)
+    
+    Attention(Q, K, V) = softmax(Q @ K^T / √d_k) @ V
+
+**Purpose**:
+
+- Capture dependencies between different positions in sequences
+- Self-attention mechanism allows each position to attend to all positions in the sequence
+- Multi-head design enables the model to attend to different types of information
+
+**Parameters**:
+
+- ``embed_dim``: Input and output dimension
+- ``num_heads``: Number of attention heads
+- ``dropout``: Dropout probability for attention weights, default 0.0
+- ``bias``: Whether to use bias, default True
+- ``batch_first``: Whether input format is (batch, seq, feature), default False
+- ``kdim``: Key dimension, default None (uses embed_dim)
+- ``vdim``: Value dimension, default None (uses embed_dim)
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Create multi-head attention layer
+    mha = nn.MultiheadAttention(embed_dim=512, num_heads=8, batch_first=True)
+
+    # Input tensors
+    batch_size, seq_len, embed_dim = 2, 10, 512
+    query = rm.randn(batch_size, seq_len, embed_dim)
+    key = rm.randn(batch_size, seq_len, embed_dim)
+    value = rm.randn(batch_size, seq_len, embed_dim)
+
+    # Forward propagation
+    output, attn_weights = mha(query, key, value)
+    print(f"Output shape: {output.shape}")  # [2, 10, 512]
+    print(f"Attention weights shape: {attn_weights.shape}")  # [2, 10, 10]
+
+Transformer Encoder
+-------------------
+
+The encoder consists of multiple identical encoder layers stacked together. Each encoder layer contains:
+
+1. **Multi-head self-attention**: Processes relationships within the input sequence
+2. **Feed-forward network**: Applies non-linear transformations independently to each position
+3. **Residual connections and layer normalization**: Stabilizes training
+
+**Two Normalization Modes**:
+
+- **Post-LN** (default): Execute sublayer first, then normalize (original Transformer paper)
+- **Pre-LN**: Normalize first, then execute sublayer (more stable training)
+
+**Components**:
+
+- ``TransformerEncoderLayer``: Single encoder layer
+- ``TransformerEncoder``: Complete encoder composed of N encoder layers
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Create encoder layer
+    encoder_layer = nn.TransformerEncoderLayer(
+        d_model=512, nhead=8, dim_feedforward=2048, 
+        dropout=0.1, batch_first=True
+    )
+
+    # Create encoder (6 layers)
+    encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
+
+    # Input sequence (batch=2, seq_len=10, d_model=512)
+    src = rm.randn(2, 10, 512)
+    
+    # Forward propagation
+    output = encoder(src)
+    print(f"Encoder output shape: {output.shape}")  # [2, 10, 512]
+
+Transformer Decoder
+-------------------
+
+The decoder consists of multiple identical decoder layers stacked together. Each decoder layer contains:
+
+1. **Masked multi-head self-attention**: Prevents attending to future positions (autoregressive)
+2. **Cross-attention**: Attends to encoder output (memory)
+3. **Feed-forward network**: Non-linear transformation
+4. **Residual connections and layer normalization**
+
+**Components**:
+
+- ``TransformerDecoderLayer``: Single decoder layer
+- ``TransformerDecoder``: Complete decoder composed of N decoder layers
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Create decoder layer
+    decoder_layer = nn.TransformerDecoderLayer(
+        d_model=512, nhead=8, dim_feedforward=2048,
+        dropout=0.1, batch_first=True
+    )
+
+    # Create decoder (6 layers)
+    decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
+
+    # Target sequence (batch=2, tgt_len=20, d_model=512)
+    tgt = rm.randn(2, 20, 512)
+    
+    # Encoder output (batch=2, src_len=10, d_model=512)
+    memory = rm.randn(2, 10, 512)
+    
+    # Forward propagation
+    output = decoder(tgt, memory)
+    print(f"Decoder output shape: {output.shape}")  # [2, 20, 512]
+
+Complete Transformer Model
+--------------------------
+
+Riemann provides a complete Transformer model containing both encoder and decoder.
+
+**Parameters**:
+
+- ``d_model``: Model dimension, default 512
+- ``nhead``: Number of attention heads, default 8
+- ``num_encoder_layers``: Number of encoder layers, default 6
+- ``num_decoder_layers``: Number of decoder layers, default 6
+- ``dim_feedforward``: Feed-forward network dimension, default 2048
+- ``dropout``: Dropout probability, default 0.1
+- ``activation``: Activation function, 'relu' or 'gelu', default 'relu'
+- ``batch_first``: Input format, default False
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Create Transformer model
+    transformer = nn.Transformer(
+        d_model=512, nhead=8, num_encoder_layers=6, num_decoder_layers=6,
+        dim_feedforward=2048, dropout=0.1, batch_first=True
+    )
+
+    # Source sequence (batch=2, src_len=10, d_model=512)
+    src = rm.randn(2, 10, 512)
+    
+    # Target sequence (batch=2, tgt_len=20, d_model=512)
+    tgt = rm.randn(2, 20, 512)
+    
+    # Forward propagation
+    output = transformer(src, tgt)
+    print(f"Transformer output shape: {output.shape}")  # [2, 20, 512]
+
+Machine Translation Example
+---------------------------
+
+Below is a complete machine translation model example demonstrating the use of Transformer in training and inference:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    class TransformerTranslationModel(nn.Module):
+        """Transformer Machine Translation Model"""
+        
+        def __init__(self, src_vocab_size, tgt_vocab_size, d_model=512, nhead=8, 
+                     num_encoder_layers=6, num_decoder_layers=6, max_seq_len=100):
+            super().__init__()
+            self.d_model = d_model
+            
+            # Word embedding layers
+            self.src_embedding = nn.Embedding(src_vocab_size, d_model)
+            self.tgt_embedding = nn.Embedding(tgt_vocab_size, d_model)
+            
+            # Positional encoding (simplified as learnable parameters)
+            self.pos_encoding = nn.Embedding(max_seq_len, d_model)
+            
+            # Transformer
+            self.transformer = nn.Transformer(
+                d_model=d_model, nhead=nhead,
+                num_encoder_layers=num_encoder_layers,
+                num_decoder_layers=num_decoder_layers,
+                dim_feedforward=2048, dropout=0.1,
+                batch_first=True
+            )
+            
+            # Output projection
+            self.output_proj = nn.Linear(d_model, tgt_vocab_size)
+        
+        def forward(self, src, tgt, src_mask=None, tgt_mask=None):
+            """Training forward propagation"""
+            # Add positional encoding
+            src_pos = rm.arange(src.shape[1]).expand(src.shape[0], -1)
+            tgt_pos = rm.arange(tgt.shape[1]).expand(tgt.shape[0], -1)
+            
+            src_emb = self.src_embedding(src) + self.pos_encoding(src_pos)
+            tgt_emb = self.tgt_embedding(tgt) + self.pos_encoding(tgt_pos)
+            
+            # Transformer forward propagation
+            output = self.transformer(src_emb, tgt_emb, src_mask=src_mask, tgt_mask=tgt_mask)
+            
+            # Project to vocabulary dimension
+            logits = self.output_proj(output)
+            return logits
+        
+        def generate(self, src, max_len=50, start_token=1, end_token=2):
+            """Inference: Autoregressive generation of translation results"""
+            self.eval()
+            
+            # Encode source sequence
+            src_pos = rm.arange(src.shape[1]).expand(src.shape[0], -1)
+            src_emb = self.src_embedding(src) + self.pos_encoding(src_pos)
+            memory = self.transformer.encoder(src_emb)
+            
+            # Autoregressive generation
+            tgt = rm.full((src.shape[0], 1), start_token, dtype=rm.int64)
+            
+            for _ in range(max_len):
+                # Generate causal mask
+                tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1])
+                
+                # Decode
+                tgt_pos = rm.arange(tgt.shape[1]).expand(tgt.shape[0], -1)
+                tgt_emb = self.tgt_embedding(tgt) + self.pos_encoding(tgt_pos)
+                output = self.transformer.decoder(tgt_emb, memory, tgt_mask=tgt_mask)
+                
+                # Predict next token
+                logits = self.output_proj(output[:, -1, :])
+                next_token = logits.argmax(dim=-1, keepdim=True)
+                
+                # Add to sequence
+                tgt = rm.concatenate([tgt, next_token], dim=1)
+                
+                # Check if end token is generated
+                if (next_token == end_token).all():
+                    break
+            
+            return tgt
+
+    # Create model
+    model = TransformerTranslationModel(
+        src_vocab_size=10000, tgt_vocab_size=10000,
+        d_model=512, nhead=8, num_encoder_layers=6
+    )
+
+    # Simulate training data
+    src = rm.randint(0, 10000, (2, 20))  # Source sequence
+    tgt = rm.randint(0, 10000, (2, 25))  # Target sequence
+
+    # Training forward propagation
+    logits = model(src, tgt)
+    print(f"Training output shape: {logits.shape}")  # [2, 25, 10000]
+
+    # Inference generation
+    generated = model.generate(src, max_len=30)
+    print(f"Generated sequence shape: {generated.shape}")
+
+Differences Between Encoder and Decoder
+---------------------------------------
+
+.. list-table:: Encoder vs Decoder
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - Characteristic
+     - Encoder
+     - Decoder
+   * - **Attention Type**
+     - Self-attention only
+     - Self-attention + Cross-attention
+   * - **Masking**
+     - No mask (can see all input)
+     - Causal mask (cannot see future positions)
+   * - **Input**
+     - Source sequence
+     - Target sequence + Encoder output
+   * - **Application Scenarios**
+     - Text classification, sentiment analysis, feature extraction
+     - Machine translation, text generation, summarization
+
+Training and Inference Workflow
+-------------------------------
+
+**Training Phase**:
+
+1. **Encoder** processes the entire source sequence to generate memory
+2. **Decoder** receives the target sequence (teacher forcing) and encoder memory
+3. Use causal mask to prevent decoder from attending to future positions
+4. Compute loss and backpropagate
+
+**Inference Phase**:
+
+1. **Encoder** processes the source sequence to generate memory
+2. **Decoder** generates autoregressively:
+   
+   - Start with start token
+   - Generate next token based on previously generated tokens and encoder memory
+   - Repeat until end token or maximum length
+
+.. code-block:: text
+
+    Training:
+    Source: [I, love, you] ──→ Encoder ──→ Memory
+    Target: [我, 爱, 你] ───→ Decoder ──→ Output
+                                   ↑
+                                   └── Memory (from Encoder)
+    
+    Inference:
+    Source: [I, love, you] ──→ Encoder ──→ Memory
+                                              ↓
+    Generated: [我] ───────→ Decoder ──→ [爱]
+       ↑                                      ↓
+       └──────────────────────────────── [你]
+
+Transformer Design Guidelines
+-----------------------------
+
+1. **Model Dimension Selection**:
+   
+   - ``d_model`` is typically 512 or 768, balancing model capacity and computational cost
+   - ``num_heads`` should divide ``d_model`` evenly (e.g., 512/8=64)
+
+2. **Layer Depth**:
+   
+   - Standard configuration is 6 encoder layers + 6 decoder layers
+   - Encoder-only models (e.g., BERT) can use 12-24 layers
+   - Decoder-only models (e.g., GPT) can use 12-96 layers
+
+3. **Positional Encoding**:
+   
+   - Essential for Transformer as it has no inherent sequential information
+   - Can use learnable positional embeddings or sinusoidal encoding
+   - Some modern variants use Rotary Position Embedding (RoPE)
+
+4. **Attention Mask Usage**:
+   
+   - ``src_mask``: Used when source sequence contains padding
+   - ``tgt_mask``: Causal mask to prevent attending to future positions
+   - ``memory_mask``: Controls which encoder positions decoder can attend to
+
+5. **Optimization Tips**:
+   
+   - Use learning rate warmup to stabilize early training
+   - Label smoothing can improve generalization
+   - Gradient clipping prevents gradient explosion

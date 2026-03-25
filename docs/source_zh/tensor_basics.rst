@@ -345,6 +345,9 @@ Riemann 提供了丰富的特殊张量创建函数，下表列出了所有支持
     * - ``linspace``
       - 创建指定范围内的等间隔一维张量
       - ``linspace(0, 1, 5)``
+    * - ``from_numpy``
+      - 从 NumPy 或 CuPy 数组创建张量
+      - ``from_numpy(np_array)``
 
 **使用示例**:
 
@@ -352,23 +355,28 @@ Riemann 提供了丰富的特殊张量创建函数，下表列出了所有支持
 
     # 零张量
     x = rm.zeros(3, 4)
-    
+
     # 全一张量
     x = rm.ones(2, 3)
-    
+
     # 单位矩阵
     x = rm.eye(3)
-    
+
     # 随机张量
     x = rm.randn(2, 3)  # 正态分布
     x = rm.rand(2, 3)   # 均匀分布 [0, 1)
-    
+
     # 填充张量
     x = rm.full((2, 3), 5)  # 创建值为 5 的 2x3 张量
-    
+
     # 序列张量
     x = rm.arange(0, 10, 2)  # 0, 2, 4, 6, 8
     x = rm.linspace(0, 1, 5)  # 0, 0.25, 0.5, 0.75, 1.0
+
+    # 从 NumPy 数组创建
+    import numpy as np
+    np_array = np.array([1, 2, 3])
+    x = rm.from_numpy(np_array)
 
 特殊张量的默认参数行为
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -667,7 +675,7 @@ Riemann 提供了广泛的数学函数，以下是常用的数学函数列表：
     - ``rm.arccos(x)``
   * - ``arctan``
     - 计算反正切值
-    - ``rm.atan(x)``
+    - ``rm.arctan(x)``
   * - ``arctan2``
     - 计算两个张量的反正切值
     - ``rm.arctan2(y, x)``
@@ -705,7 +713,6 @@ Riemann 提供了广泛的数学函数，以下是常用的数学函数列表：
 .. code-block:: python
 
     import riemann as rm
-    import numpy as np
 
     # 创建示例张量
     x = rm.tensor([-2.5, 0.0, 1.5, 3.0])
@@ -802,6 +809,12 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
   * - ``argmin``
     - 返回最小值的索引
     - ``rm.argmin(x)``
+  * - ``prod``
+    - 计算张量元素的乘积
+    - ``rm.prod(x)``
+  * - ``dot``
+    - 计算两个张量的点积
+    - ``rm.dot(x, y)``
 
 **统计函数示例**
 
@@ -1337,6 +1350,9 @@ Riemann 提供了多种张量检查和比较函数，用于检查张量的属性
   * - ``hstack``
     - 水平堆叠张量，一维张量水平连接，多维张量沿第1轴连接
     - ``rm.hstack([x, y])``
+  * - ``split``
+    - 沿指定维度将张量分割成多个块
+    - ``rm.split(x, 2, dim=0)``
 
 张量类型转换
 ------------

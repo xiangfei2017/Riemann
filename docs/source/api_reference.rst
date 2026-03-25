@@ -219,6 +219,18 @@ Random Number Generation
    :return: Tensor filled with random values
    :rtype: riemann.TN
 
+Random Seed Control
+~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.manual_seed(seed)
+
+   Set the seed for the random number generator to ensure reproducibility of random operations.
+
+   :param seed: Random seed value
+   :type seed: int
+   :return: Random number generator object
+   :rtype: torch.Generator
+
 Sequence and Range Functions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1095,6 +1107,24 @@ Mathematical Operations
    :return: Natural logarithm of each element plus one
    :rtype: riemann.TN
 
+.. function:: riemann.log2(x)
+
+   Calculate the base-2 logarithm of each element.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Base-2 logarithm of each element
+   :rtype: riemann.TN
+
+.. function:: riemann.log10(x)
+
+   Calculate the base-10 logarithm of each element.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Base-10 logarithm of each element
+   :rtype: riemann.TN
+
 .. function:: riemann.exp(x)
 
    Calculate the exponential of each element.
@@ -1102,6 +1132,24 @@ Mathematical Operations
    :param x: Input tensor
    :type x: riemann.TN
    :return: Exponential of each element
+   :rtype: riemann.TN
+
+.. function:: riemann.exp2(x)
+
+   Calculate 2 raised to the power of each element.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: 2 raised to the power of each element
+   :rtype: riemann.TN
+
+.. function:: riemann.square(x)
+
+   Calculate the square of each element.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Square of each element
    :rtype: riemann.TN
 
 .. function:: riemann.sin(x)
@@ -1266,6 +1314,42 @@ Mathematical Operations
    :return: Inverse hyperbolic tangent of each element
    :rtype: riemann.TN
 
+.. function:: riemann.ceil(x)
+
+   Round up each element to the smallest integer greater than or equal to the element.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Ceil of each element
+   :rtype: riemann.TN
+
+.. function:: riemann.floor(x)
+
+   Round down each element to the largest integer less than or equal to the element.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Floor of each element
+   :rtype: riemann.TN
+
+.. function:: riemann.round(x)
+
+   Round each element to the nearest integer.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Rounded tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.trunc(x)
+
+   Truncate the decimal part of each element, returning the integer part.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Truncated tensor
+   :rtype: riemann.TN
+
 .. function:: riemann.sign(x)
 
    Calculate the sign of each element.
@@ -1421,6 +1505,69 @@ Mathematical Operations
    :param diagonal: Diagonal offset
    :type diagonal: int, optional
    :return: Upper triangular part of the matrix
+   :rtype: riemann.TN
+
+.. function:: riemann.cumsum(input, dim, *, dtype=None)
+
+   Calculate the cumulative sum of a tensor along a specified dimension.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param dim: Dimension along which to compute cumulative sum
+   :type dim: int
+   :param dtype: Data type of the output tensor
+   :type dtype: riemann.dtype, optional
+   :return: Cumulative sum result
+   :rtype: riemann.TN
+
+.. function:: riemann.unique(input, sorted=True, return_inverse=False, return_counts=False, dim=None)
+
+   Return the unique elements of a tensor.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param sorted: Whether to sort the unique values
+   :type sorted: bool, optional
+   :param return_inverse: Whether to return inverse indices
+   :type return_inverse: bool, optional
+   :param return_counts: Whether to return counts of each unique value
+   :type return_counts: bool, optional
+   :param dim: Dimension along which to find unique values, default is None (flattened)
+   :type dim: int, optional
+   :return: Unique values, or tuple if return_inverse or return_counts is specified
+   :rtype: riemann.TN or tuple
+
+.. function:: riemann.broadcast_tensors(*tensors)
+
+   Broadcast multiple tensors to the same shape.
+
+   :param tensors: Sequence of tensors to broadcast
+   :type tensors: riemann.TN
+   :return: List of broadcasted tensors
+   :rtype: list of riemann.TN
+
+.. function:: riemann.repeat(input, repeats, dim=None)
+
+   Repeat tensor elements along a specified dimension.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param repeats: Number of repetitions for each element
+   :type repeats: int
+   :param dim: Dimension along which to repeat, default is None (flattened)
+   :type dim: int, optional
+   :return: Repeated tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.outer(input, vec2)
+
+   Compute the outer product of two vectors.
+
+   :param input: First input vector
+   :type input: riemann.TN
+   :param vec2: Second input vector
+   :type vec2: riemann.TN
+   :return: Outer product matrix
    :rtype: riemann.TN
 
 Comparison Operations
@@ -1855,6 +2002,13 @@ Data Conversion
    :return: Python list or scalar
    :rtype: list, int, float, complex
 
+.. method:: riemann.TN.numpy()
+
+   Convert the tensor to a NumPy array.
+
+   :return: NumPy array
+   :rtype: numpy.ndarray
+
 .. method:: riemann.TN.to(*args, **kwargs)
 
    Convert the tensor to a specified data type and/or device.
@@ -2188,8 +2342,8 @@ CUDA Support
        >>> cuda_device = rm.Device('cuda')
        >>> # Create a specific CUDA device
        >>> cuda_device_1 = rm.Device('cuda:1')
-       >>> # Create a CUDA device by index
-       >>> cuda_device_2 = rm.Device(2)
+       >>> # Create a CUDA device by type and index
+       >>> cuda_device_2 = rm.Device('cuda', 2)
 
    .. method:: __enter__()
 
@@ -2211,28 +2365,28 @@ CUDA Support
 
       Return the official string representation of the device.
 
-.. function:: riemann.is_available()
+.. function:: riemann.cuda.is_available()
 
    Check if CUDA is available.
 
    :return: True if CUDA is available, False otherwise
    :rtype: bool
 
-.. function:: riemann.device_count()
+.. function:: riemann.cuda.device_count()
 
    Return the number of available CUDA devices.
 
    :return: Number of available CUDA devices
    :rtype: int
 
-.. function:: riemann.current_device()
+.. function:: riemann.cuda.current_device()
 
    Return the index of the current CUDA device.
 
    :return: Index of the current CUDA device
    :rtype: int
 
-.. function:: riemann.get_device_name(device_idx)
+.. function:: riemann.cuda.get_device_name(device_idx)
 
    Return the name of the CUDA device at the given index.
 
@@ -2241,18 +2395,25 @@ CUDA Support
    :return: Name of the CUDA device
    :rtype: str
 
-.. function:: riemann.set_device(device_idx)
+.. function:: riemann.cuda.set_device(device_idx)
 
    Set the current CUDA device.
 
    :param device_idx: CUDA device index to set as current
    :type device_idx: int
 
-.. function:: riemann.empty_cache()
+.. function:: riemann.cuda.empty_cache()
 
    Clear the CUDA cache.
 
-.. function:: riemann.is_in_cuda_context()
+.. function:: riemann.cuda.synchronize(device=None)
+
+   Wait for all operations on the current CUDA device to complete.
+
+   :param device: Device to synchronize, default is current device
+   :type device: str, int, or Device, optional
+
+.. function:: riemann.cuda.is_in_cuda_context()
 
    Check if the current thread is in a CUDA device context.
 
@@ -2604,6 +2765,241 @@ Context Managers
    :param mode: True to enable gradient computation, False to disable
    :type mode: bool
 
+Linear Algebra Module
+---------------------
+
+The ``riemann.linalg`` module provides various linear algebra operations, including matrix multiplication, decomposition, and solving.
+
+Matrix Operations
+~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.linalg.matmul(a, b)
+
+   Compute the matrix product of two tensors.
+
+   :param a: First input tensor
+   :type a: riemann.TN
+   :param b: Second input tensor
+   :type b: riemann.TN
+   :return: Matrix product result
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.cross(a, b, dim=-1)
+
+   Compute the cross product (vector product) of two tensors.
+
+   :param a: First input tensor
+   :type a: riemann.TN
+   :param b: Second input tensor
+   :type b: riemann.TN
+   :param dim: Dimension along which to compute cross product, default is -1
+   :type dim: int, optional
+   :return: Cross product result
+   :rtype: riemann.TN
+
+Norm Computation
+~~~~~~~~~~~~~~~~
+
+.. function:: riemann.linalg.norm(A, ord=None, dim=None, keepdim=False)
+
+   Compute the norm of a tensor or matrix.
+
+   :param A: Input tensor
+   :type A: riemann.TN
+   :param ord: Order of norm, default is Frobenius norm
+   :type ord: int or float or str, optional
+   :param dim: Dimension along which to compute norm, default is None (compute norm of all elements)
+   :type dim: int or tuple, optional
+   :param keepdim: Whether to keep the reduced dimensions
+   :type keepdim: bool, optional
+   :return: Norm value
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.vector_norm(x, ord=2, dim=None, keepdim=False)
+
+   Compute the vector norm.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :param ord: Order of norm, default is 2 (L2 norm)
+   :type ord: float, optional
+   :param dim: Dimension along which to compute norm
+   :type dim: int or tuple, optional
+   :param keepdim: Whether to keep the reduced dimensions
+   :type keepdim: bool, optional
+   :return: Norm value
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.matrix_norm(A, ord='fro', dim=(-2, -1), keepdim=False)
+
+   Compute the matrix norm.
+
+   :param A: Input tensor
+   :type A: riemann.TN
+   :param ord: Order of norm, default is 'fro' (Frobenius norm)
+   :type ord: str or int, optional
+   :param dim: Dimensions of the matrix, default is (-2, -1)
+   :type dim: tuple, optional
+   :param keepdim: Whether to keep the reduced dimensions
+   :type keepdim: bool, optional
+   :return: Matrix norm value
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.cond(A, p=None)
+
+   Compute the condition number of a matrix.
+
+   :param A: Input matrix
+   :type A: riemann.TN
+   :param p: Type of norm, default is None (2-norm condition number)
+   :type p: int or float or str, optional
+   :return: Condition number
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.svdvals(A)
+
+   Compute the singular values of a matrix.
+
+   :param A: Input matrix
+   :type A: riemann.TN
+   :return: Singular values
+   :rtype: riemann.TN
+
+Matrix Decomposition
+~~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.linalg.det(A)
+
+   Compute the determinant of a matrix.
+
+   :param A: Input matrix
+   :type A: riemann.TN
+   :return: Determinant value
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.inv(A)
+
+   Compute the inverse of a square matrix.
+
+   :param A: Input square matrix
+   :type A: riemann.TN
+   :return: Inverse matrix
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.skew(A)
+
+   Compute the skew-symmetric part of a matrix.
+
+   :param A: Input matrix
+   :type A: riemann.TN
+   :return: Skew-symmetric matrix
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.svd(A, full_matrices=True)
+
+   Compute the singular value decomposition (SVD) of a matrix.
+
+   :param A: Input matrix
+   :type A: riemann.TN
+   :param full_matrices: Whether to return full U and Vh matrices
+   :type full_matrices: bool, optional
+   :return: Tuple of (U, S, Vh)
+   :rtype: tuple
+
+.. function:: riemann.linalg.pinv(A, rcond=1e-15)
+
+   Compute the Moore-Penrose pseudoinverse of a matrix.
+
+   :param A: Input matrix
+   :type A: riemann.TN
+   :param rcond: Singular value threshold
+   :type rcond: float, optional
+   :return: Pseudoinverse matrix
+   :rtype: riemann.TN
+
+Eigenvalue Decomposition
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.linalg.eig(A)
+
+   Compute the eigenvalues and eigenvectors of a square matrix.
+
+   :param A: Input square matrix
+   :type A: riemann.TN
+   :return: Tuple of (eigenvalues, eigenvectors)
+   :rtype: tuple
+
+.. function:: riemann.linalg.eigh(A, UPLO='L')
+
+   Compute the eigenvalues and eigenvectors of a Hermitian (or real symmetric) matrix.
+
+   :param A: Input Hermitian matrix
+   :type A: riemann.TN
+   :param UPLO: Specifies whether to use upper ('U') or lower ('L') triangular part
+   :type UPLO: str, optional
+   :return: Tuple of (eigenvalues, eigenvectors)
+   :rtype: tuple
+
+Linear Equation Solving
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.linalg.lstsq(A, b, rcond=None)
+
+   Compute the least-squares solution.
+
+   :param A: Coefficient matrix
+   :type A: riemann.TN
+   :param b: Right-hand side vector or matrix
+   :type b: riemann.TN
+   :param rcond: Singular value threshold
+   :type rcond: float, optional
+   :return: Least-squares solution
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.lu(A, pivot=True)
+
+   Compute the LU decomposition of a matrix.
+
+   :param A: Input matrix
+   :type A: riemann.TN
+   :param pivot: Whether to perform pivoting
+   :type pivot: bool, optional
+   :return: Tuple of (P, L, U)
+   :rtype: tuple
+
+.. function:: riemann.linalg.solve(A, b)
+
+   Solve the linear equation system Ax = b.
+
+   :param A: Coefficient matrix
+   :type A: riemann.TN
+   :param b: Right-hand side vector or matrix
+   :type b: riemann.TN
+   :return: Solution vector or matrix
+   :rtype: riemann.TN
+
+.. function:: riemann.linalg.qr(A, mode='reduced')
+
+   Compute the QR decomposition of a matrix.
+
+   :param A: Input matrix
+   :type A: riemann.TN
+   :param mode: Decomposition mode, 'reduced' or 'complete'
+   :type mode: str, optional
+   :return: Tuple of (Q, R)
+   :rtype: tuple
+
+.. function:: riemann.linalg.cholesky(A, upper=False)
+
+   Compute the Cholesky decomposition of a positive-definite matrix.
+
+   :param A: Input positive-definite matrix
+   :type A: riemann.TN
+   :param upper: Whether to return upper triangular matrix, default is False (lower)
+   :type upper: bool, optional
+   :return: Cholesky factor
+   :rtype: riemann.TN
+
 Neural Network Modules
 ----------------------
 
@@ -2669,6 +3065,24 @@ Container Modules
 
    :param modules: Dictionary of modules for initialization
    :type modules: dict of {str: riemann.Module}, optional
+
+.. class:: riemann.nn.ParameterList(parameters=None)
+
+   Container class for storing a list of parameters.
+
+   This container allows storing multiple parameters in list form. All parameters are properly registered to appear in the parameter list.
+
+   :param parameters: List of parameters for initialization
+   :type parameters: list of riemann.Parameter, optional
+
+.. class:: riemann.nn.ParameterDict(parameters=None)
+
+   Container class for storing a dictionary of parameters.
+
+   This container allows storing parameters using string keys and provides dictionary-like access methods. All parameters are properly registered.
+
+   :param parameters: Dictionary of parameters for initialization
+   :type parameters: dict of {str: riemann.Parameter}, optional
 
 Linear Layers
 ~~~~~~~~~~~~~
@@ -3079,6 +3493,34 @@ Dropout Layers
    :param inplace: Whether to perform operation in-place
    :type inplace: bool, optional
 
+Embedding Layer
+~~~~~~~~~~~~~~~~
+
+.. class:: riemann.nn.Embedding(num_embeddings, embedding_dim, padding_idx=None, max_norm=None, norm_type=2.0, scale_grad_by_freq=False, sparse=False, dtype=None, device=None)
+
+   Embedding layer that converts integer indices to dense vectors.
+   
+   The embedding layer is a fundamental component in neural networks for handling categorical features and sequence data.
+   
+   :param num_embeddings: Number of embedding vectors, i.e., vocabulary size
+   :type num_embeddings: int
+   :param embedding_dim: Dimension of each embedding vector
+   :type embedding_dim: int
+   :param padding_idx: If specified, embedding vectors at this index do not participate in gradient computation and remain unchanged during training
+   :type padding_idx: int, optional
+   :param max_norm: If specified, all embedding vectors with norm exceeding max_norm will be renormalized to max_norm
+   :type max_norm: float, optional
+   :param norm_type: p-value for norm calculation, defaults to 2 (L2 norm)
+   :type norm_type: float, optional
+   :param scale_grad_by_freq: If True, gradients will be scaled by frequency of each word in mini-batch
+   :type scale_grad_by_freq: bool, optional
+   :param sparse: If True, gradient of weight will be a sparse tensor
+   :type sparse: bool, optional
+   :param dtype: Data type for embedding weights
+   :type dtype: np.dtype, optional
+   :param device: Device for embedding weights
+   :type device: str|int|Device, optional
+
 Loss Function Modules
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -3185,6 +3627,151 @@ Loss Function Modules
    :type reduce: bool, optional
    :param reduction: Specifies the reduction to apply to the output
    :type reduction: str, optional
+
+Transformer Modules
+~~~~~~~~~~~~~~~~~~~
+
+.. class:: riemann.nn.MultiheadAttention(embed_dim, num_heads, dropout=0.0, bias=True, add_bias_kv=False, add_zero_attn=False, kdim=None, vdim=None, batch_first=False, device=None, dtype=None)
+
+   Multi-head attention mechanism, allows the model to attend to information from different representation subspaces.
+
+   :param embed_dim: Dimension of input and output vectors, must be divisible by num_heads
+   :type embed_dim: int
+   :param num_heads: Number of attention heads
+   :type num_heads: int
+   :param dropout: Dropout probability for attention weights
+   :type dropout: float, optional
+   :param bias: Whether to add bias to projection layers
+   :type bias: bool, optional
+   :param add_bias_kv: Whether to add learnable bias to key and value sequences
+   :type add_bias_kv: bool, optional
+   :param add_zero_attn: Whether to add a column of zeros to attention weights
+   :type add_zero_attn: bool, optional
+   :param kdim: Dimension of key vectors, defaults to embed_dim
+   :type kdim: int, optional
+   :param vdim: Dimension of value vectors, defaults to embed_dim
+   :type vdim: int, optional
+   :param batch_first: Whether input/output shape is (batch, seq, feature) instead of (seq, batch, feature)
+   :type batch_first: bool, optional
+   :param device: Device for tensors
+   :type device: optional
+   :param dtype: Data type for tensors
+   :type dtype: optional
+
+.. class:: riemann.nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward=2048, dropout=0.1, activation='relu', layer_norm_eps=1e-05, batch_first=False, norm_first=False, bias=True, device=None, dtype=None)
+
+   Single layer of Transformer encoder, consisting of self-attention mechanism and feed-forward network.
+
+   :param d_model: Dimension of input and output features
+   :type d_model: int
+   :param nhead: Number of attention heads
+   :type nhead: int
+   :param dim_feedforward: Dimension of feed-forward hidden layer
+   :type dim_feedforward: int, optional
+   :param dropout: Dropout probability
+   :type dropout: float, optional
+   :param activation: Activation function type, 'relu' or 'gelu'
+   :type activation: str, optional
+   :param layer_norm_eps: Epsilon value for layer normalization
+   :type layer_norm_eps: float, optional
+   :param batch_first: Whether input/output shape is (batch, seq, feature)
+   :type batch_first: bool, optional
+   :param norm_first: Whether to use Pre-LN mode
+   :type norm_first: bool, optional
+   :param bias: Whether to add bias to linear layers
+   :type bias: bool, optional
+   :param device: Device for tensors
+   :type device: optional
+   :param dtype: Data type for tensors
+   :type dtype: optional
+
+.. class:: riemann.nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward=2048, dropout=0.1, activation='relu', layer_norm_eps=1e-05, batch_first=False, norm_first=False, bias=True, device=None, dtype=None)
+
+   Single layer of Transformer decoder, consisting of self-attention, cross-attention, and feed-forward network.
+
+   :param d_model: Dimension of input and output features
+   :type d_model: int
+   :param nhead: Number of attention heads
+   :type nhead: int
+   :param dim_feedforward: Dimension of feed-forward hidden layer
+   :type dim_feedforward: int, optional
+   :param dropout: Dropout probability
+   :type dropout: float, optional
+   :param activation: Activation function type, 'relu' or 'gelu'
+   :type activation: str, optional
+   :param layer_norm_eps: Epsilon value for layer normalization
+   :type layer_norm_eps: float, optional
+   :param batch_first: Whether input/output shape is (batch, seq, feature)
+   :type batch_first: bool, optional
+   :param norm_first: Whether to use Pre-LN mode
+   :type norm_first: bool, optional
+   :param bias: Whether to add bias to linear layers
+   :type bias: bool, optional
+   :param device: Device for tensors
+   :type device: optional
+   :param dtype: Data type for tensors
+   :type dtype: optional
+
+.. class:: riemann.nn.TransformerEncoder(encoder_layer, num_layers, norm=None, enable_nested_tensor=True, mask_check=True)
+
+   Transformer encoder consisting of N stacked TransformerEncoderLayer layers.
+
+   :param encoder_layer: Single encoder layer instance to be cloned
+   :type encoder_layer: TransformerEncoderLayer
+   :param num_layers: Number of encoder layers
+   :type num_layers: int
+   :param norm: Final layer normalization, optional
+   :type norm: Module, optional
+   :param enable_nested_tensor: Whether to enable nested tensor optimization (interface compatibility only)
+   :type enable_nested_tensor: bool, optional
+   :param mask_check: Whether to perform mask checking (interface compatibility only)
+   :type mask_check: bool, optional
+
+.. class:: riemann.nn.TransformerDecoder(decoder_layer, num_layers, norm=None)
+
+   Transformer decoder consisting of N stacked TransformerDecoderLayer layers.
+
+   :param decoder_layer: Single decoder layer instance to be cloned
+   :type decoder_layer: TransformerDecoderLayer
+   :param num_layers: Number of decoder layers
+   :type num_layers: int
+   :param norm: Final layer normalization, optional
+   :type norm: Module, optional
+
+.. class:: riemann.nn.Transformer(d_model=512, nhead=8, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, dropout=0.1, activation='relu', custom_encoder=None, custom_decoder=None, layer_norm_eps=1e-05, batch_first=False, norm_first=False, bias=True, device=None, dtype=None)
+
+   Complete Transformer architecture containing both encoder and decoder.
+
+   :param d_model: Dimension of encoder/decoder inputs
+   :type d_model: int, optional
+   :param nhead: Number of attention heads
+   :type nhead: int, optional
+   :param num_encoder_layers: Number of encoder layers
+   :type num_encoder_layers: int, optional
+   :param num_decoder_layers: Number of decoder layers
+   :type num_decoder_layers: int, optional
+   :param dim_feedforward: Dimension of feed-forward network
+   :type dim_feedforward: int, optional
+   :param dropout: Dropout value
+   :type dropout: float, optional
+   :param activation: Activation function, 'relu' or 'gelu'
+   :type activation: str, optional
+   :param custom_encoder: Custom encoder module
+   :type custom_encoder: Module, optional
+   :param custom_decoder: Custom decoder module
+   :type custom_decoder: Module, optional
+   :param layer_norm_eps: Epsilon value for layer normalization
+   :type layer_norm_eps: float, optional
+   :param batch_first: Whether input/output shape is (batch, seq, feature)
+   :type batch_first: bool, optional
+   :param norm_first: Whether to perform LayerNorm before attention and feed-forward
+   :type norm_first: bool, optional
+   :param bias: Whether linear and LayerNorm layers learn additive bias
+   :type bias: bool, optional
+   :param device: Device for tensors
+   :type device: optional
+   :param dtype: Data type for tensors
+   :type dtype: optional
 
 Functional Interface
 ~~~~~~~~~~~~~~~~~~~~
@@ -3916,12 +4503,43 @@ Fold the unfolded tensor back to its original shape
 :type padding: int or tuple, optional
 
 :param stride: Stride of the sliding block
-
 :type stride: int or tuple, optional
-
 :return: Folded tensor with shape (N, C, H, W)
-
 :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.unfold2d(input, kernel_size, dilation=1, padding=0, stride=1)
+
+   Extract sliding local blocks from 2D input tensor (2D-specific version of unfold)
+
+   :param input: Input tensor with shape (N, C, H, W)
+   :type input: riemann.TN
+   :param kernel_size: Sliding block size
+   :type kernel_size: int or tuple
+   :param dilation: Spacing between kernel elements
+   :type dilation: int or tuple, optional
+   :param padding: Zero-padding added to both sides of the input
+   :type padding: int or tuple, optional
+   :param stride: Stride of the sliding block
+   :type stride: int or tuple, optional
+   :return: Unfolded tensor with shape (N, C * kernel_size[0] * kernel_size[1], L)
+   :rtype: riemann.TN
+
+.. function:: riemann.nn.functional.unfold3d(input, kernel_size, dilation=1, padding=0, stride=1)
+
+   Extract sliding local blocks from 3D input tensor (3D-specific version of unfold)
+
+   :param input: Input tensor with shape (N, C, D, H, W)
+   :type input: riemann.TN
+   :param kernel_size: Sliding block size
+   :type kernel_size: int or tuple
+   :param dilation: Spacing between kernel elements
+   :type dilation: int or tuple, optional
+   :param padding: Zero-padding added to all sides of the input
+   :type padding: int or tuple, optional
+   :param stride: Stride of the sliding block
+   :type stride: int or tuple, optional
+   :return: Unfolded tensor with shape (N, C * kernel_size[0] * kernel_size[1] * kernel_size[2], L)
+   :rtype: riemann.TN
 
 Datasets
 --------
