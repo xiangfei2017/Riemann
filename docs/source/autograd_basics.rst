@@ -67,13 +67,13 @@ The ``backward()`` method is suitable for computing gradients of multiple tensor
 
 .. code-block:: python
 
-    tensor.backward(gradient=None, retain_graph=False, create_graph=False)
+    tensor_object.backward(gradient=None, retain_graph=False, create_graph=False)
 
 **Parameters**:
 
 - **gradient** (optional): When the output tensor is not a scalar, a gradient tensor with the same shape as the output is required. For scalar outputs, this parameter can be omitted, defaulting to ``None`` (equivalent to passing scalar 1).
 - **retain_graph** (optional): Whether to retain the computation graph. Defaults to ``False``, meaning the graph is released after backpropagation. Set to ``True`` if you need to call ``backward()`` multiple times.
-- **create_graph** (optional): create_graph (optional): Whether to record the computation graph of gradients for subsequent computation of higher-order derivatives, defaults to ``False``.
+- **create_graph** (optional): Whether to record the computation graph of gradients for subsequent computation of higher-order derivatives, defaults to ``False``.
 
 **Use Cases**:
 
@@ -161,7 +161,7 @@ The ``grad()`` function is suitable for computing gradients of specific tensors,
 - **inputs**: Input tensor or tuple of tensors, specifying which tensors to compute gradients for
 - **grad_outputs** (optional): Gradient tensor required when ``outputs`` is not a scalar
 - **retain_graph** (optional): Whether to retain the computation graph, defaults to ``False``
-- **create_graph** (optional): create_graph (optional): Whether to record the computation graph of gradients for subsequent computation of higher-order derivatives, defaults to ``False``
+- **create_graph** (optional): Whether to record the computation graph of gradients for subsequent computation of higher-order derivatives, defaults to ``False``
 - **allow_unused** (optional): Whether to allow some input tensors to be unused, defaults to ``False``
 
 **Use Cases**:

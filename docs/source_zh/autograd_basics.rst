@@ -153,7 +153,7 @@ Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()
 
 .. code-block:: python
 
-    riemann.grad(outputs, inputs, grad_outputs=None, retain_graph=False, create_graph=False, allow_unused=False)
+    riemann.autograd.grad(outputs, inputs, grad_outputs=None, retain_graph=False, create_graph=False, allow_unused=False)
 
 **参数说明**
 
