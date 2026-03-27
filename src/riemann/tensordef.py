@@ -1592,19 +1592,14 @@ class TN:
                 raise ValueError(f"Right value size {right_size} exceeds target size {target_size}")
         elif right_size == target_size:
             right_val = right_val._reshape(target_data.shape)
-        elif right_val.shape == target_data.shape:
-            # 形状已经相等，无需扩展
-            pass
         elif right_val.ndim <= target_data.ndim:
-            right_val = right_val._expand(target_data.shape)  # 使用更高效的 _expand
+            # _expand 内部会检查形状相等，无需重复检查
+            right_val = right_val._expand(target_data.shape)
         else:
-            # 获取所有大小为1的维度并squeeze
+            # 维度数过多，先squeeze所有大小为1的维度，再expand
             dim = tuple(i for i, size in enumerate(right_val.shape) if size == 1)
-            if dim:
-                right_val = right_val._squeeze(dim)
-            # squeeze后再次检查形状
-            if right_val.shape != target_data.shape:
-                right_val = right_val._expand(target_data.shape)  # 使用更高效的 _expand
+            right_val = right_val._squeeze(dim)
+            right_val = right_val._expand(target_data.shape)
 
         return right_val
 
@@ -3143,14 +3138,14 @@ class TN:
         else:
             raise TypeError("dim must be None, an integer, or a tuple of integers")
         
-        # 如果处理后没有需要挤压的维度，直接返回原张量
-        if not new_dim:
-            return self
-        
         new_dim = tuple(new_dim)  # type: ignore
         return self._squeeze(new_dim)
 
     def _squeeze(self, new_dim: tuple):
+        # 快速路径：如果没有需要挤压的维度，直接返回原张量
+        if not new_dim:
+            return self
+        
         # 根据原始张量的数据类型选择使用np或cp
         arrlib = self._get_array_lib()
 
@@ -3530,6 +3525,11 @@ class TN:
         new_shape = tuple(int(s) for s in new_shape)
         
         original_shape = self.shape
+        
+        # 快速路径：如果形状相同，直接返回自身
+        if new_shape == original_shape:
+            return self
+        
         orig_ndim = len(original_shape)
         new_ndim = len(new_shape)
         
@@ -3573,6 +3573,11 @@ class TN:
         该函数被sum、mean的梯度函数调用，以提高效率
         """
         original_shape = self.shape
+        
+        # 快速路径：如果形状相同，直接返回自身
+        if new_shape == original_shape:
+            return self
+        
         # 根据原始张量的数据类型选择使用np或cp
         arrlib = self._get_array_lib()        
         # 使用numpy的broadcast_to执行扩展
@@ -3619,8 +3624,11 @@ class TN:
         异常:
             RuntimeError: 当扩展不兼容时抛出
         """
-        size = _validate_shape(size)
-        return broadcast_to(self, size)
+        # 解析参数格式（支持 (2,3) 或 2,3 两种形式）
+        new_shape = _validate_shape(size)
+
+        # 直接调用函数版本，避免重复验证
+        return broadcast_to(self, new_shape)
     
     def repeat(self, *repeats) -> TN:
         """
@@ -4006,7 +4014,10 @@ class TN:
             # 如还没有梯度值，直接赋值
             self.grad_value = grad_value
         else:
-            # 如已有梯度值，累计梯度,不能用原地+=
+            # 如self已有梯度值，累计梯度
+            # 多个节点可能共享了同一个grad_value张量，
+            # 比如c=a+b，c收到的梯度grad_value会原封不动地传递给a和b,
+            # a和b的grad_value是同一个张量，所以不能用原地+=累加梯度
             self.grad_value = self.grad_value + grad_value
         return
     
@@ -5331,8 +5342,8 @@ def _validate_shape(shape:tuple|list):
         newshape = shape
     
     # 验证形状参数是否为整数
-    if any(not isinstance(dim, (int,np.integer)) for dim in newshape):
-        raise RuntimeError(f'{shape} contains non int numbers')
+    # if any(not isinstance(dim, (int,np.integer)) for dim in newshape):
+    #     raise RuntimeError(f'{shape} contains non int numbers')
     return newshape
 
 def zeros(*shape,dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad:bool|None = False)->TN:
@@ -6024,23 +6035,15 @@ def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
         >>> z = tensor([1, 2, 3])  # 形状(3,)
         >>> w = broadcast_to(z, (2, 3))  # 形状(2, 3)，每行都是[1, 2, 3]
     """
-    # 验证输入
+    # 验证输入类型
     if not isinstance(input, TN):
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     
-    # 确保size是元组
-    if not isinstance(size, (tuple,list)):
-        raise TypeError(f"Expected size to be a tuple or list of integers, but received type: {type(size)}")
+    # 确保size是元组（支持列表输入）
+    size = tuple(size) if isinstance(size, list) else size
     
-    # 将size转换为元组
-    size = tuple(size)
-    
-    if input.shape == size:
-        return input
-
-    # 使用 _expand 实现广播，比创建全1张量更高效
-    # _expand 内部直接使用 numpy/cupy 的 broadcast_to，返回视图不复制数据
-    # 不需要重复检查形状，因为 _expand 会处理
+    # _expand 内部会检查形状相等并返回自身，无需重复检查
+    # _expand 内部使用 numpy/cupy 的 broadcast_to，返回视图不复制数据
     try:
         return input._expand(size)
     except ValueError as e:
