@@ -1,12 +1,34 @@
 自动求导基础
 ============
 
-Riemann 的自动微分引擎，允许自动计算张量操作的梯度。这对于训练神经网络和其他优化任务至关重要。
+Riemann 的自动微分引擎能够自动记录张量计算的过程，形成计算图，并通过反向传播算法高效地计算导数。这对于训练神经网络和其他优化任务至关重要。
 
-梯度跟踪
---------
+**核心概念**
 
-默认情况下，张量计算不跟踪其梯度。要启用梯度跟踪，请在创建张量时设置 ``requires_grad=True``。
+- **计算图（Computation Graph）**：Riemann 在后台自动构建的有向图，记录了张量之间的运算关系。每个节点代表一个张量，边代表运算操作。
+
+- **前向计算（Forward Pass）**：从输入张量开始，沿着计算图执行运算，最终得到输出结果的过程。
+
+- **反向传播（Backward Propagation）**：从输出张量开始，沿着计算图的反方向传播梯度，计算每个输入张量的导数。
+
+- **梯度（Gradient）**：标量张量对其他张量的偏导数，表示输出相对于输入的变化率。
+
+- **叶子节点张量（Leaf Node Tensor）**：用户直接创建的张量（例如通过 ``rm.tensor()``），且 ``requires_grad=True``。这些通常是模型参数。
+
+- **中间节点张量（Intermediate Node Tensor）**：通过对其他张量进行运算而创建的张量。默认情况下，不会保留中间节点的梯度。
+
+**梯度计算方法**
+
+Riemann 提供了两种计算梯度的方法：
+
+1. **backward() 方法**：适合一次求出多个张量的梯度。调用后，所有参与计算的叶子节点张量的梯度会被计算并存储在各自的 ``grad`` 属性中。
+
+2. **grad() 函数**：适合对指定的张量求导。可以精确控制需要计算哪些张量的梯度，返回一个包含梯度的元组，不会修改张量的 ``grad`` 属性。
+
+梯度跟踪开关
+------------
+
+默认情况下，张量计算不跟踪其梯度。要启用梯度跟踪开关，请在创建张量时设置 ``requires_grad=True``。
 
 .. code-block:: python
 
@@ -34,17 +56,48 @@ Riemann 的自动微分引擎，允许自动计算张量操作的梯度。这对
 计算梯度
 --------
 
-要计算梯度，请在输出张量上调用 ``backward()`` 方法。
+Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()`` 函数。
+
+使用 backward() 方法
+~~~~~~~~~~~~~~~~~~~~
+
+``backward()`` 方法适合一次求出多个张量的梯度。调用后，梯度会自动存储在参与计算的叶子节点张量的 ``grad`` 属性中。
+
+**函数签名**
+
+.. code-block:: python
+
+    tensor.backward(gradient=None, retain_graph=False, create_graph=False)
+
+**参数说明**
+
+- **gradient** （可选）：当输出张量不是标量时，需要提供一个与输出张量形状相同的梯度张量。对于标量输出，可以省略此参数，默认为 ``None`` （相当于传入标量 1）。
+- **retain_graph** （可选）：是否保留计算图。默认为 ``False`` ，表示反向传播后释放计算图。如果需要多次调用 ``backward()`` ，应设置为 ``True`` 。
+- **create_graph** （可选）：是否记录梯度的计算图，以便后续计算高阶导数，默认为 ``False`` 。
+
+**使用场景**
+
+- 训练神经网络时，一次计算所有可训练参数的梯度
+- 需要多次反向传播时（如梯度累积）
+- 计算高阶导数时
+
+**注意事项**
+
+- 只有 ``requires_grad=True`` 的 **叶子节点张量** 才会被计算梯度
+- **中间节点张量** 默认不会保留梯度，如果需要计算中间节点的梯度，需要调用 ``retain_grad()`` 方法
+- 梯度会累积到 ``grad`` 属性中，多次调用 ``backward()`` 前需要手动清零梯度
+
+**示例 1：标量输出的梯度计算**
 
 .. code-block:: python
 
     import riemann as rm
     
-    # 创建带梯度跟踪的张量
+    # 创建带梯度跟踪的张量（叶子节点）
     x = rm.tensor(2.0, requires_grad=True)
     y = rm.tensor(3.0, requires_grad=True)
     
-    # 定义计算
+    # 定义计算（中间节点）
     z = x * y + x ** 2.
     
     # 计算梯度
@@ -54,7 +107,7 @@ Riemann 的自动微分引擎，允许自动计算张量操作的梯度。这对
     print(x.grad)  # dz/dx = y + 2*x = 3 + 4 = 7
     print(y.grad)  # dz/dy = x = 2
 
-对于标量输出，可以直接调用 ``backward()``。对于非标量输出，需要提供梯度参数：
+**示例 2：非标量输出的梯度计算**
 
 .. code-block:: python
 
@@ -66,12 +119,97 @@ Riemann 的自动微分引擎，允许自动计算张量操作的梯度。这对
     # 定义产生非标量输出的计算
     y = x * 2.
     
-    # 计算相对于向量的梯度
-    gradient = rm.tensor([1., 1., 1.])  # 和的梯度
+    # 计算相对于向量的梯度，需要传入梯度参数
+    gradient = rm.tensor([1., 1., 1.])  # 雅可比向量积的向量
     y.backward(gradient)
     
     # 访问梯度
     print(x.grad)  # [2., 2., 2.]
+
+**示例 3：保留中间节点的梯度**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor(2.0, requires_grad=True)
+    y = x * 3  # 中间节点
+    z = y ** 2  # 输出
+    
+    # 保留中间节点 y 的梯度
+    y.retain_grad()
+    
+    z.backward()
+    
+    print(x.grad)  # dz/dx = 36
+    print(y.grad)  # dz/dy = 12（因为调用了 retain_grad()）
+
+使用 grad() 函数
+~~~~~~~~~~~~~~~~
+
+``grad()`` 函数适合对指定的张量求导，可以精确控制需要计算哪些张量的梯度。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.grad(outputs, inputs, grad_outputs=None, retain_graph=False, create_graph=False, allow_unused=False)
+
+**参数说明**
+
+- **outputs** ：输出张量（标量或张量），用于计算梯度的起点
+- **inputs** ：输入张量或张量元组，指定需要计算梯度的张量
+- **grad_outputs** （可选）：当 ``outputs`` 不是标量时，需要提供梯度张量
+- **retain_graph** （可选）：是否保留计算图，默认为 ``False``
+- **create_graph** （可选）：是否记录梯度的计算图，以便后续计算高阶导数，默认为 ``False``
+- **allow_unused** （可选）：是否允许某些输入张量未被使用，默认为 ``False``
+
+**使用场景**
+
+- 只需要计算特定张量的梯度，而不是所有叶子节点的梯度
+- 不想修改张量的 ``grad`` 属性时
+- 需要更灵活地控制梯度计算过程
+
+**注意事项**
+
+- 梯度以 **元组形式返回** ，顺序与 ``inputs`` 参数的顺序一致
+- 只有 ``inputs`` 中指定的张量才会计算梯度
+- **不会修改** 输入张量的 ``grad`` 属性
+- 中间节点即使调用了 ``retain_grad()`` ，也不会在 ``grad()`` 中自动计算梯度，必须显式指定
+
+**示例 1：计算指定张量的梯度**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor(2.0, requires_grad=True)
+    y = rm.tensor(3.0, requires_grad=True)
+    z = rm.tensor(4.0, requires_grad=True)
+    
+    # 定义计算
+    w = x * y + z
+    
+    # 只计算 x 和 y 的梯度，不计算 z 的梯度
+    grads = rm.autograd.grad(w, (x, y))
+    
+    print(grads)  # (tensor(3.), tensor(2.))
+    print(x.grad)  # None（grad() 不会修改 grad 属性）
+
+**示例 2：非标量输出的梯度计算**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    y = x * 2
+    
+    # 对于非标量输出，需要提供 grad_outputs
+    grad_outputs = rm.tensor([1., 1., 1.])
+    grads = rm.autograd.grad(y, x, grad_outputs=grad_outputs)
+    
+    print(grads)  # (tensor([2., 2., 2.]),)
 
 梯度累积
 --------
@@ -100,12 +238,32 @@ Riemann 的自动微分引擎，允许自动计算张量操作的梯度。这对
         x.grad.zero_()
     print(x.grad)  # 0
 
-禁用梯度跟踪
---------------
+梯度计算上下文控制
+------------------
 
-有时你需要在不跟踪梯度的情况下执行操作，例如在评估模型时。你可以使用以下几种方法：
+Riemann 提供了灵活的梯度计算上下文控制机制，通过上下文管理器和修饰器，可以方便地启用或禁用梯度跟踪。这在模型推理（需要禁用梯度以节省内存）和训练（需要启用梯度）场景中非常有用。
 
-使用 ``riemann.no_grad()`` 上下文管理器：
+is_grad_enabled() 函数
+~~~~~~~~~~~~~~~~~~~~~~
+
+``is_grad_enabled()`` 函数用于检查当前是否启用了梯度计算。
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # 检查当前梯度状态
+    print(rm.is_grad_enabled())  # True（默认启用）
+    
+    with rm.no_grad():
+        print(rm.is_grad_enabled())  # False
+
+no_grad() 上下文管理器/装饰器
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``no_grad()`` 用于暂时禁用梯度计算。在这个上下文中，所有计算将不会追踪梯度，适用于推理阶段，可显著减少内存使用并加速计算。
+
+**作为上下文管理器使用：**
 
 .. code-block:: python
 
@@ -116,6 +274,123 @@ Riemann 的自动微分引擎，允许自动计算张量操作的梯度。这对
     with rm.no_grad():
         y = x * 2.
         print(y.requires_grad)  # False
+
+**作为函数装饰器使用：**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    @rm.no_grad
+    def inference(model, x):
+        # 函数内的计算不会追踪梯度
+        return model(x)
+
+enable_grad() 上下文管理器/装饰器
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``enable_grad()`` 用于暂时启用梯度计算。可用于在 ``no_grad`` 上下文中临时启用梯度计算。
+
+**作为上下文管理器使用：**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    
+    with rm.no_grad():
+        # 这里禁用了梯度
+        print(rm.is_grad_enabled())  # False
+        
+        with rm.enable_grad():
+            # 这里临时启用了梯度
+            y = x * 2.
+            print(y.requires_grad)  # True
+        
+        # 回到禁用梯度的状态
+        print(rm.is_grad_enabled())  # False
+
+**作为函数装饰器使用：**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    @rm.enable_grad
+    def train_step(model, x, target, loss_fn):
+        # 函数内的计算会追踪梯度
+        pred = model(x)
+        loss = loss_fn(pred, target)
+        loss.backward()
+        return loss
+
+set_grad_enabled() 上下文管理器/装饰器
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``set_grad_enabled(mode)`` 是最灵活的梯度控制函数，可以显式地启用或禁用梯度计算。
+
+**参数：**
+
+- **mode** (bool): ``True`` 启用梯度计算，``False`` 禁用梯度计算
+
+**作为上下文管理器使用：**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    
+    # 禁用梯度
+    with rm.set_grad_enabled(False):
+        y = x * 2.
+        print(y.requires_grad)  # False
+    
+    # 启用梯度
+    with rm.set_grad_enabled(True):
+        y = x * 2.
+        print(y.requires_grad)  # True
+
+**作为函数装饰器使用：**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    @rm.set_grad_enabled(False)
+    def inference(model, x):
+        return model(x)
+    
+    @rm.set_grad_enabled(True)
+    def train(model, x, target, loss_fn):
+        pred = model(x)
+        loss = loss_fn(pred, target)
+        loss.backward()
+        return loss
+
+嵌套使用上下文管理器
+~~~~~~~~~~~~~~~~~~~~
+
+梯度控制上下文管理器支持嵌套使用，内层上下文会临时覆盖外层的设置：
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    
+    with rm.no_grad():  # 外层：禁用梯度
+        y1 = x * 2.
+        print(f"外层 no_grad: y1.requires_grad = {y1.requires_grad}")  # False
+        
+        with rm.enable_grad():  # 内层：启用梯度
+            y2 = x * 3.
+            print(f"内层 enable_grad: y2.requires_grad = {y2.requires_grad}")  # True
+        
+        # 回到外层上下文
+        y3 = x * 4.
+        print(f"回到外层: y3.requires_grad = {y3.requires_grad}")  # False
 
 张量计算图分离与数据复制方法
 -------------------------------------------------
@@ -642,6 +917,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
 
    - **用途**：执行前向计算
    - **参数**：
+
      - ``ctx``：上下文对象，用于保存反向传播所需的信息。使用 ``ctx.save_for_backward()`` 保存反向传播需要的张量
      - ``*inputs``：输入张量（可变数量的参数）
    - **返回**：前向计算的输出张量
@@ -651,6 +927,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
 
    - **用途**：执行反向（梯度）计算
    - **参数**：
+
      - ``ctx``：上下文对象，包含前向传播期间保存的信息。通过 ``ctx.saved_tensors`` 访问保存的张量
      - ``grad_output``：输出张量的梯度（来自计算图中后续层）
    - **返回**：梯度元组，每个输入张量对应一个梯度。每个梯度应为 ``grad_output`` 与局部梯度（偏导数）的乘积
@@ -754,6 +1031,7 @@ attach_zero_grad_sources 方法
 将张量连接到计算图，使它们在调用 backward 时收到零梯度而不是 None。
 
 **参数：**
+
 - ``sources``：要依附的来源张量集合，可以是元组、列表或集合。只有 ``requires_grad=True`` 的张量（且不是张量本身）会被依附。
 
 **返回：**
@@ -789,12 +1067,14 @@ share_grad_map 函数
 确保组中的所有张量都参与计算图并收到梯度（对于不直接参与计算的张量为零），而不是 None。
 
 **参数：**
+
 - ``tensors``：要连接的张量元组或列表。必须是元组或列表（不是集合）以保持顺序。
 
 **返回：**
 具有相同值但连接到共享计算图的张量元组或列表。注意：``requires_grad=True`` 的张量会被克隆（不会被原地修改）。
 
 **行为：**
+
 - ``requires_grad=True`` 的张量会被克隆，并将所有其他张量作为零梯度来源依附到克隆张量
 - 不需要梯度的张量或非 TN 对象保持不变
 - 所有连接的张量互相接收零梯度

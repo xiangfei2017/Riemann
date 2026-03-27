@@ -107,6 +107,7 @@ Tensor Function Parameters
 
 - If data is a numpy array or cupy array, preserves the original data type
 - If data is a Python scalar:
+
   - bool → bool
   - int → int64
   - float → default floating-point type (default: float32)
@@ -2021,6 +2022,7 @@ The ``setat`` function is used to set values at specified indices (non-in-place)
 3. **Gradient Tracking**：For tensors requiring gradient tracking, some indexing operations may affect gradient calculation, especially in-place operations.
 4. **Performance Considerations**：For large tensors, integer array indexing and boolean indexing may be slower than slice indexing because they create new tensor copies.
 5. **gather/scatter Function Parameters**：
+
    - ``dim``：Specifies the dimension of the operation
    - ``index``：Specifies the index positions
    - ``src``：Specifies the source data (only for scatter-related functions)
@@ -2220,6 +2222,7 @@ Here is an example of gradient tracking for in-place array assignment by index:
 
 - After in-place assignment, the value of `x` becomes `[1.0, 10.0, 3.0]`, while the value of `y` remains unchanged
 - Gradient calculation results show:
+
   - `x0.grad` is `[1.0, 0.0, 1.0]`, indicating that gradients are normally tracked except at the in-place assignment position
   - `y.grad` is `[1.0, 0.0, 0.0]`, indicating that gradients in the right-hand side direction are normally tracked
 
@@ -2442,26 +2445,31 @@ Extracts the upper triangular part of the tensor (including the diagonal).
 **Notes**
 
 1. ``diagonal`` Function:
+
    - Input tensor must be at least 2-dimensional
    - dim1 and dim2 cannot be the same
    - Supports negative indices (-1 represents the last dimension)
 
 2. ``diag`` Function:
+
    - When input is 1D tensor, returns diagonal matrix
    - When input is 2D tensor, returns diagonal elements
    - Does not support 3D or higher-dimensional inputs
 
 3. ``batch_diag`` Function:
+
    - The last dimension of the input tensor is the length of the diagonal elements
    - The output tensor shape is ``(*, n, n)``, where n is the size of the last dimension of the input tensor
 
 4. ``fill_diagonal`` and ``fill_diagonal_`` Functions:
+
    - input tensor must be at least 2-dimensional
    - dim1 and dim2 cannot be the same
    - Support negative indices (default fills the diagonal of the last two dimensions)
    - ``fill_diagonal_`` is an in-place operation that modifies the original tensor
 
 5. ``tril`` and ``triu`` Functions:
+
    - The diagonal parameter controls the offset of the diagonal
    - diagonal=0 represents the main diagonal
    - diagonal>0 represents above the main diagonal

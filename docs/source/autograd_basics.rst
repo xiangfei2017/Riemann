@@ -1,10 +1,32 @@
 Automatic Differentiation Basics
 ================================
 
-Riemann's automatic differentiation engine, allows for automatic computation of gradients for tensor operations. This is essential for training neural networks and other optimization tasks.
+Riemann's automatic differentiation engine automatically records tensor computations, building a computation graph, and efficiently computes derivatives through backpropagation. This is essential for training neural networks and other optimization tasks.
 
-Gradient Tracking
------------------
+**Core Concepts**
+
+- **Computation Graph**: A directed graph automatically constructed by Riemann in the background that records the relationships between tensor operations. Each node represents a tensor, and edges represent operations.
+
+- **Forward Pass**: The process of executing operations starting from input tensors along the computation graph to obtain the final output.
+
+- **Backward Propagation (Backprop)**: The process of propagating gradients backward along the computation graph starting from the output tensor to compute derivatives for each input tensor.
+
+- **Gradient**: The partial derivative of a scalar output tensor with respect to other tensors, representing the rate of change of the output relative to the input.
+
+- **Leaf Node Tensor**: A tensor created directly by the user (e.g., through ``rm.tensor()``) with ``requires_grad=True``. These are typically model parameters.
+
+- **Intermediate Node Tensor**: A tensor created as a result of operations on other tensors. By default, gradients for intermediate nodes are not retained.
+
+**Gradient Computation Methods**
+
+Riemann provides two methods for computing gradients:
+
+1. **backward() method**: Suitable for computing gradients of multiple tensors at once. After calling, gradients for all participating leaf node tensors are computed and stored in their respective ``grad`` attributes.
+
+2. **grad() function**: Suitable for computing gradients of specific tensors. Allows precise control over which tensors' gradients to compute, returning a tuple of gradients without modifying the tensors' ``grad`` attributes.
+
+Gradient Tracking Switch
+------------------------
 
 By default, tensors don't track their gradients. To enable gradient tracking, set ``requires_grad=True`` when creating a tensor:
 
@@ -34,17 +56,48 @@ You can also enable or disable gradient tracking on existing tensors:
 Computing Gradients
 -------------------
 
-To compute gradients, call the ``backward()`` method on the output tensor:
+Riemann provides two methods for computing gradients: the ``backward()`` method and the ``grad()`` function.
+
+Using the backward() Method
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``backward()`` method is suitable for computing gradients of multiple tensors at once. After calling, gradients are automatically stored in the ``grad`` attributes of participating leaf node tensors.
+
+**Function Signature**:
+
+.. code-block:: python
+
+    tensor.backward(gradient=None, retain_graph=False, create_graph=False)
+
+**Parameters**:
+
+- **gradient** (optional): When the output tensor is not a scalar, a gradient tensor with the same shape as the output is required. For scalar outputs, this parameter can be omitted, defaulting to ``None`` (equivalent to passing scalar 1).
+- **retain_graph** (optional): Whether to retain the computation graph. Defaults to ``False``, meaning the graph is released after backpropagation. Set to ``True`` if you need to call ``backward()`` multiple times.
+- **create_graph** (optional): create_graph (optional): Whether to record the computation graph of gradients for subsequent computation of higher-order derivatives, defaults to ``False``.
+
+**Use Cases**:
+
+- Training neural networks, computing gradients for all trainable parameters at once
+- When multiple backward passes are needed (e.g., gradient accumulation)
+- Computing higher-order derivatives
+
+**Important Notes**:
+
+- Only **leaf node tensors** with ``requires_grad=True`` will have their gradients computed
+- **Intermediate node tensors** do not retain gradients by default; call ``retain_grad()`` if you need gradients for intermediate nodes
+- Gradients accumulate in the ``grad`` attribute; manually zero gradients before multiple ``backward()`` calls
+
+**Example 1: Gradient Computation for Scalar Output**
 
 .. code-block:: python
 
     import riemann as rm
     
-    # Create tensors with gradient tracking
+    # Create tensors with gradient tracking (leaf nodes)
     x = rm.tensor(2.0, requires_grad=True)
     y = rm.tensor(3.0, requires_grad=True)
     
-    # Define computation
+    # Define computation (intermediate node)
     z = x * y + x ** 2.
     
     # Compute gradients
@@ -54,7 +107,7 @@ To compute gradients, call the ``backward()`` method on the output tensor:
     print(x.grad)  # dz/dx = y + 2*x = 3 + 4 = 7
     print(y.grad)  # dz/dy = x = 2
 
-For scalar outputs, you can call ``backward()`` directly. For non-scalar outputs, you need to provide a gradient argument:
+**Example 2: Gradient Computation for Non-Scalar Output**
 
 .. code-block:: python
 
@@ -66,12 +119,97 @@ For scalar outputs, you can call ``backward()`` directly. For non-scalar outputs
     # Define computation that produces a non-scalar output
     y = x * 2.
     
-    # Compute gradients with respect to a vector
-    gradient = rm.tensor([1., 1., 1.])  # Gradient of the sum
+    # Compute gradients with respect to a vector, gradient argument required
+    gradient = rm.tensor([1., 1., 1.])  # Vector for Jacobian-vector product
     y.backward(gradient)
     
     # Access gradients
     print(x.grad)  # [2., 2., 2.]
+
+**Example 3: Retaining Gradients for Intermediate Nodes**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor(2.0, requires_grad=True)
+    y = x * 3  # Intermediate node
+    z = y ** 2  # Output
+    
+    # Retain gradients for intermediate node y
+    y.retain_grad()
+    
+    z.backward()
+    
+    print(x.grad)  # dz/dx = 36
+    print(y.grad)  # dz/dy = 12 (because retain_grad() was called)
+
+Using the grad() Function
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``grad()`` function is suitable for computing gradients of specific tensors, allowing precise control over which tensors' gradients to compute.
+
+**Function Signature**:
+
+.. code-block:: python
+
+    riemann.grad(outputs, inputs, grad_outputs=None, retain_graph=False, create_graph=False, allow_unused=False)
+
+**Parameters**:
+
+- **outputs**: Output tensor(s) (scalar or tensor), the starting point for gradient computation
+- **inputs**: Input tensor or tuple of tensors, specifying which tensors to compute gradients for
+- **grad_outputs** (optional): Gradient tensor required when ``outputs`` is not a scalar
+- **retain_graph** (optional): Whether to retain the computation graph, defaults to ``False``
+- **create_graph** (optional): create_graph (optional): Whether to record the computation graph of gradients for subsequent computation of higher-order derivatives, defaults to ``False``
+- **allow_unused** (optional): Whether to allow some input tensors to be unused, defaults to ``False``
+
+**Use Cases**:
+
+- When you only need gradients for specific tensors, not all leaf nodes
+- When you don't want to modify the ``grad`` attributes of tensors
+- When you need more flexible control over the gradient computation process
+
+**Important Notes**:
+
+- Gradients are returned as a **tuple**, in the same order as the ``inputs`` parameter
+- Only tensors specified in ``inputs`` will have their gradients computed
+- **Does not modify** the ``grad`` attributes of input tensors
+- Intermediate nodes, even with ``retain_grad()`` called, will not automatically have gradients computed in ``grad()``; they must be explicitly specified
+
+**Example 1: Computing Gradients for Specific Tensors**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor(2.0, requires_grad=True)
+    y = rm.tensor(3.0, requires_grad=True)
+    z = rm.tensor(4.0, requires_grad=True)
+    
+    # Define computation
+    w = x * y + z
+    
+    # Only compute gradients for x and y, not z
+    grads = rm.autograd.grad(w, (x, y))
+    
+    print(grads)  # (tensor(3.), tensor(2.))
+    print(x.grad)  # None (grad() does not modify grad attributes)
+
+**Example 2: Gradient Computation for Non-Scalar Output**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    y = x * 2
+    
+    # For non-scalar outputs, grad_outputs must be provided
+    grad_outputs = rm.tensor([1., 1., 1.])
+    grads = rm.autograd.grad(y, x, grad_outputs=grad_outputs)
+    
+    print(grads)  # (tensor([2., 2., 2.]),)
 
 Gradient Accumulation
 ---------------------
@@ -100,12 +238,32 @@ Gradients are accumulated by default. This means that if you call ``backward()``
         x.grad.zero_()
     print(x.grad)  # 0
 
-Disabling Gradient Tracking
----------------------------
+Gradient Computation Context Control
+------------------------------------
 
-Sometimes you need to perform operations without tracking gradients, for example during evaluation. You can use several methods:
+Riemann provides a flexible gradient computation context control mechanism through functions and context managers, allowing convenient enabling or disabling of gradient tracking. This is useful in model inference (where gradients should be disabled to save memory) and training (where gradients are needed) scenarios.
 
-Using ``riemann.no_grad()`` context manager:
+is_grad_enabled() Function
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``is_grad_enabled()`` function checks whether gradient computation is currently enabled.
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    # Check current gradient status
+    print(rm.is_grad_enabled())  # True (enabled by default)
+    
+    with rm.no_grad():
+        print(rm.is_grad_enabled())  # False
+
+no_grad() Context Manager/Decorator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``no_grad()`` temporarily disables gradient computation. In this context, all computations will not track gradients, which is suitable for inference phases and can significantly reduce memory usage and accelerate computation.
+
+**As a context manager:**
 
 .. code-block:: python
 
@@ -116,6 +274,123 @@ Using ``riemann.no_grad()`` context manager:
     with rm.no_grad():
         y = x * 2.
         print(y.requires_grad)  # False
+
+**As a function decorator:**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    @rm.no_grad
+    def inference(model, x):
+        # Computations within the function will not track gradients
+        return model(x)
+
+enable_grad() Context Manager/Decorator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``enable_grad()`` temporarily enables gradient computation. Can be used to temporarily enable gradients within a ``no_grad`` context.
+
+**As a context manager:**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    
+    with rm.no_grad():
+        # Gradients are disabled here
+        print(rm.is_grad_enabled())  # False
+        
+        with rm.enable_grad():
+            # Gradients are temporarily enabled here
+            y = x * 2.
+            print(y.requires_grad)  # True
+        
+        # Back to disabled state
+        print(rm.is_grad_enabled())  # False
+
+**As a function decorator:**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    @rm.enable_grad
+    def train_step(model, x, target, loss_fn):
+        # Computations within the function will track gradients
+        pred = model(x)
+        loss = loss_fn(pred, target)
+        loss.backward()
+        return loss
+
+set_grad_enabled() Context Manager/Decorator
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``set_grad_enabled(mode)`` is the most flexible gradient control function, allowing explicit enabling or disabling of gradient computation.
+
+**Parameters:**
+
+- **mode** (bool): ``True`` to enable gradient computation, ``False`` to disable
+
+**As a context manager:**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    
+    # Disable gradients
+    with rm.set_grad_enabled(False):
+        y = x * 2.
+        print(y.requires_grad)  # False
+    
+    # Enable gradients
+    with rm.set_grad_enabled(True):
+        y = x * 2.
+        print(y.requires_grad)  # True
+
+**As a function decorator:**
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    @rm.set_grad_enabled(False)
+    def inference(model, x):
+        return model(x)
+    
+    @rm.set_grad_enabled(True)
+    def train(model, x, target, loss_fn):
+        pred = model(x)
+        loss = loss_fn(pred, target)
+        loss.backward()
+        return loss
+
+Nested Context Managers
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Gradient control context managers support nested usage, where inner contexts temporarily override outer settings:
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    
+    with rm.no_grad():  # Outer: disable gradients
+        y1 = x * 2.
+        print(f"Outer no_grad: y1.requires_grad = {y1.requires_grad}")  # False
+        
+        with rm.enable_grad():  # Inner: enable gradients
+            y2 = x * 3.
+            print(f"Inner enable_grad: y2.requires_grad = {y2.requires_grad}")  # True
+        
+        # Back to outer context
+        y3 = x * 4.
+        print(f"Back to outer: y3.requires_grad = {y3.requires_grad}")  # False
 
 Tensor Methods for Graph Detaching and Data Copying
 ---------------------------------------------------
@@ -643,6 +918,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
 
    - **Purpose**: Performs the forward computation
    - **Parameters**:
+
      - ``ctx``: Context object used to save information for the backward pass. Use ``ctx.save_for_backward()`` to store tensors needed in backward
      - ``*inputs``: Input tensors (variable number of arguments)
    - **Returns**: Output tensor(s) of the forward computation
@@ -652,6 +928,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
 
    - **Purpose**: Performs the backward (gradient) computation
    - **Parameters**:
+
      - ``ctx``: Context object containing information saved during forward pass. Access saved tensors via ``ctx.saved_tensors``
      - ``grad_output``: Gradient of the output tensor (from subsequent layers in the computation graph)
    - **Returns**: Tuple of gradients, one for each input tensor. Each gradient should be the product of ``grad_output`` and the local gradient (partial derivative)
@@ -755,6 +1032,7 @@ The ``attach_zero_grad_sources`` method attaches multiple tensors as source tens
 Connect tensors to the computational graph so they receive zero gradients instead of None when backward is called.
 
 **Parameters:**
+
 - ``sources``: A tuple, list, or set of tensors to attach. Only tensors with ``requires_grad=True`` (and not the tensor itself) will be attached.
 
 **Returns:**
@@ -790,12 +1068,14 @@ The ``share_grad_map`` function connects a group of tensors to a shared computat
 Ensure all tensors in a group participate in the computational graph and receive gradients (zero for tensors not directly involved in computation) rather than None.
 
 **Parameters:**
+
 - ``tensors``: A tuple or list of tensors to connect. Must be tuple or list (not set) to preserve order.
 
 **Returns:**
 A tuple or list of tensors with the same values but connected to a shared computational graph. Note: tensors with ``requires_grad=True`` are cloned (not modified in place).
 
 **Behavior:**
+
 - Tensors with ``requires_grad=True`` are cloned, and all other tensors are attached as zero-gradient sources to the cloned tensor
 - Tensors without gradients or non-TN objects remain unchanged
 - All connected tensors receive zero gradients from each other
