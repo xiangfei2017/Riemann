@@ -144,6 +144,32 @@ Riemann提供了丰富的示例代码，位于`examples/`目录：
 
 ### 源码安装与开发环境配置
 
+#### 使用Conda（推荐）
+
+Conda能更好地管理复杂依赖，特别是CUDA相关包：
+
+```bash
+# 创建新的conda环境
+conda create -n riemann python=3.10
+conda activate riemann
+
+# 安装核心依赖
+conda install numpy pillow tqdm
+
+# 从源码安装Riemann
+git clone https://gitee.com/xfcode2021/Riemann.git
+cd Riemann
+pip install -e .
+
+# 安装测试依赖（可选）
+pip install pytest
+
+# 安装CUDA依赖（可选，参考下方平台兼容性表格）
+pip install -e .[cuda]
+```
+
+#### 使用pip
+
 ```bash
 # 从Gitee获取Riemann库源码
 git clone https://gitee.com/xfcode2021/Riemann.git
@@ -167,9 +193,6 @@ pip install -e .[cuda12]
 pip install -e .[cuda11]
 # CUDA 10.x (仅Linux)
 pip install -e .[cuda10]
-
-# 安装通用cupy依赖（适用于macOS、ARM64等平台）
-pip install -e .[cupy]
 ```
 
 ### 依赖说明
@@ -184,23 +207,31 @@ pip install -e .[cupy]
 #### CUDA依赖
 
 CUDA依赖不会自动安装，需要显式指定：
-- **cupy-cuda13x**: 适用于CUDA 13.x的Linux和Windows平台
-- **cupy-cuda12x**: 适用于CUDA 12.x的Linux和Windows平台
-- **cupy-cuda11x**: 适用于CUDA 11.x的Linux和Windows平台
-- **cupy-cuda10x**: 适用于CUDA 10.x的Linux平台
-- **cupy**: 通用版本（适用于macOS、ARM64等不支持CUDA的平台）
+- **cupy-cuda13x**: 适用于CUDA 13.x的Linux和Windows x86_64/AMD64平台
+- **cupy-cuda12x**: 适用于CUDA 12.x的Linux和Windows x86_64/AMD64平台
+- **cupy-cuda11x**: 适用于CUDA 11.x的Linux和Windows x86_64/AMD64平台
+- **cupy-cuda10x**: 适用于CUDA 10.x的Linux x86_64/AMD64平台
 
 #### 平台兼容性
 
-- **CUDA支持**: 仅在Linux或Windows系统，且x86_64/AMD64架构下可用
-- **macOS系统**: 不支持NVIDIA CUDA，会自动使用CPU模式
-- **ARM架构**: 对于NVIDIA Jetson等设备可能支持CUDA，但需要安装对应ARM版本的CUDA驱动
+| 平台 | 架构 | CUDA支持 | 安装方式 |
+|------|------|----------|----------|
+| Linux | x86_64/AMD64 | ✅ 支持 | `pip install -e .[cuda]` |
+| Windows | x86_64/AMD64 | ✅ 支持 | `pip install -e .[cuda]` |
+| macOS | x86_64/ARM64 | ❌ 不支持 | 无NVIDIA GPU驱动，使用CPU模式 |
+| Linux (ARM64) | aarch64/arm64 | ⚠️ 需源码编译 | NVIDIA Jetson等需从源码编译CuPy |
+| Windows (ARM64) | aarch64/arm64 | ❌ 不支持 | 暂不支持CUDA |
+
+**详细说明：**
+- **macOS**: 由于缺少NVIDIA GPU驱动，不支持NVIDIA CUDA。Riemann将自动使用CPU模式。
+- **Linux ARM64**（如NVIDIA Jetson Nano、AGX Xavier）: 支持CUDA，但需要从源码编译安装CuPy。详见 [CuPy安装指南](https://docs.cupy.dev/en/stable/install.html)。
+- **Windows ARM64**: 目前不支持CUDA。
 
 ### CUDA驱动安装说明
 
-1. **检查CUDA驱动版本**
-   - Windows系统：右键点击桌面 → NVIDIA控制面板 → 帮助 → 系统信息 → 驱动程序版本
-   - Linux系统：终端运行 `nvidia-smi` 或 `nvcc --version`
+1. **检查CUDA版本**
+   - Windows/Linux: 终端运行 `nvcc --version` 查看已安装的CUDA Toolkit版本
+   - 注意：`nvidia-smi`显示的是GPU驱动支持的最高CUDA版本，而`nvcc --version`显示的是实际安装的CUDA Toolkit版本。驱动程序向后兼容多个CUDA Toolkit版本。
 
 2. **下载并安装对应版本的CUDA驱动**
    - 访问NVIDIA官方网站：https://developer.nvidia.com/cuda-toolkit-archive
@@ -208,9 +239,7 @@ CUDA依赖不会自动安装，需要显式指定：
    - 安装过程中请按照向导提示完成
 
 3. **验证CUDA驱动安装**
-   - 安装完成后，重启电脑并运行：
-     - Windows: `nvidia-smi`
-     - Linux: `nvidia-smi` 或 `nvcc --version`
+   - 安装完成后，重启电脑并运行 `nvcc --version`
    - 确认输出中显示正确的CUDA版本信息
 
 ### 验证安装

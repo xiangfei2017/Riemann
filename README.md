@@ -145,6 +145,32 @@ Riemann provides rich example codes located in the `examples/` directory:
 
 ### Source Installation and Development Environment Configuration
 
+#### Using Conda (Recommended)
+
+Conda can better manage complex dependencies, especially for CUDA-related packages:
+
+```bash
+# Create a new conda environment
+conda create -n riemann python=3.10
+conda activate riemann
+
+# Install core dependencies
+conda install numpy pillow tqdm
+
+# Install Riemann from source
+git clone https://github.com/xiangfei2017/Riemann.git
+cd Riemann
+pip install -e .
+
+# Install test dependencies (optional)
+pip install pytest
+
+# Install CUDA dependencies (optional, see platform compatibility table below)
+pip install -e .[cuda]
+```
+
+#### Using pip
+
 ```bash
 # Get Riemann library source code from GitHub
 git clone https://github.com/xiangfei2017/Riemann.git
@@ -168,9 +194,6 @@ pip install -e .[cuda12]
 pip install -e .[cuda11]
 # CUDA 10.x (Linux only)
 pip install -e .[cuda10]
-
-# Install general CuPy dependency (for macOS, ARM64, etc.)
-pip install -e .[cupy]
 ```
 
 ### Dependency Description
@@ -185,23 +208,31 @@ Running `pip install riemann` will automatically install the following core depe
 #### CUDA Dependencies
 
 CUDA dependencies are not automatically installed and need to be explicitly specified:
-- **cupy-cuda13x**: For CUDA 13.x on Linux and Windows platforms
-- **cupy-cuda12x**: For CUDA 12.x on Linux and Windows platforms
-- **cupy-cuda11x**: For CUDA 11.x on Linux and Windows platforms
-- **cupy-cuda10x**: For CUDA 10.x on Linux platforms
-- **cupy**: General version (for macOS, ARM64, and other platforms that don't support CUDA)
+- **cupy-cuda13x**: For CUDA 13.x on Linux and Windows x86_64/AMD64 platforms
+- **cupy-cuda12x**: For CUDA 12.x on Linux and Windows x86_64/AMD64 platforms
+- **cupy-cuda11x**: For CUDA 11.x on Linux and Windows x86_64/AMD64 platforms
+- **cupy-cuda10x**: For CUDA 10.x on Linux x86_64/AMD64 platforms
 
 #### Platform Compatibility
 
-- **CUDA support**: Only available on Linux or Windows systems with x86_64/AMD64 architecture
-- **macOS systems**: NVIDIA CUDA is not supported, will automatically use CPU mode
-- **ARM architecture**: For devices like NVIDIA Jetson, CUDA may be supported, but you need to install the corresponding ARM version of CUDA driver
+| Platform | Architecture | CUDA Support | Installation Method |
+|----------|-------------|--------------|---------------------|
+| Linux | x86_64/AMD64 | ✅ Supported | `pip install -e .[cuda]` |
+| Windows | x86_64/AMD64 | ✅ Supported | `pip install -e .[cuda]` |
+| macOS | x86_64/ARM64 | ❌ Not supported | No NVIDIA GPU drivers; uses CPU mode |
+| Linux (ARM64) | aarch64/arm64 | ⚠️ Build from source | NVIDIA Jetson: build CuPy from source |
+| Windows (ARM64) | aarch64/arm64 | ❌ Not supported | No CUDA support |
+
+**Detailed Notes:**
+- **macOS**: NVIDIA CUDA is not supported on macOS due to lack of NVIDIA GPU drivers. Riemann will automatically use CPU mode.
+- **Linux ARM64** (e.g., NVIDIA Jetson Nano, AGX Xavier): CUDA is supported, but you need to build CuPy from source. See [CuPy Installation Guide](https://docs.cupy.dev/en/stable/install.html) for instructions.
+- **Windows ARM64**: Currently does not support CUDA.
 
 ### CUDA Driver Installation Instructions
 
-1. **Check CUDA Driver Version**
-   - Windows system: Right-click on desktop → NVIDIA Control Panel → Help → System Information → Driver Version
-   - Linux system: Run in terminal `nvidia-smi` or `nvcc --version`
+1. **Check CUDA Version**
+   - Windows/Linux: Run `nvcc --version` in terminal to check installed CUDA Toolkit version
+   - Note: `nvidia-smi` shows the maximum CUDA version supported by the GPU driver, while `nvcc --version` shows the actually installed CUDA Toolkit version. The driver is backward compatible with multiple CUDA Toolkit versions.
 
 2. **Download and Install Corresponding CUDA Driver**
    - Visit NVIDIA official website: https://developer.nvidia.com/cuda-toolkit-archive
@@ -209,9 +240,7 @@ CUDA dependencies are not automatically installed and need to be explicitly spec
    - Follow the wizard instructions to complete the installation
 
 3. **Verify CUDA Driver Installation**
-   - After installation, restart your computer and run:
-     - Windows: `nvidia-smi`
-     - Linux: `nvidia-smi` or `nvcc --version`
+   - After installation, restart your computer and run `nvcc --version`
    - Confirm that the output shows the correct CUDA version information
 
 ### Verify Installation

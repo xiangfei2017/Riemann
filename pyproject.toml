@@ -38,7 +38,11 @@ dependencies = [
 
 [project.optional-dependencies]
 # CUDA支持 - 提供不同CUDA版本的选项
-# 注意：CuPy主要支持x86_64/AMD64架构的Linux和Windows平台
+# 注意：
+# 1. CuPy官方预编译包主要支持x86_64/AMD64架构的Linux和Windows平台
+# 2. macOS不支持NVIDIA CUDA（因为没有NVIDIA GPU驱动支持）
+# 3. Linux ARM64架构（如NVIDIA Jetson）支持CUDA，但需要自行编译安装CuPy
+# 4. Windows ARM64目前不支持CUDA
 cuda13 = [
     "cupy-cuda13x; (platform_system=='Linux' or platform_system=='Windows') and (platform_machine=='x86_64' or platform_machine=='AMD64')",
 ]
@@ -54,10 +58,6 @@ cuda10 = [
 # 默认CUDA选项（推荐CUDA 12.x）
 cuda = [
     "riemann[cuda12]"
-]
-# 通用cupy选项（适用于macOS、ARM64等不支持CUDA的平台）
-cupy = [
-    "cupy; platform_system=='Darwin' or platform_machine=='aarch64' or platform_machine=='arm64'"
 ]
 tests = [
     "pytest>=7.0.0",
