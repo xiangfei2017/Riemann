@@ -1569,21 +1569,22 @@ class TN:
 
     
     def _adjust_right_val(self, target_data, val):
-        if not isinstance(val,TN):
-            right_val = tensor(val, dtype = self.dtype, device=self.device)
-        else:
+        # 快速路径：如果val已经是TN且设备、类型匹配，直接使用
+        if isinstance(val, TN):
             right_val = val
-
+            # 检查设备一致性
             if right_val.device != self.device:
                 raise ValueError(f"Right value device {right_val.device} does not match target device {self.device}")
-
-            # 确保val和self的dtype相同
+            # 检查并转换dtype
             if right_val.dtype != self.dtype:
-                right_val = right_val.type(self.dtype)           
+                right_val = right_val.type(self.dtype)
+        else:
+            right_val = tensor(val, dtype=self.dtype, device=self.device)
         
         # 将右值形状、维度转化为和索引值相匹配的形式
         target_size = target_data.size
-        right_size = right_val.numel()
+        right_size = right_val.data.size  # 直接访问底层数组的size，避免方法调用开销
+        
         if right_size > target_size:
             if target_size == 0 and right_size == 1:
                 pass   # 允许向空张量赋值0D标量
@@ -1591,14 +1592,19 @@ class TN:
                 raise ValueError(f"Right value size {right_size} exceeds target size {target_size}")
         elif right_size == target_size:
             right_val = right_val._reshape(target_data.shape)
+        elif right_val.shape == target_data.shape:
+            # 形状已经相等，无需扩展
+            pass
         elif right_val.ndim <= target_data.ndim:
-            right_val = right_val.broadcast_to(target_data.shape)
+            right_val = right_val._expand(target_data.shape)  # 使用更高效的 _expand
         else:
-            # 获取所有大小为1的维度
+            # 获取所有大小为1的维度并squeeze
             dim = tuple(i for i, size in enumerate(right_val.shape) if size == 1)
-            # 移除所有大小为1的维度
-            right_val = right_val.squeeze(dim)
-            right_val = right_val.broadcast_to(target_data.shape)
+            if dim:
+                right_val = right_val._squeeze(dim)
+            # squeeze后再次检查形状
+            if right_val.shape != target_data.shape:
+                right_val = right_val._expand(target_data.shape)  # 使用更高效的 _expand
 
         return right_val
 
@@ -3140,12 +3146,15 @@ class TN:
         # 如果处理后没有需要挤压的维度，直接返回原张量
         if not new_dim:
             return self
+        
+        new_dim = tuple(new_dim)  # type: ignore
+        return self._squeeze(new_dim)
 
+    def _squeeze(self, new_dim: tuple):
         # 根据原始张量的数据类型选择使用np或cp
         arrlib = self._get_array_lib()
 
         # 执行挤压操作并设置梯度信息
-        new_dim = tuple(new_dim)  # type: ignore
         newarr = arrlib.squeeze(self.data, axis=new_dim)
         ret = TN()
         ret.data = newarr
@@ -3171,6 +3180,8 @@ class TN:
         
         if ret.requires_grad:
             ret.fromvars = (self,)
+            if isinstance(dim,int):
+                dim = (dim,)
             ret.parms = (dim,)
             ret.gradfuncs = (_unsqueeze_backward,)
         return ret
@@ -3257,18 +3268,8 @@ class TN:
                 f"shape '{processed_shape}' is invalid for input of size {original_size}"
             )
         
-        # 记录原始形状供反向传播恢复
-        original_shape = self.shape
-        ret = TN()
-        ret.data = self.data.reshape(tuple(processed_shape))
-        ret.requires_grad = (is_grad_enabled() and self.requires_grad)
+        return self._reshape(tuple(processed_shape))
         
-        if ret.requires_grad:
-            ret.fromvars = (self,)
-            ret.parms = ((original_shape, tuple(processed_shape)),)
-            ret.gradfuncs = (_reshape_backward,)
-        return ret
-
     def view(self, *new_shape):
         """返回具有相同数据但不同形状的新张量视图。
         
@@ -3286,7 +3287,7 @@ class TN:
         """
         return self.reshape(*new_shape)
 
-    def _reshape(self, *new_shape):
+    def _reshape(self, new_shape):
         """
         Simplified version of reshape with better performance.
         
@@ -3297,7 +3298,7 @@ class TN:
         - Only accepts non-negative integer tuples or sequences
         
         Args:
-            *new_shape: Sequence of non-negative integers or a single shape tuple, 
+            new_shape: a single shape tuple, 
                        specifying the new tensor shape.
                        All dimensions must be non-negative integers.
                        The product of dimensions must match the original tensor size.
@@ -3309,25 +3310,19 @@ class TN:
             This function assumes valid input parameters for better performance.
             For robust error handling with -1 support, use reshape() method instead.
         """
-        # Handle parameter format
-        if len(new_shape) == 1 and isinstance(new_shape[0], (tuple, list)):
-            shape = tuple(new_shape[0])
-        else:
-            shape = new_shape
-        
         # Return self if shape is the same
-        if self.shape == shape:
+        if self.shape == new_shape:
             return self
         
         # Record original shape for backward propagation
         original_shape = self.shape
         ret = TN()
-        ret.data = self.data.reshape(shape)
+        ret.data = self.data.reshape(new_shape)
         ret.requires_grad = (is_grad_enabled() and self.requires_grad)
         
         if ret.requires_grad:
             ret.fromvars = (self,)
-            ret.parms = ((original_shape, shape),)
+            ret.parms = ((original_shape, new_shape),)
             ret.gradfuncs = (_reshape_backward,)
         return ret
 
@@ -3400,7 +3395,7 @@ class TN:
             # 在原dim位置插入1，形成窗口数量维度
             window_shape = list(window.shape)
             window_shape.insert(dim, 1)
-            window = window._reshape(window_shape)
+            window = window._reshape(tuple(window_shape))
             
             # 将窗口添加到列表中
             windows.append(window)
@@ -3511,7 +3506,7 @@ class TN:
         new_shape = new_shape[:start_dim] + [flattened_size] + new_shape[end_dim + 1:]
 
         # 通过reshape实现展平（继承梯度传播能力）
-        return self._reshape(*new_shape)
+        return self._reshape(tuple(new_shape))
 
     def expand(self, *size):
         """
@@ -3534,54 +3529,50 @@ class TN:
         # 转换为整数元组
         new_shape = tuple(int(s) for s in new_shape)
         
-        # 处理负数维度大小，特别是-1
         original_shape = self.shape
         orig_ndim = len(original_shape)
         new_ndim = len(new_shape)
         
-        # 替换-1为对应的原始维度大小
-        processed_shape = list(new_shape)
-        for i in range(new_ndim):
-            if processed_shape[i] == -1:
-                if new_ndim == orig_ndim:  # 只有当维度数量相同时，才能使用-1
-                    processed_shape[i] = original_shape[i]
-                else:
-                    raise RuntimeError(
-                        f"Cannot use -1 as size value for dimension {i} when the number of dimensions changes from {orig_ndim} to {new_ndim}"
-                    )
-        new_shape = tuple(processed_shape)
-        
-        # 对于维度数量不同的情况，如果原张量是0维，可以扩展到任意形状
-        if orig_ndim != new_ndim:
-            if orig_ndim == 0:  # 标量可以扩展到任意形状
-                pass
-            else:
-                # 检查是否可以通过在前面添加1的维度来匹配新维度数
-                # 例如：(4,) -> (1,4) -> 可以扩展为 (3,4)
-                if new_ndim > orig_ndim:
-                    # 创建扩展后的原始形状（在前面添加1）
-                    expanded_orig_shape = (1,) * (new_ndim - orig_ndim) + original_shape
-                    # 检查扩展后的原始形状是否与新形状兼容
-                    for i, (orig_dim, new_dim) in enumerate(zip(expanded_orig_shape, new_shape)):
-                        if orig_dim != 1 and orig_dim != new_dim:
-                            raise RuntimeError(
-                                f"The expanded size of the tensor ({new_dim}) in dimension {i} must be "
-                                f"equal to the existing size ({orig_dim}) or the existing size must be one."
-                            )
-                else:
-                    raise RuntimeError(
-                        f"expand(Size({list(new_shape)})): the number of dimensions "
-                        f"({new_ndim}) must be >= the number of dimensions of the tensor ({orig_ndim})"
-                    )
+        # 处理-1并统一维度对齐后的原始形状
+        if orig_ndim == 0:
+            # 标量可以扩展到任意形状，直接使用新形状
+            aligned_orig_shape = new_shape
+        elif new_ndim < orig_ndim:
+            raise RuntimeError(
+                f"expand(Size({list(new_shape)})): the number of dimensions "
+                f"({new_ndim}) must be >= the number of dimensions of the tensor ({orig_ndim})"
+            )
+        elif new_ndim > orig_ndim:
+            # 在前面添加1来对齐维度
+            aligned_orig_shape = (1,) * (new_ndim - orig_ndim) + original_shape
         else:
-            # 维度数量相同的情况，检查每个维度的兼容性
-            for i, (orig_dim, new_dim) in enumerate(zip(original_shape, new_shape)):
+            aligned_orig_shape = original_shape
+        
+        # 处理-1并检查维度兼容性
+        processed_shape = []
+        for i, (orig_dim, new_dim) in enumerate(zip(aligned_orig_shape, new_shape)):
+            if new_dim == -1:
+                if orig_ndim == 0:
+                    raise RuntimeError("Cannot use -1 when expanding a scalar tensor")
+                processed_shape.append(orig_dim)
+            else:
                 if orig_dim != 1 and orig_dim != new_dim:
                     raise RuntimeError(
                         f"The expanded size of the tensor ({new_dim}) in dimension {i} must be "
                         f"equal to the existing size ({orig_dim}) or the existing size must be one."
                     )
+                processed_shape.append(new_dim)
         
+        new_shape = tuple(processed_shape)
+
+        return self._expand(new_shape)
+
+    def _expand(self, new_shape):
+        """
+        实现张量扩展的内部逻辑，不对new_shape做检查
+        该函数被sum、mean的梯度函数调用，以提高效率
+        """
+        original_shape = self.shape
         # 根据原始张量的数据类型选择使用np或cp
         arrlib = self._get_array_lib()        
         # 使用numpy的broadcast_to执行扩展
@@ -6047,15 +6038,13 @@ def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
     if input.shape == size:
         return input
 
-    # 创建全1张量并与输入相乘，利用numpy的广播机制
-    ones_tensor = ones(*size, dtype=input.dtype, device=input.device, requires_grad=False)
-    result = input * ones_tensor
-    
-    # 确保结果的形状正确
-    if result.shape != size:
-        raise RuntimeError(f"Failed to broadcast tensor to shape {size}")
-    
-    return result
+    # 使用 _expand 实现广播，比创建全1张量更高效
+    # _expand 内部直接使用 numpy/cupy 的 broadcast_to，返回视图不复制数据
+    # 不需要重复检查形状，因为 _expand 会处理
+    try:
+        return input._expand(size)
+    except ValueError as e:
+        raise RuntimeError(f"Failed to broadcast tensor from shape {input.shape} to shape {size}: {e}")
 
 def broadcast_tensors(*tensors: TN) -> Tuple[TN, ...]:
     """
@@ -6237,7 +6226,7 @@ def repeat(input: TN, repeats: Tuple[int, ...]) -> TN:
                 shape = list(grad_value.shape)
                 shape[j] = repeat
                 shape.insert(j+1, size)
-                grad_reshaped = grad_value._reshape(shape)
+                grad_reshaped = grad_value._reshape(tuple(shape))
                 
                 # 在重复的维度上求和
                 grad_value = grad_reshaped.sum(dim=j)
@@ -6337,7 +6326,7 @@ def _squeeze_backward(result_tensor:TN, i: int) -> TN:
 
 def _unsqueeze_backward(result_tensor:TN, i: int) -> TN:
     dim = result_tensor.parms[i]
-    grad = result_tensor.grad_value.squeeze(dim)
+    grad = result_tensor.grad_value._squeeze(dim)
     return grad
 
 def _reshape_backward(result_tensor: TN, i: int) -> TN:
@@ -6679,16 +6668,14 @@ def _get_broadcast_axis(big_shape,small_shape):
 
 def _sum_backward(result_tensor:TN,i:int)->TN:
     dim, keepdims = result_tensor.parms[i]
+    x_shape = result_tensor.fromvars[i].shape
 
-    # 如果sum计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
+    # 如果sum计算时结果张量做过维度精简，需要将缩减的维度恢复
+    # 然后expand到输入形状，sum的梯度就是直接将输出梯度传播到每个输入元素
     if keepdims == False:
-        new_result_grad = result_tensor.grad_value.unsqueeze(dim)
+        grad = result_tensor.grad_value.unsqueeze(dim)._expand(x_shape)
     else:
-        new_result_grad = result_tensor.grad_value
-    
-    x=result_tensor.fromvars[i]
-    mask = ones_like(x)
-    grad = new_result_grad * mask
+        grad = result_tensor.grad_value._expand(x_shape)
     
     return grad
 
@@ -7058,28 +7045,26 @@ def _mean_backward(result_tensor:TN, i:int)->TN:
     dim, keepdim = result_tensor.parms[i]     
     x = result_tensor.fromvars[i]
 
-    if type(dim) == int:
+    if isinstance(dim, int):
         n = x.data.shape[dim]
     elif dim is None:
+        n = x.numel()
+    elif isinstance(dim, tuple):
         n = 1
-        for i in x.data.shape:
-            n *= i
-    elif isinstance(dim,tuple):
-        n=1.
-        for i in dim:
-            n *= x.data.shape[i]
+        for d in dim:
+            n *= x.data.shape[d]
     else:
         raise TypeError(dim)
 
-    arr = ones_like(x) / tensor(n,dtype=x.dtype,device=x.device)
-    
-    # 如果mean计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
-    if keepdim == False:
-        new_result_grad = result_tensor.grad_value.unsqueeze(dim)
+    # 均值的梯度传播到输入张量，需要缩放1/n，同时考虑keepdim参数，要恢复维度
+    # 最后要expand到输入的形状，才得到输入的梯度
+    if keepdim:
+        # keepdim=True时，直接expand到输入形状，无需unsqueeze
+        grad = (result_tensor.grad_value / n)._expand(x.shape)
     else:
-        new_result_grad = result_tensor.grad_value
-
-    grad = new_result_grad * arr
+        # unsqueeze在dim=None时直接返回原张量，无需额外判断
+        grad = (result_tensor.grad_value / n).unsqueeze(dim)._expand(x.shape)
+    
     return grad
 
 def mean(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
@@ -7406,27 +7391,15 @@ def _var_backward(result_tensor:TN, i:int)->TN:
     diff = x - x_mean
     factor = tensor(2.0 / denom,dtype = x.dtype, device=x.device)
     
-    # 准备梯度值
-    grad_value = result_tensor.grad_value
-    
     # 如果keepdim为False，需要扩展梯度维度以匹配diff的维度
+    # unsqueeze支持int、tuple和None，dim=None时直接返回原张量
     if not keepdim:
-        if dim is None:
-            # 对于全局方差，需要扩展到原始形状
-            new_result_grad = grad_value._reshape(tuple(1 for _ in x.shape))
-        elif isinstance(dim, int):
-            new_result_grad = grad_value.unsqueeze(dim)
-        else:  # tuple
-            # 对多个dim，按升序逐个unsqueeze以保持维度顺序正确
-            # 注意：这里需要按升序处理，因为每次unsqueeze会增加维度，影响后续的索引
-            new_result_grad = grad_value
-            for d in sorted(dim):
-                new_result_grad = new_result_grad.unsqueeze(d)
+        grad_value = result_tensor.grad_value.unsqueeze(dim)
     else:
-        new_result_grad = grad_value
+        grad_value = result_tensor.grad_value
     
     # 计算最终梯度
-    grad = new_result_grad * diff * factor
+    grad = grad_value * diff * factor
     return grad
 
 def var(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->TN:
@@ -8677,12 +8650,12 @@ def vstack(tensors: Tuple[TN, ...]|List[TN]) -> TN:
     all_1d = all(t.ndim == 1 for t in tensors)
     if all_0d:
         # 对于0D张量，添加新维度后沿第0轴连接
-        expanded_tensors = [t._reshape(1, 1) for t in tensors]
+        expanded_tensors = [t._reshape((1, 1)) for t in tensors]
         return concatenate(expanded_tensors, dim=0)
     elif all_1d:
         # 对于一维张量，添加新维度后沿第0轴连接
         # 这样可以利用concatenate的梯度跟踪能力
-        expanded_tensors = [t.reshape(1, -1) for t in tensors]
+        expanded_tensors = [t._reshape((1, -1)) for t in tensors]
         return concatenate(expanded_tensors, dim=0)
     else:
         # 对于多维张量，沿第0轴连接
@@ -8701,7 +8674,7 @@ def hstack(tensors: Tuple[TN, ...]|List[TN]) -> TN:
     all_1d = all(t.ndim == 1 for t in tensors)
     if all_0d:
         # 对于0D张量，添加新维度后沿第0轴连接
-        expanded_tensors = [t._reshape(1) for t in tensors]
+        expanded_tensors = [t._reshape((1,)) for t in tensors]
         return concatenate(expanded_tensors, dim=0)
     elif all_1d:
         # 对于一维张量，沿第0轴连接（水平堆叠）

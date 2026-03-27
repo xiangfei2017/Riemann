@@ -989,15 +989,20 @@ class TestMaxMinFunctions(unittest.TestCase):
             {"name": "1D向量，沿轴0保留维度", "shape": (6,), "dim": 0, "keepdim": True, "dtype": np.float32},
             {"name": "无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.float32},
             {"name": "沿轴0，不保留维度", "shape": (5, 6), "dim": 0, "keepdim": False, "dtype": np.float64},
+            {"name": "沿轴1，不保留维度", "shape": (2, 3), "dim": 1, "keepdim": False, "dtype": np.float32},
             {"name": "沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.float32},
             {"name": "沿多轴，保留维度", "shape": (4, 2, 3), "dim": (0, 1), "keepdim": True, "dtype": np.float64},
+            {"name": "沿多轴，不保留维度", "shape": (2, 3, 4), "dim": (0, 2), "keepdim": False, "dtype": np.float32},
+            {"name": "空维度", "shape": (2, 3), "dim": (), "keepdim": False, "dtype": np.float64},
             # 复数场景测试用例
             {"name": "复数0D标量，无维度", "shape": (), "dim": None, "keepdim": False, "dtype": np.complex64},
             {"name": "复数1D向量，无维度", "shape": (3,), "dim": None, "keepdim": False, "dtype": np.complex128},
             {"name": "复数1D向量，沿轴0", "shape": (5,), "dim": 0, "keepdim": False, "dtype": np.complex64},
             {"name": "复数，无维度，不保留维度", "shape": (3, 4), "dim": None, "keepdim": False, "dtype": np.complex64},
             {"name": "复数，沿轴0，不保留维度", "shape": (5, 6), "dim": 0, "keepdim": False, "dtype": np.complex128},
-            {"name": "复数，沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.complex64}
+            {"name": "复数，沿轴1，保留维度", "shape": (2, 3, 4), "dim": 1, "keepdim": True, "dtype": np.complex64},
+            {"name": "复数，沿轴1，不保留维度", "shape": (2, 3), "dim": 1, "keepdim": False, "dtype": np.complex64},
+            {"name": "复数，沿多轴，不保留维度", "shape": (2, 3, 4), "dim": (0, 2), "keepdim": False, "dtype": np.complex128}
         ]
         
         for case in test_cases:

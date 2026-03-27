@@ -389,7 +389,7 @@ class CUDAUnitTest(unittest.TestCase):
         
         # 复数张量梯度跟踪 - 需要显式提供梯度
         with cuda.Device('cuda:0'):
-            cuda_complex = rm.tensor([1+2j, 3+4j, 5+6j], dtype=rm.complex128, requires_grad=True)
+            cuda_complex = rm.tensor([1+2j, 3+4j, 5+6j], requires_grad=True)
         cpu_complex = cuda_complex.to('cpu')
         
         result = cpu_complex.sum()

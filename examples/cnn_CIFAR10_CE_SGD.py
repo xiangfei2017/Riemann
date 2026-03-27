@@ -1,25 +1,21 @@
 """
-CIFAR-10图像识别卷积神经网络示例（LeNet版）
+CIFAR-10图像识别卷积神经网络示例（简化LeNet版）
 
-本示例展示了如何使用Riemann深度学习框架构建一个现代LeNet卷积神经网络，
+本示例展示了如何使用Riemann深度学习框架构建一个简化版LeNet卷积神经网络，
 用于CIFAR-10图像分类任务。
 
 主要组件：
-    - LeNet: 现代LeNet卷积神经网络模型
-        * 3个卷积层 + 3个全连接层
-        * 使用Dropout防止过拟合
+    - LeNet: 简化版LeNet卷积神经网络模型
+        * 2个卷积层 + 1个全连接层
         * 针对32x32输入优化
     - EasyCIFAR10: 预处理的CIFAR10数据集
     - 数据预处理: 归一化和标准化
 
 网络结构:
-     Conv(3->32) -> ReLU -> MaxPool
-     Conv(32->64) -> ReLU -> MaxPool
-     Conv(64->128) -> ReLU -> MaxPool
+     Conv(3->32) -> ReLU -> MaxPool  # 32x32 -> 16x16
+     Conv(32->64) -> ReLU -> MaxPool # 16x16 -> 8x8
      Flatten
-     FC(2048->256) -> ReLU -> Dropout
-     FC(256->128) -> ReLU -> Dropout
-     FC(128->10)
+     FC(4096->10)  # 直接输出到10个类别
 
 使用方法:
     运行本脚本将自动加载CIFAR-10数据集，
@@ -110,15 +106,13 @@ class EasyCIFAR10(datasets.CIFAR10):
 
 class LeNet(nn.Module):
     """
-    现代 LeNet 卷积神经网络用于 CIFAR-10 图像分类
+    简化版 LeNet 卷积神经网络用于 CIFAR-10 图像分类
     
     网络结构（针对 32x32 输入优化）:
         - 卷积层1: Conv(3->32, 3x3) -> ReLU -> MaxPool(2x2)  # 32x32 -> 16x16
         - 卷积层2: Conv(32->64, 3x3) -> ReLU -> MaxPool(2x2) # 16x16 -> 8x8
-        - 卷积层3: Conv(64->128, 3x3) -> ReLU -> MaxPool(2x2) # 8x8 -> 4x4
-        - 全连接层1: Linear(128*4*4 -> 256) -> ReLU -> Dropout(0.5)
-        - 全连接层2: Linear(256 -> 128) -> ReLU -> Dropout(0.5)
-        - 输出层: Linear(128 -> 10)
+        - 展平
+        - 全连接层: Linear(64*8*8 -> 10)  # 直接输出到10个类别
     
     方法:
         forward(inputs): 前向传播计算
@@ -129,23 +123,22 @@ class LeNet(nn.Module):
         """
         初始化 LeNet 模型
         
-        创建网络各层、损失函数和优化器。
+        使用 Sequential 容器构建网络，代码更简洁。
         """
         super().__init__()
         
-        # 卷积层部分
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1)
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1)
+        # 特征提取部分：2个卷积层，使用 Sequential 容器
+        self.features = nn.Sequential(
+            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
         
-        self.relu = nn.ReLU()
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        # 全连接层部分
-        self.fc1 = nn.Linear(128 * 4 * 4, 256)
-        self.fc2 = nn.Linear(256, 128)
-        self.fc3 = nn.Linear(128, 10)
-        self.dropout = nn.Dropout(0.5)
+        # 分类器部分：1个全连接层，直接输出到10个类别
+        self.classifier = nn.Linear(64 * 8 * 8, 10)
 
         # 交叉熵损失函数，适用于多分类任务
         self.loss_func = nn.CrossEntropyLoss()
@@ -160,34 +153,14 @@ class LeNet(nn.Module):
         返回:
             Tensor: 输出张量，形状为(batch_size, 10)
         """
-        # 卷积层1: 32x32 -> 16x16
-        x = self.conv1(inputs)
-        x = self.relu(x)
-        x = self.pool(x)
+        # 特征提取: (batch_size, 3, 32, 32) -> (batch_size, 64, 8, 8)
+        x = self.features(inputs)
         
-        # 卷积层2: 16x16 -> 8x8
-        x = self.conv2(x)
-        x = self.relu(x)
-        x = self.pool(x)
-        
-        # 卷积层3: 8x8 -> 4x4
-        x = self.conv3(x)
-        x = self.relu(x)
-        x = self.pool(x)
-        
-        # 展平
+        # 展平: (batch_size, 64, 8, 8) -> (batch_size, 64*8*8)
         x = x.reshape(x.shape[0], -1)
         
-        # 全连接层
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        
-        x = self.fc2(x)
-        x = self.relu(x)
-        x = self.dropout(x)
-        
-        x = self.fc3(x)
+        # 分类: (batch_size, 64*8*8) -> (batch_size, 10)
+        x = self.classifier(x)
         return x
     
     def train_step(self, inputs, targets):
@@ -300,7 +273,7 @@ def main():
     # 创建数据加载器，使用极小的批次大小
     train_loader = DataLoader(
         dataset=train_dataset,
-        batch_size=16,  # 极小的批次大小
+        batch_size=256,
         shuffle=True
     )
     test_loader = DataLoader(
@@ -325,7 +298,7 @@ def main():
     
     # 训练模型
     print("\n开始训练...")
-    epochs = 3  # 极少的训练epoch数
+    epochs = 5  # 训练epoch数
     train_start_time = time.time()
     
     best_accuracy = 0.0
