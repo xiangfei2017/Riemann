@@ -153,7 +153,7 @@ The ``grad()`` function is suitable for computing gradients of specific tensors,
 
 .. code-block:: python
 
-    riemann.grad(outputs, inputs, grad_outputs=None, retain_graph=False, create_graph=False, allow_unused=False)
+    riemann.autograd.grad(outputs, inputs, grad_outputs=None, retain_graph=False, create_graph=False, allow_unused=False)
 
 **Parameters**:
 

@@ -67,7 +67,7 @@ Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()
 
 .. code-block:: python
 
-    tensor.backward(gradient=None, retain_graph=False, create_graph=False)
+    tensor_object.backward(gradient=None, retain_graph=False, create_graph=False)
 
 **参数说明**
 
