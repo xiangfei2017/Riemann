@@ -1678,6 +1678,136 @@ class TestInplaceOperations(unittest.TestCase):
                     raise
         stats.end_function()
 
+    def test_fancy_indexing_inplace(self):
+        """测试整数数组索引和布尔数组索引的原地操作
+        
+        这个测试专门覆盖 __setitem__ 中 else 分支的代码路径，
+        验证当 temp._is_view = False 时，能正确处理 stored_index 与空元组的比较。
+        
+        Bug 背景：之前使用 stored_index != () 会在 stored_index 是 numpy 数组时
+        触发广播错误 ValueError: operands could not be broadcast together。
+        修复后使用 isinstance(stored_index, tuple) and len(stored_index) == 0 进行判断。
+        
+        所有原地操作（+=、-=、*=、/=）在 CUDA 上都可以正常工作。
+        subat_/mulat_/divat_ 使用自定义函数替代 CuPy 有 bug 的 subtract.at/multiply.at/divide.at。
+        """
+        
+        # 测试场景：整数数组索引和布尔数组索引（不返回视图）
+        # 每个测试用例可以指定支持的设备列表
+        test_cases = [
+            {
+                "name": "NumPy整数数组索引原地加法",
+                "index": np.array([0, 2, 4]),
+                "op": "+=",
+                "value": 10,
+                "devices": ["cpu", "cuda"] if CUDA_AVAILABLE else ["cpu"]
+            },
+            {
+                "name": "NumPy布尔数组索引原地加法",
+                "index": np.array([True, False, True, False, True]),
+                "op": "+=",
+                "value": 100,
+                "devices": ["cpu", "cuda"] if CUDA_AVAILABLE else ["cpu"]
+            },
+            {
+                "name": "Python列表整数数组索引原地乘法",
+                "index": [1, 3],
+                "op": "*=",
+                "value": 2,
+                "devices": ["cpu", "cuda"] if CUDA_AVAILABLE else ["cpu"]
+            },
+            {
+                "name": "NumPy整数数组索引原地减法",
+                "index": np.array([0, 4]),
+                "op": "-=",
+                "value": 5,
+                "devices": ["cpu", "cuda"] if CUDA_AVAILABLE else ["cpu"]
+            },
+            {
+                "name": "NumPy整数数组索引原地除法",
+                "index": np.array([1, 3]),
+                "op": "/=",
+                "value": 2,
+                "devices": ["cpu", "cuda"] if CUDA_AVAILABLE else ["cpu"]
+            },
+        ]
+        
+        for test_case in test_cases:
+            for device in test_case["devices"]:
+                case_name = f"{test_case['name']} - {device}"
+                start_time = time.time()
+                
+                try:
+                    # 创建基础张量
+                    base_data = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+                    
+                    # 创建Riemann张量（需要梯度以触发计算图记录）
+                    rm_x_leaf = rm.tensor(base_data, requires_grad=True, device=device)
+                    rm_x = rm_x_leaf * 1  # 创建非叶子节点
+                    rm_x.retain_grad()
+                    
+                    # 创建PyTorch张量用于对比
+                    torch_x = None
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(base_data, requires_grad=True, device=device)
+                        torch_x = torch_x * 1
+                        torch_x.retain_grad()
+                    
+                    # 记录操作前的值
+                    rm_before = rm_x.data.copy()
+                    
+                    # 执行原地操作
+                    idx = test_case["index"]
+                    op = test_case["op"]
+                    value = test_case["value"]
+                    
+                    if op == "+=":
+                        rm_x[idx] += value
+                        if TORCH_AVAILABLE:
+                            torch_x[idx] += value
+                    elif op == "-=":
+                        rm_x[idx] -= value
+                        if TORCH_AVAILABLE:
+                            torch_x[idx] -= value
+                    elif op == "*=":
+                        rm_x[idx] *= value
+                        if TORCH_AVAILABLE:
+                            torch_x[idx] *= value
+                    elif op == "/=":
+                        rm_x[idx] /= value
+                        if TORCH_AVAILABLE:
+                            torch_x[idx] /= value
+                    
+                    # 反向传播
+                    rm_loss = rm_x.sum()
+                    rm_loss.backward()
+                    
+                    if TORCH_AVAILABLE:
+                        torch_loss = torch_x.sum()
+                        torch_loss.backward()
+                    
+                    # 比较结果
+                    forward_passed = compare_values(rm_x, torch_x)
+                    grad_passed = compare_grads(rm_x, torch_x)
+                    passed = forward_passed and grad_passed
+                    
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    # 断言确保测试通过
+                    self.assertTrue(passed, f"Fancy indexing inplace operation failed: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
 if __name__ == '__main__':
     # 设置为独立脚本运行模式
     IS_RUNNING_AS_SCRIPT = True

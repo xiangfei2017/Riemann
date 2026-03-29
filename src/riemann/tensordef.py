@@ -1038,15 +1038,8 @@ class TN:
         Returns:
             bool: 如果张量是连续的返回True，否则返回False
         """
-        # 检查是NumPy数组还是CuPy数组
-        if isinstance(self.data, np.ndarray):
-            return self.data.flags.contiguous
-        elif cp and isinstance(self.data, cp.ndarray):
-            return self.data.flags.c_contiguous
-        else:
-            # 对于其他类型，默认返回True
-            return True
-
+        return self.data.flags.c_contiguous
+        
     def contiguous(self):
         """
         如果张量不是连续的，返回一个具有相同数据但连续内存布局的新张量。
@@ -1111,102 +1104,66 @@ class TN:
         return ret
     
     def __setitem__(self, index, val):
+        # 1. 最先检查：所有原地操作都需要这个检查
         if self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
-        
-        # 检查是否是视图对象的赋值，避免不必要的操作
-        if hasattr(val, '_is_view'):
-            # 转换索引格式以便比较
-            index_val = _convert_TNindex_to_numpy(index)
+
+        # 2. 快速路径：简单赋值（非视图对象）
+        if not hasattr(val, '_is_view'):
+            return self.setat_(index, val)
+
+        # 3. 快速路径：视图但基础不同
+        if val._base is not self:
+            return self.setat_(index, val)
+
+        # 4. 复杂原地操作场景（视图且基础是self）
+        # 转换索引格式以便比较
+        index_val = _convert_TNindex_to_numpy(index)
+
+        # 检查右值val是否是来自self的索引视图对象，原因如下:
+        # 原地操作时，比如a[index]+=b,会先触发a.__getitem__(index)生成临时对象temp，
+        # 然后执行原地操作temp+=b,如temp是视图（共享内存）,原地操作在_inplace_oper_at_()里被重定向到a上了
+        # 最后触发a.__setitem__(index,temp),
+        # 这时就要检查temp是否是来自a的索引视图，如果是，原地操作已在a上已操作过，所以直接返回
+        # 如果temp不是视图，将temp的计算图记录的原地操作应用到a上
+        if val._is_view:
+            # 如果右值是视图对象，且视图的基础是self，索引也相同，则不需要执行操作
+            # 安全比较索引值，处理布尔数组等复杂索引类型
+            if _indexes_are_equal(val._view_index, index_val):
+                return self
+        else:
+            # 非视图对象的赋值，需要应用记录的原地操作
+            gradfuncs = val.gradfuncs
+            parms = val.parms
+            fromvars = val.fromvars
+            for i in range(len(gradfuncs) - 1, -1, -1):
+                # parms[i] 可能是 (target_copy, index_val) 元组或单个 index_val
+                parm = parms[i]
+                if isinstance(parm, tuple) and len(parm) >= 2:
+                    # 原地操作: (target_copy, index_val, ...)
+                    stored_index = parm[1]
+                else:
+                    # 非原地操作: index_val
+                    stored_index = parm
                 
-            # 辅助函数：检查是否为布尔索引
-            def _is_boolean_index(idx):
-                """检查索引是否为布尔类型索引"""
-                try:
-                    if hasattr(idx, 'dtype') and idx.dtype == bool:
-                        return True
-                    elif isinstance(idx, np.ndarray) and idx.dtype == bool:
-                        return True
-                    elif isinstance(idx, tuple):
-                        return any(_is_boolean_index(i) for i in idx)
-                    return False
-                except Exception:
-                    return False
-            
-            # 辅助函数：比较两个索引是否相同
-            def _indexes_are_equal(idx1, idx2):
-                """比较两个索引是否相同，仅支持简单索引类型"""
-                try:
-                    # 跳过布尔索引比较
-                    if _is_boolean_index(idx1) or _is_boolean_index(idx2):
-                        return False
-                    
-                    if isinstance(idx1, tuple) and isinstance(idx2, tuple):
-                        # 元组索引比较
-                        if len(idx1) != len(idx2):
-                            return False
-                        for a, b in zip(idx1, idx2):
-                            try:
-                                # 对数组类型进行特殊处理
-                                if hasattr(a, 'shape') and hasattr(b, 'shape'):
-                                    return bool(np.array_equal(a, b))
-                                # 简单类型直接比较
-                                if a != b:
-                                    return False
-                            except Exception:
-                                return False
-                        return True
-                    elif isinstance(idx1, (int, slice, type(None))) and isinstance(idx2, (int, slice, type(None))):
-                        # 单一索引比较
-                        return idx1 == idx2
-                    else:
-                        # 其他类型尝试转换为数组比较
-                        try:
-                            return bool(np.array_equal(np.asarray(idx1), np.asarray(idx2)))
-                        except Exception:
-                            return False
-                except Exception:
-                    return False
-            
-            # 检查右值val是否是来自self的索引视图对象，原因如下:
-            # 原地操作时，比如a[index]+=b,会先除法a.__getitem__(index)生成临时对象temp，
-            # 然后执行原地操作temp+=b,如temp是视图（共享内存）,原地操作在_inplace_oper_at_()里被重定向到a上了
-            # 最后触发a.__setitem__(index,temp),
-            # 这时就要检查temp是否是来自a的索引视图，如果是，原地操作已在a上已操作过，所以直接返回
-            # 如果temp不是视图，将temp的计算图记录的原地操作应用到a上
-            if val._is_view:
-                # 如果右值是视图对象，且视图的基础是self，索引也相同，则不需要执行操作
-                # 安全比较索引值，处理布尔数组等复杂索引类型
-                if val._base is self and _indexes_are_equal(val._view_index, index_val):
-                    return self
-            else:
-                # 非视图对象的赋值
-                if val._base is self and _indexes_are_equal(val._view_index, index_val):
-                    for i in range(len(val.gradfuncs)-1,-1,-1):
-                        funcname = val.gradfuncs[i].__name__
-                        if funcname == '_addat_inplace_backward':
-                            if val.parms[i][1] == ():
-                                return self.addat_(index_val,val.fromvars[i])
+                # 检查 stored_index 是否为空元组 ()
+                # 注意：不能使用 != 比较 numpy 数组和元组
+                is_empty_tuple = isinstance(stored_index, tuple) and len(stored_index) == 0
+                if not is_empty_tuple:
+                    continue
+                funcname = gradfuncs[i].__name__
+                if funcname == '_addat_inplace_backward':
+                    return self.addat_(index_val, fromvars[i])
+                elif funcname == '_subat_inplace_backward':
+                    return self.subat_(index_val, fromvars[i])
+                elif funcname == '_mulat_inplace_backward':
+                    return self.mulat_(index_val, fromvars[i])
+                elif funcname == '_divat_inplace_backward':
+                    return self.divat_(index_val, fromvars[i])
+                elif funcname == '_powat_inplace_backward':
+                    return self.powat_(index_val, fromvars[i])
 
-                        if funcname == '_subat_inplace_backward':
-                            if val.parms[i][1] == ():
-                                return self.subat_(index_val,val.fromvars[i])
-                        
-                        if funcname == '_mulat_inplace_backward':
-                            if val.parms[i][1] == ():
-                                return self.mulat_(index_val,val.fromvars[i])
-
-                        if funcname == '_divat_inplace_backward':
-                            if val.parms[i][1] == ():
-                                return self.divat_(index_val,val.fromvars[i])
-
-                        if funcname == '_powat_inplace_backward':
-                            if val.parms[i][1] == ():
-                                return self.powat_(index_val,val.fromvars[i])
-                # end of if val._base is self and _indexes_are_equal(val._view_index, index_val)
-        # end of if hasattr(val, '_is_view')
-
-        return self.setat_(index,val)
+        return self.setat_(index, val)
     
     def _merge_indices(self, base_index, current_index):
         """
@@ -1605,7 +1562,7 @@ class TN:
 
     def _inplace_oper_at_(self, index, val, oper_func, backward_func):
         # 将索引规范化为numpy索引
-        index_val = _convert_TNindex_to_numpy(index) 
+        index_val = _convert_TNindex_to_numpy(index)
         
         # 检查是否为视图对象
         if hasattr(self, '_is_view') and self._is_view:
@@ -1699,12 +1656,19 @@ class TN:
 
     def subat_(self,index,val):
         arrlib = self._get_array_lib()
-        return self._inplace_oper_at_(index, val, arrlib.subtract.at, _subat_inplace_backward)
+        if arrlib == cp:
+            def _subat_numpy_item(numpy_arr, index, right_numpy_arr):
+                numpy_arr[index] -= right_numpy_arr
+                return numpy_arr
+            oper_func = _subat_numpy_item
+        else:
+            oper_func = np.subtract.at
+        return self._inplace_oper_at_(index, val, oper_func, _subat_inplace_backward)
 
     def subat(self,index,val):
         arrlib = self._get_array_lib()
         return self._non_inplace_oper_at(index, val, arrlib.subtract.at, _subat_backward_left, _subat_backward_right)
-
+    
     def mulat_(self,index,val):
         arrlib = self._get_array_lib()
         if arrlib == cp:
@@ -2355,8 +2319,7 @@ class TN:
             raise ValueError("Dimension order must contain all axes without repetition")
         
         # 使用numpy.transpose直接计算维度重排
-        arrlib = self._get_array_lib()
-        new_data = arrlib.transpose(self.data, dims)  # type: ignore
+        new_data = self.data.transpose(dims)
         
         # 创建新张量
         requires_grad = is_grad_enabled() and self.requires_grad
@@ -6308,20 +6271,71 @@ def outer(x:TN,y:TN)->TN:
     return (x.unsqueeze(1) * y.unsqueeze(0))
 
 def _convert_TNindex_to_numpy(index):
-        if isinstance(index,TN):
-            index_val = index.data
-        elif isinstance(index,tuple):
-            index_list = []
-            for idx in index:
-                if isinstance(idx,TN):
-                    index_list.append(idx.data)
-                else:
-                    index_list.append(idx)
-            index_val = tuple(index_list)
-        else:
-            index_val = index
+    if isinstance(index,TN):
+        index_val = index.data
+    elif isinstance(index,tuple):
+        index_list = []
+        for idx in index:
+            if isinstance(idx,TN):
+                index_list.append(idx.data)
+            else:
+                index_list.append(idx)
+        index_val = tuple(index_list)
+    else:
+        index_val = index
 
-        return index_val
+    return index_val
+
+
+def _is_boolean_index(idx):
+    """检查索引是否为布尔类型索引"""
+    try:
+        if hasattr(idx, 'dtype') and idx.dtype == bool:
+            return True
+        elif isinstance(idx, np.ndarray) and idx.dtype == bool:
+            return True
+        elif isinstance(idx, tuple):
+            return any(_is_boolean_index(i) for i in idx)
+        return False
+    except Exception:
+        return False
+
+
+def _indexes_are_equal(idx1, idx2):
+    """比较两个索引是否相同，仅支持简单索引类型"""
+    try:
+        # 跳过布尔索引比较
+        if _is_boolean_index(idx1) or _is_boolean_index(idx2):
+            return False
+
+        if isinstance(idx1, tuple) and isinstance(idx2, tuple):
+            # 元组索引比较
+            if len(idx1) != len(idx2):
+                return False
+            for a, b in zip(idx1, idx2):
+                try:
+                    # 对数组类型进行特殊处理
+                    if hasattr(a, 'shape') and hasattr(b, 'shape'):
+                        return bool(np.array_equal(a, b))
+                    # 简单类型直接比较
+                    if a != b:
+                        return False
+                except Exception:
+                    return False
+            return True
+        elif isinstance(idx1, (int, slice, type(None))) and isinstance(idx2, (int, slice, type(None))):
+            # 单一索引比较
+            return idx1 == idx2
+        else:
+            # 其他类型尝试转换为数组比较
+            try:
+                return bool(np.array_equal(np.asarray(idx1), np.asarray(idx2)))
+            except Exception:
+                return False
+    except Exception:
+        return False
+
+
 def _squeeze_backward(result_tensor:TN, i: int) -> TN:
     dim = result_tensor.parms[i]
     grad = result_tensor.grad_value.unsqueeze(dim)
@@ -6691,9 +6705,7 @@ def sum(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     if dim == ():
         dim = None
     
-    # 根据x的数组类型选择使用np或cp
-    arrlib = x._get_array_lib()
-    sumvalue = arrlib.sum(x.data, axis=dim, keepdims=keepdim)
+    sumvalue = x.data.sum(axis=dim, keepdims=keepdim)
     
     # 创建与x在相同设备上的张量
     ret=tensor(sumvalue, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
@@ -6858,10 +6870,8 @@ def cumsum(input: TN, dim: int, *, dtype: Optional[Union[str, np.dtype]] = None,
         if dim not in [0, -1]:
             raise IndexError(f"Dimension out of range (expected to be in range of [-1, 0], but got {dim})")
     
-    # 根据x的数组类型选择使用np或cp
-    arrlib = input._get_array_lib()
     # 前向计算 - 使用numpy.cumsum
-    result_data = arrlib.cumsum(input.data, axis=dim, dtype=result_dtype)
+    result_data = input.data.cumsum(axis=dim, dtype=result_dtype)
     
     # 如果指定了输出张量，将结果写入其中
     if out is not None:
@@ -7031,10 +7041,8 @@ def prod(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     if dim == ():
         dim = None
     
-    # 根据x的数组类型选择使用np或cp
-    arrlib = x._get_array_lib()
     # 使用numpy/cupy的prod函数计算乘积
-    prod_value = arrlib.prod(x.data, axis=dim, keepdims=keepdim)
+    prod_value = x.data.prod(axis=dim, keepdims=keepdim)
     ret = tensor(prod_value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     
     if ret.requires_grad:
@@ -7078,8 +7086,7 @@ def mean(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
         dim = None
     
     # 根据x的数组类型选择使用np或cp
-    arrlib = x._get_array_lib()
-    value = arrlib.mean(x.data, axis=dim, keepdims=keepdim)
+    value = x.data.mean(axis=dim, keepdims=keepdim)
     ret = tensor(value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     
     if ret.requires_grad:
@@ -7413,8 +7420,7 @@ def var(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->
         dim = None
     ddof = 1 if unbiased == True else 0
 
-    arrlib = x._get_array_lib()
-    value = arrlib.var(x.data, axis=dim, ddof=ddof, keepdims=keepdim)
+    value = x.data.var(axis=dim, ddof=ddof, keepdims=keepdim)
     ret=tensor(value, device=x.device, requires_grad = (is_grad_enabled() and x.requires_grad))
     
     if ret.requires_grad:
@@ -8305,7 +8311,7 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
     """
     # 处理参数缺省逻辑
     if min is None and max is None:
-        raise ValueError("clamp()需要至少指定min或max参数")
+        raise ValueError("clamp(): min or max must be specified")
     
     # 检查out参数和梯度需求的冲突
     if out is not None and (x.requires_grad or 
@@ -8330,7 +8336,7 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
         # 处理参数边界
         if scalar_min is not None and scalar_max is not None:
             if scalar_min > scalar_max:
-                raise ValueError("clamp(): min不能大于max")
+                raise ValueError("clamp(): min must be less than or equal to max")
         
         # 使用现有的实现
         arrlib = x._get_array_lib()
@@ -8343,7 +8349,7 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
     if not isinstance(min, TN) and not isinstance(max, TN):
         if min is not None and max is not None:
             if min > max:
-                raise ValueError("clamp(): min不能大于max")
+                raise ValueError("clamp(): min must be less than or equal to max")
     
     # 使用where实现
     if min is not None and max is not None:
