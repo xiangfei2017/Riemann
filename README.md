@@ -163,7 +163,7 @@ cd Riemann
 pip install -e .
 
 # Install test dependencies (optional)
-pip install pytest
+pip install -e .[tests]
 
 # Install CUDA dependencies (optional, see platform compatibility table below)
 pip install -e .[cuda]

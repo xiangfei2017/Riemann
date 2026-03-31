@@ -162,7 +162,7 @@ cd Riemann
 pip install -e .
 
 # 安装测试依赖（可选）
-pip install pytest
+pip install -e .[tests]
 
 # 安装CUDA依赖（可选，参考下方平台兼容性表格）
 pip install -e .[cuda]
