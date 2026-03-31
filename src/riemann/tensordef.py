@@ -63,9 +63,8 @@ Example usage:
 from __future__ import annotations
 from itertools import accumulate
 import builtins
-from logging import warning
 import warnings
-from typing import Callable, Any, List, Tuple, TypeAlias, overload, Union, Optional
+from typing import Callable, Any, TypeAlias, overload
 import math
 import numpy as np
 from .cuda import Device, cp, is_in_cuda_context, get_default_device
@@ -1104,53 +1103,97 @@ class TN:
         return ret
     
     def __setitem__(self, index, val):
-        # 1. 最先检查：所有原地操作都需要这个检查
+        """
+        实现原地赋值操作（如 a[index] = val, a[index] += val 等）
+        
+        处理流程：
+        1. 检查叶子节点保护（原地操作不能直接在叶子节点上执行）
+        2. 快速路径：非张量值或来自其他张量的视图，直接赋值
+        3. 复杂场景：处理来自 self 的索引视图的原地操作
+        
+        原地操作执行流程示例（a[index] += b）：
+        1. a.__getitem__(index) 创建临时张量 temp
+        2. temp.__iadd__(b) 执行原地操作，记录到 temp 的计算图
+        3. a.__setitem__(index, temp) 被触发，需要处理 temp 的计算图
+        
+        参数:
+            index: 索引，可以是切片、整数、数组等
+            val: 右值，可能是张量或标量
+        """
+        # 1. 叶子节点检查：所有原地操作都需要这个检查
+        # 叶子节点是计算图的起点，直接修改会破坏梯度追踪
         if self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
 
-        # 2. 快速路径：简单赋值（非视图对象）
+        # 2. 快速路径：简单赋值（右值不是张量，没有 _is_view 属性）
         if not hasattr(val, '_is_view'):
             return self.setat_(index, val)
 
-        # 3. 快速路径：视图但基础不同
+        # 3. 快速路径：视图但基础不是 self（来自其他张量的视图）
         if val._base is not self:
             return self.setat_(index, val)
 
-        # 4. 复杂原地操作场景（视图且基础是self）
-        # 转换索引格式以便比较
+        # 4. 复杂原地操作场景：视图且基础是 self
+        # 这种情况发生在 a[index] += b 这样的原地操作中
+        # val 是通过 a.__getitem__(index) 创建的临时张量
         index_val = _convert_TNindex_to_numpy(index)
 
-        # 检查右值val是否是来自self的索引视图对象，原因如下:
-        # 原地操作时，比如a[index]+=b,会先触发a.__getitem__(index)生成临时对象temp，
-        # 然后执行原地操作temp+=b,如temp是视图（共享内存）,原地操作在_inplace_oper_at_()里被重定向到a上了
-        # 最后触发a.__setitem__(index,temp),
-        # 这时就要检查temp是否是来自a的索引视图，如果是，原地操作已在a上已操作过，所以直接返回
-        # 如果temp不是视图，将temp的计算图记录的原地操作应用到a上
+        # 根据 val 是否是视图，分两种情况处理：
+        # 
+        # 场景 A：val 是视图（如切片索引 a[0:3] += 1）
+        # - __getitem__ 返回的视图与 self 共享内存
+        # - 原地操作已在 _inplace_oper_at_ 中被重定向到 self 上执行
+        # - 这里只需检查索引匹配，直接返回
+        #
+        # 场景 B：val 不是视图（如整数数组索引 a[[0,4]] += 1）
+        # - __getitem__ 返回的是副本，不共享内存
+        # - 原地操作只修改了 val 的数据，self 的数据未变
+        # - 需要将 val 中记录的原地操作应用到 self 上
         if val._is_view:
-            # 如果右值是视图对象，且视图的基础是self，索引也相同，则不需要执行操作
-            # 安全比较索引值，处理布尔数组等复杂索引类型
+            # 场景 A：视图对象
+            # 检查 val 的视图索引与当前索引是否一致
+            # 使用 _indexes_are_equal 安全比较（处理布尔数组等复杂索引）
             if _indexes_are_equal(val._view_index, index_val):
+                # 索引匹配，原地操作已在 self 上执行，直接返回
                 return self
         else:
-            # 非视图对象的赋值，需要应用记录的原地操作
+            # 场景 B：非视图对象
+            # 需要遍历 val 的计算图，找到最近的原地操作并应用到 self
+            # 
+            # val 的计算图结构示例（执行 a[[0,4]] += 10 后）：
+            # gradfuncs: (_addat_inplace_backward, _getitem_backward)
+            # parms:     ((target_copy, ()), array([0, 4]))
+            # fromvars:  (right_val, a)
+            #
+            # 注意：parms 中混合了两种格式：
+            # - 原地操作：元组 (target_copy, index_val)，index_val 为 () 表示全量操作
+            # - 非原地操作：单个 index_val（如 array([0, 4])）
             gradfuncs = val.gradfuncs
             parms = val.parms
             fromvars = val.fromvars
+            
+            # 倒序遍历，优先处理最近的操作（原地操作在计算图前面插入）
             for i in range(len(gradfuncs) - 1, -1, -1):
-                # parms[i] 可能是 (target_copy, index_val) 元组或单个 index_val
                 parm = parms[i]
+                
+                # 区分原地操作和非原地操作的 parms 格式
                 if isinstance(parm, tuple) and len(parm) >= 2:
-                    # 原地操作: (target_copy, index_val, ...)
+                    # 原地操作格式：(target_copy, stored_index, ...)
+                    # stored_index 为 () 表示对整个张量执行原地操作
                     stored_index = parm[1]
                 else:
-                    # 非原地操作: index_val
+                    # 非原地操作（如 __getitem__）：parms[i] 就是 index_val
+                    # 这种操作不需要在 __setitem__ 中处理，跳过
                     stored_index = parm
                 
-                # 检查 stored_index 是否为空元组 ()
-                # 注意：不能使用 != 比较 numpy 数组和元组
+                # 检查是否是全量原地操作（stored_index 为空元组）
+                # 使用 isinstance + len 而不是 ==，避免与 numpy 数组比较时出错
                 is_empty_tuple = isinstance(stored_index, tuple) and len(stored_index) == 0
                 if not is_empty_tuple:
                     continue
+                
+                # 找到匹配的原地操作，应用到 self 上
+                # 使用 index_val 作为操作索引（即 __setitem__ 接收到的索引）
                 funcname = gradfuncs[i].__name__
                 if funcname == '_addat_inplace_backward':
                     return self.addat_(index_val, fromvars[i])
@@ -1163,367 +1206,11 @@ class TN:
                 elif funcname == '_powat_inplace_backward':
                     return self.powat_(index_val, fromvars[i])
 
+        # 默认情况：执行普通赋值
         return self.setat_(index, val)
-    
-    def _merge_indices(self, base_index, current_index):
-        """
-        基于坐标转换的索引合并函数
-
-        该函数用于将视图张量上的操作索引合并到基础张量的索引空间中。
-        当对视图张量执行索引操作时，需要将视图坐标系中的索引转换为
-        基础张量坐标系中的等效索引。
-
-        思路：将索引视为坐标，通过numpy向量化操作实现从视图坐标系到基张量坐标系的坐标转换
         
-        参数:
-            base_index (tuple): 视图的基础索引（在基张量坐标系中的坐标）。
-                可以是整数、切片、数组或它们的组合。
-                例如：(slice(2, 8), slice(3, 7)) 表示视图在基础张量中的位置
-            current_index (tuple or scalar): 当前操作的索引（在视图坐标系中的坐标）。
-                可以是整数、切片、整数数组、布尔数组或它们的组合。
-                例如：(slice(1, 3), 2) 表示在视图上的操作位置
-
-        返回:
-            tuple: 合并后的索引（在基张量坐标系中的坐标）。
-                返回的索引可以直接用于访问基础张量的数据。
-
-        示例:
-            >>> # 假设 base 是形状为 (10, 10) 的张量
-            >>> view = base[2:8, 3:7]  # 创建视图，base_index = (slice(2, 8), slice(3, 7))
-            >>> # 在视图上执行操作 view[1:3, 1] = value
-            >>> # current_index = (slice(1, 3), 1)
-            >>> combined = view._merge_indices(view._view_index, (slice(1, 3), 1))
-            >>> # combined = (slice(3, 5), 4)  # 在基础张量中的等效位置
-
-        支持的索引类型:
-            - 整数索引：单个元素访问，支持负数索引
-            - 切片索引：范围访问，支持 start:stop:step 语法
-            - 整数数组索引： fancy indexing，支持数组和列表
-            - 布尔数组索引：条件索引，选择满足条件的元素
-            - 混合索引：上述类型的任意组合
-
-        注意事项:
-            - 整数索引会将该维度从视图中移除（降维）
-            - 布尔数组索引的维度必须与视图对应维度匹配
-            - 数组索引中的负索引会被转换为正索引
-            - 支持省略号 (...) 索引，会自动展开为适当数量的全切片
-        """
-        # 辅助函数：检查是否为布尔类型索引
-        def _is_boolean_index(index):
-            return isinstance(index, np.ndarray) and index.dtype == bool
-
-        # 辅助函数：检查是否为CuPy数组
-        def _is_cupy_array(arr):
-            return cp is not None and isinstance(arr, cp.ndarray)
-
-        # 辅助函数：获取数组库（numpy或cupy）
-        def _get_array_lib(arr):
-            return cp if _is_cupy_array(arr) else np
-
-        # 辅助函数：处理数组中的负索引
-        def _handle_negative_indices(arr, dim_size):
-            """处理数组中的负索引，返回处理后的数组"""
-            lib = _get_array_lib(arr)
-            if lib.any(arr < 0):
-                arr = arr.copy()
-                arr[arr < 0] += dim_size
-            return arr
-        
-        def _normalize_neg_index(index, dim_size):
-            """
-            将负索引转换为对应的正索引
-            
-            参数:
-                index: 要转换的索引（可以是整数、切片或整数数组）
-                dim_size: 当前维度的大小
-                
-            返回:
-                normalized_index: 转换后的正索引
-            """
-            if isinstance(index, int):
-                if index < 0:
-                    index += dim_size
-                return index
-            elif isinstance(index, slice):
-                start = index.start
-                stop = index.stop
-                step = index.step
-                
-                if start is not None and start < 0:
-                    start += dim_size
-                if stop is not None and stop < 0:
-                    stop += dim_size
-                
-                return slice(start, stop, step)
-            elif isinstance(index, (np.ndarray, list)) and np.issubdtype(np.array(index).dtype, np.integer):
-                index_arr = np.asarray(index)
-                # 对负索引进行转换
-                index_arr[index_arr < 0] += dim_size
-                return index_arr
-            else:
-                return index
-
-        # 辅助函数：标准化索引格式并处理省略号
-        def _normalize_index(index, length):
-            if not isinstance(index, tuple):
-                index = (index,) if not _is_boolean_index(index) else index
-            
-            if _is_boolean_index(index):
-                return index
-                
-            # 处理省略号 - 只有当 index 是元组且不包含数组时才检查
-            if isinstance(index, tuple):
-                # 检查元组中是否包含数组或非基本类型
-                contains_array = any(isinstance(idx, (np.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in index)
-                # 检查是否包含CuPy数组
-                if cp:
-                    contains_array = contains_array or any(isinstance(idx, cp.ndarray) for idx in index)
-                # 只有不包含数组时才检查省略号
-                if not contains_array and Ellipsis in index:
-                    ellipsis_idx = index.index(Ellipsis)
-                    num_regular = len(index) - 1
-                    num_missing = length - num_regular
-                    if num_missing > 0:
-                        index = index[:ellipsis_idx] + (slice(None),) * num_missing + index[ellipsis_idx+1:]
-                    else:
-                        index = index[:ellipsis_idx] + index[ellipsis_idx+1:]
-            
-            # 补全索引长度 - 只有当 index 是元组时才补全
-            if isinstance(index, tuple) and len(index) < length:
-                index += (slice(None),) * (length - len(index))
-            
-            return index
-        
-        # 辅助函数：获取基础张量维度大小
-        def _get_base_dim_size(view_dim):
-            if hasattr(self, '_base') and self._base is not None:
-                return self._base.shape[view_dim] if view_dim < len(self._base.shape) else 1
-            return self.shape[view_dim] if view_dim < len(self.shape) else 1
-        
-        # 辅助函数：处理基础索引为数组的情况
-        def _process_base_array_index(base_idx, view_dim):
-            dim_size = _get_base_dim_size(view_dim)
-
-            # 根据索引类型选择合适的数组库
-            base_idx_arr = base_idx if _is_cupy_array(base_idx) else np.asarray(base_idx)
-            lib = _get_array_lib(base_idx_arr)
-
-            if np.issubdtype(base_idx_arr.dtype, np.bool_):
-                # 布尔数组 -> 整数数组
-                base_idx_arr = lib.where(base_idx_arr)[0]
-
-            # 处理负索引（使用提取的辅助函数）
-            base_idx_arr = _handle_negative_indices(base_idx_arr, dim_size)
-
-            return base_idx_arr, len(base_idx_arr)
-        
-        # 辅助函数：处理基础索引为切片的情况
-        def _process_base_slice_index(base_idx, view_dim):
-            dim_size = _get_base_dim_size(view_dim)
-            norm_base = _normalize_neg_index(base_idx, dim_size)
-            base_start = norm_base.start if norm_base.start is not None else 0
-            base_stop = norm_base.stop if norm_base.stop is not None else dim_size
-            base_step = norm_base.step  # 严格保留原始步长，不做默认值替换
-            step_val = 1 if base_step is None else base_step
-            view_dim_size = (base_stop - base_start + step_val - 1) // step_val
-            
-            return base_start, base_stop, base_step, step_val, view_dim_size
-        
-        # 第一步：标准化基础索引格式
-        if isinstance(base_index, slice):
-            base_index = (base_index,)
-        elif isinstance(base_index, int):
-            base_index = (base_index,)
-        elif not isinstance(base_index, tuple):
-            base_index = tuple(base_index)
-        
-        # 计算视图的实际维度（不包括被整数索引折叠的维度）
-        view_dims = []
-        for i, idx in enumerate(base_index):
-            if not isinstance(idx, int):
-                view_dims.append(i)
-        
-        # 第二步：处理特殊情况 - 省略号索引
-        if isinstance(current_index, tuple) and any(idx is Ellipsis for idx in current_index):
-            num_ellipsis = current_index.count(Ellipsis)
-            if num_ellipsis > 1:
-                raise ValueError("An index can only contain a single ellipsis ('...')")
-            
-            # 扩展省略号为相应数量的full slices
-            ellipsis_idx = current_index.index(Ellipsis)
-            num_full_slices = len(view_dims) - (len(current_index) - num_ellipsis)
-            expanded_index = (
-                current_index[:ellipsis_idx] + 
-                (slice(None),) * builtins.max(0, num_full_slices) + 
-                current_index[ellipsis_idx+1:]
-            )
-            current_index = expanded_index
-        
-        # 第三步：处理特殊情况 - view_dims为空（base_index全是整数）
-        if not view_dims:
-            # 处理base_index为空的情况（直接对原始张量进行索引）
-            if len(base_index) == 0:
-                return _normalize_index(current_index, 0) if isinstance(current_index, tuple) else current_index
-            
-            # 处理链式索引情况，如x[1][2]或x[1][:3]
-            if isinstance(current_index, int):
-                if len(base_index) == 1 and isinstance(base_index[0], int):
-                    return (base_index[0], current_index)
-            elif isinstance(current_index, tuple):
-                if len(base_index) == 1 and isinstance(base_index[0], int):
-                    return (base_index[0],) + current_index
-            return base_index
-        
-        # 第四步：标准化当前索引
-        current_index = _normalize_index(current_index, len(view_dims))
-        
-        # 第五步：快速路径 - 当前操作是对整个视图进行的
-        if isinstance(current_index, tuple):
-            contains_array = any(isinstance(idx, (np.ndarray, list)) and not isinstance(idx, (str, bytes)) for idx in current_index)
-            if not contains_array:
-                all_full_slices = all(
-                    isinstance(idx, slice) and 
-                    idx.start is None and 
-                    idx.stop is None and 
-                    idx.step is None 
-                    for idx in current_index
-                )
-                if all_full_slices and len(current_index) == len(view_dims):
-                    return base_index
-        
-        # 第六步：处理布尔数组索引
-        if _is_boolean_index(current_index):
-            # 使用提取的辅助函数获取数组库
-            lib = _get_array_lib(current_index)
-            bool_indices = lib.where(current_index)
-            if len(bool_indices) != len(view_dims):
-                raise ValueError(f"Boolean index dimension mismatch: {len(bool_indices)} vs {len(view_dims)}")
-
-            combined_coords = list(base_index)
-            for i, (view_dim, bool_idx) in enumerate(zip(view_dims, bool_indices)):
-                base_idx = base_index[view_dim]
-
-                if isinstance(base_idx, slice):
-                    # 切片 -> 布尔索引：线性变换
-                    _, _, _, step, _ = _process_base_slice_index(base_idx, view_dim)
-                    norm_base = _normalize_neg_index(base_idx, _get_base_dim_size(view_dim))
-                    start = norm_base.start if norm_base.start is not None else 0
-                    combined_coords[view_dim] = start + bool_idx * step
-                elif isinstance(base_idx, (np.ndarray, list)) or _is_cupy_array(base_idx):
-                    # 数组 -> 布尔索引：查表
-                    base_arr, _ = _process_base_array_index(base_idx, view_dim)
-                    combined_coords[view_dim] = base_arr[bool_idx]
-                else:
-                    raise NotImplementedError(f"Unsupported base index type: {type(base_idx)}")
-
-            return tuple(combined_coords)
-        
-        # 第七步：常规索引合并逻辑
-        combined_coords = list(base_index)
-        
-        # 确保当前索引是元组格式
-        if not isinstance(current_index, tuple):
-            current_index = (current_index,)
-        
-        # 确保当前索引长度与view_dims长度匹配
-        while len(current_index) < len(view_dims):
-            current_index += (slice(None),)
-        
-        # 遍历视图的每个维度和当前索引
-        for i, (view_dim, curr_idx) in enumerate(zip(view_dims, current_index)):
-            base_idx = base_index[view_dim]
-            
-            # 处理None/newaxis索引
-            if curr_idx is None:
-                combined_coords[view_dim] = None
-                continue
-            
-            # 根据基础索引类型选择处理方式
-            if isinstance(base_idx, slice):
-                base_start, base_stop, base_step, step_val, view_dim_size = _process_base_slice_index(base_idx, view_dim)
-            elif isinstance(base_idx, (np.ndarray, list)) or _is_cupy_array(base_idx):
-                base_idx_arr, view_dim_size = _process_base_array_index(base_idx, view_dim)
-            else:
-                raise NotImplementedError(f"Unsupported base index type: {type(base_idx)}")
-            
-            # 标准化当前索引
-            norm_curr_idx = _normalize_neg_index(curr_idx, view_dim_size)
-            
-            # 应用坐标转换
-            if isinstance(norm_curr_idx, int):
-                if isinstance(base_idx, slice):
-                    # 切片 -> 整数：线性变换
-                    actual_idx = base_start + norm_curr_idx * step_val
-                    # 检查边界：下界和上界
-                    if actual_idx < base_start or actual_idx >= base_stop:
-                        raise IndexError(f"Index {norm_curr_idx} out of bounds for view dimension size {view_dim_size}")
-                    combined_coords[view_dim] = actual_idx
-                else:
-                    # 数组 -> 整数：直接查表
-                    # 检查边界
-                    if norm_curr_idx < 0 or norm_curr_idx >= view_dim_size:
-                        raise IndexError(f"Index {norm_curr_idx} out of bounds for view dimension size {view_dim_size}")
-                    combined_coords[view_dim] = base_idx_arr[norm_curr_idx]
-            
-            elif isinstance(norm_curr_idx, slice):
-                if isinstance(base_idx, slice):
-                    # 切片 -> 切片：组合线性变换
-                    curr_start = norm_curr_idx.start if norm_curr_idx.start is not None else 0
-                    curr_stop = norm_curr_idx.stop
-                    curr_step = norm_curr_idx.step
-                    
-                    # 计算实际数值
-                    base_step_val = 1 if base_step is None else base_step
-                    curr_step_val = 1 if curr_step is None else curr_step
-                    
-                    actual_start = base_start + curr_start * base_step_val
-                    actual_stop = base_stop if curr_stop is None else (base_start + curr_stop * base_step_val)
-                    actual_stop = builtins.min(actual_stop, base_stop)
-                    
-                    # 确定最终步长
-                    if base_step is None and curr_step is None:
-                        actual_step = None
-                    elif base_step is None:
-                        actual_step = curr_step
-                    elif curr_step is None:
-                        actual_step = base_step
-                    else:
-                        actual_step = base_step * curr_step
-                    
-                    combined_coords[view_dim] = slice(actual_start, actual_stop, actual_step)
-                else:
-                    # 数组 -> 切片：直接索引映射数组
-                    combined_coords[view_dim] = base_idx_arr[norm_curr_idx]
-            
-            elif isinstance(norm_curr_idx, (np.ndarray, list)) or _is_cupy_array(norm_curr_idx):
-                # 使用提取的辅助函数获取数组库
-                curr_idx_arr = norm_curr_idx if _is_cupy_array(norm_curr_idx) else np.asarray(norm_curr_idx)
-                lib = _get_array_lib(curr_idx_arr)
-
-                if np.issubdtype(curr_idx_arr.dtype, np.bool_):
-                    # 布尔数组 -> 整数数组
-                    bool_indices = lib.where(curr_idx_arr)[0]
-                    if len(bool_indices) == 0:
-                        combined_coords[view_dim] = lib.array([], dtype=int)
-                        continue
-                    curr_idx_arr = bool_indices
-
-                # 确保索引在有效范围内
-                if lib.any(curr_idx_arr >= view_dim_size):
-                    raise IndexError(f"Array index out of bounds for view dimension size {view_dim_size}")
-                
-                if isinstance(base_idx, slice):
-                    # 切片 -> 数组：应用线性变换
-                    combined_coords[view_dim] = base_start + curr_idx_arr * step_val
-                else:
-                    # 数组 -> 数组：向量化查表
-                    combined_coords[view_dim] = base_idx_arr[curr_idx_arr]
-            
-            else:
-                raise NotImplementedError(f"Unsupported index type: {type(norm_curr_idx)}")
-        
-        return tuple(combined_coords)
-
+    def merge_indices(self, base_index, current_index):
+        return merge_indices(self, base_index, current_index)
     
     def _adjust_right_val(self, target_data, val):
         # 快速路径：如果val已经是TN且设备、类型匹配，直接使用
@@ -1570,7 +1257,7 @@ class TN:
             base_index = self._view_index
                         
             # 调用内部函数合并索引
-            combined_index = self._merge_indices(base_index, index_val)
+            combined_index = self.merge_indices(base_index, index_val)
             
             # self是视图时，直接在原张量self._base上执行操作
             self._base._inplace_oper_at_(combined_index, val, oper_func, backward_func)
@@ -1667,7 +1354,14 @@ class TN:
 
     def subat(self,index,val):
         arrlib = self._get_array_lib()
-        return self._non_inplace_oper_at(index, val, arrlib.subtract.at, _subat_backward_left, _subat_backward_right)
+        if arrlib == cp:
+            def _subat_numpy_item(numpy_arr, index, right_numpy_arr):
+                numpy_arr[index] -= right_numpy_arr
+                return numpy_arr
+            oper_func = _subat_numpy_item
+        else:
+            oper_func = np.subtract.at
+        return self._non_inplace_oper_at(index, val, oper_func, _subat_backward_left, _subat_backward_right)
     
     def mulat_(self,index,val):
         arrlib = self._get_array_lib()
@@ -2147,7 +1841,7 @@ class TN:
         对于多维张量，返回嵌套列表。此操作会断开计算图，因此返回的列表不会参与梯度计算。
         
         Returns:
-            Union[list, int, float, complex]: 张量数据的Python列表或标量表示
+            list | int | float | complex: 张量数据的Python列表或标量表示
             
         Raises:
             RuntimeError: 如果张量需要计算梯度
@@ -3609,7 +3303,7 @@ class TN:
         repeats = _validate_shape(repeats)
         return repeat(self, repeats)
     
-    def flip(self, dims:List[int]|Tuple[int,...]) -> TN:
+    def flip(self, dims:list[int]|tuple[int,...]) -> TN:
         return flip(self,dims)
 
     def clamp(self,min:float|None=None, max:float|None=None):  # type: ignore
@@ -3707,7 +3401,7 @@ class TN:
         ret = sum(self, dim, keepdim)
         return ret
     
-    def cumsum(self, dim: int, *, dtype: Optional[Union[str, np.dtype]] = None, out: Optional[TN] = None):
+    def cumsum(self, dim: int, *, dtype: str | np.dtype | None = None, out: TN | None = None):
         ret = cumsum(self,dim,dtype=dtype,out=out)
         return ret
     
@@ -5974,7 +5668,7 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
     return decorator
 # end of track_grad
 
-def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
+def broadcast_to(input: TN, size: tuple[int, ...]) -> TN:
     """
     将输入张量广播到指定的形状。
     
@@ -5983,7 +5677,7 @@ def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
     
     Args:
         input (TN): 要广播的输入张量
-        size (Tuple[int, ...]): 目标形状，必须与输入形状兼容
+        size (tuple[int, ...]): 目标形状，必须与输入形状兼容
         
     Returns:
         TN: 广播后的张量
@@ -6012,7 +5706,7 @@ def broadcast_to(input: TN, size: Tuple[int, ...]) -> TN:
     except ValueError as e:
         raise RuntimeError(f"Failed to broadcast tensor from shape {input.shape} to shape {size}: {e}")
 
-def broadcast_tensors(*tensors: TN) -> Tuple[TN, ...]:
+def broadcast_tensors(*tensors: TN) -> tuple[TN, ...]:
     """
     将多个张量广播到相同的形状
     
@@ -6025,7 +5719,7 @@ def broadcast_tensors(*tensors: TN) -> Tuple[TN, ...]:
         
     Returns:
         广播后的张量元组，所有张量具有相同的形状
-        rtype: Tuple[TN, ...]
+        rtype: tuple[TN, ...]
         
     Raises:
         TypeError: 如果输入不是TN张量
@@ -6078,7 +5772,7 @@ def broadcast_tensors(*tensors: TN) -> Tuple[TN, ...]:
     
     return tuple(broadcasted_tensors)
 
-def repeat(input: TN, repeats: Tuple[int, ...]) -> TN:
+def repeat(input: TN, repeats: tuple[int, ...]) -> TN:
     """
     沿着指定的维度重复张量的元素。
     
@@ -6091,7 +5785,7 @@ def repeat(input: TN, repeats: Tuple[int, ...]) -> TN:
     
     Args:
         input (TN): 要重复的输入张量
-        repeats (Tuple[int, ...]): 每个维度的重复次数，可以是整数元组或多个整数参数
+        repeats (tuple[int, ...]): 每个维度的重复次数，可以是整数元组或多个整数参数
             - 如果长度小于输入张量维度，会抛出异常
             - 如果长度大于输入张量维度，会在前面添加新的维度
             - 所有元素必须是正整数
@@ -6271,12 +5965,30 @@ def outer(x:TN,y:TN)->TN:
     return (x.unsqueeze(1) * y.unsqueeze(0))
 
 def _convert_TNindex_to_numpy(index):
-    if isinstance(index,TN):
+    """
+    将 TN 索引转换为 NumPy 兼容的索引格式
+    
+    此函数是索引处理的单一入口，负责：
+    1. 将 TN 张量索引转换为底层数组
+    2. 将 None 转换为 (None,) 以统一处理 np.newaxis
+    
+    Args:
+        index: 输入索引，可以是 TN、slice、int、tuple、list、np.ndarray 等
+    
+    Returns:
+        转换后的索引
+    """
+    if isinstance(index, TN):
         index_val = index.data
-    elif isinstance(index,tuple):
+    elif index is None:
+        # 将 None 转换为 (None,) 以便在反向传播中统一处理
+        # 这样可以区分 "没有索引信息" (None) 和 "None 索引" ((None,))
+        # 同时 arr[None] 和 arr[(None,)] 在 NumPy 中行为相同
+        index_val = (None,)
+    elif isinstance(index, tuple):
         index_list = []
         for idx in index:
-            if isinstance(idx,TN):
+            if isinstance(idx, TN):
                 index_list.append(idx.data)
             else:
                 index_list.append(idx)
@@ -6418,7 +6130,6 @@ def _setat_inplace_backward(result_tensor:TN, i:int)->TN:
     # result_tensor就是原地赋值时的self
     # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
     right_var_grad = result_tensor.grad_value[index]
-    
     # 由于self的在原地索引赋值时index位置已被右值覆盖，
     # 所以要将self的grad_value中索引位置的梯度设为0
     clone_self_grad = result_tensor.grad_value.setat(index,0.)
@@ -6582,7 +6293,7 @@ def _flip_backward(result_tensor:TN, i:int)->TN:
     dims = result_tensor.parms[0]  # 获取前向传播时使用的dims参数
     return flip(grad_value,dims)
 
-def flip(input: TN, dims:List[int]|Tuple[int,...]) -> TN:
+def flip(input: TN, dims:list[int]|tuple[int,...]) -> TN:
     """沿指定维度翻转张量的顺序。
     
     Reverse the order of an n-D tensor along given axis in dims.
@@ -6814,7 +6525,7 @@ def _cumsum_backward(result_tensor: TN, i: int) -> TN:
     
     return input_grad
 
-def cumsum(input: TN, dim: int, *, dtype: Optional[Union[str, np.dtype]] = None, out: Optional[TN] = None) -> TN:
+def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN | None = None) -> TN:
     """
     对输入张量沿指定维度进行累积求和。
     
@@ -8244,14 +7955,14 @@ def _where_backward(r, i):
     return grad
 
 @overload
-def where(cond: TN, x: None, y: None) -> Tuple[TN, ...]:
+def where(cond: TN, x: None, y: None) -> tuple[TN, ...]:
     ...
 
 @overload
 def where(cond: TN, x: TN | int | float, y: TN | int | float) -> TN:
     ...
 
-def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | None = None) -> TN | Tuple[TN, ...]:
+def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | None = None) -> TN | tuple[TN, ...]:
     
     if not isinstance(cond,TN):
         raise ValueError('cond must be a tensor')
@@ -8365,7 +8076,7 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
         # 无限制，返回原张量
         return x
 
-def split(ts: TN, split_indices, dim: int = 0) -> List[TN]:
+def split(ts: TN, split_indices, dim: int = 0) -> list[TN]:
     """
     沿指定轴分割TN张量，支持计算图记录和梯度反向传播
     参数：
@@ -8448,7 +8159,7 @@ def _sort_backward(result_tensor: TN, i: int) -> TN:
     
     return grad
 
-def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = False, *, out = None) -> Tuple[TN, TN]:
+def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = False, *, out = None) -> tuple[TN, TN]:
     """
     对张量沿指定维度排序，返回排序后的张量和对应的索引张量
     
@@ -8607,7 +8318,7 @@ def argsort(input: TN, dim: int = -1, descending: bool = False, stable: bool = F
     
     return sorted_indices_tensor
 
-def stack(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
+def stack(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
     """沿新维度堆叠张量"""
     arrlib = tensors[0]._get_array_lib()
     data = arrlib.stack([t.data for t in tensors], axis=dim)
@@ -8625,7 +8336,7 @@ def stack(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
     
     return ret
 
-def concatenate(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
+def concatenate(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
     """沿指定轴连接张量"""
     arrlib = tensors[0]._get_array_lib()
     data = arrlib.concatenate([t.data for t in tensors], axis=dim)
@@ -8642,10 +8353,10 @@ def concatenate(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
     
     return ret
 
-def cat(tensors: Tuple[TN, ...]|List[TN], dim: int = 0) -> TN:
+def cat(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
     return concatenate(tensors, dim)
 
-def vstack(tensors: Tuple[TN, ...]|List[TN]) -> TN:
+def vstack(tensors: tuple[TN, ...]|list[TN]) -> TN:
     """垂直堆叠张量
     
     对于一维张量，将它们作为行堆叠（创建二维数组）；
@@ -8670,7 +8381,7 @@ def vstack(tensors: Tuple[TN, ...]|List[TN]) -> TN:
         # 对于多维张量，沿第0轴连接
         return concatenate(tensors, dim=0)
 
-def hstack(tensors: Tuple[TN, ...]|List[TN]) -> TN:
+def hstack(tensors: tuple[TN, ...]|list[TN]) -> TN:
     """水平堆叠张量
     
     对于一维张量，水平连接成一维数组；
@@ -9437,7 +9148,7 @@ def batch_diag(v):
 
 # end of batch_diag
 
-def nonzero(input: TN, *, as_tuple: bool = False) -> TN | Tuple[TN, ...]:
+def nonzero(input: TN, *, as_tuple: bool = False) -> TN | tuple[TN, ...]:
     """
     返回输入张量中所有非零元素的索引。
     
@@ -9447,7 +9158,7 @@ def nonzero(input: TN, *, as_tuple: bool = False) -> TN | Tuple[TN, ...]:
                  如果为False（默认），返回一个二维张量，每行是一个非零元素的坐标
     
     返回:
-        TN或Tuple[TN, ...]: 非零元素的索引
+        TN或tuple[TN, ...]: 非零元素的索引
         - 当as_tuple=False时，返回形状为(N, input.ndim)的二维张量，其中N是非零元素的数量
         - 当as_tuple=True时，返回一个元组，包含input.ndim个一维张量，每个对应一个维度的索引
     
@@ -9989,3 +9700,585 @@ def share_grad_map(tensors:tuple|list):
             target_list.append(t)
     
     return type(tensors)(target_list)
+
+def _is_cupy_array(arr):
+    """
+    检查是否为 CuPy 数组
+    """
+    return cp is not None and isinstance(arr, cp.ndarray)
+
+def _get_array_lib(arr):
+    """
+    获取数组对应的库（numpy 或 cupy）
+    """
+    return cp if _is_cupy_array(arr) else np
+
+class _IndexDescriptor:
+    """
+    统一索引描述符类
+    
+    用于统一表示不同类型的索引（切片、数组、整数），便于进行索引合并计算。
+    
+    属性:
+        type: 索引类型（LINEAR、LOOKUP 或 NONE）
+        params: 类型特定的参数字典
+    
+    示例:
+        >>> # 表示切片 slice(2, 10, 2)
+        >>> desc = _IndexDescriptor(_IndexDescriptor.LINEAR, start=2, stop=10, step=2)
+        >>> 
+        >>> # 表示数组索引 [0, 2, 4]
+        >>> desc = _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=np.array([0, 2, 4]))
+    """
+    
+    LINEAR = 'LINEAR'  # 线性切片索引，如 slice(start, stop, step)
+    LOOKUP = 'LOOKUP'  # 离散索引，如 [0, 2, 4] 或 np.array([0, 2, 4])
+    NONE = 'NONE'      # None 索引（np.newaxis）
+    
+    __slots__ = ('type', 'params')
+    
+    def __init__(self, mapping_type: str, **params):
+        """
+        初始化索引描述符
+        
+        Args:
+            mapping_type: 索引类型（LINEAR、LOOKUP 或 NONE）
+            **params: 类型特定的参数
+                - LINEAR: start, stop, step
+                - LOOKUP: indices（numpy 数组）
+        """
+        self.type = mapping_type
+        self.params = params
+    
+    def __repr__(self):
+        """返回描述符的字符串表示"""
+        if self.type == _IndexDescriptor.LINEAR:
+            return f"LINEAR(start={self.params['start']}, stop={self.params['stop']}, step={self.params['step']})"
+        elif self.type == _IndexDescriptor.LOOKUP:
+            return f"LOOKUP(indices={self.params['indices']})"
+        else:
+            return f"NONE()"
+
+
+def _normalize_index_to_tuple(index):
+    """将索引标准化为元组格式"""
+    if isinstance(index, tuple):
+        return index
+    elif isinstance(index, (slice, int, list, np.ndarray)) or _is_cupy_array(index):
+        return (index,)
+    else:
+        return tuple(index)
+
+
+def _expand_ellipsis(index, target_ndim):
+    """展开索引中的 Ellipsis 为适当数量的 slice(None)"""
+    # 标准化为tuple
+    if not isinstance(index, tuple):
+        if index is Ellipsis:
+            return (slice(None),) * target_ndim
+        return (index,)
+    
+    # 检查是否包含 Ellipsis（使用显式循环避免数组索引的歧义）
+    ellipsis_idx = -1
+    for i, idx in enumerate(index):
+        if idx is Ellipsis:
+            ellipsis_idx = i
+            break
+    
+    if ellipsis_idx == -1:
+        # 没有 Ellipsis，直接返回
+        return index
+    
+    # 计算需要填充的 slice(None) 数量
+    num_other = len(index) - 1
+    num_slices_needed = target_ndim - num_other
+    
+    if num_slices_needed < 0:
+        # Ellipsis 可以表示0个切片
+        return index[:ellipsis_idx] + index[ellipsis_idx+1:]
+    
+    # 展开 Ellipsis
+    return (index[:ellipsis_idx] + 
+            (slice(None),) * num_slices_needed + 
+            index[ellipsis_idx+1:])
+
+
+def _try_merge_special_base_index(base_index, current_index):
+    """尝试处理特殊的 base_index 情况（空元组、(None,)、全整数索引）"""
+    # 处理 base_index 为空元组的情况（直接索引原始张量）
+    # 注意：current_index 不会是 None，因为 _convert_TNindex_to_numpy 已将 None 转换为 (None,)
+    if isinstance(base_index, tuple) and len(base_index) == 0:
+        return current_index
+    
+    # 处理 (None,) 形式的 base_index（通过 np.newaxis 创建的视图）
+    if isinstance(base_index, tuple) and len(base_index) == 1 and base_index[0] is None:
+        # 标准化 current_index 为元组（current_index 不会是 None，因为 _convert_TNindex_to_numpy 已转换）
+        curr_tuple = current_index if isinstance(current_index, tuple) else (current_index,)
+        
+        if len(curr_tuple) == 1:
+            curr_idx = curr_tuple[0]
+            if isinstance(curr_idx, int):
+                # x[None][0] -> 选取新维度的第0个元素，结果是原始数据的全部
+                return (slice(None),)
+            elif curr_idx is None:
+                # x[None][None] -> 添加两个新维度
+                return (None, None)
+            elif isinstance(curr_idx, slice):
+                # x[None][:] -> 保留新维度，选取全部
+                return (None, curr_idx)
+        
+        # 其他情况，保留 None 并追加 current_index
+        return (None,) + curr_tuple
+    
+    # 标准化 base_index 为元组
+    base_tuple = _normalize_index_to_tuple(base_index)
+    
+    # 检查是否全是整数索引（无视图维度）
+    if all(isinstance(idx, int) for idx in base_tuple):
+        if isinstance(current_index, int) and len(base_tuple) == 1:
+            # 单整数索引链式访问，如 x[5][3]
+            return (base_tuple[0], current_index)
+        elif isinstance(current_index, tuple):
+            # 多索引链式访问，如 x[5][1:3]
+            return base_tuple + current_index
+        return base_tuple
+    
+    # 需要进一步处理
+    return None
+
+
+def _preprocess_base_index(base_index, tensor):
+    """预处理基础索引：标准化为元组、展开 Ellipsis、计算 view_dims"""
+    # 标准化为元组格式
+    base_tuple = _normalize_index_to_tuple(base_index)
+    
+    # 计算基础张量的维度数
+    base_ndim = len(tensor._base.shape) if (hasattr(tensor, '_base') and tensor._base is not None) else len(tensor.shape)
+    
+    # 展开 Ellipsis（不填充长度，因为 base_index 可能只索引部分维度）
+    if any(idx is Ellipsis for idx in base_tuple):
+        base_tuple = _expand_ellipsis(base_tuple, base_ndim)
+    
+    # 计算 view_dims（非整数索引的位置）
+    view_dims = [i for i, idx in enumerate(base_tuple) if not isinstance(idx, int)]
+    
+    return base_tuple, view_dims
+
+
+def _preprocess_current_index(current_index, view_dims):
+    """预处理当前索引：标准化为元组、展开 Ellipsis、填充长度"""
+    # 标准化为元组格式（简化版）
+    result = current_index if isinstance(current_index, tuple) else (current_index,)
+    
+    ndim = len(view_dims)
+    
+    # 展开 Ellipsis
+    if any(idx is Ellipsis for idx in result):
+        result = _expand_ellipsis(result, ndim)
+    
+    # 填充长度以匹配 view_dims
+    if len(result) < ndim:
+        result = result + (slice(None),) * (ndim - len(result))
+    
+    return result
+
+
+def _normalize_index(index, dim_size: int):
+    """将索引转换为 IndexDescriptor（支持 slice、int、array 等类型）"""
+    
+    if isinstance(index, slice):
+        # 处理切片索引
+        step = index.step if index.step is not None else 1
+        
+        # 处理负步长切片
+        # 对于负步长，start 默认为 dim_size-1，stop 默认为 -dim_size-1（在第一个元素之前）
+        if step < 0:
+            start = index.start if index.start is not None else dim_size - 1
+            # 对于负步长，stop 默认为 -dim_size-1（比任何有效索引都小）
+            stop = index.stop if index.stop is not None else -dim_size - 1
+        else:
+            start = index.start if index.start is not None else 0
+            stop = index.stop if index.stop is not None else dim_size
+        
+        # 处理负数索引（仅当不是 None 转换的默认值时）
+        if start < 0:
+            start += dim_size
+        # 对于负步长，stop 可以是负数（表示在数组开头之前停止）
+        if stop < 0 and step > 0:
+            stop += dim_size
+        
+        return _IndexDescriptor(_IndexDescriptor.LINEAR, start=start, stop=stop, step=step)
+    
+    elif isinstance(index, (int, np.integer)):
+        # 处理整数索引，转换为单元素 LOOKUP
+        idx = int(index if index >= 0 else index + dim_size)
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=np.array([idx]))
+    
+    elif isinstance(index, (list, np.ndarray)) or _is_cupy_array(index):
+        # 处理列表、NumPy 数组或 CuPy 数组索引
+        if _is_cupy_array(index):
+            # CuPy 数组：保持 CuPy 类型，使用 cupy 的函数
+            indices = index
+            lib = cp
+        else:
+            # NumPy 数组或列表：转换为 NumPy 数组
+            indices = np.asarray(index)
+            lib = np
+        
+        # 处理布尔数组索引
+        # 布尔数组需要转换为整数索引（True 元素的位置）
+        if indices.dtype == bool:
+            # 将布尔数组转换为整数索引数组
+            int_indices = lib.where(indices)[0]
+            return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=int_indices)
+        
+        # 处理负索引（仅适用于整数数组）
+        if np.issubdtype(indices.dtype, np.integer):
+            indices = lib.where(indices < 0, indices + dim_size, indices)
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=indices)
+    
+    elif index is Ellipsis:
+        # Ellipsis (...) 应该在 _expand_ellipsis 中处理
+        # 如果到达这里，说明 Ellipsis 没有被正确展开
+        raise ValueError("Ellipsis (...) 应该在 _expand_ellipsis 中处理，不应该到达 normalize_index")
+
+    elif index is None:
+        # None (np.newaxis) 作为特殊标记返回
+        return None
+
+    else:
+        raise ValueError(f"不支持的索引类型: {type(index)}")
+
+
+def _merge_descriptors(base_desc: _IndexDescriptor, current_desc: _IndexDescriptor) -> _IndexDescriptor:
+    """合并两个索引描述符（支持 LINEAR/LOOKUP 的组合）"""
+    
+    # 情况1: LINEAR + LINEAR = LINEAR
+    # 组合两个切片，计算新的 start, stop, step
+    # 
+    # 数学公式:
+    #   设基础切片: A = slice(a_start, a_stop, a_step)
+    #   设当前切片: C = slice(c_start, c_stop, c_step)
+    #   
+    #   则合并后的切片:
+    #     new_start = a_start + c_start * a_step
+    #     new_step  = a_step * c_step
+    #     new_stop  = min(a_start + c_stop * a_step, a_stop)
+    #
+    # 推导过程:
+    #   基础切片映射: f(i) = a_start + i * a_step, 其中 i ∈ [0, (a_stop-a_start)/a_step)
+    #   当前切片映射: g(j) = c_start + j * c_step, 其中 j ∈ [0, (c_stop-c_start)/c_step)
+    #   
+    #   合并映射: h(j) = f(g(j)) = a_start + (c_start + j * c_step) * a_step
+    #                    = (a_start + c_start * a_step) + j * (a_step * c_step)
+    #   
+    #   因此:
+    #     新起点 = a_start + c_start * a_step
+    #     新步长 = a_step * c_step
+    #     新终点 = min(a_start + c_stop * a_step, a_stop)  # 不能超过基础切片的终点
+    #
+    # 示例:
+    #   base = slice(2, 8, 1), current = slice(1, 3, 1)
+    #   new_start = 2 + 1*1 = 3
+    #   new_step  = 1*1 = 1
+    #   new_stop  = min(2 + 3*1, 8) = 5
+    #   result = slice(3, 5, 1)  # 即 arr[2:8][1:3] == arr[3:5]
+    if base_desc.type == _IndexDescriptor.LINEAR and current_desc.type == _IndexDescriptor.LINEAR:
+        a_start, a_stop, a_step = base_desc.params['start'], base_desc.params['stop'], base_desc.params['step']
+        c_start, c_stop, c_step = current_desc.params['start'], current_desc.params['stop'], current_desc.params['step']
+        
+        # 处理负步长（反转切片）
+        # 对于负步长，使用数学公式直接计算合并后的切片参数
+        # 
+        # 数学公式（适用于正负步长）:
+        #   设基础切片: A = slice(a_start, a_stop, a_step)
+        #   设当前切片: C = slice(c_start, c_stop, c_step)
+        #   
+        #   则合并后的切片:
+        #     new_start = a_start + c_start * a_step
+        #     new_step  = a_step * c_step
+        #     new_stop  = a_start + c_stop * a_step
+        #
+        # 注意: 对于负步长，不需要取 min，因为负步长的 stop 本身就可能小于 start
+        #
+        # 示例（负步长）:
+        #   base = slice(9, -1, -1)  # 表示 [9,8,7,6,5,4,3,2,1,0]
+        #   current = slice(1, 4, 1)  # 选取第1到第4个元素
+        #   new_start = 9 + 1*(-1) = 8
+        #   new_step  = (-1)*1 = -1
+        #   new_stop  = 9 + 4*(-1) = 5
+        #   result = slice(8, 5, -1)  # 表示 [8,7,6]
+        if a_step < 0:
+            new_start = a_start + c_start * a_step
+            new_step = a_step * c_step
+            new_stop = a_start + c_stop * a_step
+            return _IndexDescriptor(_IndexDescriptor.LINEAR, start=new_start, stop=new_stop, step=new_step)
+        
+        new_start = a_start + c_start * a_step
+        new_step = a_step * c_step
+        new_stop = builtins.min(a_start + c_stop * a_step, a_stop)
+        
+        return _IndexDescriptor(_IndexDescriptor.LINEAR, start=new_start, stop=new_stop, step=new_step)
+    
+    # 情况2: LINEAR + LOOKUP = LOOKUP
+    # 切片后离散索引，应用线性映射
+    #
+    # 数学公式:
+    #   设基础切片: A = slice(start, stop, step)
+    #   设当前索引: C = [c_0, c_1, ..., c_n]
+    #   
+    #   则合并后的索引:
+    #     mapped[i] = start + c_i * step
+    #
+    # 推导过程:
+    #   基础切片映射: f(i) = start + i * step
+    #   离散索引直接选取: c_i 表示在视图中的第 c_i 个元素
+    #   
+    #   合并映射: mapped[i] = f(c_i) = start + c_i * step
+    #
+    # 示例:
+    #   base = slice(2, 8, 2), current = [0, 2]
+    #   mapped[0] = 2 + 0*2 = 2
+    #   mapped[1] = 2 + 2*2 = 6
+    #   result = [2, 6]  # 即 arr[2:8:2][[0,2]] == arr[[2,6]]
+    elif base_desc.type == _IndexDescriptor.LINEAR and current_desc.type == _IndexDescriptor.LOOKUP:
+        start = base_desc.params['start']
+        step = base_desc.params['step']
+        indices = current_desc.params['indices']
+        
+        mapped = start + indices * step
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=mapped)
+    
+    # 情况3: LOOKUP + LINEAR = LOOKUP
+    # 离散索引后切片，从查找表中选择子范围
+    #
+    # 数学公式:
+    #   设基础查找表: T = [t_0, t_1, ..., t_m]
+    #   设当前切片: C = slice(start, stop, step)
+    #   
+    #   则合并后的索引:
+    #     indices = [start, start+step, start+2*step, ..., min(stop, m)-1]
+    #     mapped[i] = T[indices[i]]
+    #
+    # 推导过程:
+    #   基础查找表: T[i] 表示父张量中的第 T[i] 个元素
+    #   切片映射: 从查找表中选取索引范围 [start, stop)，步长为 step
+    #   
+    #   合并映射: mapped[j] = T[start + j * step], 其中 j 满足 start + j*step < min(stop, m)
+    #
+    # 示例:
+    #   base = [2, 4, 6, 8], current = slice(1, 3, 1)
+    #   indices = [1, 2]  # 从查找表中选取第1和第2个元素
+    #   mapped = [base[1], base[2]] = [4, 6]
+    #   result = [4, 6]  # 即 arr[[2,4,6,8]][1:3] == arr[[4,6]]
+    elif base_desc.type == _IndexDescriptor.LOOKUP and current_desc.type == _IndexDescriptor.LINEAR:
+        table = base_desc.params['indices']
+        start = current_desc.params['start']
+        stop = current_desc.params['stop']
+        step = current_desc.params['step']
+        
+        # 根据 table 的类型选择库
+        lib = _get_array_lib(table)
+
+        # 使用 .size 属性获取数组长度，适用于 NumPy 和 CuPy
+        table_size = table.size if hasattr(table, 'size') else len(table)
+        actual_stop = builtins.min(stop, table_size)
+        indices = lib.arange(start, actual_stop, step)
+        
+        mapped = table[indices]
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=mapped)
+    
+    # 情况4: LOOKUP + LOOKUP = LOOKUP
+    # 两次离散索引，使用第二次索引从第一次的查找表中选择元素
+    #
+    # 数学公式:
+    #   设基础查找表: T1 = [a_0, a_1, ..., a_m]
+    #   设当前查找表: T2 = [b_0, b_1, ..., b_n]
+    #   
+    #   则合并后的索引:
+    #     valid_indices = {b_i | 0 <= b_i < m}
+    #     mapped[i] = T1[T2[i]]  # 仅对有效的 T2[i]
+    #
+    # 推导过程:
+    #   第一次查找: T1[i] 表示父张量中的第 T1[i] 个元素
+    #   第二次查找: T2[j] 表示在 T1 中的第 T2[j] 个元素
+    #   
+    #   合并映射: mapped[j] = T1[T2[j]], 需要满足 0 <= T2[j] < len(T1)
+    #   
+    #   注意: 如果 T2[j] 超出范围，则跳过该索引（通过 valid_mask 过滤）
+    #
+    # 示例:
+    #   base = [2, 4, 6, 8], current = [0, 2]
+    #   mapped[0] = base[0] = 2
+    #   mapped[1] = base[2] = 6
+    #   result = [2, 6]  # 即 arr[[2,4,6,8]][[0,2]] == arr[[2,6]]
+    elif base_desc.type == _IndexDescriptor.LOOKUP and current_desc.type == _IndexDescriptor.LOOKUP:
+        table1 = base_desc.params['indices']
+        table2 = current_desc.params['indices']
+        
+        # 确定使用哪个数组库（根据 table2 的类型，因为结果应该与 table2 同类型）
+        lib = _get_array_lib(table2)
+        
+        # 如果 table1 和 table2 类型不同，需要转换 table1
+        if _is_cupy_array(table1) and not _is_cupy_array(table2):
+            # table1 是 CuPy，table2 是 NumPy：将 table1 转换为 NumPy
+            table1 = table1.get()
+        elif not _is_cupy_array(table1) and _is_cupy_array(table2):
+            # table1 是 NumPy，table2 是 CuPy：将 table1 转换为 CuPy
+            table1 = cp.asarray(table1)
+
+        # 使用 .size 属性获取数组长度，适用于 NumPy 和 CuPy
+        table1_size = table1.size if hasattr(table1, 'size') else len(table1)
+        valid_mask = (table2 >= 0) & (table2 < table1_size)
+        valid_indices = table2[valid_mask]
+        mapped = table1[valid_indices]
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=mapped)
+    
+    else:
+        raise ValueError(f"未知的描述符类型组合: {base_desc.type}, {current_desc.type}")
+
+
+def _descriptor_to_index(desc: _IndexDescriptor, original_type: type = None, keep_step_none: bool = False):
+    """将 IndexDescriptor 转换回原始索引类型（slice、int 或 array）"""
+    if desc.type == _IndexDescriptor.LINEAR:
+        start = desc.params['start']
+        stop = desc.params['stop']
+        step = desc.params['step']
+        # 如果 step 为 1 且 keep_step_none 为 True，返回 None（与原版一致）
+        if keep_step_none and step == 1:
+            step = None
+        return slice(start, stop, step)
+    elif desc.type == _IndexDescriptor.LOOKUP:
+        indices = desc.params['indices']
+        if len(indices) == 1 and original_type == int:
+            return int(indices[0])
+        return indices
+    elif desc.type == _IndexDescriptor.NONE:
+        return None
+    else:
+        raise ValueError(f"未知的描述符类型: {desc.type}")
+
+def merge_indices(self, base_index, current_index):
+    """
+    基于 _IndexDescriptor 的索引合并函数
+
+    将视图索引链（base_index 和 current_index）合并为在原始张量上的等效索引。
+    这是原地操作的核心函数，用于确定需要修改原始张量的哪些元素。
+
+    职责分层设计：
+    ----------------
+    本函数采用分层架构，各阶段职责清晰：
+
+    第一阶段 - 尝试处理特殊情况：
+        调用 _try_merge_special_base_index 处理可以快速合并的情况：
+        - base_index 为空元组（直接索引原始张量）
+        - base_index 为 (None,)（np.newaxis 创建的视图）
+        - base_index 全是整数索引（链式索引）
+        如果可以合并，直接返回结果，跳过后续阶段。
+        
+        注意：base_index 不会为 None，因为 _convert_TNindex_to_numpy 已将 None 转换为 (None,)
+
+    第二阶段 - 预处理 base_index：
+        调用 _preprocess_base_index 进行标准化：
+        - 将各种格式（slice、int、tuple 等）统一转换为元组格式
+        - 展开 Ellipsis（...），但不填充长度（因为 base_index 可能只索引部分维度）
+        - 计算 view_dims（非整数索引的位置）
+
+    第三阶段 - 预处理 current_index：
+        调用 _preprocess_current_index 进行标准化：
+        - 转换为元组格式
+        - 展开 Ellipsis
+        - 填充长度以匹配 view_dims
+
+    第四阶段 - 逐个维度合并索引：
+        对每个视图维度，调用 _normalize_index 将索引转换为 _IndexDescriptor，
+        使用 _merge_descriptors 合并描述符，再通过 _descriptor_to_index 转回原始格式。
+
+    支持的索引类型：
+    ----------------
+    - 切片索引：slice(start, stop, step)，支持正负步长
+    - 整数索引：int，支持负索引
+    - 数组索引：list、np.ndarray、cp.ndarray，支持布尔数组
+    - 省略号：Ellipsis（...）自动展开
+    - None 索引：np.newaxis，添加新维度
+
+    Args:
+        base_index: 基础索引，用于创建视图。可以是 slice、int、tuple、list 或 np.ndarray
+        current_index: 当前索引，用于在视图上进行索引。可以是 slice、int、tuple 等
+
+    Returns:
+        tuple: 合并后的索引元组，可以直接用于原始张量的索引
+
+    示例:
+        >>> # 基本切片合并：x[2:8][1:3] 等价于 x[3:5]
+        >>> merge_indices(self, slice(2, 8), slice(1, 3))
+        (slice(3, 5, None),)
+        >>>
+        >>> # 负步长切片：x[::-1][1:4] 在 1D 张量 [0..9] 上
+        >>> merge_indices(self, slice(None, None, -1), slice(1, 4))
+        (slice(8, 5, -1),)  # 选取元素 [8, 7, 6]
+        >>>
+        >>> # 多维索引合并：x[2:8, 3:7][1:3, 0:2] 等价于 x[3:5, 3:5]
+        >>> merge_indices(self, (slice(2, 8), slice(3, 7)), (slice(1, 3), slice(0, 2)))
+        (slice(3, 5, None), slice(3, 5, None))
+        >>>
+        >>> # 数组索引合并：x[[0,2,4]][[0,2]] 等价于 x[[0,4]]
+        >>> merge_indices(self, [0, 2, 4], [0, 2])
+        (array([0, 4]),)
+        >>>
+        >>> # np.newaxis 特殊情况：x[None][0] 等价于 x[:]
+        >>> merge_indices(self, (None,), (0,))
+        (slice(None),)
+    """
+    
+    # 第一阶段：尝试处理特殊情况    
+    result = _try_merge_special_base_index(base_index, current_index)
+    if result is not None:
+        return result
+    
+    # 第二阶段：预处理 base_index    
+    base_index, view_dims = _preprocess_base_index(base_index, self)
+    
+    # 第三阶段：预处理 current_index    
+    current_index = _preprocess_current_index(current_index, view_dims)
+    
+    # 第四阶段：逐个维度合并索引
+    # 获取基础张量的形状（只需计算一次）
+    base_shape = self._base.shape if (hasattr(self, '_base') and self._base is not None) else self.shape
+    
+    result = list(base_index)  # 复制 base_index，用于存储合并结果
+    
+    for i, view_dim in enumerate(view_dims):
+        base_idx = base_index[view_dim]
+        curr_idx = current_index[i]
+        
+        # 处理 None（np.newaxis）索引 - current_idx 为 None 会覆盖 base_idx
+        if curr_idx is None:
+            result[view_dim] = None
+            continue
+        
+        # 获取当前维度在原始张量中的大小
+        dim_size = base_shape[view_dim] if view_dim < len(base_shape) else 1
+        
+        # 标准化基础索引为 IndexDescriptor
+        base_desc = _normalize_index(base_idx, dim_size)
+
+        # 处理 None 索引（np.newaxis）- base_idx 为 None 时保持原样
+        if base_desc is None:
+            result[view_dim] = base_idx
+            continue
+
+        # 计算视图大小（该维度在视图中的元素数量）
+        if base_desc.type == _IndexDescriptor.LINEAR:
+            p = base_desc.params
+            view_size = (p['stop'] - p['start'] + p['step'] - 1) // p['step']
+        else:
+            indices = base_desc.params['indices']
+            view_size = indices.size if hasattr(indices, 'size') else len(indices)
+        
+        # 标准化当前索引、合并、转回原始格式
+        current_desc = _normalize_index(curr_idx, view_size)
+        merged = _merge_descriptors(base_desc, current_desc)
+        result[view_dim] = _descriptor_to_index(merged, type(curr_idx), keep_step_none=True)
+    
+    return tuple(result)
