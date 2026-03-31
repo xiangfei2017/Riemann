@@ -47,7 +47,6 @@ Implemented Classes:
 
 import math
 import copy
-from typing import Optional, Tuple
 from ..tensordef import *
 from .module import Module, Parameter, Linear, Dropout, LayerNorm, ModuleList
 from .activation import ReLU, GELU
@@ -88,8 +87,8 @@ class MultiheadAttention(Module):
         bias: bool = True,
         add_bias_kv: bool = False,
         add_zero_attn: bool = False,
-        kdim: Optional[int] = None,
-        vdim: Optional[int] = None,
+        kdim: int | None = None,
+        vdim: int | None = None,
         batch_first: bool = False,
         device=None,
         dtype=None
@@ -205,12 +204,12 @@ class MultiheadAttention(Module):
         query: TN,
         key: TN,
         value: TN,
-        key_padding_mask: Optional[TN] = None,
+        key_padding_mask: TN | None = None,
         need_weights: bool = True,
-        attn_mask: Optional[TN] = None,
+        attn_mask: TN | None = None,
         average_attn_weights: bool = True,
         is_causal: bool = False
-    ) -> Tuple[TN, Optional[TN]]:
+    ) -> tuple[TN, TN | None]:
         """
         多头注意力前向传播 (Multi-head Attention Forward Pass)
         
@@ -250,7 +249,7 @@ class MultiheadAttention(Module):
                 默认为 False
         
         Returns:
-            Tuple[TN, Optional[TN]]: 
+            tuple[TN, TN | None]:
                 - attn_output: 注意力输出，形状与 query 相同
                 - attn_output_weights: 注意力权重，形状取决于 average_attn_weights 和 need_weights
                     如果 need_weights=False，则返回 None
@@ -356,7 +355,7 @@ class MultiheadAttention(Module):
             value (TN): 值张量
             
         Returns:
-            Tuple[TN, TN, TN]: 投影后的 q、k、v 张量
+            tuple[TN, TN, TN]: 投影后的 q、k、v 张量
         """
         if self._qkv_same_embed_dim and query is key and key is value:
             projected = linear(query, self.in_proj_weight, self.in_proj_bias)
@@ -490,8 +489,8 @@ class TransformerEncoderLayer(Module):
     def forward(
         self,
         src: TN,
-        src_mask: Optional[TN] = None,
-        src_key_padding_mask: Optional[TN] = None,
+        src_mask: TN | None = None,
+        src_key_padding_mask: TN | None = None,
         is_causal: bool = False
     ) -> TN:
         """
@@ -650,10 +649,10 @@ class TransformerDecoderLayer(Module):
         self,
         tgt: TN,
         memory: TN,
-        tgt_mask: Optional[TN] = None,
-        memory_mask: Optional[TN] = None,
-        tgt_key_padding_mask: Optional[TN] = None,
-        memory_key_padding_mask: Optional[TN] = None,
+        tgt_mask: TN | None = None,
+        memory_mask: TN | None = None,
+        tgt_key_padding_mask: TN | None = None,
+        memory_key_padding_mask: TN | None = None,
         tgt_is_causal: bool = False,
         memory_is_causal: bool = False
     ) -> TN:
@@ -772,7 +771,7 @@ class TransformerEncoder(Module):
         self,
         encoder_layer: 'TransformerEncoderLayer',
         num_layers: int,
-        norm: Optional[Module] = None,
+        norm: Module | None = None,
         enable_nested_tensor: bool = True,
         mask_check: bool = True
     ):
@@ -801,9 +800,9 @@ class TransformerEncoder(Module):
     def forward(
         self,
         src: TN,
-        mask: Optional[TN] = None,
-        src_key_padding_mask: Optional[TN] = None,
-        is_causal: Optional[bool] = None
+        mask: TN | None = None,
+        src_key_padding_mask: TN | None = None,
+        is_causal: bool | None = None
     ) -> TN:
         """
         Transformer 编码器前向传播 (Transformer Encoder Forward Pass)
@@ -862,7 +861,7 @@ class TransformerDecoder(Module):
         self,
         decoder_layer: 'TransformerDecoderLayer',
         num_layers: int,
-        norm: Optional[Module] = None
+        norm: Module | None = None
     ):
         """
         初始化 TransformerDecoder 模块
@@ -881,11 +880,11 @@ class TransformerDecoder(Module):
         self,
         tgt: TN,
         memory: TN,
-        tgt_mask: Optional[TN] = None,
-        memory_mask: Optional[TN] = None,
-        tgt_key_padding_mask: Optional[TN] = None,
-        memory_key_padding_mask: Optional[TN] = None,
-        tgt_is_causal: Optional[bool] = None,
+        tgt_mask: TN | None = None,
+        memory_mask: TN | None = None,
+        tgt_key_padding_mask: TN | None = None,
+        memory_key_padding_mask: TN | None = None,
+        tgt_is_causal: bool | None = None,
         memory_is_causal: bool = False
     ) -> TN:
         """
@@ -951,8 +950,8 @@ class Transformer(Module):
         dim_feedforward: int = 2048,
         dropout: float = 0.1,
         activation: str = "relu",
-        custom_encoder: Optional[Module] = None,
-        custom_decoder: Optional[Module] = None,
+        custom_encoder: Module | None = None,
+        custom_decoder: Module | None = None,
         layer_norm_eps: float = 1e-05,
         batch_first: bool = False,
         norm_first: bool = False,
@@ -1011,14 +1010,14 @@ class Transformer(Module):
         self,
         src: TN,
         tgt: TN,
-        src_mask: Optional[TN] = None,
-        tgt_mask: Optional[TN] = None,
-        memory_mask: Optional[TN] = None,
-        src_key_padding_mask: Optional[TN] = None,
-        tgt_key_padding_mask: Optional[TN] = None,
-        memory_key_padding_mask: Optional[TN] = None,
-        src_is_causal: Optional[bool] = None,
-        tgt_is_causal: Optional[bool] = None,
+        src_mask: TN | None = None,
+        tgt_mask: TN | None = None,
+        memory_mask: TN | None = None,
+        src_key_padding_mask: TN | None = None,
+        tgt_key_padding_mask: TN | None = None,
+        memory_key_padding_mask: TN | None = None,
+        src_is_causal: bool | None = None,
+        tgt_is_causal: bool | None = None,
         memory_is_causal: bool = False
     ) -> TN:
         """

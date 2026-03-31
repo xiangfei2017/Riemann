@@ -60,7 +60,7 @@ import zipfile
 import io
 import sys
 import struct
-from typing import Any, Union, Optional
+from typing import Any
 from .tensordef import TN, tensor
 from .nn.module import Parameter
 from .cuda import Device, cp
@@ -390,8 +390,8 @@ def _parameter_constructor(*args):
         raise ValueError(f"Invalid arguments for Parameter constructor: {args}")
 
 
-def save(obj: Any, f: Union[str, os.PathLike, Any], 
-         pickle_module: Any = None, 
+def save(obj: Any, f: str | os.PathLike | Any,
+         pickle_module: Any = None,
          pickle_protocol: int = 2,
          use_new_zipfile_serialization: bool = True,
          _disable_byteorder_record: bool = False) -> None:
@@ -551,8 +551,8 @@ def _legacy_save(obj, f, pickle_module, pickle_protocol):
         f.write(data_np.tobytes())
 
 
-def load(f: Union[str, os.PathLike, Any], 
-         map_location: Optional[Any] = None,
+def load(f: str | os.PathLike | Any,
+         map_location: Any | None = None,
          pickle_module: Any = None,
          **pickle_load_args: Any) -> Any:
     """

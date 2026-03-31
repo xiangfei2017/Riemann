@@ -48,7 +48,7 @@ Implemented schedulers:
 All schedulers support PyTorch-compatible interfaces and can be used with any Riemann optimizer.
 """
 from __future__ import annotations
-from typing import List, Optional, Callable, Dict, Any, Union
+from typing import Any
 import math
 from .optim import Optimizer
 
@@ -96,7 +96,7 @@ class LRScheduler:
             for i, group in enumerate(optimizer.param_groups):
                 group['lr'] = self.base_lrs[i]
     
-    def step(self, epoch: Optional[int] = None) -> None:
+    def step(self, epoch: int | None = None) -> None:
         """
         执行单个调度步骤，更新学习率
         
@@ -123,28 +123,28 @@ class LRScheduler:
             if self.verbose:
                 print(f"Epoch {self.last_epoch}: adjusting learning rate of group {i} from {old_lr:.6f} to {lr:.6f}")
     
-    def get_lr(self) -> List[float]:
+    def get_lr(self) -> list[float]:
         """
         计算当前epoch的学习率
-        
+
         返回:
-            List[float]: 每个参数组的学习率
-        
+            list[float]: 每个参数组的学习率
+
         异常:
             NotImplementedError: 子类必须实现此方法
         """
         raise NotImplementedError("Subclasses must implement get_lr method")
-    
-    def get_last_lr(self) -> List[float]:
+
+    def get_last_lr(self) -> list[float]:
         """
         返回上一次计算的学习率
         
         返回:
-            List[float]: 每个参数组的上一次学习率
+            list[float]: 每个参数组的上一次学习率
         """
         return self._last_lr
-    
-    def state_dict(self) -> Dict[str, Any]:
+
+    def state_dict(self) -> dict[str, Any]:
         """
         返回调度器状态的字典，可用于保存和恢复调度器状态
         
@@ -157,7 +157,7 @@ class LRScheduler:
             '_last_lr': self._last_lr,
         }
     
-    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         """
         从state_dict中加载调度器状态
         
@@ -206,12 +206,12 @@ class StepLR(LRScheduler):
         self.gamma = gamma
         super().__init__(optimizer, last_epoch, verbose)
     
-    def get_lr(self) -> List[float]:
+    def get_lr(self) -> list[float]:
         """
         计算当前epoch的学习率
 
         返回:
-            List[float]: 每个参数组的学习率
+            list[float]: 每个参数组的学习率
         """
         return [base_lr * (self.gamma ** ((self.last_epoch + 1) // self.step_size)) for base_lr in self.base_lrs]
 
@@ -226,7 +226,7 @@ class MultiStepLR(LRScheduler):
         - 训练过程中需要在特定epoch降低学习率
         - 基于经验或先验知识设置学习率衰减点
     """
-    def __init__(self, optimizer: Optimizer, milestones: List[int], gamma: float = 0.1, last_epoch: int = -1, verbose: bool = False) -> None:
+    def __init__(self, optimizer: Optimizer, milestones: list[int], gamma: float = 0.1, last_epoch: int = -1, verbose: bool = False) -> None:
         """
         初始化MultiStepLR调度器
         
@@ -251,12 +251,12 @@ class MultiStepLR(LRScheduler):
         self.gamma = gamma
         super().__init__(optimizer, last_epoch, verbose)
     
-    def get_lr(self) -> List[float]:
+    def get_lr(self) -> list[float]:
         """
         计算当前epoch的学习率
 
         返回:
-            List[float]: 每个参数组的学习率
+            list[float]: 每个参数组的学习率
         """
         # 计算当前epoch已经经过了多少个milestone
         num_decays = sum(1 for milestone in self.milestones if milestone <= self.last_epoch + 1)
@@ -292,12 +292,12 @@ class ExponentialLR(LRScheduler):
         self.gamma = gamma
         super().__init__(optimizer, last_epoch, verbose)
     
-    def get_lr(self) -> List[float]:
+    def get_lr(self) -> list[float]:
         """
         计算当前epoch的学习率
 
         返回:
-            List[float]: 每个参数组的学习率
+            list[float]: 每个参数组的学习率
         """
         return [base_lr * (self.gamma ** (self.last_epoch + 1)) for base_lr in self.base_lrs]
 
@@ -335,12 +335,12 @@ class CosineAnnealingLR(LRScheduler):
         self.eta_min = eta_min
         super().__init__(optimizer, last_epoch, verbose)
     
-    def get_lr(self) -> List[float]:
+    def get_lr(self) -> list[float]:
         """
         计算当前epoch的学习率
 
         返回:
-            List[float]: 每个参数组的学习率
+            list[float]: 每个参数组的学习率
         """
         # 计算当前epoch在余弦循环中的位置
         # 与PyTorch一致，使用(1 + cos(pi * epoch / T_max)) / 2的形式
@@ -363,7 +363,7 @@ class ReduceLROnPlateau:
     """
     def __init__(self, optimizer: Optimizer, mode: str = 'min', factor: float = 0.1, patience: int = 10,
                  verbose: bool = False, threshold: float = 1e-4, threshold_mode: str = 'rel',
-                 cooldown: int = 0, min_lr: Union[float, List[float]] = 0, eps: float = 1e-8) -> None:
+                 cooldown: int = 0, min_lr: float | list[float] = 0, eps: float = 1e-8) -> None:
         """
         初始化ReduceLROnPlateau调度器
         
@@ -448,7 +448,7 @@ class ReduceLROnPlateau:
         self.num_bad_epochs = 0
         self.cooldown_counter = 0
     
-    def step(self, metrics: float, epoch: Optional[int] = None) -> None:
+    def step(self, metrics: float, epoch: int | None = None) -> None:
         """
         执行单个调度步骤，根据指标更新学习率
         
@@ -476,7 +476,7 @@ class ReduceLROnPlateau:
                     self.cooldown_counter = self.cooldown
                     self.num_bad_epochs = 0
     
-    def _reduce_lr(self, epoch: Optional[int]) -> None:
+    def _reduce_lr(self, epoch: int | None) -> None:
         """
         降低学习率
         """
@@ -492,7 +492,7 @@ class ReduceLROnPlateau:
                 if self.verbose:
                     print(f"Epoch {epoch}: reducing learning rate of group {i} from {old_lr:.6f} to {new_lr:.6f}")
     
-    def state_dict(self) -> Dict[str, Any]:
+    def state_dict(self) -> dict[str, Any]:
         """
         返回调度器状态的字典，可用于保存和恢复调度器状态
         
@@ -514,7 +514,7 @@ class ReduceLROnPlateau:
             'cooldown_counter': self.cooldown_counter,
         }
     
-    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         """
         从state_dict中加载调度器状态
         

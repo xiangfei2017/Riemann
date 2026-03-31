@@ -52,28 +52,28 @@ gradients of scalars or tensors with respect to other tensors.
 """
 
 import numpy as np
-from typing import Callable, Any, List, Tuple, Optional
+from typing import Callable, Any
 import builtins
 from ..tensordef import *
 from .grad import *
 
-def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]], 
-             inputs: TN | List[TN] | Tuple[TN, ...], 
-             create_graph: bool = False, 
-             strict: bool = True) -> TN | List[TN] | Tuple[TN, ...]:
+def jacobian(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
+             inputs: TN | list[TN] | tuple[TN, ...],
+             create_graph: bool = False,
+             strict: bool = True) -> TN | list[TN] | tuple[TN, ...]:
     """计算函数的雅可比矩阵。
 
         该函数计算给定函数在输入点处的雅可比矩阵，支持单个或多个输入、
         单个或多个输出的情况，并与PyTorch的jacobian函数行为保持兼容。
 
         参数:
-            func (Callable[..., TN | List[TN] | Tuple[TN, ...]]): 要计算雅可比矩阵的函数
-            inputs (TN | List[TN] | Tuple[TN, ...]): 函数的输入张量或张量列表
+            func (Callable[..., TN | list[TN] | tuple[TN, ...]]): 要计算雅可比矩阵的函数
+            inputs (TN | list[TN] | tuple[TN, ...]): 函数的输入张量或张量列表
             create_graph (bool, 可选): 是否在梯度计算中创建计算图，默认为False
             strict (bool, 可选): 是否严格遵循PyTorch的行为规范，默认为True
 
         返回:
-            TN | List[TN] | Tuple[TN, ...]: 根据输入/输出类型返回相应结构的雅可比矩阵
+            TN | list[TN] | tuple[TN, ...]: 根据输入/输出类型返回相应结构的雅可比矩阵
 
         异常:
             RuntimeError: 当输入张量不可求导、输出不是张量等情况
@@ -121,7 +121,7 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     total_input_elements = builtins.sum(input_sizes)
 
     # 创建结果存储
-    jacobian_results: List[TN] = []
+    jacobian_results: list[TN] = []
 
     # 对每个输出计算梯度
     current_output_idx = 0
@@ -181,7 +181,7 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
             # 3. 多输入单输出：返回与输入结构匹配的元组
             # 优化：使用预计算的 input_sizes
             # input_sizes 已在前面计算
-            result_list: List[TN] = []
+            result_list: list[TN] = []
             start_idx = 0
             for size, shape in zip(input_sizes, input_shapes):
                 # 提取每个输入对应的雅可比矩阵部分
@@ -200,12 +200,12 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
             return tuple(jacobian_results)
         else:
             # 4. 多输入多输出：对于每个输出，返回与输入结构匹配的元组
-            result_list: List[Tuple[TN, ...]] = []  # type: ignore
+            result_list: list[tuple[TN, ...]] = []  # type: ignore
             # 优化：使用预计算的 input_sizes
             # input_sizes 已在前面计算
 
             for jac, output_shape in zip(jacobian_results, output_shapes):
-                output_result_list: List[TN] = []
+                output_result_list: list[TN] = []
                 start_idx = 0
                 for size, inp_shape in zip(input_sizes, input_shapes):
                     # 提取每个输入对应的雅可比矩阵部分
@@ -220,8 +220,8 @@ def jacobian(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
             return tuple(result_list)
 # end of jacobian
 
-def derivative(func: Callable[..., TN | List[TN] | Tuple[TN, ...]], 
-               create_graph: bool = False) -> Callable[..., TN | List[TN] | Tuple[TN, ...]]:
+def derivative(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
+               create_graph: bool = False) -> Callable[..., TN | list[TN] | tuple[TN, ...]]:
     """计算函数的导数函数。
 
     该函数返回一个新函数，该新函数在调用时会计算原始函数func在输入点处的导数。
@@ -229,11 +229,11 @@ def derivative(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     内部基于jacobian函数实现导数计算。
 
     参数:
-        func (Callable[..., TN | List[TN] | Tuple[TN, ...] ]): 要求导的函数
+        func (Callable[..., TN | list[TN] | tuple[TN, ...] ]): 要求导的函数
         create_graph (bool, 可选): 是否在梯度计算中创建计算图，默认为False
 
     返回:
-        Callable[..., TN | List[TN] | Tuple[TN, ...]]: 返回导函数，该函数接受与原函数相同的输入
+        Callable[..., TN | list[TN] | tuple[TN, ...]]: 返回导函数，该函数接受与原函数相同的输入
 
     示例:
         >>> def f(x):
@@ -243,7 +243,7 @@ def derivative(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
         >>> df(x)  # 应返回 tensor([4.0])
     """
     
-    def _derivative(*inputs: Any) -> TN | List[TN] | Tuple[TN, ...]:
+    def _derivative(*inputs: Any) -> TN | list[TN] | tuple[TN, ...]:
         # 调用jacobian计算导数
         jac = jacobian(func, inputs, create_graph=create_graph)
         
@@ -284,10 +284,10 @@ def derivative(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     return _derivative
 # end of derivative
 
-def hessian(func: Callable[..., TN], 
-           inputs: TN | List[TN] | Tuple[TN], 
+def hessian(func: Callable[..., TN],
+           inputs: TN | list[TN] | tuple[TN],
            create_graph: bool = False,
-           strict: bool = True) -> TN | List[TN] | Tuple[TN, ...]:
+           strict: bool = True) -> TN | list[TN] | tuple[TN, ...]:
     """计算函数的Hessian矩阵。
 
         该函数计算给定函数在输入点处的Hessian矩阵，即函数梯度的雅可比矩阵。
@@ -295,12 +295,12 @@ def hessian(func: Callable[..., TN],
 
         参数:
             func (Callable[..., TN]): 要计算Hessian矩阵的函数，该函数应返回一个标量张量
-            inputs (TN | List[TN] | Tuple[TN]): 函数的输入张量或张量列表
+            inputs (TN | list[TN] | tuple[TN]): 函数的输入张量或张量列表
             create_graph (bool, 可选): 是否在梯度计算中创建计算图，默认为False
             strict (bool, 可选): 如果为True，当检测到输出与某个输入无关时将引发错误，默认为True
 
         返回:
-            TN | List[TN] | Tuple[TN, ...]: 根据输入类型返回相应结构的Hessian矩阵
+            TN | list[TN] | tuple[TN, ...]: 根据输入类型返回相应结构的Hessian矩阵
 
         异常:
             RuntimeError: 当输入张量不可求导、输出不是标量等情况
@@ -318,7 +318,7 @@ def hessian(func: Callable[..., TN],
             raise RuntimeError(f"Input {i} must be a tensor")
         
     # 定义一个辅助函数，用于计算梯度
-    def gradient_fn(*args: TN) -> Tuple[TN, ...]:
+    def gradient_fn(*args: TN) -> tuple[TN, ...]:
         # 计算函数值
         output = func(*args)
         # 确保输出是标量
@@ -359,13 +359,11 @@ def hessian(func: Callable[..., TN],
         return hessian_results
 # end of hessian
 
-
-# 重写jvp函数，优化精度并保持数学正确性
-def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
-        inputs: TN | List[TN] | Tuple[TN, ...],
-        v: Optional[TN | List[TN] | Tuple[TN, ...]] = None,
+def jvp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
+        inputs: TN | list[TN] | tuple[TN, ...],
+        v: TN | list[TN] | tuple[TN, ...] | None = None,
         create_graph: bool = False,
-        strict: bool = False) -> Tuple[TN | List[TN] | Tuple[TN, ...], TN | List[TN] | Tuple[TN, ...]]:
+        strict: bool = False) -> tuple[TN | list[TN] | tuple[TN, ...], TN | list[TN] | tuple[TN, ...]]:
     """计算函数在给定点的雅可比向量积(JVP)。"""
     # 处理输入为单个张量或张量列表的情况
     is_single_input = not isinstance(inputs, (list, tuple))
@@ -412,7 +410,7 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
             raise RuntimeError(f"Output {i} must be a tensor")
     
     # 计算JVP结果，对每个输出单独计算JVP
-    jvp_results: List[TN] = []
+    jvp_results: list[TN] = []
     
     for out in outputs_processed:
         # 对于标量输出，使用点积计算JVP
@@ -519,11 +517,11 @@ def jvp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
     return original_outputs, original_jvp
 
 # 修改后的vjp函数，与PyTorch官方接口保持一致
-def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
-        inputs: TN | List[TN] | Tuple[TN, ...],
-        v: Optional[TN | List[TN] | Tuple[TN, ...]] = None,
+def vjp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
+        inputs: TN | list[TN] | tuple[TN, ...],
+        v: TN | list[TN] | tuple[TN, ...] | None = None,
         create_graph: bool = False,
-        strict: bool = False) -> Tuple[TN | List[TN] | Tuple[TN, ...], TN | List[TN] | Tuple[TN, ...]]:
+        strict: bool = False) -> tuple[TN | list[TN] | tuple[TN, ...], TN | list[TN] | tuple[TN, ...]]:
     """计算给定向量v与函数在给定点处的雅可比矩阵的点积。
 
     计算函数func在inputs点处的向量雅可比积(VJP)。
@@ -540,7 +538,7 @@ def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
             如果为False，我们为这些输入返回零张量作为vjp，这是预期的数学值。默认为False。
 
     返回:
-        Tuple[TN | List[TN] | Tuple[TN, ...], TN | List[TN] | Tuple[TN, ...]]:
+        tuple[TN | list[TN] | tuple[TN, ...], TN | list[TN] | tuple[TN, ...]]:
             - 第一个元素是函数的输出
             - 第二个元素是向量雅可比积结果
 
@@ -649,7 +647,7 @@ def vjp(func: Callable[..., TN | List[TN] | Tuple[TN, ...]],
 
 
 # 添加在vjp函数后
-def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | List[TN] | Tuple[TN, ...], v: TN | List[TN] | Tuple[TN, ...], create_graph: bool = False, strict: bool = False) -> Tuple[TN, TN | List[TN] | Tuple[TN, ...]]:
+def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | list[TN] | tuple[TN, ...], v: TN | list[TN] | tuple[TN, ...], create_graph: bool = False, strict: bool = False) -> tuple[TN, TN | list[TN] | tuple[TN, ...]]:
     """
     计算Hessian-vector乘积 (hvp) 或 vector-Hessian乘积 (vhp) 的核心函数。
     
@@ -663,7 +661,7 @@ def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | List[T
         strict (bool, 可选): 与grad函数中的strict参数相同
     
     返回:
-        Tuple[TN, Tensor或Tensor列表]: 
+        tuple[TN, Tensor或Tensor列表]:
             - 第一个元素是函数的输出值
             - 第二个元素是HVP/VHP结果，形状与inputs匹配
     """
@@ -726,7 +724,7 @@ def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | List[T
     # 返回函数值和HVP/VHP结果的元组，与PyTorch行为一致
     return func_output, hessian_vec_product
 
-def hvp(func: Callable[..., TN], inputs: TN | List[TN] | Tuple[TN, ...], v: TN | List[TN] | Tuple[TN, ...], create_graph: bool = False, strict: bool = False) -> Tuple[TN, TN | List[TN] | Tuple[TN, ...]]:
+def hvp(func: Callable[..., TN], inputs: TN | list[TN] | tuple[TN, ...], v: TN | list[TN] | tuple[TN, ...], create_graph: bool = False, strict: bool = False) -> tuple[TN, TN | list[TN] | tuple[TN, ...]]:
     """
     计算Hessian-vector product (HVP): H @ v
     
@@ -741,7 +739,7 @@ def hvp(func: Callable[..., TN], inputs: TN | List[TN] | Tuple[TN, ...], v: TN |
         strict (bool, 可选): 如果为True，当检测到输出与某个输入无关时将引发错误
     
     返回:
-        Tuple[TN, Tensor或Tensor列表]: 
+        tuple[TN, Tensor或Tensor列表]:
             - 第一个元素是函数的输出值
             - 第二个元素是VHP结果，形状与inputs匹配
     """
@@ -749,7 +747,7 @@ def hvp(func: Callable[..., TN], inputs: TN | List[TN] | Tuple[TN, ...], v: TN |
     # 直接调用核心函数计算
     return _compute_hessian_vector_product(func, inputs, v, create_graph, strict)
 
-def vhp(func: Callable[..., TN], inputs: TN | List[TN] | Tuple[TN, ...], v: TN | List[TN] | Tuple[TN, ...], create_graph: bool = False, strict: bool = False) -> Tuple[TN, TN | List[TN] | Tuple[TN, ...]]:
+def vhp(func: Callable[..., TN], inputs: TN | list[TN] | tuple[TN, ...], v: TN | list[TN] | tuple[TN, ...], create_graph: bool = False, strict: bool = False) -> tuple[TN, TN | list[TN] | tuple[TN, ...]]:
     """
     计算vector-Hessian product (VHP): v @ H
     
@@ -766,9 +764,9 @@ def vhp(func: Callable[..., TN], inputs: TN | List[TN] | Tuple[TN, ...], v: TN |
         strict (bool, 可选): 如果为True，当检测到输出与某个输入无关时将引发错误
     
     返回:
-        Tuple[TN, Tensor或Tensor列表]: 
+        tuple[TN, Tensor或Tensor列表]:
             - 第一个元素是函数的输出值
             - 第二个元素是VHP结果，形状与inputs匹配
     """
-    
+
     return hvp(func, inputs, v, create_graph, strict)

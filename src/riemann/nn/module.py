@@ -59,7 +59,7 @@ This file implements the following key components:
 All modules implement a PyTorch-compatible interface, making it easy to migrate code
 between Riemann and PyTorch frameworks.
 """
-from typing import Any, Dict
+from typing import Any
 import copy
 import numpy as np
 from ..tensordef import *
@@ -159,7 +159,7 @@ class Parameter(TN):
         - is_leaf属性影响反向传播的行为
         - 继承自张量类，支持所有张量操作
     """
-    def __init__(self, data: Optional[TN] = None, requires_grad:bool=True):
+    def __init__(self, data: TN | None = None, requires_grad:bool=True):
         """
         初始化参数实例 (Initialize Parameter Instance)
         
@@ -1859,7 +1859,7 @@ class Module:
         
         return destination
 
-    def load_state_dict(self, state_dict: Dict[str, Any], strict: bool = True):
+    def load_state_dict(self, state_dict: dict[str, Any], strict: bool = True):
         """将状态字典复制到模块中 (Load State Dictionary)
         
         将state_dict中的参数和缓冲区复制到当前模块中。这是state_dict()
@@ -5328,8 +5328,8 @@ class Embedding(Module):
         - 目前不支持sparse参数（会忽略该参数）
     """
     
-    def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: Optional[int] = None, 
-                 max_norm: Optional[float] = None, norm_type: float = 2.0, scale_grad_by_freq: bool = False, 
+    def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: int | None = None,
+                 max_norm: float | None = None, norm_type: float = 2.0, scale_grad_by_freq: bool = False,
                  sparse: bool = False, device=None,dtype: np.dtype|None = None):
         """
         初始化嵌入层

@@ -74,7 +74,7 @@ and training computer vision models.
 from __future__ import annotations
 import random
 import math
-from typing import Callable, List, Tuple, Union, Optional, Any
+from typing import Callable, Any
 import numpy as np
 from PIL import Image, ImageOps, ImageEnhance
 
@@ -136,7 +136,7 @@ class Compose(Transform):
         ... ])
     """
     
-    def __init__(self, transforms: List[Callable]) -> None:
+    def __init__(self, transforms: list[Callable]) -> None:
         self.transforms = transforms
     
     def __call__(self, img: Any) -> Any:
@@ -282,7 +282,7 @@ class Normalize(Transform):
         ...                      std=[0.229, 0.224, 0.225])
     """
     
-    def __init__(self, mean: List[float], std: List[float], inplace: bool = False) -> None:
+    def __init__(self, mean: list[float], std: list[float], inplace: bool = False) -> None:
         self.mean = mean
         self.std = std
         self.inplace = inplace
@@ -332,7 +332,7 @@ class Resize(Transform):
         >>> transforms.Resize((256, 256))  # 直接调整为256x256
     """
     
-    def __init__(self, size: Union[int, Tuple[int, int]], 
+    def __init__(self, size: int | tuple[int, int],
                  interpolation: int = BILINEAR) -> None:
         self.size = size
         self.interpolation = interpolation
@@ -379,7 +379,7 @@ class CenterCrop(Transform):
         >>> transforms.CenterCrop((224, 256))  # 裁剪为224x256
     """
     
-    def __init__(self, size: Union[int, Tuple[int, int]]) -> None:
+    def __init__(self, size: int | tuple[int, int]) -> None:
         if isinstance(size, int):
             self.size = (size, size)
         else:
@@ -494,9 +494,9 @@ class RandomRotation(Transform):
         >>> transforms.RandomRotation((10, 30))  # 在(10, 30)度范围内随机旋转
     """
     
-    def __init__(self, degrees: Union[int, Tuple[int, int]], 
-                 resample: int = NEAREST, expand: bool = False, 
-                 center: Optional[Tuple[float, float]] = None) -> None:
+    def __init__(self, degrees: int | tuple[int, int],
+                 resample: int = NEAREST, expand: bool = False,
+                 center: tuple[float, float] | None = None) -> None:
         if isinstance(degrees, int):
             self.degrees = (-degrees, degrees)
         else:
@@ -542,17 +542,17 @@ class ColorJitter(Transform):
         >>> transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)
     """
     
-    def __init__(self, brightness: Union[float, Tuple[float, float]] = 0,
-                 contrast: Union[float, Tuple[float, float]] = 0,
-                 saturation: Union[float, Tuple[float, float]] = 0,
-                 hue: Union[float, Tuple[float, float]] = 0) -> None:
+    def __init__(self, brightness: float | tuple[float, float] = 0,
+                 contrast: float | tuple[float, float] = 0,
+                 saturation: float | tuple[float, float] = 0,
+                 hue: float | tuple[float, float] = 0) -> None:
         self.brightness = self._check_input(brightness, 'brightness')
         self.contrast = self._check_input(contrast, 'contrast')
         self.saturation = self._check_input(saturation, 'saturation')
         self.hue = self._check_input(hue, 'hue', center=0, bound=(-0.5, 0.5))
     
-    def _check_input(self, value: Union[float, Tuple[float, float]], name: str, 
-                     center: float = 1, bound: Tuple[float, float] = (0, float('inf'))) -> Tuple[float, float]:
+    def _check_input(self, value: float | tuple[float, float], name: str,
+                     center: float = 1, bound: tuple[float, float] = (0, float('inf'))) -> tuple[float, float]:
         if isinstance(value, (float, int)):
             if value < 0:
                 raise ValueError(f"If {name} is a single number, it must be non negative.")
@@ -710,8 +710,8 @@ class RandomCrop(Transform):
         >>> transforms.RandomCrop((224, 256))  # 随机裁剪为224x256
     """
     
-    def __init__(self, size: Union[int, Tuple[int, int]], 
-                 padding: Optional[Union[int, Tuple[int, int, int, int]]] = None) -> None:
+    def __init__(self, size: int | tuple[int, int],
+                 padding: int | tuple[int, int, int, int] | None = None) -> None:
         if isinstance(size, int):
             self.size = (size, size)
         else:
@@ -767,9 +767,9 @@ class RandomResizedCrop(Transform):
         >>> transforms.RandomResizedCrop(224)  # 随机裁剪并调整为224x224
     """
     
-    def __init__(self, size: Union[int, Tuple[int, int]], 
-                 scale: Tuple[float, float] = (0.08, 1.0),
-                 ratio: Tuple[float, float] = (3. / 4., 4. / 3.),
+    def __init__(self, size: int | tuple[int, int],
+                 scale: tuple[float, float] = (0.08, 1.0),
+                 ratio: tuple[float, float] = (3. / 4., 4. / 3.),
                  interpolation: int = BILINEAR) -> None:
         if isinstance(size, int):
             self.size = (size, size)
@@ -834,13 +834,13 @@ class FiveCrop(Transform):
         >>> transforms.FiveCrop(224)  # 裁剪为5个224x224的图像
     """
     
-    def __init__(self, size: Union[int, Tuple[int, int]]) -> None:
+    def __init__(self, size: int | tuple[int, int]) -> None:
         if isinstance(size, int):
             self.size = (size, size)
         else:
             self.size = size
     
-    def __call__(self, img: Image.Image) -> Tuple[Image.Image, ...]:
+    def __call__(self, img: Image.Image) -> tuple[Image.Image, ...]:
         """
         Args:
             img (PIL.Image): 要裁剪的图像
@@ -886,14 +886,14 @@ class TenCrop(Transform):
         >>> transforms.TenCrop(224)  # 裁剪为10个224x224的图像
     """
     
-    def __init__(self, size: Union[int, Tuple[int, int]], vertical_flip: bool = False) -> None:
+    def __init__(self, size: int | tuple[int, int], vertical_flip: bool = False) -> None:
         if isinstance(size, int):
             self.size = (size, size)
         else:
             self.size = size
         self.vertical_flip = vertical_flip
     
-    def __call__(self, img: Image.Image) -> Tuple[Image.Image, ...]:
+    def __call__(self, img: Image.Image) -> tuple[Image.Image, ...]:
         """
         Args:
             img (PIL.Image): 要裁剪的图像
@@ -941,8 +941,8 @@ class Pad(Transform):
         >>> transforms.Pad((2, 4))  # 高度方向填充2像素，宽度方向填充4像素
     """
     
-    def __init__(self, padding: Union[int, Tuple[int, int], Tuple[int, int, int, int]], 
-                 fill: Union[int, Tuple[int, ...]] = 0, padding_mode: str = 'constant') -> None:
+    def __init__(self, padding: int | tuple[int, int] | tuple[int, int, int, int],
+                 fill: int | tuple[int, ...] = 0, padding_mode: str = 'constant') -> None:
         self.padding = padding
         self.fill = fill
         self.padding_mode = padding_mode

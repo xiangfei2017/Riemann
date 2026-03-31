@@ -60,7 +60,7 @@ standard optimization steps and closure-based steps (required for LBFGS).
 """
 import numpy as np
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Union, Callable, Iterable
+from typing import Any, Callable, Iterable
 from ..tensordef import *
 from ..nn import *
 from ..cuda import cp
@@ -80,7 +80,7 @@ class Optimizer:
         defaults: 优化器的默认超参数
         state: 优化器的状态字典，存储每个参数的历史信息（如动量项等）
     """
-    def __init__(self, params: Union[Iterable[Union[TN, Parameter]], List[Dict[str, Any]]], defaults: Dict[str, Any]) -> None:
+    def __init__(self, params: Iterable[TN | Parameter] | list[dict[str, Any]], defaults: dict[str, Any]) -> None:
         """
         初始化优化器
         
@@ -91,10 +91,10 @@ class Optimizer:
         异常:
             ValueError: 当参数列表为空时抛出
         """
-        self.param_groups: List[Dict[str, Any]] = []
+        self.param_groups: list[dict[str, Any]] = []
         self.defaults = defaults
         # 使用defaultdict简化状态管理，避免检查不存在的键
-        self.state: defaultdict[Any, Dict[str, Any]] = defaultdict(dict)
+        self.state: defaultdict[Any, dict[str, Any]] = defaultdict(dict)
         
         # 检查空参数列表
         if isinstance(params, (list, tuple)) and len(params) == 0:
@@ -120,7 +120,7 @@ class Optimizer:
             if hasattr(first_param, 'device') and first_param.device.type == 'cuda':
                 self.arrlib = cp
 
-    def add_param_group(self, param_group: Dict[str, Any]) -> None:
+    def add_param_group(self, param_group: dict[str, Any]) -> None:
         """
         向优化器添加一个参数组
         
@@ -182,7 +182,7 @@ class Optimizer:
                     else:
                         p.grad.zero_()
     
-    def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
+    def step(self, closure: Callable[[], float] | None = None) -> float | None:
         """
         执行单个优化步骤
         
@@ -197,7 +197,7 @@ class Optimizer:
         """
         raise NotImplementedError("Subclasses must implement step method")
 
-    def state_dict(self) -> Dict[str, Any]:
+    def state_dict(self) -> dict[str, Any]:
         """
         返回优化器状态的字典，可用于保存和恢复优化器状态
         
@@ -229,7 +229,7 @@ class Optimizer:
             'param_groups': param_groups
         }
 
-    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         """
         从state_dict中加载优化器状态
         
@@ -393,7 +393,7 @@ class SGD(Optimizer):
         - 需要逃离局部最优解的复杂优化问题
         - 大多数深度学习任务的默认选择
     """
-    def __init__(self, params: Union[Iterable[Union[TN, Parameter]], List[Dict[str, Any]]], 
+    def __init__(self, params: Iterable[TN | Parameter] | list[dict[str, Any]],
                  lr: float = 0.01, momentum: float = 0.0, weight_decay: float = 0.0,
                  dampening: float = 0.0, nesterov: bool = False) -> None:
         """
@@ -426,7 +426,7 @@ class SGD(Optimizer):
                        dampening=dampening, nesterov=nesterov)
         super().__init__(params, defaults)
 
-    def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
+    def step(self, closure: Callable[[], float] | None = None) -> float | None:
         """
         执行单个优化步骤（参数更新）
         

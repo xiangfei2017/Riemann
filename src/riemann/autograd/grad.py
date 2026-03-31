@@ -43,7 +43,7 @@ Core components:
 All functions support Riemann Tensor (TN) type and automatic differentiation.
 """
 
-from typing import List, Tuple, Callable, Any
+from typing import Callable, Any
 import numpy as np
 from ..tensordef import *
 
@@ -96,12 +96,12 @@ def _save_grad_and_check_if_grads_are_completed(grad_completed_var, input_tensor
 
     return all(grad is not None for grad in grad_list)
 
-def grad(outputs:TN, 
-         inputs:TN|List[TN]|Tuple[TN], 
+def grad(outputs:TN,
+         inputs:TN|list[TN]|tuple[TN],
          retain_graph: bool = False,
          grad_outputs:TN|None=None,
          create_graph : bool = False,
-         allow_unused: bool = False)->Tuple[TN,...]:
+         allow_unused: bool = False)->tuple[TN,...]:
     """
     计算给定输出相对于输入的梯度，直接返回梯度张量而不修改原始张量。
     
@@ -127,7 +127,7 @@ def grad(outputs:TN,
     
     参数：
         outputs (TN): 需要计算梯度的输出张量
-        inputs (TN | List[TN] | Tuple[TN]): 需要计算梯度的输入张量或张量列表
+        inputs (TN | list[TN] | tuple[TN]): 需要计算梯度的输入张量或张量列表
         grad_outputs (TN | None, 可选): 输出张量的梯度
             - None: 默认值，要求输出张量是标量，梯度将设置为1.0
             - TN: 用户提供的梯度张量，必须与输出张量形状相同
@@ -140,9 +140,9 @@ def grad(outputs:TN,
         allow_unused (bool, 可选): 严格模式控制
             - False: 默认值，当输出与输入无关时抛出RuntimeError
             - True: 当输出与输入无关时返回None作为梯度
-            
+
     返回：
-        Tuple[TN, ...]: 与输入张量列表对应的梯度张量元组，顺序与inputs相同
+        tuple[TN, ...]: 与输入张量列表对应的梯度张量元组，顺序与inputs相同
         - 对于与输出相关的输入，返回相应的梯度张量
         - 对于与输出无关的输入，在非严格模式下返回None
     
@@ -271,10 +271,10 @@ def grad(outputs:TN,
     return tuple(grad_list)  # type: ignore
 #end of grad
 
-def higher_order_grad(outputs: TN, 
-                     inputs: TN | List[TN] | Tuple[TN], 
-                     n: int, 
-                     create_graph: bool = False) -> Tuple[TN, ...]:
+def higher_order_grad(outputs: TN,
+                     inputs: TN | list[TN] | tuple[TN],
+                     n: int,
+                     create_graph: bool = False) -> tuple[TN, ...]:
     """
     计算标量张量输出相对于inputs中每个张量的n阶导数。
     
@@ -293,12 +293,12 @@ def higher_order_grad(outputs: TN,
         - 高阶导数计算可能会消耗大量内存，特别是当create_graph=True时
     参数：
         outputs (TN): 需要计算梯度的标量输出张量
-        inputs (TN | List[TN] | Tuple[TN]): 需要计算高阶导数的输入张量或张量列表
+        inputs (TN | list[TN] | tuple[TN]): 需要计算高阶导数的输入张量或张量列表
         n (int): 导数的阶数，必须大于或等于0
         create_graph (bool, 可选): 是否在梯度计算过程中创建计算图，默认为False
-         
+
     返回：
-        Tuple[TN, ...]: 与inputs对应的高阶导数张量元组
+        tuple[TN, ...]: 与inputs对应的高阶导数张量元组
          
     异常：
         ValueError: 当参数不符合要求时抛出
@@ -398,7 +398,7 @@ def _sum_all(tensors):
     return result
 
 
-def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-6, atol: float = 1e-5, rtol: float = 1e-3, raise_exception: bool = True, check_sparse_nnz: bool = False, fast_mode: bool = False) -> bool:
+def gradcheck(func: Callable[..., Any], inputs: tuple[TN, ...], eps: float = 1e-6, atol: float = 1e-5, rtol: float = 1e-3, raise_exception: bool = True, check_sparse_nnz: bool = False, fast_mode: bool = False) -> bool:
     """
     验证给定函数的梯度计算是否正确，通过比较数值梯度和解析梯度。
 
@@ -408,7 +408,7 @@ def gradcheck(func: Callable[..., Any], inputs: Tuple[TN, ...], eps: float = 1e-
     参数：
         func (Callable[..., Any]): 需要验证梯度的函数，该函数应接受一个或多个TN张量作为输入，
                                   并返回一个或多个TN张量作为输出。
-        inputs (Tuple[TN, ...]): 用于测试的输入张量元组，所有张量必须设置requires_grad=True，
+        inputs (tuple[TN, ...]): 用于测试的输入张量元组，所有张量必须设置requires_grad=True，
                                且必须是双精度（float64）类型。
         eps (float, 可选): 用于计算数值梯度的微小扰动，默认为1e-6。
         atol (float, 可选): 绝对误差容限，默认为1e-5。

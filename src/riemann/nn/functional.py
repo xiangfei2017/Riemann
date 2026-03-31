@@ -85,11 +85,10 @@ All functions in this module are designed to work with the Riemann Tensor (TN) t
 support automatic differentiation through properly implemented backward functions.
 """
 
-import numpy as np
 from typing import Optional
 from ..tensordef import *
 
-def linear(input: TN, weight: TN, bias: Optional[TN] = None) -> TN:
+def linear(input: TN, weight: TN, bias: TN | None = None) -> TN:
     """
     应用线性变换：y = xA^T + b
     
@@ -419,7 +418,7 @@ def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
     )
 
 # 在non-reduction模式下保留所有样本位置，只是将被忽略样本的损失值设为0
-def nll_loss(input: TN, target: TN, weight: Optional[TN] = None,
+def nll_loss(input: TN, target: TN, weight: TN | None = None,
              ignore_index: int = -100, reduction: str = 'mean') -> TN:
     if not isinstance(input, TN):
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
@@ -642,7 +641,7 @@ def smooth_l1_loss(input: TN, target: TN, size_average=None, reduce=None, reduct
     else:
         raise ValueError(f"Invalid reduction: {reduction}")
 
-def cross_entropy(input: TN, target: TN, weight: Optional[TN] = None,
+def cross_entropy(input: TN, target: TN, weight: TN | None = None,
                  size_average=None, ignore_index: int = -100,
                  reduce=None, reduction: str = 'mean',
                  label_smoothing: float = 0.0) -> TN:
@@ -730,10 +729,10 @@ def cross_entropy(input: TN, target: TN, weight: Optional[TN] = None,
     else:
         raise ValueError(f"Invalid reduction: {reduction}")
 
-def binary_cross_entropy_with_logits(input: TN, target: TN, weight: Optional[TN] = None,
+def binary_cross_entropy_with_logits(input: TN, target: TN, weight: TN | None = None,
                                     size_average=None, reduce=None,
                                     reduction: str = 'mean',
-                                    pos_weight: Optional[TN] = None) -> TN:
+                                    pos_weight: TN | None = None) -> TN:
     """
     计算带logits的二分类交叉熵损失
     接口与torch.nn.functional.binary_cross_entropy_with_logits一致
@@ -1334,7 +1333,7 @@ def unfold3d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
     
     return unfolded_blocks, D_out, H_out, W_out
 
-def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
+def conv1d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
     r"""对输入张量应用1D卷积。
 
     参数:
@@ -1466,7 +1465,7 @@ def conv1d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
     
     return output
 
-def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
+def conv2d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
     r"""对输入张量应用2D卷积。
 
     参数:
@@ -1579,7 +1578,7 @@ def conv2d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0
     
     return output
 
-def conv3d(input: TN, weight: TN, bias: Optional[TN] = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
+def conv3d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, dilation=1, groups=1) -> TN:
     r"""对输入张量应用3D卷积。
 
     参数:
@@ -2424,8 +2423,8 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
 
     return output
 
-def batch_norm(input: TN, running_mean: Optional[TN] = None, running_var: Optional[TN] = None, 
-              weight: Optional[TN] = None, bias: Optional[TN] = None, training: bool = False, 
+def batch_norm(input: TN, running_mean: TN | None = None, running_var: TN | None = None,
+              weight: TN | None = None, bias: TN | None = None, training: bool = False,
               momentum: float = 0.1, eps: float = 1e-5) -> TN:
     """
     对输入张量应用批量归一化。
@@ -2617,8 +2616,8 @@ def layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-05):
 def embedding(
     input: TN,
     weight: TN,
-    padding_idx: Optional[int] = None,
-    max_norm: Optional[float] = None,
+    padding_idx: int | None = None,
+    max_norm: float | None = None,
     norm_type: float = 2.0,
     scale_grad_by_freq: bool = False,
     sparse: bool = False,
@@ -2777,8 +2776,8 @@ def embedding(
 def embedding2(
     input: TN,
     weight: TN,
-    padding_idx: Optional[int] = None,
-    max_norm: Optional[float] = None,
+    padding_idx: int | None = None,
+    max_norm: float | None = None,
     norm_type: float = 2,
     scale_grad_by_freq: bool = False,
     sparse: bool = False,
