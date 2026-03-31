@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "riemann"
-version = "0.5.0"
+version = "0.5.1"
 description = "A framework for tensor computation, automatic differentiation, and neural network development with PyTorch-compatible APIs."
 readme = "README.md"
 authors = [
@@ -16,11 +16,11 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Software Development :: Libraries",
@@ -29,7 +29,7 @@ classifiers = [
 keywords = ["automatic differentiation", "deep learning", "gradient", "tensor", 
             "machine learning", "neural networks", "pytorch-compatible", 
             "scientific computing", "optimization"]
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.20.0",
     "pillow>=8.0.0",
