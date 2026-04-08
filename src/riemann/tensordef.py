@@ -3724,7 +3724,7 @@ class TN:
         
         hook_manager = BackwardHookManager()
         
-        def propagate_grad_to_sources(item: TN, vars_received_grad: set) -> set:
+        def propagate_grad_to_sources(item: TN, vars_received_grad: set, grad_value=None) -> set:
             """
             反向传播核心函数，负责将当前节点的梯度传播到其所有来源节点
             更新并返回已收集完梯度、可入栈的源变量集合
@@ -3732,6 +3732,7 @@ class TN:
             参数：
                 item: 当前节点张量
                 vars_received_grad: 已收集完梯度、可入栈的源变量集合
+                grad_value: 可选的梯度值（用于当item.grad_value为None时使用grad_clone的情况）
             返回：
                 vars_received_grad: 已收集完梯度、可入栈的源变量集合
             """
@@ -3742,7 +3743,7 @@ class TN:
             
             fromvars = item.fromvars
             gradfuncs = item.gradfuncs
-
+            
             for i in range(len(fromvars)):
                 var: TN = fromvars[i]
                 fn = gradfuncs[i]
@@ -3754,7 +3755,7 @@ class TN:
                     
                     if var.rcv_grad_count == 0:
                         vars_received_grad.add(var)
-            
+                      
             return vars_received_grad
         # end of propagate_grad_to_sources
 
@@ -3770,6 +3771,14 @@ class TN:
                 #     warnings.warn(f'item poped from stack has no grad_value, skip backward')
                 #     continue
 
+                # 在反向传播前统一检查和处理两种钩子，process_module_hooks内部会：
+                # 1. 检查反向预处理钩子和反向钩子的就绪条件
+                # 2. 调用已就绪的钩子
+                # 3. 返回可反向传播的节点集合
+                items_for_propagate = hook_manager.process_module_hooks(item)
+                             
+                # 在调用钩子之后保存梯度，确保钩子可以访问所有输入的梯度grad_value
+                # 因为叶子节点梯度保存后，grad_value为置None空
                 if item.is_leaf:
                     item._save_grad(create_graph)
                     item.grad_value = None
@@ -3777,41 +3786,20 @@ class TN:
 
                 if item.retains_grad:
                     item._save_grad(create_graph)
-                            
-                # 缓存钩子模块的输出梯度，获取可反向传播节点集合
-                # items_for_propagate已经包含了所有需要传播梯度的节点（包括当前节点或模块的所有输出）
-                items_for_propagate, pre_hook_modules, backward_hook_modules = (
-                    hook_manager.wait_for_backward_pre_hook_ready(item)
-                )
                 
                 # 如果没有可传播节点（模块输出梯度未收集齐），跳过本次循环
                 if not items_for_propagate:
                     continue
                 
-                # 反向传播前：按模块调用预处理钩子（修改模块输出的grad_value）
-                if pre_hook_modules:
-                    hook_manager.process_backward_pre_hooks(pre_hook_modules)
-                
-                # 反向传播前：调用反向钩子（模块没有输入需要梯度时）
-                if backward_hook_modules:
-                    hook_manager.process_backward_hooks(backward_hook_modules)
-                
-                # 反向传播：将梯度传播到所有来源节点
+                # 将梯度传播到所有来源节点
                 vars_received_grad = set()
                 for current_item in items_for_propagate:
-                    propagate_grad_to_sources(current_item,vars_received_grad)
+                    propagate_grad_to_sources(current_item, vars_received_grad)
                     # 传播完梯度的节点，使命完成，清空grad_value节省内存
                     current_item.grad_value = None
                 
-                # 反向传播后：缓存并等待模块输入梯度收集齐全，获取可入栈节点列表和反向钩子模块集合
-                vars_to_stack, backward_hook_modules = hook_manager.wait_for_backward_hook_ready(vars_received_grad)
-                
-                # 反向传播后：调用反向钩子（模块输入梯度收集齐全）
-                if backward_hook_modules:
-                    hook_manager.process_backward_hooks(backward_hook_modules)
-                
-                # 待入栈节点入栈（vars_to_stack已经包含了所有可入栈的节点）
-                stack.extend(vars_to_stack)
+                # 将收到梯度的节点入栈（这些节点将在下次循环中处理）
+                stack.extend(vars_received_grad)
             # end of while stack
 
         # 清理钩子模块的缓存
@@ -3878,354 +3866,268 @@ class BackwardHookManager:
     """
     反向传播钩子管理器
 
-    统一管理模块的反向传播预处理钩子和反向钩子处理逻辑，实现：
-    1. 模块输出梯度的副本缓存
-    2. 反向预处理钩子的调用时机控制（模块输出梯度收集完成后调用）
-    3. 反向钩子的调用时机控制（模块输入梯度都收集完成后调用）
-    4. 缓存数据的集中清理
-
-    设计原则：
-    - 模块输出的梯度都收集完成后，才能调用反向预处理钩子
-    - 模块输入的梯度都收集完成后，才能调用反向钩子
-    - 支持多输入多输出、模块嵌套、多模块共享输入等场景
-
-    缓存结构优化：
-    - 使用Module._backward_hook_cache统一存储所有反向钩子所需信息
-    - 结构：{输出张量ID: {'inputs': ..., 'tensor': ..., 'grad_clone': ..., 'multi_group': ...}}
+    统一管理模块的反向预处理钩子(full_backward_pre_hook)和反向钩子(full_backward_hook)。
+    
+    核心设计原则：
+    1. 反向预处理钩子：模块所有输出梯度收集完成后调用，可修改输出梯度
+    2. 反向钩子：模块所有输入梯度收集完成后调用，可修改输入梯度
+    3. 统一在节点出栈时处理钩子，确保梯度已就绪
+    4. 节点不可能同时是反向预处理模块的输出和反向钩子模块的输入（互斥性）
+    
+    数据结构：
+    - _backward_pre_hooks_processed: 已处理的反向预处理钩子模块
+    - _backward_hooks_processed: 已处理的反向钩子模块
+    - _module_output_ids_to_cleanup: 需要清理的模块输出ID集合
+    - _popped_tensors: 已出栈的节点ID集合（用于判断梯度就绪）
     """
     
     def __init__(self):
         self._backward_pre_hooks_processed: set = set()
         self._backward_hooks_processed: set = set()
-        # 记录每个模块需要清理的output_id，避免在cleanup中遍历计算图
-        # 在 wait_for_backward_pre_hook_ready 中被填充，包含了所有需要清理的模块和对应的 output_id
-        self._module_output_ids_to_cleanup: dict = {}  # {module: set(output_ids)}
+        # {module: set(output_ids)} - 用于cleanup时快速清理缓存
+        self._module_output_ids_to_cleanup: dict = {}
+        # {tensor_id} - 已出栈节点，用于判断输入或输出梯度是否就绪
+        self._popped_tensors: set = set()
     
-    def wait_for_backward_pre_hook_ready(self, tensor: TN) -> tuple[set, set, set]:
+    def wait_for_backward_pre_hook_ready(self, tensor: TN) -> tuple[set, set]:
         """
-        等待反向预处理钩子就绪，返回可传播节点和钩子模块集合
-
-        当张量是模块输出时，检查其梯度是否已收集完成，并确定哪些节点可以继续反向传播。
-        此函数在backward里节点出栈时统一调用。
-
-        设计要点（与反向钩子的 wait_for_backward_hook_ready 结构保持一致）：
-            - 输入tensor为刚出栈的节点
-            - 通过 _check_backward_pre_hooks_ready 检查模块输出梯度是否收集完成（就绪条件）
-            - 只有模块完全准备好调用反向预处理钩子时，才将其加入 pre_hook_modules
-            - 返回的items_for_propagate集合包含：
-                - 如tensor不是注册钩子模块的输出节点，tensor放入items_for_propagate
-                - 如tensor是注册钩子模块的输出节点，且该模块输出梯度已收集齐时，将该模块的所有输出节点放入items_for_propagate
-                - 如tensor是注册钩子模块的输出节点，且该模块的输出梯度未收集齐全时，items_for_propagate为空
-
-        检查流程（与反向钩子流程一致）：
-            - _check_backward_pre_hooks_ready: 检查就绪条件（梯度收集完成）
-
-        缓存使用：
-            - 使用module._backward_hook_cache[output_id]获取缓存条目
-            - 只有注册了反向钩子时才将tensor.grad_value.clone()存入cache_entry['grad_clone']
-              （反向预处理钩子直接从grad_value获取梯度，不需要clone副本）
-            - 通过cache_entry['multi_group']获取多输出组信息
-
+        检查反向预处理钩子是否就绪，返回可传播节点和就绪模块集合。
+        
+        在节点出栈时调用，完成以下任务：
+        1. 缓存输出梯度（用于反向钩子和预处理钩子）
+        2. 检查模块输出梯度是否收集完成
+        3. 确定可反向传播的节点集合
+        
+        关键逻辑：
+        - 非模块输出节点：直接返回{tensor}
+        - 模块输出节点：缓存梯度，检查是否就绪，返回模块所有输出节点
+        
+        注意：节点出栈状态由调用方（process_module_hooks）记录，此函数不重复记录。
+        
         参数:
-            tensor: 当前处理的张量（已收集完梯度，即grad_value不为None）
-
+            tensor: 刚出栈的节点（grad_value已就绪，且已在_popped_tensors中）
+            
         返回:
-            tuple[set, set, set]: (items_for_propagate, pre_hook_modules, backward_hook_modules)
-                - items_for_propagate: 可反向传播节点集合，根据设计要点确定
-                - pre_hook_modules: 已就绪的反向预处理钩子模块集合
-                - backward_hook_modules: 已就绪的反向钩子模块集合
+            (items_for_propagate, pre_hook_modules)
+            - items_for_propagate: 可反向传播节点集合
+            - pre_hook_modules: 已就绪的反向预处理钩子模块集合
         """
         pre_hook_modules = set()
-        backward_hook_modules = set()
         
-        # 快速退出：如果tensor不是任何模块的输出节点，直接返回
+        # 非模块输出节点，直接返回
         if not tensor._output_of:
-            return {tensor}, pre_hook_modules, backward_hook_modules
+            return {tensor}, pre_hook_modules
         
         for module in tensor._output_of:
-            # 当前tensor是模块的输出节点
-            # 优化：先检查cache，避免对没有注册钩子的模块进行不必要的检查
             if id(tensor) not in module._backward_hook_cache:
                 continue
             
-            # 快速退出：如果模块没有注册任何钩子，跳过
-            if not module._backward_pre_hooks and not module._backward_hooks:
-                continue
-
-            # 优化：使用统一的_backward_hook_cache字典替代独立的4个字典
             output_id = id(tensor)
             cache_entry = module._backward_hook_cache[output_id]
-
-            # 只有注册了反向钩子时才缓存输出梯度的clone副本
-            # 反向预处理钩子直接从grad_value获取梯度，不需要clone副本
-            if module._backward_hooks:
-                if tensor.grad_value is not None:
-                    cache_entry['grad_clone'] = tensor.grad_value.clone()
-
-                # 检查模块的其他输出是否也已收集完梯度
-                # 从multi_group中查找当前tensor所属的多输出组
+            
+            # 缓存输出梯度
+            if tensor.grad_value is not None:
+                cache_entry['grad_clone'] = tensor.grad_value.clone()
+                
+                # 多输出模块：缓存同组其他输出的梯度
                 multi_group = cache_entry.get('multi_group')
                 if multi_group is not None:
-                    # 找到多输出组，检查组内其他输出的梯度
                     for other_output in multi_group:
-                        other_output_id = id(other_output)
-                        if other_output_id == output_id:
+                        if other_output is tensor:
                             continue
                         if other_output.grad_value is not None:
-                            other_cache = module._backward_hook_cache.get(other_output_id)
-                            if other_cache is not None:
+                            other_cache = module._backward_hook_cache.get(id(other_output))
+                            if other_cache is not None and other_cache.get('grad_clone') is None:
                                 other_cache['grad_clone'] = other_output.grad_value.clone()
-
-            # 记录该模块需要清理的output_id
+            
+            # 记录需要清理的output_id
             if module not in self._module_output_ids_to_cleanup:
                 self._module_output_ids_to_cleanup[module] = set()
             self._module_output_ids_to_cleanup[module].add(output_id)
-
-            # 检查反向预处理钩子是否就绪（就绪条件检查）
-            if module._backward_pre_hooks:
-                if self._check_backward_pre_hooks_ready(module):
-                    pre_hook_modules.add(module)
             
-            # 检查反向钩子是否就绪
-            if module._backward_hooks:
-                if self._check_backward_hooks_ready(module):
-                    backward_hook_modules.add(module)
+            # 检查反向预处理钩子是否就绪
+            # 前置检查：module._backward_pre_hooks 非空，避免不必要的 _check_backward_pre_hooks_ready 调用
+            if module._backward_pre_hooks and self._check_backward_pre_hooks_ready(module):
+                pre_hook_modules.add(module)
         
-        # 合并预处理钩子模块和反向钩子模块，两者都需要等待所有输出梯度收集齐
-        all_hook_modules = pre_hook_modules | backward_hook_modules
-        items_for_propagate = self._get_items_for_propagate(tensor, all_hook_modules)
+        # 确定可传播节点
+        items_for_propagate = self._get_items_for_propagate(tensor, pre_hook_modules)
         
-        # 返回集合而不是列表，方便直接使用
-        return set(items_for_propagate), pre_hook_modules, backward_hook_modules
+        return set(items_for_propagate), pre_hook_modules
     
     def _get_items_for_propagate(self, tensor: TN, hook_modules: set) -> list:
         """
-        获取可反向传播的节点列表
-
-        根据当前节点和涉及的钩子模块（预处理钩子或反向钩子），确定哪些节点可以继续反向传播。
-        注意：本函数会检查多输出模块的所有输出是否都已收集完梯度（通过检查 rcv_grad_count）。
-
-        设计要点：
-            - 如tensor不是注册钩子模块的输出节点，tensor放入items_for_propagate
-            - 如tensor是注册钩子模块的输出节点，且该模块输出梯度已收集齐时，将该模块的所有输出节点放入items_for_propagate
-            - 如tensor是注册钩子模块的输出节点，且该模块的输出梯度未收集齐全时，items_for_propagate为空
-            - 如tensor是模块输入但不是输出（如参数节点），返回空列表
-
-        缓存使用：
-            - 使用module._backward_hook_cache检查tensor是否是模块输出节点
-            - 通过cache_entry['multi_group']获取多输出组信息
-            - 对于多输出模块，需要检查所有输出的梯度是否都已收集
-
-        参数:
-            tensor: 当前处理的张量节点
-            hook_modules: 涉及钩子（预处理钩子或反向钩子）的模块集合
-
-        返回:
-            list: 可反向传播的节点列表
-                - 如果tensor不涉及钩子，返回[tensor]
-                - 如果tensor是模块输入但不是输出（如参数节点），返回[]
-                - 如果tensor涉及钩子但梯度未收集齐，返回[]
-                - 如果tensor是钩子模块的输出节点且梯度已收集齐，返回模块所有输出列表
+        获取可反向传播的节点列表。
+        
+        核心逻辑：
+        1. 非注册钩子模块输入输出的节点（如参数）-> 返回 []
+        2. tensor 是已就绪模块的输出 -> 返回该模块的所有输出
+        3. tensor 是未就绪的反向预处理钩子模块的输出 -> 返回 []（等待）
+           等待条件：多输出模块中，组内有输出未出栈（id(out) not in _popped_tensors）
+        4. 其他情况 -> 返回 [tensor]
+        
+        注意：hook_modules 已由 wait_for_backward_pre_hook_ready 通过 _check_backward_pre_hooks_ready
+        检查过就绪状态（基于 rcv_grad_count），此处直接使用，无需重复检查。
+        但第3点中的等待检查基于 _popped_tensors，与就绪检查不同，用于确保所有输出都已出栈。
         """
-        if not hook_modules and tensor._output_of:
-            # 检查tensor是否是任何模块的输出节点（包括没有注册钩子的模块）
-            # 如果是多输出模块的一部分，需要检查所有输出的梯度是否都已收集
+        # 非注册钩子模块输入输出的节点（如参数）不传播
+        if tensor._module_input_of and not tensor._output_of:
+            return []
+        
+        # 有就绪模块：返回该模块的所有输出
+        if hook_modules:
+            for module in hook_modules:
+                if id(tensor) not in module._backward_hook_cache:
+                    continue
+                cache_entry = module._backward_hook_cache[id(tensor)]
+                multi_outputs = cache_entry.get('multi_group')
+                if multi_outputs:
+                    return [out for out in multi_outputs if id(out) in self._popped_tensors]
+                return [tensor]
+        
+        # 无就绪模块：检查是否是未就绪的反向预处理钩子模块的输出
+        # 注意：这里只检查是否有注册钩子，不检查就绪状态（已在 wait_for_backward_pre_hook_ready 中检查）
+        if tensor._output_of:
             for module in tensor._output_of:
                 if id(tensor) not in module._backward_hook_cache:
                     continue
-                cache_entry = module._backward_hook_cache.get(id(tensor))
-                multi_outputs = cache_entry.get('multi_group') if cache_entry else None
-                if multi_outputs is None:
-                    continue
-                # 当前tensor是多输出模块的一部分，检查所有需要梯度的输出的梯度
-                for out in multi_outputs:
-                    if out.requires_grad and out.rcv_grad_count > 0:
-                        # 多输出梯度未收集齐，返回空列表
-                        return []
-                # 所有需要梯度的输出梯度已收集齐
-                # 只返回grad_value不为None的输出（不参与前向计算的模块输出节点永远不会收到梯度，需要剔除）
-                return [out for out in multi_outputs if out.grad_value is not None]
-            # 不是多输出模块，返回[tensor]
-            return [tensor]
-
-        # 找到当前tensor所属的钩子模块（如果有）
-        tensor_module = None
-        for module in hook_modules:
-            if id(tensor) in module._backward_hook_cache:
-                tensor_module = module
-                break
-
-        # 如tensor不是注册钩子模块的输出节点，tensor放入items_for_propagate
-        if tensor_module is None:
-            # 当前tensor不是任何钩子模块的输出节点
-            # 检查是否是模块输入节点但不是输出节点
-            if tensor._module_input_of and not tensor._output_of:
-                return []
-            return [tensor]
-
-        # 当前tensor是某个钩子模块的输出节点
-        module = tensor_module
-
-        # 从_backward_hook_cache中获取multi_group信息
-        cache_entry = module._backward_hook_cache.get(id(tensor))
-        multi_outputs = cache_entry.get('multi_group') if cache_entry else None
-
-        if multi_outputs is not None:
-            # 多输出模块：返回所有grad_value不为None的输出
-            return [out for out in multi_outputs if out.grad_value is not None]
-        else:
-            # 单输出模块或多次前向传播的情况，返回[tensor]
-            return [tensor]
+                # 是反向预处理钩子模块的输出但未就绪 -> 等待
+                if module._backward_pre_hooks:
+                    cache_entry = module._backward_hook_cache[id(tensor)]
+                    multi_outputs = cache_entry.get('multi_group')
+                    if multi_outputs:
+                        # 多输出模块：检查是否所有输出都已出栈
+                        # 使用 _popped_tensors 而非 rcv_grad_count，因为 rcv_grad_count 可能在传播后被重置
+                        for out in multi_outputs:
+                            if out.requires_grad and id(out) not in self._popped_tensors:
+                                return []  # 未就绪，等待
+                        # 已就绪但未在hook_modules中（可能已通过其他输出添加）
+                        return [out for out in multi_outputs if id(out) in self._popped_tensors]
+                    # 单输出模块未就绪
+                    return []
+        
+        return [tensor]
     
     def _should_call_backward_pre_hooks(self, module) -> bool:
         """
-        检查是否应该调用反向预处理钩子（准入条件检查）
+        检查是否应该调用反向预处理钩子（准入条件）。
         
-        本函数检查调用反向预处理钩子的"准入条件"，即是否有意义调用钩子。
-        如果返回True，表示应该调用钩子；但此时可能还未满足"就绪条件"（梯度收集完成）。
-        梯度收集完成的检查在 _check_backward_pre_hooks_ready 中进行。
+        准入条件（与PyTorch一致）：
+        - 至少有一个输入需要梯度，或者模块有参数
+        - 如果都没有，调用钩子无意义（没有梯度可修改）
         
-        准入条件（与PyTorch行为一致）：
-        1. 模块注册了反向预处理钩子
-        2. 至少有一个输入需要梯度，或者模块有参数
-           - 如果没有输入需要梯度且模块没有参数，不调用钩子
-           - 因为只有存在输入或参数需要梯度时，反向预处理钩子才能有意义，
-             否则没有梯度可以修改
-        
-        注意：
-            - 本函数只检查准入条件，不检查梯度收集完成
-            - 与反向钩子的 _check_backward_hooks_ready 中的准入条件检查保持一致
-            
-        缓存使用：
-            - 使用module._backward_hook_cache遍历所有输出条目
-            - 通过cache_entry['inputs']获取前向输入，检查是否需要梯度
+        注意：这是"准入条件"，不是"就绪条件"。就绪条件（梯度收集完成）
+        在 _check_backward_pre_hooks_ready 中检查。
         
         参数:
             module: 要检查的模块
-        
+            
         返回:
-            bool: 如果满足准入条件返回True（应该调用钩子），否则返回False
+            bool: 是否满足准入条件
         """
         if not module._backward_pre_hooks:
             return False
         
         # 检查是否至少有一个输入需要梯度
-        # 快速检查：如果没有输入需要梯度，直接检查是否有参数需要梯度
-        # 这样可以避免遍历所有输入，提高效率
-        has_input_requires_grad = False
-        for output_id, cache_entry in module._backward_hook_cache.items():
-            forward_inputs = cache_entry.get('inputs', ())
-            for inp in forward_inputs:
+        for cache_entry in module._backward_hook_cache.values():
+            for inp in cache_entry.get('inputs', ()):
                 if isinstance(inp, TN) and inp.requires_grad:
-                    has_input_requires_grad = True
-                    break
-            if has_input_requires_grad:
-                break
+                    return True
         
-        # 如果有输入需要梯度，直接返回True，不需要检查参数
-        if has_input_requires_grad:
-            return True
-        
-        # 如果没有输入需要梯度，检查是否有参数需要梯度
+        # 没有输入需要梯度，检查是否有参数需要梯度
         return any(param.requires_grad for param in module.parameters())
     
-    def _check_backward_pre_hooks_ready(self, module) -> tuple:
+    def _check_backward_pre_hooks_ready(self, module) -> bool:
         """
-        检查反向预处理钩子是否就绪（就绪条件检查）
-        
-        本函数检查调用反向预处理钩子的"就绪条件"，即模块输出梯度是否收集完成。
-        注意：本函数不检查准入条件（是否应该调用钩子），
-        准入条件检查在 _should_call_backward_pre_hooks 中进行。
+        检查反向预处理钩子是否就绪（就绪条件）。
         
         就绪条件：
-        1. 所有需要梯度的模块输出节点的rcv_grad_count为0（梯度收集完成）
+        - 单输出模块：该输出节点的 rcv_grad_count == 0（所有上游梯度已收集完成）
+        - 多输出模块：该组内所有需要梯度的输出节点的 rcv_grad_count == 0
         
-        为什么使用rcv_grad_count：
-            - rcv_grad_count表示该节点还需要接收多少个梯度
-            - 当rcv_grad_count为0时，表示所有上游梯度都已收集完成
-            - 这比检查grad_value是否为None更可靠，因为grad_value可能在梯度收集完成后被清空
+        关键设计点：
+        1. 使用 rcv_grad_count 而非 grad_value 检测就绪状态
+           - rcv_grad_count == 0 表示所有上游梯度已收集完成
+           - grad_value 可能在收集完成后被清空，不可靠
+           - 对于不参与损失计算的输出（grad_value=None），rcv_grad_count 仍为 0
         
-        注意：
-            - 本函数只检查就绪条件，不检查准入条件
-            - 与反向钩子的 _check_backward_hooks_ready 中的就绪条件检查保持一致
-            - 在 wait_for_backward_pre_hook_ready 和 process_backward_pre_hooks 中调用
-            
-        缓存使用：
-            - 使用module._backward_hook_cache遍历所有输出条目
-            - 通过cache_entry['multi_group']获取多输出组信息
+        2. 多输出模块的特殊处理
+           - 多输出必须作为一个组一起处理（与 PyTorch 行为一致）
+           - 必须等待组内所有需要梯度的输出都就绪才能调用钩子
+        
+        3. 部分输出不参与损失计算的场景
+           - 不参与损失计算的输出：rcv_grad_count == 0, grad_value == None
+           - 参与损失计算的输出：rcv_grad_count == 0, grad_value != None
+           - 只要组内所有需要梯度的输出 rcv_grad_count == 0，就认为组已就绪
+        
+        注意：这是"就绪条件"，不是"准入条件"。准入条件
+        在 _should_call_backward_pre_hooks 中检查。
+        
+        前置条件：调用此函数前已确认 module._backward_pre_hooks 非空
         
         参数:
             module: 要检查的模块
-        
+            
         返回:
-            bool: 如果至少有一个输出就绪返回True，否则返回False
+            bool: 是否存在至少一个就绪的输出（或输出组）
         """
-        # 快速退出：如果没有注册反向预处理钩子，直接返回False
-        if not module._backward_pre_hooks:
+        # 检查准入条件
+        # 注意：_should_call_backward_pre_hooks 内部会检查 module._backward_pre_hooks
+        if not self._should_call_backward_pre_hooks(module):
             return False
         
-        processed_multi_groups = set()  # 已处理的多输出组ID（用于去重）
+        processed_groups = set()
         
-        # 检查所有需要梯度的输出是否都已收集完梯度
+        # 遍历所有输出，找到任意一个就绪的输出（或输出组）即返回True
         for output_id, cache_entry in module._backward_hook_cache.items():
-            # 跳过已经处理过的输出
             if (id(module), output_id) in self._backward_pre_hooks_processed:
                 continue
-
+            
             output_tensor = cache_entry.get('tensor')
-            if output_tensor is None:
+            if output_tensor is None or not output_tensor.requires_grad:
                 continue
-
-            # 获取多输出组
+            
             multi_group = cache_entry.get('multi_group')
             
             if multi_group is None:
-                # 单输出模块：检查该输出是否就绪
-                if output_tensor.requires_grad:
-                    if output_tensor.rcv_grad_count > 0:
-                        # 该输出的梯度未收集完成，继续检查其他输出
-                        continue
-                # 找到就绪的输出，返回True
-                return True
-            else:
-                # 多输出模块：检查组是否已处理
-                group_id = id(multi_group)
-                if group_id in processed_multi_groups:
-                    continue
-                
-                # 检查该组所有输出是否就绪
-                group_ready = True
-                for out in multi_group:
-                    if out.requires_grad and out.rcv_grad_count > 0:
-                        group_ready = False
-                        break
-                
-                if group_ready:
-                    # 找到就绪的多输出组，返回True
+                # 单输出：检查该输出是否就绪
+                # rcv_grad_count == 0 表示所有上游梯度已收集完成
+                if output_tensor.rcv_grad_count == 0:
                     return True
-                processed_multi_groups.add(group_id)
+            else:
+                # 多输出：按组检查
+                group_id = id(multi_group)
+                if group_id in processed_groups:
+                    continue
+                processed_groups.add(group_id)
+                
+                # 检查组内所有需要梯度的输出是否就绪
+                # 注意：不参与损失计算的输出 rcv_grad_count 也为 0
+                group_ready = all(
+                    out.rcv_grad_count == 0 
+                    for out in multi_group 
+                    if out.requires_grad
+                )
+                if group_ready:
+                    return True
         
-        # 没有就绪的输出
         return False
     
     def _call_backward_pre_hooks_chain(self, module, grad_output_tuple: tuple) -> tuple:
         """
-        调用反向预处理钩子链，支持链式处理
+        调用反向预处理钩子链（支持链式处理）。
         
-        本函数是 _call_backward_pre_hooks 的辅助方法，用于统一处理反向预处理钩子的调用逻辑。
-        单输出和多输出模块都使用本函数来调用钩子链。
-        
-        链式处理逻辑：
-            - 按注册顺序依次调用每个钩子
-            - 如果钩子返回了值，该值会作为下一个钩子的输入
-            - 支持钩子返回元组或单个张量（会自动包装为元组）
+        链式处理：
+        - 按注册顺序依次调用每个钩子
+        - 钩子返回值作为下一个钩子的输入
+        - 支持返回元组或单个张量
         
         参数:
             module: 模块
-            grad_output_tuple: 输入梯度元组
+            grad_output_tuple: 输出梯度元组
             
         返回:
-            tuple: (处理后的梯度元组, 是否调用了钩子)
+            (处理后的梯度元组, 是否调用了钩子)
         """
         hooks_called = False
         current_grad_output = grad_output_tuple
@@ -4241,36 +4143,28 @@ class BackwardHookManager:
     
     def _call_backward_pre_hooks(self, module) -> bool:
         """
-        调用模块的反向预处理钩子
-        
-        本函数统一处理单输出和多输出模块的反向预处理钩子。
-        单输出可以看作是多输出的特例（只有一个输出）。
-        
-        与 _call_backward_hooks 对应，本函数处理反向预处理钩子，
-        而 _call_backward_hooks 处理反向钩子。
+        调用模块的反向预处理钩子。
         
         处理流程：
-        1. 从_backward_hook_cache获取所有未处理的输出
-        2. 按multi_group分组（单输出视为一组）
-        3. 对每组输出收集梯度，调用钩子链
+        1. 获取所有未处理的输出
+        2. 按 multi_group 分组（单输出视为一组）
+        3. 收集梯度，调用钩子链
         4. 根据钩子返回值更新输出梯度
-        5. 更新grad_clone供反向钩子使用
+        5. 更新 grad_clone 供反向钩子使用
         
         参数:
             module: 模块
             
         返回:
-            bool: 是否成功处理至少一个输出组
+            bool: 是否成功处理了至少一个输出组
         """
-        # 快速退出：如果没有注册反向预处理钩子，直接返回False
         if not module._backward_pre_hooks:
             return False
         
-        processed_multi_groups = set()  # 已处理的多输出组ID
-        processed_any = False  # 是否处理了至少一个输出组
+        processed_groups = set()
+        processed_any = False
         
         for output_id, cache_entry in module._backward_hook_cache.items():
-            # 跳过已经处理过的输出
             if (id(module), output_id) in self._backward_pre_hooks_processed:
                 continue
             
@@ -4278,32 +4172,55 @@ class BackwardHookManager:
             if output_tensor is None:
                 continue
             
-            # 获取多输出组
             multi_group = cache_entry.get('multi_group')
             
             if multi_group is None:
-                # 单输出：构建只有一个元素的元组
+                # 单输出：检查是否已出栈
+                if id(output_tensor) not in self._popped_tensors:
+                    continue
                 outputs_to_process = (output_tensor,)
             else:
                 # 多输出：检查组是否已处理
                 group_id = id(multi_group)
-                if group_id in processed_multi_groups:
+                if group_id in processed_groups:
                     continue
+                
+                # 检查组内所有需要梯度且会参与反向传播的输出是否都已出栈
+                # 注意：不参与损失计算的输出不会入栈（没有收到梯度），不需要等待
+                # 通过 rcv_grad_count 判断：rcv_grad_count == 0 表示已就绪（或从未收到梯度）
+                # 通过 _popped_tensors 判断：已出栈的节点
+                # 条件：需要梯度且 (已出栈 或 从未收到梯度)
+                group_ready = all(
+                    id(out) in self._popped_tensors or out.rcv_grad_count == 0
+                    for out in multi_group
+                    if out.requires_grad
+                )
+                if not group_ready:
+                    continue
+                
                 outputs_to_process = multi_group
-                processed_multi_groups.add(group_id)
+                processed_groups.add(group_id)
             
-            # 过滤出需要梯度的输出
+            # 过滤需要梯度的输出
             outputs_requires_grad = tuple(out for out in outputs_to_process if out.requires_grad)
             
-            # 如果没有需要梯度的输出，直接标记为已处理
+            # 无需要梯度的输出，直接标记为已处理
             if not outputs_requires_grad:
                 for out in outputs_to_process:
                     self._backward_pre_hooks_processed.add((id(module), id(out)))
                 processed_any = True
                 continue
             
-            # 收集梯度
-            grad_outputs = tuple(out.grad_value for out in outputs_requires_grad)
+            # 收集梯度（优先使用缓存的grad_clone）
+            grad_outputs = []
+            for out in outputs_requires_grad:
+                out_cache = module._backward_hook_cache.get(id(out))
+                grad = out_cache.get('grad_clone') if out_cache else None
+                if grad is None:
+                    grad = out.grad_value
+                grad_outputs.append(grad)
+            
+            grad_outputs = tuple(grad_outputs)
             
             # 调用钩子链
             current_grad_output, hooks_called = self._call_backward_pre_hooks_chain(module, grad_outputs)
@@ -4311,22 +4228,17 @@ class BackwardHookManager:
             # 处理钩子返回值
             if hooks_called and current_grad_output is not grad_outputs:
                 if isinstance(current_grad_output, (tuple, list)):
-                    for i, output_tensor in enumerate(outputs_requires_grad):
+                    for i, out in enumerate(outputs_requires_grad):
                         if i < len(current_grad_output):
-                            if current_grad_output[i] is None:
-                                output_tensor.grad_value = zeros_like(output_tensor, requires_grad=False)
-                            else:
-                                output_tensor.grad_value = current_grad_output[i]
+                            out.grad_value = current_grad_output[i] if current_grad_output[i] is not None else zeros_like(out, requires_grad=False)
                 else:
-                    # 返回的不是元组/列表，只更新第一个输出
                     outputs_requires_grad[0].grad_value = current_grad_output
             
             # 更新grad_clone供反向钩子使用
-            for output_tensor in outputs_requires_grad:
-                out_id = id(output_tensor)
-                out_cache = module._backward_hook_cache.get(out_id)
+            for out in outputs_requires_grad:
+                out_cache = module._backward_hook_cache.get(id(out))
                 if out_cache is not None:
-                    out_cache['grad_clone'] = output_tensor.grad_value.clone() if output_tensor.grad_value is not None else None
+                    out_cache['grad_clone'] = out.grad_value.clone() if out.grad_value is not None else None
             
             # 标记所有输出为已处理
             for out in outputs_to_process:
@@ -4336,172 +4248,130 @@ class BackwardHookManager:
         
         return processed_any
     
-    def process_backward_pre_hooks(self, modules: set) -> None:
+    def process_module_hooks(self, tensor: TN) -> set:
         """
-        处理反向传播预处理钩子（按模块调用）
-
-        检查模块是否可以调用反向预处理钩子，如果可以则调用。
-
-        设计原则（与反向钩子的 process_backward_hooks 结构保持一致）：
-        - 模块输出的梯度都收集完成后，才能调用反向预处理钩子
-        - 调用钩子并处理返回值后，直接更新模块输出节点的grad_value
-        - 与PyTorch行为一致：无输入梯度且无参数时，不调用钩子
-
-        检查流程（与反向钩子流程一致）：
-            - _should_call_backward_pre_hooks: 检查准入条件（是否应该调用钩子）
-            - _check_backward_pre_hooks_ready: 检查就绪条件（梯度收集完成）
-
-        缓存使用：
-            - 遍历module._backward_hook_cache获取所有输出
-            - 统一处理单输出和多输出（单输出视为多输出的特例）
-
+        统一处理模块钩子（反向预处理钩子和反向钩子）。
+        
+        核心逻辑：
+        1. 记录节点出栈状态
+        2. 获取两种钩子的可传播节点和就绪模块
+        3. 融合判断：任一集合为空则不能传播（条件未满足）
+        4. 两个集合都非空时，调用钩子并返回并集
+        
+        关键设计（互斥性）：
+        - 节点不可能同时是反向预处理模块的输出和反向钩子模块的输入
+        - 因此正常情况下，items_for_pre_hook 和 items_for_backward_hook 只有一个非空
+        
         参数:
-            modules: 待处理的模块集合（已就绪的反向预处理钩子模块）
-        """
-
-        for module in modules:
-            # 检查准入条件：是否应该调用反向预处理钩子
-            # 与反向钩子的准入条件检查保持一致
-            if not self._should_call_backward_pre_hooks(module):
-                continue
+            tensor: 当前出栈的节点张量
             
-            # 检查就绪条件：模块输出梯度是否收集完成
-            if not self._check_backward_pre_hooks_ready(module):
-                continue
+        返回:
+            set: 可反向传播节点集合（空集表示不能传播）
+        """
+        # 快速退出检查：tensor没有_module_input_of和_output_of，说明是普通节点（非模块输入输出）
+        # 这是性能关键路径，大部分节点是普通节点
+        if not tensor._module_input_of and not tensor._output_of:
+            return {tensor}
+        
+        # 记录节点已出栈（供后续检查使用）
+        self._popped_tensors.add(id(tensor))
+        
+        # 获取两种钩子的可传播节点和模块
+        items_for_pre_hook, pre_hook_modules = self.wait_for_backward_pre_hook_ready(tensor)
+        items_for_backward_hook, backward_hook_modules = self.wait_for_backward_hook_ready(tensor)
+        
+        # 融合可传播节点集合
+        # 如果任一集合为空，说明对应的钩子条件未满足，不能传播
+        # 由于互斥性，正常情况下只有一个集合会非空
+        if not items_for_pre_hook or not items_for_backward_hook:
+            # 至少一个集合为空，不能反向传播，也不调用钩子
+            return set()
+        
+        # 两个集合都非空，可以反向传播
+        # 调用已就绪的钩子（wait函数返回的模块已通过就绪检查，直接调用内部函数）
+        if pre_hook_modules:
+            for module in pre_hook_modules:
+                self._call_backward_pre_hooks(module)
+        if backward_hook_modules:
+            for module in backward_hook_modules:
+                self._call_backward_hooks(module)
+        
+        # 取并集作为可传播节点集合
+        items_for_propagate = items_for_pre_hook | items_for_backward_hook
+        
+        return items_for_propagate
 
-            # 统一处理模块的所有输出（单输出和多输出）
-            self._call_backward_pre_hooks(module)
-    
     def _check_backward_hooks_ready(self, module) -> bool:
         """
-        检查模块是否准备好调用反向钩子
-
-        准备条件：
-        1. 模块注册了反向钩子
-        2. 所有需要梯度的输入节点的rcv_grad_count为0
-        3. 当前backward涉及的输出节点的梯度副本已缓存（用于多次前向传播场景）
-        4. 至少有一个输入需要梯度，或者模块有参数（与PyTorch行为一致）
-
-        注意：
-            - 在单次前向传播场景下，输入梯度收集齐全意味着输出梯度已缓存
-            - 但在多次前向传播场景下，需要检查grad_clone来区分当前backward涉及的输出
-
-        缓存使用：
-            - 遍历module._backward_hook_cache获取所有输出条目
-            - 只检查grad_clone不为None的输出（表示该输出已参与当前backward）
-            - 通过cache_entry['inputs']获取输入，检查梯度是否收集完成
-
+        检查模块是否准备好调用反向钩子（就绪条件）。
+        
+        就绪条件：
+        1. 所有需要梯度的输入节点的 rcv_grad_count == 0
+        2. 所有需要梯度的输入节点都已出栈（_popped_tensors）
+        3. 至少有一个输入需要梯度，或者模块有参数
+        
+        关键设计：
+        - 输入节点必须出栈后才能调用反向钩子
+        - 防止钩子修改仍在栈中的节点的梯度
+        
         参数:
             module: 要检查的模块
-
+            
         返回:
-            bool: 如果准备好返回True，否则返回False
+            bool: 模块是否就绪
         """
         if not module._backward_hooks:
             return False
 
-        # 检查是否至少有一个输入需要梯度
-        # 只检查当前backward涉及的输出节点（grad_clone不为None的）
-        # 这对于多次前向传播场景很重要：只处理已经backward的输出
-        has_input_requires_grad = False
+        # 收集所有需要检查的输入（未处理的、有梯度的输出对应的输入）
+        inputs_to_check = set()
+        
         for output_id, cache_entry in module._backward_hook_cache.items():
-            # 跳过已经处理过的输出
             if (id(module), output_id) in self._backward_hooks_processed:
                 continue
-
             # 只检查有梯度副本的输出节点（已参与当前backward的）
             if cache_entry.get('grad_clone') is None:
                 continue
-
-            forward_inputs = cache_entry.get('inputs', ())
-            for inp in forward_inputs:
+            
+            for inp in cache_entry.get('inputs', ()):
                 if inp.requires_grad:
-                    has_input_requires_grad = True
-                    # 优化：仅需检查rcv_grad_count，因为rcv_grad_count==0意味着grad_value已设置
-                    if inp.rcv_grad_count > 0:
-                        return False
-
-        # 如果没有输入需要梯度，检查是否有参数需要梯度
-        # 与PyTorch行为一致：没有输入梯度且没有参数需要梯度时，不调用钩子
-        if not has_input_requires_grad:
-            # 检查是否有参数需要梯度（与_should_call_backward_pre_hooks保持一致）
-            if not any(param.requires_grad for param in module.parameters()):
+                    inputs_to_check.add(inp)
+        
+        # 没有输入需要梯度时，检查是否有参数需要梯度（准入条件）
+        if not inputs_to_check:
+            return any(param.requires_grad for param in module.parameters())
+        
+        # 检查所有输入是否都已就绪（梯度收集完成且已出栈）
+        for inp in inputs_to_check:
+            if inp.rcv_grad_count > 0:
                 return False
-
+            if id(inp) not in self._popped_tensors:
+                return False
+        
         return True
     
     def _call_backward_hooks(self, module):
         """
-        调用模块的反向钩子
-
-        支持多次前向传播场景，每次前向传播的输出会分别调用钩子。
-
-        注意：对于多输出模块，只调用一次钩子，但会处理所有输出。
-
+        调用模块的反向钩子。
+        
+        处理流程：
+        1. 构建 grad_input（从输入节点的 grad_value 获取）
+        2. 构建 grad_output（从缓存的 grad_clone 获取）
+        3. 调用钩子链
+        4. 根据返回值更新输入节点的 grad_value
+        
         钩子返回值处理：
-            - 如果钩子返回None：不修改梯度，保持原值
-            - 如果钩子返回tuple/list：按位置更新对应输入的梯度
-            - 如果返回的某个元素为None：将该输入的梯度设为0（与PyTorch行为一致）
-            - 如果返回的元素数量与输入数量不匹配：抛出RuntimeError
-
-        缓存使用：
-            - 从module._backward_hook_cache筛选grad_clone不为None的输出
-            - 通过cache_entry['inputs']获取输入，cache_entry['tensor']获取输出
-            - 通过cache_entry['multi_group']判断是否为多输出模块
-            - 从各输出的cache_entry['grad_clone']获取梯度
-
+        - 返回 None：不修改梯度
+        - 返回 tuple/list：按位置更新对应输入的梯度
+        - 返回的元素为 None：将该输入的梯度设为 0
+        
         参数:
             module: 要调用钩子的模块
         """
         if not module._backward_hooks:
             return
 
-        # 内部函数：构建grad_input元组
-        # - 所有输入requires_grad=False时，传递None
-        # - 部分输入requires_grad=False时，传递全0张量
-        def _build_grad_input(forward_inputs):
-            """
-            构建反向钩子的grad_input参数
-
-            参数:
-                forward_inputs: 前向传播的输入张量元组
-
-            返回:
-                tuple: 每个输入对应的梯度张量或None
-            """
-            all_inputs_no_grad = all(not inp.requires_grad for inp in forward_inputs)
-            grad_inputs = []
-            for inp in forward_inputs:
-                if inp.requires_grad:
-                    grad_inputs.append(inp.grad_value)
-                else:
-                    if all_inputs_no_grad:
-                        grad_inputs.append(None)
-                    else:
-                        grad_inputs.append(zeros_like(inp, requires_grad=False))
-            return tuple(grad_inputs)
-
-        # 内部函数：构建grad_output元组
-        def _build_grad_output(module, multi_outputs):
-            """
-            构建反向钩子的grad_output参数
-
-            参数:
-                module: 当前模块
-                multi_outputs: 多输出模块的所有输出张量元组
-
-            返回:
-                tuple: 每个输出对应的梯度张量（从grad_clone获取）
-            """
-            grad_outputs = []
-            for output_tensor in multi_outputs:
-                out_id = id(output_tensor)
-                out_cache = module._backward_hook_cache.get(out_id)
-                grad_out = out_cache.get('grad_clone') if out_cache else None
-                grad_outputs.append(grad_out)
-            return tuple(grad_outputs)
-
-        # 优化：使用_backward_hook_cache的键来获取输出ID（只获取有grad_clone的）
+        # 获取有grad_clone的输出ID（已参与当前backward的）
         current_output_ids = [
             output_id for output_id, cache_entry in module._backward_hook_cache.items()
             if cache_entry.get('grad_clone') is not None
@@ -4510,212 +4380,192 @@ class BackwardHookManager:
         if not current_output_ids:
             return
 
-        # 按输出ID分别处理，支持多次前向传播
-        # 注意：对于多输出模块，需要按multi_group分组处理
-        processed_first_ids = set()  # 记录已处理的多输出组
+        processed_first_ids = set()
 
         for output_id in current_output_ids:
-            # 检查是否已经处理过该输出的反向钩子
             if (id(module), output_id) in self._backward_hooks_processed:
                 continue
 
-            # 优化：从_backward_hook_cache获取该输出对应的输入
             cache_entry = module._backward_hook_cache.get(output_id)
             if cache_entry is None:
-                # 标记为已处理，避免重复检查
                 self._backward_hooks_processed.add((id(module), output_id))
                 continue
 
             forward_inputs = cache_entry.get('inputs', ())
             if not forward_inputs:
-                # 标记为已处理，避免重复检查
                 self._backward_hooks_processed.add((id(module), output_id))
                 continue
 
-            # 优化：从_backward_hook_cache获取multi_outputs（多输出模块的所有输出）
             multi_outputs = cache_entry.get('multi_group')
-            first_output_id = None
 
             if multi_outputs is None:
                 # 单输出模块
                 output_tensor = cache_entry.get('tensor')
                 if output_tensor is None:
-                    # 标记为已处理，避免重复检查
                     self._backward_hooks_processed.add((id(module), output_id))
                     continue
                 multi_outputs = (output_tensor,)
                 first_output_id = output_id
+                is_multi_output = False
             else:
                 first_output_id = id(multi_outputs[0])
+                is_multi_output = len(multi_outputs) > 1
             
-            # 检查该多输出组是否已处理
-            # 注意：对于多输出模块，只处理一次（使用processed_first_ids去重）
-            # 对于单输出模块，每次前向传播分别处理
-            is_multi_output = len(multi_outputs) > 1 if multi_outputs else False
+            # 多输出组去重
             if is_multi_output and first_output_id in processed_first_ids:
-                # 标记该输出为已处理
                 self._backward_hooks_processed.add((id(module), output_id))
                 continue
             
-            # 使用内部函数构建grad_input和grad_output
-            grad_input_tuple = _build_grad_input(forward_inputs)
-            grad_output_tuple = _build_grad_output(module, multi_outputs)
+            # 构建grad_input
+            all_inputs_no_grad = all(not inp.requires_grad for inp in forward_inputs)
+            grad_input_tuple = tuple(
+                inp.grad_value if inp.grad_value is not None else zeros_like(inp, requires_grad=False)
+                if inp.requires_grad else
+                (None if all_inputs_no_grad else zeros_like(inp, requires_grad=False))
+                for inp in forward_inputs
+            )
             
+            # 构建grad_output
+            grad_output_tuple = tuple(
+                module._backward_hook_cache.get(id(out), {}).get('grad_clone')
+                for out in multi_outputs
+            )
+            
+            # 调用钩子链
             for hook in module._backward_hooks.values():
                 hook_result = hook(module, grad_input_tuple, grad_output_tuple)
                 if hook_result is not None:
-                    # 验证hook_result是否为tuple/list，与PyTorch行为一致
+                    # 验证返回值
                     if not isinstance(hook_result, (tuple, list)):
                         raise RuntimeError(
                             f"Backward hook returned an invalid number of grad_input, "
                             f"got 1 (non-tuple), but expected {len(forward_inputs)}"
                         )
-                    
-                    # 验证返回的grad_input数量是否匹配
                     if len(hook_result) != len(forward_inputs):
                         raise RuntimeError(
                             f"Backward hook returned an invalid number of grad_input, "
                             f"got {len(hook_result)}, but expected {len(forward_inputs)}"
                         )
                     
+                    # 更新输入梯度
                     for i, inp in enumerate(forward_inputs):
                         if i < len(hook_result):
-                            if hook_result[i] is not None:
-                                # hook_result[i]不是None，修改第i个输入的梯度
-                                inp.grad_value = hook_result[i]
-                            else:
-                                # hook_result[i]是None，将梯度设为0（与PyTorch行为一致）
-                                inp.grad_value = zeros_like(inp, requires_grad=False)
+                            inp.grad_value = hook_result[i] if hook_result[i] is not None else zeros_like(inp, requires_grad=False)
+                else:
+                    # 钩子返回None，使用grad_input_tuple中的梯度
+                    for i, inp in enumerate(forward_inputs):
+                        if i < len(grad_input_tuple) and grad_input_tuple[i] is not None:
+                            inp.grad_value = grad_input_tuple[i]
             
-            # 标记该多输出组的所有输出为已处理
-            if multi_outputs is not None:
-                for output_tensor in multi_outputs:
-                    out_id = id(output_tensor)
-                    self._backward_hooks_processed.add((id(module), out_id))
-            else:
-                self._backward_hooks_processed.add((id(module), output_id))
+            # 标记输出为已处理
+            for out in multi_outputs:
+                self._backward_hooks_processed.add((id(module), id(out)))
             
-            # 只对多输出模块使用processed_first_ids
             if is_multi_output:
                 processed_first_ids.add(first_output_id)
-    
-    def process_backward_hooks(self, modules: set):
+
+    def wait_for_backward_hook_ready(self, tensor: TN) -> tuple[set, set]:
         """
-        按模块调用反向钩子
+        检查反向钩子是否就绪，返回可传播节点和就绪模块集合。
         
-        本函数是反向钩子处理的入口，与 wait_for_backward_hook_ready 配合使用：
-        - wait_for_backward_hook_ready: 检查就绪条件，返回就绪的模块集合
-        - process_backward_hooks: 实际调用就绪模块的反向钩子
+        在节点出栈时调用，完成以下任务：
+        1. 检查tensor是否是注册了反向钩子的模块的输入
+        2. 检查模块输入梯度是否收集完成
+        3. 确定可反向传播的节点集合
         
-        与反向预处理钩子的区别：
-        - 反向预处理钩子：在模块输出梯度收集完成后调用，修改输出梯度
-        - 反向钩子：在模块输入梯度收集完成后调用，修改输入梯度
+        关键逻辑：
+        - 非反向钩子模块输入节点：直接返回{tensor}
+        - 反向钩子模块输入节点，梯度未收集齐 -> 返回空集（等待）
+        - 反向钩子模块输入节点，梯度已收集齐 -> 返回模块所有输入节点
         
-        设计原则：
-        1. 模块必须先通过 _check_backward_hooks_ready 检查才能调用钩子
-        2. 支持多次前向传播场景，每次前向传播分别调用钩子
-        3. 多输出模块只调用一次钩子，但处理所有输出
+        注意：节点出栈状态由调用方（process_module_hooks）记录，此函数不重复记录。
         
         参数:
-            modules: 待处理的模块集合（已通过就绪检查的反向钩子模块）
+            tensor: 刚出栈的节点（grad_value已就绪，且已在_popped_tensors中）
+            
+        返回:
+            (items_for_propagate, backward_hook_modules)
+            - items_for_propagate: 可反向传播节点集合
+            - backward_hook_modules: 已就绪的反向钩子模块集合
         """
-        for module in modules:
+        backward_hook_modules = set()
+        
+        # 收集所有相关模块（输入和输出关联的模块）
+        # 注意：虽然根据设计原则节点不可能同时是反向预处理模块的输出和反向钩子模块的输入
+        # 但为了处理边界情况（如模块同时注册两种钩子），需要检查两种关联
+        related_modules = set()
+        if tensor._module_input_of:
+            related_modules.update(module for module, _ in tensor._module_input_of if module._backward_hooks)
+        if tensor._output_of:
+            related_modules.update(module for module in tensor._output_of if module._backward_hooks)
+        
+        # 检查哪些模块已就绪
+        for module in related_modules:
+            if self._check_backward_hooks_ready(module):
+                backward_hook_modules.add(module)
+        
+        # 确定可传播节点
+        items_for_propagate = self._get_items_for_backward_hook(tensor, backward_hook_modules)
+        
+        return items_for_propagate, backward_hook_modules
+    
+    def _get_items_for_backward_hook(self, tensor: TN, hook_modules: set) -> set:
+        """
+        获取反向钩子处理后可反向传播的节点集合。
+        
+        核心逻辑：
+        1. 非反向钩子模块输入节点 -> 返回{tensor}
+        2. 反向钩子模块输入节点，模块未就绪 -> 返回空集（等待）
+        3. 反向钩子模块输入节点，模块已就绪 -> 返回模块所有输入节点
+        """
+        tensor_id = id(tensor)
+        
+        # 检查tensor是否是反向钩子模块的输入
+        if not tensor._module_input_of:
+            return {tensor}
+        
+        # 找到tensor所属的反向钩子模块
+        related_modules = []
+        for module, _ in tensor._module_input_of:
             if not module._backward_hooks:
                 continue
-            
-            if self._check_backward_hooks_ready(module):
-                self._call_backward_hooks(module)
-    
-    def wait_for_backward_hook_ready(self, vars_set: set) -> tuple[set, set]:
-        """
-        缓存并等待模块输入梯度收集齐全，返回可入栈节点列表和反向钩子模块集合
-
-        关键设计原则：
-        1. 在反向钩子调用条件成熟前，模块输入节点绝对不能入栈
-           - 原因：反向钩子需要访问所有输入的梯度，如果提前入栈，梯度可能还未收集完成
-        2. 只有模块完全准备好调用反向钩子时，其输入节点才能入栈
-           - 准备条件：所有需要梯度的输入节点的rcv_grad_count为0
-        3. 不涉及反向钩子的节点可以直接入栈
-           - 这些节点不依赖反向钩子，可以正常进行反向传播
-
-        缓存使用：
-            - 遍历module._backward_hook_cache获取所有输出条目
-            - 通过cache_entry['inputs']获取输入，检查梯度是否已准备好
-            - 将准备好的输入节点加入vars_to_stack
-
-        参数:
-            vars_set: 待检查的节点集合
-
-        返回:
-            tuple[set, set]: (vars_to_stack, backward_hook_modules)
-                - vars_to_stack: 可入栈的节点集合
-                - backward_hook_modules: 需要调用反向钩子的模块集合
-        """
-        vars_to_stack = set()
-        backward_hook_modules = set()
-
-        # 快速退出检查：如果所有var都不是任何模块的输入节点（即没有反向钩子），直接返回vars_set
-        if all(not var._module_input_of for var in vars_set):
-            # 没有反向钩子模块，直接返回vars_set（所有节点都已准备好）
-            return vars_set, backward_hook_modules
-
-        # 收集并检查所有注册了反向钩子的模块
-        processed_modules = set()  # 避免重复处理同一模块
-        for var in vars_set:
-            # 检查var是否是模块的输入节点
-            if not var._module_input_of:
-                continue
-
-            for module, _ in var._module_input_of:
-                # 只处理注册了反向钩子且未处理过的模块
-                if module._backward_hooks and module not in processed_modules:
-                    processed_modules.add(module)
-                    # 检查模块是否准备好调用反向钩子
-                    if self._check_backward_hooks_ready(module):
-                        # 模块准备好调用反向钩子，添加到backward_hook_modules
-                        backward_hook_modules.add(module)
-                        # 模块输入节点在反向钩子调用后才可以入栈
-                        # 只添加grad_value已准备好的输入节点
-                        for output_id, cache_entry in module._backward_hook_cache.items():
-                            forward_inputs = cache_entry.get('inputs', ())
-                            for inp in forward_inputs:
-                                if inp.requires_grad and inp.grad_value is not None and inp.rcv_grad_count == 0:
-                                    vars_to_stack.add(inp)
-                    # 否则模块未准备好，其输入节点暂时不入栈，将在下次循环时继续等待
+            for cache_entry in module._backward_hook_cache.values():
+                if any(tensor_id == id(inp) for inp in cache_entry.get('inputs', ())):
+                    related_modules.append((module, cache_entry))
+                    break
         
-        # 处理不涉及反向钩子的节点
-        for var in vars_set:
-            # 检查var是否需要梯度
-            if not var.requires_grad:
-                continue
-            
-            # 检查var是否是注册了反向钩子的模块的输入节点
-            is_backward_hook_module_input = any(
-                module._backward_hooks for module, _ in var._module_input_of
-            )
-
-            # 如果var不是注册了反向钩子的模块的输入节点，且grad_value已准备好，则入栈
-            # 注意：注册了反向钩子的模块的输入节点已在第一个循环中处理
-            if not is_backward_hook_module_input:
-                if var.grad_value is not None and var.rcv_grad_count == 0:
-                    vars_to_stack.add(var)
-                # 否则grad_value未准备好，不入栈，等待下次处理
+        # 不是反向钩子模块的输入
+        if not related_modules:
+            return {tensor}
         
-        return vars_to_stack, backward_hook_modules
+        # 模块未就绪：检查是否已处理过
+        if not hook_modules:
+            for module, cache_entry in related_modules:
+                output_id = id(cache_entry.get('tensor'))
+                if (id(module), output_id) in self._backward_hooks_processed:
+                    # 已处理过，正常传播
+                    return {tensor} if tensor.requires_grad else set()
+            # 未处理过，等待
+            return set()
+        
+        # 模块已就绪：返回所有相关输入节点
+        items = set()
+        for module in hook_modules:
+            for cache_entry in module._backward_hook_cache.values():
+                if any(tensor_id == id(inp) for inp in cache_entry.get('inputs', ())):
+                    for inp in cache_entry.get('inputs', ()):
+                        if inp.requires_grad and id(inp) in self._popped_tensors:
+                            items.add(inp)
+                    break
+        return items
     
     def cleanup(self):
         """
-        清理本次反向传播相关的所有缓存
-
-        _module_output_ids_to_cleanup 在 wait_for_backward_pre_hook_ready
-        中已经被填充，包含了所有需要清理的模块和对应的 output_id，无需再次遍历计算图。
-
-        缓存清理：
-            - 遍历_module_output_ids_to_cleanup获取需要清理的模块和output_id
-            - 从module._backward_hook_cache中删除指定的output_id条目
-            - 相比原4个独立字典，清理逻辑大大简化
-
-        优化：使用统一的_backward_hook_cache字典，清理逻辑从原来的4步简化为1步
+        清理本次反向传播相关的所有缓存。
+        
+        清理内容：
+        1. 各模块的 _backward_hook_cache
+        2. 本管理器的处理状态集合
         """
         for module, output_ids in self._module_output_ids_to_cleanup.items():
             # 优化：清理_backward_hook_cache中指定的output_ids
@@ -4726,6 +4576,7 @@ class BackwardHookManager:
         self._backward_pre_hooks_processed.clear()
         self._backward_hooks_processed.clear()
         self._module_output_ids_to_cleanup.clear()
+        self._popped_tensors.clear()
 
 
 def _get_device(device:str|int|Device=None)->Device:
