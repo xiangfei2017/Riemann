@@ -524,6 +524,8 @@ def test_hook_registration_and_management(stats):
         
     finally:
         stats.end_function()
+        # pytest断言：确保所有测试用例通过
+        assert stats.passed_cases == stats.total_cases, f"钩子注册与管理测试失败: {stats.passed_cases}/{stats.total_cases} 通过"
 
 
 def test_forward_pre_hooks(stats):
@@ -682,6 +684,8 @@ def test_forward_pre_hooks(stats):
         
     finally:
         stats.end_function()
+        # pytest断言：确保所有测试用例通过
+        assert stats.passed_cases == stats.total_cases, f"前向预处理钩子测试失败: {stats.passed_cases}/{stats.total_cases} 通过"
 
 
 def test_forward_hooks(stats):
@@ -828,6 +832,8 @@ def test_forward_hooks(stats):
         
     finally:
         stats.end_function()
+        # pytest断言：确保所有测试用例通过
+        assert stats.passed_cases == stats.total_cases, f"前向钩子测试失败: {stats.passed_cases}/{stats.total_cases} 通过"
 
 
 def test_backward_pre_hooks(stats):
@@ -1089,6 +1095,8 @@ def test_backward_pre_hooks(stats):
         
     finally:
         stats.end_function()
+        # pytest断言：确保所有测试用例通过
+        assert stats.passed_cases == stats.total_cases, f"反向预处理钩子测试失败: {stats.passed_cases}/{stats.total_cases} 通过"
 
 
 def test_backward_hooks(stats):
@@ -1534,6 +1542,8 @@ def test_backward_hooks(stats):
         
     finally:
         stats.end_function()
+        # pytest断言：确保所有测试用例通过
+        assert stats.passed_cases == stats.total_cases, f"反向钩子测试失败: {stats.passed_cases}/{stats.total_cases} 通过"
 
 
 def test_combined_hooks(stats):
@@ -1778,6 +1788,8 @@ def test_combined_hooks(stats):
         
     finally:
         stats.end_function()
+        # pytest断言：确保所有测试用例通过
+        assert stats.passed_cases == stats.total_cases, f"组合钩子测试失败: {stats.passed_cases}/{stats.total_cases} 通过"
 
 
 def test_complex_scenarios(stats):
@@ -2425,6 +2437,8 @@ def test_complex_scenarios(stats):
         
     finally:
         stats.end_function()
+        # pytest断言：确保所有测试用例通过
+        assert stats.passed_cases == stats.total_cases, f"复杂场景测试失败: {stats.passed_cases}/{stats.total_cases} 通过"
 
 
 # ==================== 主函数 ====================

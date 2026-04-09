@@ -138,8 +138,8 @@ class TN:
             retains_grad (bool): 是否保留梯度，默认为False
             rcv_grad_count (int): 在计算图中可接收梯度的计数，计算梯度时临时使用
             grad_value (TN): 用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
-            _output_of (list): 记录产生该输出张量的模块列表 [module, ...]，用于反向传播钩子机制
-            _module_input_of (list): 记录该张量作为哪些模块的输入及该模块对应的输出 [(module, module_output), ...]，用于反向传播钩子机制
+            _output_of (Module|None): 记录产生该输出张量的模块，用于反向传播钩子机制
+            _module_input_of (Module|None): 记录该张量作为哪个模块的输入，用于反向传播钩子机制
         """
         #tensor函数构造对象时，data引用一个numpy或cupy数组
         self.data: np.ndarray = None    # type: ignore
@@ -154,8 +154,8 @@ class TN:
         self.rcv_grad_count = 0         #在具体计算图中，self可接收梯度的计数，计算梯度时临时使用
         self.grad_value:TN = None       #用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
         
-        self._output_of = []            #记录该张量是哪些模块的输出 [module, ...]
-        self._module_input_of = []      #记录该张量是哪些模块的输入 [(module, output_tensor), ...]
+        self._output_of = None          #记录该张量是哪个模块的输出（单引用）
+        self._module_input_of = None    #记录该张量是哪个模块的输入（单引用）
         
         return
     
@@ -3623,32 +3623,22 @@ class TN:
         
         return
     
-    def _save_grad(self:TN, create_graph:bool):  # type: ignore
+    def _save_grad(self:TN):
         '''将self的grad_value保存到self的grad中
         '''
+
+        if self.is_leaf or self.retains_grad:
+            if self.grad is None:
+                # 如还没有梯度值，直接赋值
+                self.grad = self.grad_value
+            else:
+                # 如已有梯度值，累计梯度，注意不要使用原地+=
+                self.grad = self.grad + self.grad_value
         
-        if self.grad is None:
-            # 如还没有梯度值，直接赋值
-            self.grad = self.grad_value
-
-            # 如backward里while循环外用with set_grad_enabled(create_graph)控制梯度是否保存计算图信息，下面代码就不再需要了
-            # if create_graph:
-            #     self.grad = self.grad_value
-            # else:
-            #     # 如果不保存梯度的计算图信息，保存self.grad_value的无计算图副本
-            #     self.grad = self.grad_value.detach()
-        else:
-            # 如已有梯度值，累计梯度
-            self.grad = self.grad + self.grad_value
-
-            # 如backward里while循环外用with set_grad_enabled(create_graph)控制梯度是否保存计算图信息，下面代码就不再需要了
-            # if create_graph:
-            #     # 如果梯度也保存计算图信息，用张量加法，但不能用原地+= 
-            #     self.grad = self.grad + self.grad_value
-            # else:
-            #     # 如果不保存梯度的计算图信息，累加grad_value的无计算图副本
-            #     self.grad =self.grad + self.grad_value.detach()
-                
+        # 叶子节点存完梯度后，梯度缓存置None
+        if self.is_leaf:
+            self.grad_value = None
+        
         return
 
     def _add_received_grad_value(self:TN, grad_value:TN):
@@ -3677,8 +3667,34 @@ class TN:
             # a和b的grad_value是同一个张量，所以不能用原地+=累加梯度
             self.grad_value = self.grad_value + grad_value
         return
-    
-    def backward(self, gradient: TN|None = None, 
+
+    def _propagate_grad_to_sources(self: TN, vars_received_grad: set) -> None:
+        """将当前节点的梯度传播到其所有来源节点
+
+        反向传播核心方法，遍历当前节点的所有来源节点，计算并传播梯度。
+        直接修改vars_received_grad集合，添加已收集完梯度的节点。
+
+        参数：
+            vars_received_grad: 已收集完梯度、可入栈的源变量集合（会被直接修改）
+        """
+        fromvars = self.fromvars
+        gradfuncs = self.gradfuncs
+
+        for i in range(len(fromvars)):
+            var: TN = fromvars[i]
+            fn = gradfuncs[i]
+
+            if var.requires_grad:
+                rcv_grad_value: TN = fn(self, i)
+                var._add_received_grad_value(rcv_grad_value)
+                var.rcv_grad_count -= 1
+
+                if var.rcv_grad_count == 0:
+                    vars_received_grad.add(var)
+        
+        return
+
+    def backward(self, gradient: TN|None = None,
                  retain_graph: bool = False,
                  create_graph: bool = False):
         """执行自动微分的反向传播计算。
@@ -3686,6 +3702,11 @@ class TN:
         该函数从当前张量开始，沿计算图反向传播梯度，计算并存储所有
         叶子节点或设置了retains_grad=True的中间节点的梯度。
 
+        钩子处理机制：
+        在反向传播过程中，通过BackwardHookManager统一处理反向预处理钩子和反向钩子：
+        1. 反向预处理钩子：在模块所有输出梯度就绪时调用，可修改输出梯度
+        2. 反向钩子：在模块所有输入梯度就绪时调用，可修改输入梯度
+        
         参数:
             gradient (TN | None, 可选): 输出张量的梯度，默认为None
             retain_graph (bool, 可选):  本参数为兼容Pytorch的设计，riemann反向传播不依赖该参数，
@@ -3723,41 +3744,6 @@ class TN:
             raise TypeError(f'gradient can be either tensor or None, but got {type(gradient)}')
         
         hook_manager = BackwardHookManager()
-        
-        def propagate_grad_to_sources(item: TN, vars_received_grad: set, grad_value=None) -> set:
-            """
-            反向传播核心函数，负责将当前节点的梯度传播到其所有来源节点
-            更新并返回已收集完梯度、可入栈的源变量集合
-
-            参数：
-                item: 当前节点张量
-                vars_received_grad: 已收集完梯度、可入栈的源变量集合
-                grad_value: 可选的梯度值（用于当item.grad_value为None时使用grad_clone的情况）
-            返回：
-                vars_received_grad: 已收集完梯度、可入栈的源变量集合
-            """
-            # 以下注释代码用于调测时检测异常情况，确保开始反向传播的节点都有梯度值
-            # if item.grad_value is None:
-            #     warnings.warn(f'item has no grad_value, skip propagate_grad_to_sources')
-            #     return set()
-            
-            fromvars = item.fromvars
-            gradfuncs = item.gradfuncs
-            
-            for i in range(len(fromvars)):
-                var: TN = fromvars[i]
-                fn = gradfuncs[i]
-                
-                if var.requires_grad:
-                    rcv_grad_value: TN = fn(item, i)
-                    var._add_received_grad_value(rcv_grad_value)
-                    var.rcv_grad_count -= 1
-                    
-                    if var.rcv_grad_count == 0:
-                        vars_received_grad.add(var)
-                      
-            return vars_received_grad
-        # end of propagate_grad_to_sources
 
         stack = []
         stack.append(self)
@@ -3779,13 +3765,7 @@ class TN:
                              
                 # 在调用钩子之后保存梯度，确保钩子可以访问所有输入的梯度grad_value
                 # 因为叶子节点梯度保存后，grad_value为置None空
-                if item.is_leaf:
-                    item._save_grad(create_graph)
-                    item.grad_value = None
-                    continue
-
-                if item.retains_grad:
-                    item._save_grad(create_graph)
+                item._save_grad()
                 
                 # 如果没有可传播节点（模块输出梯度未收集齐），跳过本次循环
                 if not items_for_propagate:
@@ -3794,7 +3774,7 @@ class TN:
                 # 将梯度传播到所有来源节点
                 vars_received_grad = set()
                 for current_item in items_for_propagate:
-                    propagate_grad_to_sources(current_item, vars_received_grad)
+                    current_item._propagate_grad_to_sources(vars_received_grad)
                     # 传播完梯度的节点，使命完成，清空grad_value节省内存
                     current_item.grad_value = None
                 
@@ -3915,13 +3895,11 @@ class BackwardHookManager:
         pre_hook_modules = set()
         
         # 非模块输出节点，直接返回
-        if not tensor._output_of:
+        if tensor._output_of is None:
             return {tensor}, pre_hook_modules
         
-        for module in tensor._output_of:
-            if id(tensor) not in module._backward_hook_cache:
-                continue
-            
+        module = tensor._output_of
+        if id(tensor) in module._backward_hook_cache:
             output_id = id(tensor)
             cache_entry = module._backward_hook_cache[output_id]
             
@@ -3951,11 +3929,11 @@ class BackwardHookManager:
                 pre_hook_modules.add(module)
         
         # 确定可传播节点
-        items_for_propagate = self._get_items_for_propagate(tensor, pre_hook_modules)
+        items_for_propagate = self._get_propagate_items_for_pre_hook(tensor, pre_hook_modules)
         
         return set(items_for_propagate), pre_hook_modules
     
-    def _get_items_for_propagate(self, tensor: TN, hook_modules: set) -> list:
+    def _get_propagate_items_for_pre_hook(self, tensor: TN, hook_modules: set) -> list:
         """
         获取可反向传播的节点列表。
         
@@ -3971,7 +3949,7 @@ class BackwardHookManager:
         但第3点中的等待检查基于 _popped_tensors，与就绪检查不同，用于确保所有输出都已出栈。
         """
         # 非注册钩子模块输入输出的节点（如参数）不传播
-        if tensor._module_input_of and not tensor._output_of:
+        if tensor._module_input_of is not None and tensor._output_of is None:
             return []
         
         # 有就绪模块：返回该模块的所有输出
@@ -3987,19 +3965,20 @@ class BackwardHookManager:
         
         # 无就绪模块：检查是否是未就绪的反向预处理钩子模块的输出
         # 注意：这里只检查是否有注册钩子，不检查就绪状态（已在 wait_for_backward_pre_hook_ready 中检查）
-        if tensor._output_of:
-            for module in tensor._output_of:
-                if id(tensor) not in module._backward_hook_cache:
-                    continue
+        if tensor._output_of is not None:
+            module = tensor._output_of
+            if id(tensor) in module._backward_hook_cache:
                 # 是反向预处理钩子模块的输出但未就绪 -> 等待
                 if module._backward_pre_hooks:
                     cache_entry = module._backward_hook_cache[id(tensor)]
                     multi_outputs = cache_entry.get('multi_group')
                     if multi_outputs:
-                        # 多输出模块：检查是否所有输出都已出栈
-                        # 使用 _popped_tensors 而非 rcv_grad_count，因为 rcv_grad_count 可能在传播后被重置
+                        # 多输出模块：检查是否所有输出都已出栈或从未收到梯度
+                        # 条件：需要梯度且 (已出栈 或 从未收到梯度)
+                        # 已出栈的输出：id(out) in _popped_tensors
+                        # 未参与损失计算的输出：rcv_grad_count == 0（从未收到梯度或已收集完成）
                         for out in multi_outputs:
-                            if out.requires_grad and id(out) not in self._popped_tensors:
+                            if out.requires_grad and id(out) not in self._popped_tensors and out.rcv_grad_count > 0:
                                 return []  # 未就绪，等待
                         # 已就绪但未在hook_modules中（可能已通过其他输出添加）
                         return [out for out in multi_outputs if id(out) in self._popped_tensors]
@@ -4248,29 +4227,29 @@ class BackwardHookManager:
         
         return processed_any
     
-    def process_module_hooks(self, tensor: TN) -> set:
+    def process_module_hooks(self, tensor: TN) -> set[TN]:
         """
         统一处理模块钩子（反向预处理钩子和反向钩子）。
-        
+
         核心逻辑：
         1. 记录节点出栈状态
         2. 获取两种钩子的可传播节点和就绪模块
         3. 融合判断：任一集合为空则不能传播（条件未满足）
         4. 两个集合都非空时，调用钩子并返回并集
-        
+
         关键设计（互斥性）：
         - 节点不可能同时是反向预处理模块的输出和反向钩子模块的输入
         - 因此正常情况下，items_for_pre_hook 和 items_for_backward_hook 只有一个非空
-        
+
         参数:
             tensor: 当前出栈的节点张量
-            
+
         返回:
-            set: 可反向传播节点集合（空集表示不能传播）
+            set[TN]: 可反向传播节点集合（空集表示不能传播）
         """
         # 快速退出检查：tensor没有_module_input_of和_output_of，说明是普通节点（非模块输入输出）
         # 这是性能关键路径，大部分节点是普通节点
-        if not tensor._module_input_of and not tensor._output_of:
+        if tensor._module_input_of is None and tensor._output_of is None:
             return {tensor}
         
         # 记录节点已出栈（供后续检查使用）
@@ -4491,13 +4470,18 @@ class BackwardHookManager:
         backward_hook_modules = set()
         
         # 收集所有相关模块（输入和输出关联的模块）
-        # 注意：虽然根据设计原则节点不可能同时是反向预处理模块的输出和反向钩子模块的输入
-        # 但为了处理边界情况（如模块同时注册两种钩子），需要检查两种关联
+        # 注意：根据设计原则，节点不会同时是反向预处理模块的输出和反向钩子模块的输入
+        # （因为输入被clone，输出也被clone，两者是不同的张量）
+        # 但为了代码健壮性，仍检查两种关联
         related_modules = set()
-        if tensor._module_input_of:
-            related_modules.update(module for module, _ in tensor._module_input_of if module._backward_hooks)
-        if tensor._output_of:
-            related_modules.update(module for module in tensor._output_of if module._backward_hooks)
+        if tensor._module_input_of is not None:
+            module = tensor._module_input_of
+            if module._backward_hooks:
+                related_modules.add(module)
+        if tensor._output_of is not None:
+            module = tensor._output_of
+            if module._backward_hooks:
+                related_modules.add(module)
         
         # 检查哪些模块已就绪
         for module in related_modules:
@@ -4505,11 +4489,11 @@ class BackwardHookManager:
                 backward_hook_modules.add(module)
         
         # 确定可传播节点
-        items_for_propagate = self._get_items_for_backward_hook(tensor, backward_hook_modules)
+        items_for_propagate = self._get_propagate_items_for_backward_hook(tensor, backward_hook_modules)
         
         return items_for_propagate, backward_hook_modules
     
-    def _get_items_for_backward_hook(self, tensor: TN, hook_modules: set) -> set:
+    def _get_propagate_items_for_backward_hook(self, tensor: TN, hook_modules: set) -> set:
         """
         获取反向钩子处理后可反向传播的节点集合。
         
@@ -4521,52 +4505,55 @@ class BackwardHookManager:
         tensor_id = id(tensor)
         
         # 检查tensor是否是反向钩子模块的输入
-        if not tensor._module_input_of:
+        if tensor._module_input_of is None:
             return {tensor}
         
         # 找到tensor所属的反向钩子模块
-        related_modules = []
-        for module, _ in tensor._module_input_of:
-            if not module._backward_hooks:
-                continue
-            for cache_entry in module._backward_hook_cache.values():
-                if any(tensor_id == id(inp) for inp in cache_entry.get('inputs', ())):
-                    related_modules.append((module, cache_entry))
-                    break
+        module = tensor._module_input_of
+        if not module._backward_hooks:
+            return {tensor}
+        
+        # 查找包含该输入的缓存条目
+        # 多输出模块的所有条目共享相同的inputs元组，找到任意一个即可获取所有输入
+        # 多次前向传播的输入/输出都是独立对象（被clone），通过输入id能正确匹配到对应条目
+        related_cache_entry = None
+        for cache_entry in module._backward_hook_cache.values():
+            if any(tensor_id == id(inp) for inp in cache_entry.get('inputs', ())):
+                related_cache_entry = cache_entry
+                break
         
         # 不是反向钩子模块的输入
-        if not related_modules:
+        if related_cache_entry is None:
             return {tensor}
         
         # 模块未就绪：检查是否已处理过
         if not hook_modules:
-            for module, cache_entry in related_modules:
-                output_id = id(cache_entry.get('tensor'))
-                if (id(module), output_id) in self._backward_hooks_processed:
-                    # 已处理过，正常传播
-                    return {tensor} if tensor.requires_grad else set()
+            output_id = id(related_cache_entry.get('tensor'))
+            if (id(module), output_id) in self._backward_hooks_processed:
+                # 已处理过，正常传播
+                return {tensor} if tensor.requires_grad else set()
             # 未处理过，等待
             return set()
         
         # 模块已就绪：返回所有相关输入节点
         items = set()
-        for module in hook_modules:
-            for cache_entry in module._backward_hook_cache.values():
-                if any(tensor_id == id(inp) for inp in cache_entry.get('inputs', ())):
-                    for inp in cache_entry.get('inputs', ()):
-                        if inp.requires_grad and id(inp) in self._popped_tensors:
-                            items.add(inp)
-                    break
+        for inp in related_cache_entry.get('inputs', ()):
+            if inp.requires_grad and id(inp) in self._popped_tensors:
+                items.add(inp)
         return items
     
     def cleanup(self):
         """
         清理本次反向传播相关的所有缓存。
-        
+
         清理内容：
         1. 各模块的 _backward_hook_cache
         2. 本管理器的处理状态集合
         """
+        # 快速退出：没有需要清理的模块
+        if not self._module_output_ids_to_cleanup:
+            return
+
         for module, output_ids in self._module_output_ids_to_cleanup.items():
             # 优化：清理_backward_hook_cache中指定的output_ids
             for key in list(module._backward_hook_cache.keys()):
