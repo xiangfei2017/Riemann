@@ -3570,6 +3570,586 @@ class TestConvFunctions(unittest.TestCase):
                         stats.add_result(case_name, False, [str(e)])
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
+
+    def test_adaptive_avg_pool1d(self):
+        """测试adaptive_avg_pool1d函数与PyTorch的一致性"""
+        test_cases = [
+            {"name": "基本池化", "input_shape": (2, 3, 10), "output_size": 5},
+            {"name": "全局池化", "input_shape": (2, 3, 10), "output_size": 1},
+            {"name": "相同尺寸", "input_shape": (2, 3, 10), "output_size": 10},
+            {"name": "大尺寸输入", "input_shape": (4, 8, 100), "output_size": 7},
+            {"name": "小尺寸输出", "input_shape": (2, 3, 8), "output_size": 3},
+            {"name": "单通道", "input_shape": (1, 1, 16), "output_size": 4},
+            {"name": "多批次", "input_shape": (8, 16, 32), "output_size": 8},
+        ]
+        
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"adaptive_avg_pool1d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    input_shape = case["input_shape"]
+                    output_size = case["output_size"]
+                    
+                    np_input = np.random.randn(*input_shape)
+                    
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        torch_input = torch.tensor(np_input, requires_grad=True) if TORCH_AVAILABLE else None
+                    else:
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        torch_input = torch.tensor(np_input, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                    
+                    rm_result = rm_func.adaptive_avg_pool1d(rm_input, output_size)
+                    torch_result = torch_func.adaptive_avg_pool1d(torch_input, output_size) if TORCH_AVAILABLE else None
+                    
+                    forward_passed = compare_values(rm_result, torch_result)
+                    shape_passed = rm_result.shape == (input_shape[0], input_shape[1], output_size)
+                    
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and shape_passed and backward_passed
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"adaptive_avg_pool1d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+    def test_adaptive_avg_pool2d(self):
+        """测试adaptive_avg_pool2d函数与PyTorch的一致性"""
+        test_cases = [
+            {"name": "基本池化", "input_shape": (2, 3, 8, 8), "output_size": (4, 4)},
+            {"name": "全局池化", "input_shape": (2, 3, 8, 8), "output_size": 1},
+            {"name": "正方形输出", "input_shape": (2, 3, 8, 8), "output_size": 7},
+            {"name": "矩形输出", "input_shape": (2, 3, 16, 32), "output_size": (4, 8)},
+            {"name": "相同尺寸", "input_shape": (2, 3, 8, 8), "output_size": (8, 8)},
+            {"name": "大尺寸输入", "input_shape": (4, 8, 64, 64), "output_size": (7, 7)},
+            {"name": "小尺寸输出", "input_shape": (2, 3, 4, 4), "output_size": (2, 2)},
+        ]
+        
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"adaptive_avg_pool2d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    input_shape = case["input_shape"]
+                    output_size = case["output_size"]
+                    
+                    np_input = np.random.randn(*input_shape)
+                    
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        torch_input = torch.tensor(np_input, requires_grad=True) if TORCH_AVAILABLE else None
+                    else:
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        torch_input = torch.tensor(np_input, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                    
+                    rm_result = rm_func.adaptive_avg_pool2d(rm_input, output_size)
+                    torch_result = torch_func.adaptive_avg_pool2d(torch_input, output_size) if TORCH_AVAILABLE else None
+                    
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    if isinstance(output_size, int):
+                        expected_shape = (input_shape[0], input_shape[1], output_size, output_size)
+                    else:
+                        expected_shape = (input_shape[0], input_shape[1], output_size[0], output_size[1])
+                    shape_passed = rm_result.shape == expected_shape
+                    
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and shape_passed and backward_passed
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"adaptive_avg_pool2d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+    def test_adaptive_avg_pool3d(self):
+        """测试adaptive_avg_pool3d函数与PyTorch的一致性"""
+        test_cases = [
+            {"name": "基本池化", "input_shape": (2, 3, 8, 8, 8), "output_size": (4, 4, 4)},
+            {"name": "全局池化", "input_shape": (2, 3, 8, 8, 8), "output_size": 1},
+            {"name": "立方体输出", "input_shape": (2, 3, 8, 8, 8), "output_size": 5},
+            {"name": "长方体输出", "input_shape": (2, 3, 16, 32, 8), "output_size": (4, 8, 2)},
+            {"name": "相同尺寸", "input_shape": (2, 3, 4, 4, 4), "output_size": (4, 4, 4)},
+            {"name": "小尺寸输出", "input_shape": (2, 3, 4, 4, 4), "output_size": (2, 2, 2)},
+        ]
+        
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"adaptive_avg_pool3d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    input_shape = case["input_shape"]
+                    output_size = case["output_size"]
+                    
+                    np_input = np.random.randn(*input_shape)
+                    
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        torch_input = torch.tensor(np_input, requires_grad=True) if TORCH_AVAILABLE else None
+                    else:
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        torch_input = torch.tensor(np_input, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                    
+                    rm_result = rm_func.adaptive_avg_pool3d(rm_input, output_size)
+                    torch_result = torch_func.adaptive_avg_pool3d(torch_input, output_size) if TORCH_AVAILABLE else None
+                    
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    if isinstance(output_size, int):
+                        expected_shape = (input_shape[0], input_shape[1], output_size, output_size, output_size)
+                    else:
+                        expected_shape = (input_shape[0], input_shape[1], output_size[0], output_size[1], output_size[2])
+                    shape_passed = rm_result.shape == expected_shape
+                    
+                    backward_passed = True
+                    if TORCH_AVAILABLE:
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and shape_passed and backward_passed
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"adaptive_avg_pool3d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+    def test_adaptive_max_pool1d(self):
+        """测试adaptive_max_pool1d函数与PyTorch的一致性"""
+        test_cases = [
+            {"name": "基本池化", "input_shape": (2, 3, 10), "output_size": 5, "return_indices": False},
+            {"name": "全局池化", "input_shape": (2, 3, 10), "output_size": 1, "return_indices": False},
+            {"name": "返回索引", "input_shape": (2, 3, 10), "output_size": 5, "return_indices": True},
+            {"name": "大尺寸输入", "input_shape": (4, 8, 100), "output_size": 7, "return_indices": True},
+            {"name": "相同尺寸", "input_shape": (2, 3, 10), "output_size": 10, "return_indices": False},
+        ]
+        
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"adaptive_max_pool1d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    input_shape = case["input_shape"]
+                    output_size = case["output_size"]
+                    return_indices = case["return_indices"]
+                    
+                    np_input = np.random.randn(*input_shape)
+                    
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        torch_input = torch.tensor(np_input, requires_grad=True) if TORCH_AVAILABLE else None
+                    else:
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        torch_input = torch.tensor(np_input, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                    
+                    if return_indices:
+                        rm_result, rm_indices = rm_func.adaptive_max_pool1d(rm_input, output_size, return_indices=True)
+                        torch_result, torch_indices = torch_func.adaptive_max_pool1d(torch_input, output_size, return_indices=True) if TORCH_AVAILABLE else (None, None)
+                    else:
+                        rm_result = rm_func.adaptive_max_pool1d(rm_input, output_size, return_indices=False)
+                        torch_result = torch_func.adaptive_max_pool1d(torch_input, output_size, return_indices=False) if TORCH_AVAILABLE else None
+                    
+                    forward_passed = compare_values(rm_result, torch_result)
+                    shape_passed = rm_result.shape == (input_shape[0], input_shape[1], output_size)
+                    
+                    indices_passed = True
+                    if TORCH_AVAILABLE and return_indices:
+                        indices_passed = compare_values(rm_indices, torch_indices)
+                    
+                    backward_passed = True
+                    if TORCH_AVAILABLE and not return_indices:
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and shape_passed and indices_passed and backward_passed
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"adaptive_max_pool1d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+    def test_adaptive_max_pool2d(self):
+        """测试adaptive_max_pool2d函数与PyTorch的一致性"""
+        test_cases = [
+            {"name": "基本池化", "input_shape": (2, 3, 8, 8), "output_size": (4, 4), "return_indices": False},
+            {"name": "全局池化", "input_shape": (2, 3, 8, 8), "output_size": 1, "return_indices": False},
+            {"name": "返回索引", "input_shape": (2, 3, 8, 8), "output_size": (4, 4), "return_indices": True},
+            {"name": "正方形输出", "input_shape": (2, 3, 16, 16), "output_size": 7, "return_indices": True},
+            {"name": "矩形输出", "input_shape": (2, 3, 16, 32), "output_size": (4, 8), "return_indices": False},
+        ]
+        
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"adaptive_max_pool2d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    input_shape = case["input_shape"]
+                    output_size = case["output_size"]
+                    return_indices = case["return_indices"]
+                    
+                    np_input = np.random.randn(*input_shape)
+                    
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        torch_input = torch.tensor(np_input, requires_grad=True) if TORCH_AVAILABLE else None
+                    else:
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        torch_input = torch.tensor(np_input, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                    
+                    if return_indices:
+                        rm_result, rm_indices = rm_func.adaptive_max_pool2d(rm_input, output_size, return_indices=True)
+                        torch_result, torch_indices = torch_func.adaptive_max_pool2d(torch_input, output_size, return_indices=True) if TORCH_AVAILABLE else (None, None)
+                    else:
+                        rm_result = rm_func.adaptive_max_pool2d(rm_input, output_size, return_indices=False)
+                        torch_result = torch_func.adaptive_max_pool2d(torch_input, output_size, return_indices=False) if TORCH_AVAILABLE else None
+                    
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    if isinstance(output_size, int):
+                        expected_shape = (input_shape[0], input_shape[1], output_size, output_size)
+                    else:
+                        expected_shape = (input_shape[0], input_shape[1], output_size[0], output_size[1])
+                    shape_passed = rm_result.shape == expected_shape
+                    
+                    indices_passed = True
+                    if TORCH_AVAILABLE and return_indices:
+                        indices_passed = compare_values(rm_indices, torch_indices)
+                    
+                    backward_passed = True
+                    if TORCH_AVAILABLE and not return_indices:
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and shape_passed and indices_passed and backward_passed
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"adaptive_max_pool2d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+    def test_adaptive_max_pool2d_indices_boundary(self):
+        """测试adaptive_max_pool2d返回索引的边界情况
+        
+        验证在各种边界情况下（单行、单列、单元素区域），返回的索引是否正确
+        """
+        if not TORCH_AVAILABLE:
+            self.skipTest("PyTorch不可用，跳过索引边界测试")
+        
+        test_cases = [
+            # 测试单行区域（高度方向只有一个元素）
+            {"name": "单行区域", "input_shape": (1, 1, 3, 8), "output_size": (3, 4)},
+            # 测试单列区域（宽度方向只有一个元素）
+            {"name": "单列区域", "input_shape": (1, 1, 8, 3), "output_size": (4, 3)},
+            # 测试单元素区域（高度和宽度都只有一个元素）
+            {"name": "单元素区域", "input_shape": (1, 1, 4, 4), "output_size": (4, 4)},
+            # 测试非均匀分割
+            {"name": "非均匀分割", "input_shape": (1, 1, 7, 7), "output_size": (3, 3)},
+            # 测试大尺寸输入小尺寸输出
+            {"name": "大输入小输出", "input_shape": (1, 1, 100, 100), "output_size": (3, 3)},
+        ]
+        
+        for case in test_cases:
+            case_name = f"adaptive_max_pool2d_indices_boundary - {case['name']}"
+            start_time = time.time()
+            try:
+                input_shape = case["input_shape"]
+                output_size = case["output_size"]
+                H_in, W_in = input_shape[2], input_shape[3]
+                
+                # 创建确定性输入，使用递增序列便于验证索引
+                np_input = np.arange(input_shape[2] * input_shape[3]).reshape(input_shape).astype(np.float32)
+                
+                rm_input = rm.tensor(np_input)
+                torch_input = torch.tensor(np_input)
+                
+                rm_result, rm_indices = rm_func.adaptive_max_pool2d(rm_input, output_size, return_indices=True)
+                torch_result, torch_indices = torch_func.adaptive_max_pool2d(torch_input, output_size, return_indices=True)
+                
+                # 验证结果值一致
+                forward_passed = compare_values(rm_result, torch_result)
+                
+                # 验证索引一致
+                indices_passed = compare_values(rm_indices, torch_indices)
+                
+                # 额外验证：通过索引能否正确获取最大值
+                indices_valid = True
+                if indices_passed:
+                    rm_indices_flat = rm_indices.data.flatten()
+                    rm_result_flat = rm_result.data.flatten()
+                    for idx in range(len(rm_indices_flat)):
+                        flat_idx = int(rm_indices_flat[idx])
+                        h_idx = flat_idx // W_in
+                        w_idx = flat_idx % W_in
+                        expected_val = np_input[0, 0, h_idx, w_idx]
+                        actual_val = rm_result_flat[idx]
+                        if not np.isclose(expected_val, actual_val, rtol=1e-5, atol=1e-6):
+                            indices_valid = False
+                            break
+                
+                passed = forward_passed and indices_passed and indices_valid
+                time_taken = time.time() - start_time
+                
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    status = "通过" if passed else "失败"
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                
+                self.assertTrue(passed, f"adaptive_max_pool2d索引边界测试失败: {case_name}")
+                
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
+    def test_adaptive_max_pool3d(self):
+        """测试adaptive_max_pool3d函数与PyTorch的一致性"""
+        test_cases = [
+            {"name": "基本池化", "input_shape": (2, 3, 8, 8, 8), "output_size": (4, 4, 4), "return_indices": False},
+            {"name": "全局池化", "input_shape": (2, 3, 8, 8, 8), "output_size": 1, "return_indices": False},
+            {"name": "返回索引", "input_shape": (2, 3, 8, 8, 8), "output_size": (4, 4, 4), "return_indices": True},
+            {"name": "立方体输出", "input_shape": (2, 3, 16, 16, 16), "output_size": 5, "return_indices": True},
+            {"name": "长方体输出", "input_shape": (2, 3, 16, 32, 8), "output_size": (4, 8, 2), "return_indices": False},
+        ]
+        
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"adaptive_max_pool3d - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    input_shape = case["input_shape"]
+                    output_size = case["output_size"]
+                    return_indices = case["return_indices"]
+                    
+                    np_input = np.random.randn(*input_shape)
+                    
+                    if device == "cpu":
+                        rm_input = rm.tensor(np_input, requires_grad=True)
+                        torch_input = torch.tensor(np_input, requires_grad=True) if TORCH_AVAILABLE else None
+                    else:
+                        rm_input = rm.tensor(np_input, requires_grad=True, device=device)
+                        torch_input = torch.tensor(np_input, requires_grad=True, device=device) if TORCH_AVAILABLE else None
+                    
+                    if return_indices:
+                        rm_result, rm_indices = rm_func.adaptive_max_pool3d(rm_input, output_size, return_indices=True)
+                        torch_result, torch_indices = torch_func.adaptive_max_pool3d(torch_input, output_size, return_indices=True) if TORCH_AVAILABLE else (None, None)
+                    else:
+                        rm_result = rm_func.adaptive_max_pool3d(rm_input, output_size, return_indices=False)
+                        torch_result = torch_func.adaptive_max_pool3d(torch_input, output_size, return_indices=False) if TORCH_AVAILABLE else None
+                    
+                    forward_passed = compare_values(rm_result, torch_result)
+                    
+                    if isinstance(output_size, int):
+                        expected_shape = (input_shape[0], input_shape[1], output_size, output_size, output_size)
+                    else:
+                        expected_shape = (input_shape[0], input_shape[1], output_size[0], output_size[1], output_size[2])
+                    shape_passed = rm_result.shape == expected_shape
+                    
+                    indices_passed = True
+                    if TORCH_AVAILABLE and return_indices:
+                        indices_passed = compare_values(rm_indices, torch_indices)
+                    
+                    backward_passed = True
+                    if TORCH_AVAILABLE and not return_indices:
+                        rm_loss = rm_result.sum()
+                        torch_loss = torch_result.sum()
+                        rm_loss.backward()
+                        torch_loss.backward()
+                        backward_passed = compare_values(rm_input.grad, torch_input.grad)
+                    
+                    passed = forward_passed and shape_passed and indices_passed and backward_passed
+                    time_taken = time.time() - start_time
+                    
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    
+                    self.assertTrue(passed, f"adaptive_max_pool3d测试失败: {case_name}")
+                    
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+    def test_adaptive_max_pool3d_indices_boundary(self):
+        """测试adaptive_max_pool3d返回索引的边界情况
+        
+        验证在各种边界情况下（单层、单行、单列、单元素区域），返回的索引是否正确
+        """
+        if not TORCH_AVAILABLE:
+            self.skipTest("PyTorch不可用，跳过索引边界测试")
+        
+        test_cases = [
+            # 测试单层区域（深度方向只有一个元素）
+            {"name": "单层区域", "input_shape": (1, 1, 3, 8, 8), "output_size": (3, 4, 4)},
+            # 测试单行区域（高度方向只有一个元素）
+            {"name": "单行区域", "input_shape": (1, 1, 8, 3, 8), "output_size": (4, 3, 4)},
+            # 测试单列区域（宽度方向只有一个元素）
+            {"name": "单列区域", "input_shape": (1, 1, 8, 8, 3), "output_size": (4, 4, 3)},
+            # 测试单元素区域（深度、高度、宽度都只有一个元素）
+            {"name": "单元素区域", "input_shape": (1, 1, 4, 4, 4), "output_size": (4, 4, 4)},
+            # 测试非均匀分割
+            {"name": "非均匀分割", "input_shape": (1, 1, 7, 7, 7), "output_size": (3, 3, 3)},
+            # 测试大尺寸输入小尺寸输出
+            {"name": "大输入小输出", "input_shape": (1, 1, 50, 50, 50), "output_size": (3, 3, 3)},
+        ]
+        
+        for case in test_cases:
+            case_name = f"adaptive_max_pool3d_indices_boundary - {case['name']}"
+            start_time = time.time()
+            try:
+                input_shape = case["input_shape"]
+                output_size = case["output_size"]
+                D_in, H_in, W_in = input_shape[2], input_shape[3], input_shape[4]
+                
+                # 创建确定性输入，使用递增序列便于验证索引
+                np_input = np.arange(D_in * H_in * W_in).reshape(input_shape).astype(np.float32)
+                
+                rm_input = rm.tensor(np_input)
+                torch_input = torch.tensor(np_input)
+                
+                rm_result, rm_indices = rm_func.adaptive_max_pool3d(rm_input, output_size, return_indices=True)
+                torch_result, torch_indices = torch_func.adaptive_max_pool3d(torch_input, output_size, return_indices=True)
+                
+                # 验证结果值一致
+                forward_passed = compare_values(rm_result, torch_result)
+                
+                # 验证索引一致
+                indices_passed = compare_values(rm_indices, torch_indices)
+                
+                # 额外验证：通过索引能否正确获取最大值
+                indices_valid = True
+                if indices_passed:
+                    rm_indices_flat = rm_indices.data.flatten()
+                    rm_result_flat = rm_result.data.flatten()
+                    for idx in range(len(rm_indices_flat)):
+                        flat_idx = int(rm_indices_flat[idx])
+                        d_idx = flat_idx // (H_in * W_in)
+                        rem = flat_idx % (H_in * W_in)
+                        h_idx = rem // W_in
+                        w_idx = rem % W_in
+                        expected_val = np_input[0, 0, d_idx, h_idx, w_idx]
+                        actual_val = rm_result_flat[idx]
+                        if not np.isclose(expected_val, actual_val, rtol=1e-5, atol=1e-6):
+                            indices_valid = False
+                            break
+                
+                passed = forward_passed and indices_passed and indices_valid
+                time_taken = time.time() - start_time
+                
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    status = "通过" if passed else "失败"
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                
+                self.assertTrue(passed, f"adaptive_max_pool3d索引边界测试失败: {case_name}")
+                
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
     
     def test_tensor_fold(self):
         """测试tensordef中的fold方法"""

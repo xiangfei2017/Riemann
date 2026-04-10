@@ -3031,3 +3031,745 @@ def dropout3d(input: TN, p: float = 0.5, training: bool = True, inplace: bool = 
 # end of dropout3d()
 
 
+# ==================== Adaptive Pooling Functions ====================
+
+def adaptive_avg_pool1d(input: TN, output_size: int) -> TN:
+    r"""对输入张量应用1D自适应平均池化。
+    
+    自适应池化会根据输入尺寸和目标输出尺寸自动计算池化核大小和步长，
+    确保输出尺寸始终为指定的output_size。
+    
+    参数:
+        input (TN): 输入张量，形状为 (N, C, L_in)
+        output_size (int): 目标输出长度
+        
+    返回:
+        TN: 池化后的张量，形状为 (N, C, output_size)
+        
+    形状转换:
+        - 输入: (N, C, L_in)
+        - 输出: (N, C, output_size)
+        
+    计算逻辑:
+        对于每个输出位置i，计算对应的输入区域[start, end]，然后取平均值：
+        - stride = L_in / output_size
+        - kernel_size = ceil(stride)
+        - start = floor(i * stride)
+        - end = min(start + kernel_size, L_in)
+        
+    示例::
+    
+        >>> # 输入长度为8，输出长度为3
+        >>> input = rm.randn(2, 3, 8)
+        >>> output = adaptive_avg_pool1d(input, 3)
+        >>> print(output.shape)  # (2, 3, 3)
+        
+        >>> # 输入长度为5，输出长度为1（全局平均池化）
+        >>> output = adaptive_avg_pool1d(input, 1)
+        >>> print(output.shape)  # (2, 3, 1)
+        
+    注意:
+        - 与标准avg_pool1d不同，不需要指定kernel_size和stride
+        - 输出尺寸固定为output_size，不受输入尺寸影响
+        - 当input.size(-1) < output_size时，使用1x1的kernel
+        - 常用于需要固定输出尺寸的场景，如分类器的全局池化
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    if input.ndim != 3:
+        raise ValueError(f"Expected 3D tensor for input, but got {input.ndim}D tensor")
+    
+    if not isinstance(output_size, int) or output_size <= 0:
+        raise ValueError(f"output_size must be a positive integer, got {output_size}")
+    
+    N, C, L_in = input.shape
+    L_out = output_size
+    
+    if L_in == L_out:
+        # 输入输出尺寸相同，直接返回
+        return input.clone()
+    
+    # 创建输出张量
+    output = zeros((N, C, L_out), dtype=input.dtype, device=input.device)
+    
+    for i in range(L_out):
+        # 计算当前输出位置对应的输入起始和结束索引
+        # 使用PyTorch的算法: start = floor(i * L_in / L_out), end = ceil((i+1) * L_in / L_out)
+        start = i * L_in // L_out
+        end = ((i + 1) * L_in + L_out - 1) // L_out  # 整数ceil运算
+        
+        # 确保end不超过L_in
+        end = end if end < L_in else L_in
+        
+        # 提取对应区域并计算平均值
+        if end > start:
+            region = input[:, :, start:end]
+            output[:, :, i] = region.mean(dim=2)
+        else:
+            # 当start == end时，复制单个元素
+            output[:, :, i] = input[:, :, start]
+    
+    return output
+
+
+def adaptive_avg_pool2d(input: TN, output_size: tuple[int, int] | int) -> TN:
+    r"""对输入张量应用2D自适应平均池化。
+    
+    自适应池化会根据输入尺寸和目标输出尺寸自动计算池化核大小和步长，
+    确保输出尺寸始终为指定的output_size。
+    
+    参数:
+        input (TN): 输入张量，形状为 (N, C, H_in, W_in)
+        output_size (tuple[int, int] | int): 目标输出尺寸 (H_out, W_out) 或单个整数（正方形输出）
+        
+    返回:
+        TN: 池化后的张量，形状为 (N, C, H_out, W_out)
+        
+    形状转换:
+        - 输入: (N, C, H_in, W_in)
+        - 输出: (N, C, H_out, W_out)
+        
+    计算逻辑:
+        对于每个输出位置(i, j)，计算对应的输入区域并取平均值：
+        - stride_h = H_in / H_out, stride_w = W_in / W_out
+        - start_h = floor(i * stride_h), end_h = ceil((i + 1) * stride_h)
+        - start_w = floor(j * stride_w), end_w = ceil((j + 1) * stride_w)
+        
+    示例::
+    
+        >>> # 输入为32x32，输出为7x7
+        >>> input = rm.randn(2, 3, 32, 32)
+        >>> output = adaptive_avg_pool2d(input, (7, 7))
+        >>> print(output.shape)  # (2, 3, 7, 7)
+        
+        >>> # 输出为正方形1x1（全局平均池化）
+        >>> output = adaptive_avg_pool2d(input, 1)
+        >>> print(output.shape)  # (2, 3, 1, 1)
+        
+        >>> # 输出为1x1，等价于全局平均池化
+        >>> output = adaptive_avg_pool2d(input, (1, 1))
+        >>> print(output.shape)  # (2, 3, 1, 1)
+        
+    注意:
+        - 与标准avg_pool2d不同，不需要指定kernel_size和stride
+        - 输出尺寸固定为output_size，不受输入尺寸影响
+        - 常用于分类器的全局池化，将任意尺寸特征图转换为固定尺寸
+        - 是ResNet、VGG等网络中常用的全局池化方式
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    if input.ndim != 4:
+        raise ValueError(f"Expected 4D tensor for input, but got {input.ndim}D tensor")
+    
+    # 处理output_size参数
+    if isinstance(output_size, int):
+        H_out, W_out = output_size, output_size
+    elif isinstance(output_size, (tuple, list)) and len(output_size) == 2:
+        H_out, W_out = output_size
+        if not (isinstance(H_out, int) and isinstance(W_out, int) and H_out > 0 and W_out > 0):
+            raise ValueError(f"output_size elements must be positive integers, got {output_size}")
+    else:
+        raise ValueError(f"output_size must be int or tuple of two ints, got {output_size}")
+    
+    N, C, H_in, W_in = input.shape
+    
+    if H_in == H_out and W_in == W_out:
+        # 输入输出尺寸相同，直接返回
+        return input.clone()
+    
+    # 创建输出张量
+    output = zeros((N, C, H_out, W_out), dtype=input.dtype, device=input.device)
+    
+    # 优化版本：使用行向量化策略
+    # 对每一行输出，预先提取高度方向的区域，然后在列方向循环
+    for i in range(H_out):
+        # 计算高度方向的起始和结束索引
+        start_h = i * H_in // H_out
+        end_h = ((i + 1) * H_in + H_out - 1) // H_out
+        end_h = end_h if end_h < H_in else H_in
+        
+        if end_h > start_h:
+            # 高度方向有多个元素，提取整行区域
+            row_region = input[:, :, start_h:end_h, :]  # (N, C, h_size, W_in)
+            
+            # 对每一列输出位置计算平均值
+            for j in range(W_out):
+                start_w = j * W_in // W_out
+                end_w = ((j + 1) * W_in + W_out - 1) // W_out
+                end_w = end_w if end_w < W_in else W_in
+                
+                if end_w > start_w:
+                    # 提取子区域并计算平均值
+                    cell_region = row_region[:, :, :, start_w:end_w]
+                    output[:, :, i, j] = cell_region.mean(dim=(2, 3))
+                else:
+                    # 宽度方向只有一个元素
+                    output[:, :, i, j] = row_region[:, :, :, start_w].mean(dim=2)
+        else:
+            # 高度方向只有一个元素
+            row_slice = input[:, :, start_h, :]  # (N, C, W_in)
+            
+            for j in range(W_out):
+                start_w = j * W_in // W_out
+                end_w = ((j + 1) * W_in + W_out - 1) // W_out
+                end_w = end_w if end_w < W_in else W_in
+                
+                if end_w > start_w:
+                    output[:, :, i, j] = row_slice[:, :, start_w:end_w].mean(dim=2)
+                else:
+                    output[:, :, i, j] = row_slice[:, :, start_w]
+    
+    return output
+
+
+def adaptive_avg_pool3d(input: TN, output_size: tuple[int, int, int] | int) -> TN:
+    r"""对输入张量应用3D自适应平均池化。
+    
+    自适应池化会根据输入尺寸和目标输出尺寸自动计算池化核大小和步长，
+    确保输出尺寸始终为指定的output_size。
+    
+    参数:
+        input (TN): 输入张量，形状为 (N, C, D_in, H_in, W_in)
+        output_size (tuple[int, int, int] | int): 目标输出尺寸 (D_out, H_out, W_out) 或单个整数（立方体输出）
+        
+    返回:
+        TN: 池化后的张量，形状为 (N, C, D_out, H_out, W_out)
+        
+    形状转换:
+        - 输入: (N, C, D_in, H_in, W_in)
+        - 输出: (N, C, D_out, H_out, W_out)
+        
+    计算逻辑:
+        对于每个输出位置(d, i, j)，计算对应的输入区域并取平均值：
+        - stride_d = D_in / D_out, stride_h = H_in / H_out, stride_w = W_in / W_out
+        - start_d = floor(d * stride_d), end_d = ceil((d + 1) * stride_d)
+        - start_h = floor(i * stride_h), end_h = ceil((i + 1) * stride_h)
+        - start_w = floor(j * stride_w), end_w = ceil((j + 1) * stride_w)
+        
+    示例::
+    
+        >>> # 输入为8x8x8，输出为4x4x4
+        >>> input = rm.randn(2, 3, 8, 8, 8)
+        >>> output = adaptive_avg_pool3d(input, (4, 4, 4))
+        >>> print(output.shape)  # (2, 3, 4, 4, 4)
+        
+        >>> # 输出为1x1x1（全局平均池化）
+        >>> output = adaptive_avg_pool3d(input, 1)
+        >>> print(output.shape)  # (2, 3, 1, 1, 1)
+        
+    注意:
+        - 与标准avg_pool3d不同，不需要指定kernel_size和stride
+        - 输出尺寸固定为output_size，不受输入尺寸影响
+        - 常用于3D卷积网络的全局池化，如视频分析、医学图像处理
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    if input.ndim != 5:
+        raise ValueError(f"Expected 5D tensor for input, but got {input.ndim}D tensor")
+    
+    # 处理output_size参数
+    if isinstance(output_size, int):
+        D_out, H_out, W_out = output_size, output_size, output_size
+    elif isinstance(output_size, (tuple, list)) and len(output_size) == 3:
+        D_out, H_out, W_out = output_size
+        if not all(isinstance(x, int) and x > 0 for x in (D_out, H_out, W_out)):
+            raise ValueError(f"output_size elements must be positive integers, got {output_size}")
+    else:
+        raise ValueError(f"output_size must be int or tuple of three ints, got {output_size}")
+    
+    N, C, D_in, H_in, W_in = input.shape
+    
+    if D_in == D_out and H_in == H_out and W_in == W_out:
+        # 输入输出尺寸相同，直接返回
+        return input.clone()
+    
+    # 创建输出张量
+    output = zeros((N, C, D_out, H_out, W_out), dtype=input.dtype, device=input.device)
+    
+    # 优化版本：使用层向量化策略
+    # 对每一层（深度）输出，预先提取深度方向的区域，然后在高宽方向循环
+    for d in range(D_out):
+        # 计算深度方向的起始和结束索引
+        start_d = d * D_in // D_out
+        end_d = ((d + 1) * D_in + D_out - 1) // D_out
+        end_d = end_d if end_d < D_in else D_in
+        
+        if end_d > start_d:
+            # 深度方向有多个元素，提取整个深度区域
+            depth_region = input[:, :, start_d:end_d, :, :]  # (N, C, d_size, H_in, W_in)
+            
+            # 在高宽方向循环
+            for i in range(H_out):
+                start_h = i * H_in // H_out
+                end_h = ((i + 1) * H_in + H_out - 1) // H_out
+                end_h = end_h if end_h < H_in else H_in
+                
+                for j in range(W_out):
+                    start_w = j * W_in // W_out
+                    end_w = ((j + 1) * W_in + W_out - 1) // W_out
+                    end_w = end_w if end_w < W_in else W_in
+                    
+                    if end_h > start_h and end_w > start_w:
+                        cell_region = depth_region[:, :, :, start_h:end_h, start_w:end_w]
+                        output[:, :, d, i, j] = cell_region.mean(dim=(2, 3, 4))
+                    elif end_h > start_h:
+                        cell_region = depth_region[:, :, :, start_h:end_h, start_w]
+                        output[:, :, d, i, j] = cell_region.mean(dim=(2, 3))
+                    elif end_w > start_w:
+                        cell_region = depth_region[:, :, :, start_h, start_w:end_w]
+                        output[:, :, d, i, j] = cell_region.mean(dim=(2, 3))
+                    else:
+                        output[:, :, d, i, j] = depth_region[:, :, :, start_h, start_w].mean(dim=2)
+        else:
+            # 深度方向只有一个元素
+            depth_slice = input[:, :, start_d, :, :]  # (N, C, H_in, W_in)
+            
+            for i in range(H_out):
+                start_h = i * H_in // H_out
+                end_h = ((i + 1) * H_in + H_out - 1) // H_out
+                end_h = end_h if end_h < H_in else H_in
+                
+                for j in range(W_out):
+                    start_w = j * W_in // W_out
+                    end_w = ((j + 1) * W_in + W_out - 1) // W_out
+                    end_w = end_w if end_w < W_in else W_in
+                    
+                    if end_h > start_h and end_w > start_w:
+                        cell_region = depth_slice[:, :, start_h:end_h, start_w:end_w]
+                        output[:, :, d, i, j] = cell_region.mean(dim=(2, 3))
+                    elif end_h > start_h:
+                        output[:, :, d, i, j] = depth_slice[:, :, start_h:end_h, start_w].mean(dim=2)
+                    elif end_w > start_w:
+                        output[:, :, d, i, j] = depth_slice[:, :, start_h, start_w:end_w].mean(dim=2)
+                    else:
+                        output[:, :, d, i, j] = depth_slice[:, :, start_h, start_w]
+    
+    return output
+
+
+def adaptive_max_pool1d(input: TN, output_size: int, return_indices: bool = False) -> TN | tuple[TN, TN]:
+    r"""对输入张量应用1D自适应最大池化。
+    
+    自适应池化会根据输入尺寸和目标输出尺寸自动计算池化核大小和步长，
+    确保输出尺寸始终为指定的output_size。
+    
+    参数:
+        input (TN): 输入张量，形状为 (N, C, L_in)
+        output_size (int): 目标输出长度
+        return_indices (bool, optional): 是否返回最大值的索引。默认值: False
+        
+    返回:
+        TN 或 tuple(TN, TN): 池化后的张量，形状为 (N, C, output_size)
+            如果 return_indices 为 True，则返回 (output, indices)
+            
+    形状转换:
+        - 输入: (N, C, L_in)
+        - 输出: (N, C, output_size)
+        
+    计算逻辑:
+        对于每个输出位置i，计算对应的输入区域[start, end]，然后取最大值：
+        - stride = L_in / output_size
+        - kernel_size = ceil(stride)
+        - start = floor(i * stride)
+        - end = min(start + kernel_size, L_in)
+        
+    示例::
+    
+        >>> # 输入长度为8，输出长度为3
+        >>> input = rm.randn(2, 3, 8)
+        >>> output = adaptive_max_pool1d(input, 3)
+        >>> print(output.shape)  # (2, 3, 3)
+        
+        >>> # 返回索引
+        >>> output, indices = adaptive_max_pool1d(input, 3, return_indices=True)
+        >>> print(indices.shape)  # (2, 3, 3)
+        
+    注意:
+        - 与标准max_pool1d不同，不需要指定kernel_size和stride
+        - 输出尺寸固定为output_size，不受输入尺寸影响
+        - 返回的indices可用于adaptive_max_pool1d的逆操作
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    if input.ndim != 3:
+        raise ValueError(f"Expected 3D tensor for input, but got {input.ndim}D tensor")
+    
+    if not isinstance(output_size, int) or output_size <= 0:
+        raise ValueError(f"output_size must be a positive integer, got {output_size}")
+    
+    N, C, L_in = input.shape
+    L_out = output_size
+    
+    if L_in == L_out:
+        # 输入输出尺寸相同，直接返回
+        if return_indices:
+            # 返回0到L_in-1的索引
+            indices = arange(L_in, dtype='int64', device=input.device).reshape(1, 1, L_in).broadcast_to((N, C, L_in))
+            return input.clone(), indices
+        return input.clone()
+    
+    # 创建输出张量
+    output = zeros((N, C, L_out), dtype=input.dtype, device=input.device)
+    if return_indices:
+        indices = zeros((N, C, L_out), dtype='int64', device=input.device)
+    
+    # 对每个输出位置计算对应的输入区域并取最大值
+    for i in range(L_out):
+        # 计算当前输出位置对应的输入起始和结束索引
+        # 使用PyTorch的算法: start = floor(i * L_in / L_out), end = ceil((i+1) * L_in / L_out)
+        start = i * L_in // L_out
+        end = ((i + 1) * L_in + L_out - 1) // L_out  # 整数ceil运算
+        end = end if end < L_in else L_in
+        
+        if end > start:
+            region = input[:, :, start:end]
+            max_result = region.max(dim=2)
+            output[:, :, i] = max_result.values
+            if return_indices:
+                # 找到最大值的索引（在原始输入中的位置）
+                max_idx = region.argmax(dim=2)
+                indices[:, :, i] = max_idx + start
+        else:
+            # 当start == end时，复制单个元素
+            output[:, :, i] = input[:, :, start]
+            if return_indices:
+                indices[:, :, i] = start
+    
+    if return_indices:
+        return output, indices
+    return output
+
+
+def adaptive_max_pool2d(input: TN, output_size: tuple[int, int] | int, return_indices: bool = False) -> TN | tuple[TN, TN]:
+    r"""对输入张量应用2D自适应最大池化。
+    
+    自适应池化会根据输入尺寸和目标输出尺寸自动计算池化核大小和步长，
+    确保输出尺寸始终为指定的output_size。
+    
+    参数:
+        input (TN): 输入张量，形状为 (N, C, H_in, W_in)
+        output_size (tuple[int, int] | int): 目标输出尺寸 (H_out, W_out) 或单个整数（正方形输出）
+        return_indices (bool, optional): 是否返回最大值的索引。默认值: False
+        
+    返回:
+        TN 或 tuple(TN, TN): 池化后的张量，形状为 (N, C, H_out, W_out)
+            如果 return_indices 为 True，则返回 (output, indices)
+            indices的形状为 (N, C, H_out, W_out)，存储的是flatten后的索引
+            
+    形状转换:
+        - 输入: (N, C, H_in, W_in)
+        - 输出: (N, C, H_out, W_out)
+        
+    计算逻辑:
+        对于每个输出位置(i, j)，计算对应的输入区域并取最大值：
+        - stride_h = H_in / H_out, stride_w = W_in / W_out
+        - start_h = floor(i * stride_h), end_h = ceil((i + 1) * stride_h)
+        - start_w = floor(j * stride_w), end_w = ceil((j + 1) * stride_w)
+        
+    示例::
+    
+        >>> # 输入为32x32，输出为7x7
+        >>> input = rm.randn(2, 3, 32, 32)
+        >>> output = adaptive_max_pool2d(input, (7, 7))
+        >>> print(output.shape)  # (2, 3, 7, 7)
+        
+        >>> # 返回索引
+        >>> output, indices = adaptive_max_pool2d(input, (7, 7), return_indices=True)
+        >>> print(indices.shape)  # (2, 3, 7, 7)
+        
+    注意:
+        - 与标准max_pool2d不同，不需要指定kernel_size和stride
+        - 输出尺寸固定为output_size，不受输入尺寸影响
+        - 返回的indices是flatten后的索引，可用于max_unpool2d
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    if input.ndim != 4:
+        raise ValueError(f"Expected 4D tensor for input, but got {input.ndim}D tensor")
+    
+    # 处理output_size参数
+    if isinstance(output_size, int):
+        H_out, W_out = output_size, output_size
+    elif isinstance(output_size, (tuple, list)) and len(output_size) == 2:
+        H_out, W_out = output_size
+        if not (isinstance(H_out, int) and isinstance(W_out, int) and H_out > 0 and W_out > 0):
+            raise ValueError(f"output_size elements must be positive integers, got {output_size}")
+    else:
+        raise ValueError(f"output_size must be int or tuple of two ints, got {output_size}")
+    
+    N, C, H_in, W_in = input.shape
+    
+    if H_in == H_out and W_in == W_out:
+        # 输入输出尺寸相同，直接返回
+        if return_indices:
+            indices = arange(H_in * W_in, dtype='int64', device=input.device).reshape(1, 1, H_in, W_in).broadcast_to((N, C, H_in, W_in))
+            return input.clone(), indices
+        return input.clone()
+    
+    # 创建输出张量
+    output = zeros((N, C, H_out, W_out), dtype=input.dtype, device=input.device)
+    if return_indices:
+        indices = zeros((N, C, H_out, W_out), dtype='int64', device=input.device)
+    
+    # 优化版本：使用行向量化策略
+    # 对每一行输出，预先提取高度方向的区域，然后在列方向循环
+    for i in range(H_out):
+        # 计算高度方向的起始和结束索引
+        start_h = i * H_in // H_out
+        end_h = ((i + 1) * H_in + H_out - 1) // H_out
+        end_h = end_h if end_h < H_in else H_in
+        
+        if end_h > start_h:
+            # 高度方向有多个元素，提取整行区域
+            row_region = input[:, :, start_h:end_h, :]  # (N, C, h_size, W_in)
+            
+            # 对每一列输出位置计算最大值
+            for j in range(W_out):
+                start_w = j * W_in // W_out
+                end_w = ((j + 1) * W_in + W_out - 1) // W_out
+                end_w = end_w if end_w < W_in else W_in
+                
+                if end_w > start_w:
+                    # 提取子区域并计算最大值
+                    cell_region = row_region[:, :, :, start_w:end_w]
+                    cell_reshaped = cell_region.reshape(N, C, -1)
+                    max_result = cell_reshaped.max(dim=2)
+                    output[:, :, i, j] = max_result.values
+                    if return_indices:
+                        max_idx = cell_reshaped.argmax(dim=2)
+                        max_idx_data = max_idx.data
+                        idx_h_data = max_idx_data // (end_w - start_w) + start_h
+                        idx_w_data = max_idx_data % (end_w - start_w) + start_w
+                        indices[:, :, i, j] = idx_h_data * W_in + idx_w_data
+                else:
+                    # 宽度方向只有一个元素
+                    col_region = row_region[:, :, :, start_w]
+                    max_result = col_region.max(dim=2)
+                    output[:, :, i, j] = max_result.values
+                    if return_indices:
+                        max_idx = col_region.argmax(dim=2)
+                        indices[:, :, i, j] = (max_idx.data + start_h) * W_in + start_w
+        else:
+            # 高度方向只有一个元素
+            row_slice = input[:, :, start_h, :]  # (N, C, W_in)
+            
+            for j in range(W_out):
+                start_w = j * W_in // W_out
+                end_w = ((j + 1) * W_in + W_out - 1) // W_out
+                end_w = end_w if end_w < W_in else W_in
+                
+                if end_w > start_w:
+                    cell_region = row_slice[:, :, start_w:end_w]
+                    max_result = cell_region.max(dim=2)
+                    output[:, :, i, j] = max_result.values
+                    if return_indices:
+                        max_idx = cell_region.argmax(dim=2)
+                        indices[:, :, i, j] = start_h * W_in + max_idx.data + start_w
+                else:
+                    output[:, :, i, j] = row_slice[:, :, start_w]
+                    if return_indices:
+                        indices[:, :, i, j] = start_h * W_in + start_w
+    
+    if return_indices:
+        return output, indices
+    return output
+
+
+def adaptive_max_pool3d(input: TN, output_size: tuple[int, int, int] | int, return_indices: bool = False) -> TN | tuple[TN, TN]:
+    r"""对输入张量应用3D自适应最大池化。
+    
+    自适应池化会根据输入尺寸和目标输出尺寸自动计算池化核大小和步长，
+    确保输出尺寸始终为指定的output_size。
+    
+    参数:
+        input (TN): 输入张量，形状为 (N, C, D_in, H_in, W_in)
+        output_size (tuple[int, int, int] | int): 目标输出尺寸 (D_out, H_out, W_out) 或单个整数（立方体输出）
+        return_indices (bool, optional): 是否返回最大值的索引。默认值: False
+        
+    返回:
+        TN 或 tuple(TN, TN): 池化后的张量，形状为 (N, C, D_out, H_out, W_out)
+            如果 return_indices 为 True，则返回 (output, indices)
+            indices的形状为 (N, C, D_out, H_out, W_out)，存储的是flatten后的索引
+            
+    形状转换:
+        - 输入: (N, C, D_in, H_in, W_in)
+        - 输出: (N, C, D_out, H_out, W_out)
+        
+    计算逻辑:
+        对于每个输出位置(d, i, j)，计算对应的输入区域并取最大值：
+        - stride_d = D_in / D_out, stride_h = H_in / H_out, stride_w = W_in / W_out
+        - start_d = floor(d * stride_d), end_d = ceil((d + 1) * stride_d)
+        - start_h = floor(i * stride_h), end_h = ceil((i + 1) * stride_h)
+        - start_w = floor(j * stride_w), end_w = ceil((j + 1) * stride_w)
+        
+    示例::
+    
+        >>> # 输入为8x8x8，输出为4x4x4
+        >>> input = rm.randn(2, 3, 8, 8, 8)
+        >>> output = adaptive_max_pool3d(input, (4, 4, 4))
+        >>> print(output.shape)  # (2, 3, 4, 4, 4)
+        
+        >>> # 返回索引
+        >>> output, indices = adaptive_max_pool3d(input, (4, 4, 4), return_indices=True)
+        >>> print(indices.shape)  # (2, 3, 4, 4, 4)
+        
+    注意:
+        - 与标准max_pool3d不同，不需要指定kernel_size和stride
+        - 输出尺寸固定为output_size，不受输入尺寸影响
+        - 返回的indices是flatten后的索引
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    if input.ndim != 5:
+        raise ValueError(f"Expected 5D tensor for input, but got {input.ndim}D tensor")
+    
+    # 处理output_size参数
+    if isinstance(output_size, int):
+        D_out, H_out, W_out = output_size, output_size, output_size
+    elif isinstance(output_size, (tuple, list)) and len(output_size) == 3:
+        D_out, H_out, W_out = output_size
+        if not all(isinstance(x, int) and x > 0 for x in (D_out, H_out, W_out)):
+            raise ValueError(f"output_size elements must be positive integers, got {output_size}")
+    else:
+        raise ValueError(f"output_size must be int or tuple of three ints, got {output_size}")
+    
+    N, C, D_in, H_in, W_in = input.shape
+    
+    if D_in == D_out and H_in == H_out and W_in == W_out:
+        # 输入输出尺寸相同，直接返回
+        if return_indices:
+            indices = arange(D_in * H_in * W_in, dtype='int64', device=input.device).reshape(1, 1, D_in, H_in, W_in).broadcast_to((N, C, D_in, H_in, W_in))
+            return input.clone(), indices
+        return input.clone()
+    
+    # 创建输出张量
+    output = zeros((N, C, D_out, H_out, W_out), dtype=input.dtype, device=input.device)
+    if return_indices:
+        indices = zeros((N, C, D_out, H_out, W_out), dtype='int64', device=input.device)
+    
+    # 优化版本：使用层向量化策略
+    # 对每一层（深度）输出，预先提取深度方向的区域，然后在高宽方向循环
+    for d in range(D_out):
+        # 计算深度方向的起始和结束索引
+        start_d = d * D_in // D_out
+        end_d = ((d + 1) * D_in + D_out - 1) // D_out
+        end_d = end_d if end_d < D_in else D_in
+        
+        if end_d > start_d:
+            # 深度方向有多个元素，提取整个深度区域
+            depth_region = input[:, :, start_d:end_d, :, :]  # (N, C, d_size, H_in, W_in)
+            
+            # 在高宽方向循环
+            for i in range(H_out):
+                start_h = i * H_in // H_out
+                end_h = ((i + 1) * H_in + H_out - 1) // H_out
+                end_h = end_h if end_h < H_in else H_in
+                
+                for j in range(W_out):
+                    start_w = j * W_in // W_out
+                    end_w = ((j + 1) * W_in + W_out - 1) // W_out
+                    end_w = end_w if end_w < W_in else W_in
+                    
+                    if end_h > start_h and end_w > start_w:
+                        cell_region = depth_region[:, :, :, start_h:end_h, start_w:end_w]
+                        cell_reshaped = cell_region.reshape(N, C, -1)
+                        max_result = cell_reshaped.max(dim=2)
+                        output[:, :, d, i, j] = max_result.values
+                        if return_indices:
+                            max_idx = cell_reshaped.argmax(dim=2)
+                            d_size = end_d - start_d
+                            h_size = end_h - start_h
+                            w_size = end_w - start_w
+                            max_idx_data = max_idx.data
+                            idx_d_data = max_idx_data // (h_size * w_size) + start_d
+                            rem_data = max_idx_data % (h_size * w_size)
+                            idx_h_data = rem_data // w_size + start_h
+                            idx_w_data = rem_data % w_size + start_w
+                            indices[:, :, d, i, j] = idx_d_data * H_in * W_in + idx_h_data * W_in + idx_w_data
+                    elif end_h > start_h:
+                        cell_region = depth_region[:, :, :, start_h:end_h, start_w]
+                        cell_reshaped = cell_region.reshape(N, C, -1)
+                        max_result = cell_reshaped.max(dim=2)
+                        output[:, :, d, i, j] = max_result.values
+                        if return_indices:
+                            max_idx = cell_reshaped.argmax(dim=2)
+                            d_size = end_d - start_d
+                            max_idx_data = max_idx.data
+                            idx_d_data = max_idx_data // d_size + start_d
+                            idx_h_data = max_idx_data % d_size + start_h
+                            indices[:, :, d, i, j] = idx_d_data * H_in * W_in + idx_h_data * W_in + start_w
+                    elif end_w > start_w:
+                        cell_region = depth_region[:, :, :, start_h, start_w:end_w]
+                        cell_reshaped = cell_region.reshape(N, C, -1)
+                        max_result = cell_reshaped.max(dim=2)
+                        output[:, :, d, i, j] = max_result.values
+                        if return_indices:
+                            max_idx = cell_reshaped.argmax(dim=2)
+                            d_size = end_d - start_d
+                            max_idx_data = max_idx.data
+                            idx_d_data = max_idx_data // d_size + start_d
+                            idx_w_data = max_idx_data % d_size + start_w
+                            indices[:, :, d, i, j] = idx_d_data * H_in * W_in + start_h * W_in + idx_w_data
+                    else:
+                        cell_region = depth_region[:, :, :, start_h, start_w]
+                        max_result = cell_region.max(dim=2)
+                        output[:, :, d, i, j] = max_result.values
+                        if return_indices:
+                            max_idx = cell_region.argmax(dim=2)
+                            indices[:, :, d, i, j] = (max_idx.data + start_d) * H_in * W_in + start_h * W_in + start_w
+        else:
+            # 深度方向只有一个元素
+            depth_slice = input[:, :, start_d, :, :]  # (N, C, H_in, W_in)
+            
+            for i in range(H_out):
+                start_h = i * H_in // H_out
+                end_h = ((i + 1) * H_in + H_out - 1) // H_out
+                end_h = end_h if end_h < H_in else H_in
+                
+                for j in range(W_out):
+                    start_w = j * W_in // W_out
+                    end_w = ((j + 1) * W_in + W_out - 1) // W_out
+                    end_w = end_w if end_w < W_in else W_in
+                    
+                    if end_h > start_h and end_w > start_w:
+                        cell_region = depth_slice[:, :, start_h:end_h, start_w:end_w]
+                        cell_reshaped = cell_region.reshape(N, C, -1)
+                        max_result = cell_reshaped.max(dim=2)
+                        output[:, :, d, i, j] = max_result.values
+                        if return_indices:
+                            max_idx = cell_reshaped.argmax(dim=2)
+                            h_size = end_h - start_h
+                            max_idx_data = max_idx.data
+                            idx_h_data = max_idx_data // h_size + start_h
+                            idx_w_data = max_idx_data % h_size + start_w
+                            indices[:, :, d, i, j] = start_d * H_in * W_in + idx_h_data * W_in + idx_w_data
+                    elif end_h > start_h:
+                        cell_region = depth_slice[:, :, start_h:end_h, start_w]
+                        max_result = cell_region.max(dim=2)
+                        output[:, :, d, i, j] = max_result.values
+                        if return_indices:
+                            max_idx = cell_region.argmax(dim=2)
+                            indices[:, :, d, i, j] = start_d * H_in * W_in + (max_idx.data + start_h) * W_in + start_w
+                    elif end_w > start_w:
+                        cell_region = depth_slice[:, :, start_h, start_w:end_w]
+                        max_result = cell_region.max(dim=2)
+                        output[:, :, d, i, j] = max_result.values
+                        if return_indices:
+                            max_idx = cell_region.argmax(dim=2)
+                            indices[:, :, d, i, j] = start_d * H_in * W_in + start_h * W_in + max_idx.data + start_w
+                    else:
+                        output[:, :, d, i, j] = depth_slice[:, :, start_h, start_w]
+                        if return_indices:
+                            indices[:, :, d, i, j] = start_d * H_in * W_in + start_h * W_in + start_w
+    
+    if return_indices:
+        return output, indices
+    return output
+
+
