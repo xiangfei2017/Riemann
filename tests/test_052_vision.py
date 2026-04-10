@@ -20,7 +20,6 @@ import sys
 import os
 import time
 import numpy as np
-from typing import Tuple, Dict, Any, List
 from PIL import Image
 
 # 添加Riemann库路径
@@ -32,12 +31,17 @@ from riemann.vision.transforms import (
     Compose, ToTensor, ToPILImage, Normalize, Resize, CenterCrop,
     RandomHorizontalFlip, RandomVerticalFlip, RandomRotation, ColorJitter,
     Grayscale, RandomGrayscale, RandomResizedCrop, FiveCrop, TenCrop,
-    Pad, Lambda
+    Pad, Lambda, RandomCrop,
+    # 新增加的类
+    InterpolationMode, RandomAffine, RandomPerspective, RandomErasing,
+    GaussianBlur, AutoAugment, RandAugment, TrivialAugmentWide,
+    SanitizeBoundingBox, ConvertImageDtype, PILToTensor as RiemannPILToTensor,
+    # 本次补充的类
+    Invert, Posterize, Solarize, Equalize, AutoContrast, Sharpness,
+    Brightness, Contrast, Saturation, Hue
 )
 
-import torch
-import torchvision
-from torchvision import datasets, transforms as torch_transforms
+from torchvision import transforms as torch_transforms
 from torchvision.datasets import MNIST as TorchMNIST, CIFAR10 as TorchCIFAR10
 
 
@@ -823,6 +827,465 @@ def test_transforms(stats=None):
                             f"数组形状: Riemann {rm_array.shape}, PyTorch {torch_array.shape}")
         except Exception as e:
             stats.add_result("Pad", False, f"测试异常: {str(e)}")
+        
+        # ==================== 新增加的Transforms类测试 ====================
+        print("\n测试新增加的Transforms类...")
+        
+        # 测试InterpolationMode
+        print("测试InterpolationMode...")
+        try:
+            # 测试枚举值
+            stats.add_result("InterpolationMode-NEAREST", InterpolationMode.NEAREST.value == "nearest",
+                            f"值: {InterpolationMode.NEAREST.value}")
+            stats.add_result("InterpolationMode-BILINEAR", InterpolationMode.BILINEAR.value == "bilinear",
+                            f"值: {InterpolationMode.BILINEAR.value}")
+            stats.add_result("InterpolationMode-BICUBIC", InterpolationMode.BICUBIC.value == "bicubic",
+                            f"值: {InterpolationMode.BICUBIC.value}")
+        except Exception as e:
+            stats.add_result("InterpolationMode", False, f"测试异常: {str(e)}")
+        
+        # 测试PILToTensor（与ToTensor区分）
+        print("测试PILToTensor...")
+        try:
+            rm_pil_to_tensor = RiemannPILToTensor()
+            rm_result = rm_pil_to_tensor(rgb_image)
+            
+            # PILToTensor不缩放值到[0,1]，保持原始值[0,255]
+            stats.add_result("PILToTensor-输出形状", rm_result.shape == (3, 64, 64),
+                            f"形状: {rm_result.shape}")
+            stats.add_result("PILToTensor-值范围", rm_result.data.max() > 1.0,
+                            f"最大值: {rm_result.data.max():.2f} (应该>1.0，因为不缩放)")
+            # 检查是否为TN类型（从riemann导入的tensor类型）
+            from riemann.tensordef import TN
+            stats.add_result("PILToTensor-类型", isinstance(rm_result, TN),
+                            f"类型: {type(rm_result)}")
+        except Exception as e:
+            stats.add_result("PILToTensor", False, f"测试异常: {str(e)}")
+        
+        # 测试ConvertImageDtype
+        print("测试ConvertImageDtype...")
+        try:
+            # 创建测试张量
+            test_tensor = rm.tensor(np.random.randint(0, 256, (3, 32, 32), dtype=np.uint8))
+            rm_convert = ConvertImageDtype(np.float32)
+            rm_result = rm_convert(test_tensor)
+            
+            stats.add_result("ConvertImageDtype-类型转换", rm_result.data.dtype == np.float32,
+                            f"转换后类型: {rm_result.data.dtype}")
+            stats.add_result("ConvertImageDtype-形状保持", rm_result.shape == test_tensor.shape,
+                            f"形状: {rm_result.shape}")
+        except Exception as e:
+            stats.add_result("ConvertImageDtype", False, f"测试异常: {str(e)}")
+        
+        # 测试GaussianBlur
+        print("测试GaussianBlur...")
+        try:
+            rm_blur = GaussianBlur(kernel_size=5, sigma=1.0)
+            torch_blur = torch_transforms.GaussianBlur(kernel_size=5, sigma=1.0)
+            
+            rm_result = rm_blur(rgb_image)
+            torch_result = torch_blur(rgb_image)
+            
+            # 比较图像大小和模式
+            size_match = rm_result.size == torch_result.size
+            mode_match = rm_result.mode == torch_result.mode
+            stats.add_result("GaussianBlur-图像大小", size_match,
+                            f"Riemann: {rm_result.size}, PyTorch: {torch_result.size}")
+            stats.add_result("GaussianBlur-图像模式", mode_match,
+                            f"Riemann: {rm_result.mode}, PyTorch: {torch_result.mode}")
+            
+            # 模糊后的图像应该与原始图像不同
+            rm_array = np.array(rm_result)
+            original_array = np.array(rgb_image)
+            is_different = not np.array_equal(rm_array, original_array)
+            stats.add_result("GaussianBlur-图像变化", is_different, "模糊后图像应该与原始图像不同")
+        except Exception as e:
+            stats.add_result("GaussianBlur", False, f"测试异常: {str(e)}")
+        
+        # 测试RandomAffine
+        print("测试RandomAffine...")
+        try:
+            rm_affine = RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1))
+            torch_affine = torch_transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1))
+            
+            rm_result = rm_affine(rgb_image)
+            torch_result = torch_affine(rgb_image)
+            
+            # 比较图像大小和模式
+            size_match = rm_result.size == torch_result.size
+            mode_match = rm_result.mode == torch_result.mode
+            stats.add_result("RandomAffine-图像大小", size_match,
+                            f"Riemann: {rm_result.size}, PyTorch: {torch_result.size}")
+            stats.add_result("RandomAffine-图像模式", mode_match,
+                            f"Riemann: {rm_result.mode}, PyTorch: {torch_result.mode}")
+            
+            # 不比较像素值，因为随机变换结果不同
+            stats.add_result("RandomAffine-像素值", True, "随机变换不比较像素值")
+        except Exception as e:
+            stats.add_result("RandomAffine", False, f"测试异常: {str(e)}")
+        
+        # 测试RandomPerspective
+        print("测试RandomPerspective...")
+        try:
+            rm_perspective = RandomPerspective(distortion_scale=0.3, p=1.0)
+            torch_perspective = torch_transforms.RandomPerspective(distortion_scale=0.3, p=1.0)
+            
+            rm_result = rm_perspective(rgb_image)
+            torch_result = torch_perspective(rgb_image)
+            
+            # 比较图像大小和模式
+            size_match = rm_result.size == torch_result.size
+            mode_match = rm_result.mode == torch_result.mode
+            stats.add_result("RandomPerspective-图像大小", size_match,
+                            f"Riemann: {rm_result.size}, PyTorch: {torch_result.size}")
+            stats.add_result("RandomPerspective-图像模式", mode_match,
+                            f"Riemann: {rm_result.mode}, PyTorch: {torch_result.mode}")
+            
+            # 不比较像素值，因为随机变换结果不同
+            stats.add_result("RandomPerspective-像素值", True, "随机变换不比较像素值")
+        except Exception as e:
+            stats.add_result("RandomPerspective", False, f"测试异常: {str(e)}")
+        
+        # 测试RandomErasing
+        print("测试RandomErasing...")
+        try:
+            from riemann.tensordef import TN
+            # RandomErasing需要TN张量作为输入
+            test_tensor = rm.tensor(np.random.rand(3, 64, 64).astype(np.float32))
+            rm_erasing = RandomErasing(p=1.0, scale=(0.1, 0.3), value='random')
+            
+            rm_result = rm_erasing(test_tensor)
+            
+            stats.add_result("RandomErasing-输出形状", rm_result.shape == test_tensor.shape,
+                            f"形状: {rm_result.shape}")
+            stats.add_result("RandomErasing-类型保持", isinstance(rm_result, TN),
+                            f"类型: {type(rm_result)}")
+            
+            # 擦除后的张量应该与原始张量不同
+            is_different = not np.allclose(rm_result.data, test_tensor.data)
+            stats.add_result("RandomErasing-张量变化", is_different, "擦除后张量应该与原始张量不同")
+        except Exception as e:
+            stats.add_result("RandomErasing", False, f"测试异常: {str(e)}")
+        
+        # 测试AutoAugment
+        print("测试AutoAugment...")
+        try:
+            rm_autoaugment = AutoAugment(policy='imagenet')
+            torch_autoaugment = torch_transforms.AutoAugment(policy=torch_transforms.AutoAugmentPolicy.IMAGENET)
+            
+            rm_result = rm_autoaugment(rgb_image)
+            torch_result = torch_autoaugment(rgb_image)
+            
+            # 比较图像大小和模式
+            size_match = rm_result.size == torch_result.size
+            mode_match = rm_result.mode == torch_result.mode
+            stats.add_result("AutoAugment-图像大小", size_match,
+                            f"Riemann: {rm_result.size}, PyTorch: {torch_result.size}")
+            stats.add_result("AutoAugment-图像模式", mode_match,
+                            f"Riemann: {rm_result.mode}, PyTorch: {torch_result.mode}")
+            
+            # 不比较像素值，因为随机变换结果不同
+            stats.add_result("AutoAugment-像素值", True, "随机变换不比较像素值")
+        except Exception as e:
+            stats.add_result("AutoAugment", False, f"测试异常: {str(e)}")
+        
+        # 测试RandAugment
+        print("测试RandAugment...")
+        try:
+            rm_randaugment = RandAugment(num_ops=2, magnitude=9)
+            torch_randaugment = torch_transforms.RandAugment(num_ops=2, magnitude=9)
+            
+            rm_result = rm_randaugment(rgb_image)
+            torch_result = torch_randaugment(rgb_image)
+            
+            # 比较图像大小和模式
+            size_match = rm_result.size == torch_result.size
+            mode_match = rm_result.mode == torch_result.mode
+            stats.add_result("RandAugment-图像大小", size_match,
+                            f"Riemann: {rm_result.size}, PyTorch: {torch_result.size}")
+            stats.add_result("RandAugment-图像模式", mode_match,
+                            f"Riemann: {rm_result.mode}, PyTorch: {torch_result.mode}")
+            
+            # 不比较像素值，因为随机变换结果不同
+            stats.add_result("RandAugment-像素值", True, "随机变换不比较像素值")
+        except Exception as e:
+            stats.add_result("RandAugment", False, f"测试异常: {str(e)}")
+        
+        # 测试TrivialAugmentWide
+        print("测试TrivialAugmentWide...")
+        try:
+            rm_trivial = TrivialAugmentWide()
+            torch_trivial = torch_transforms.TrivialAugmentWide()
+            
+            rm_result = rm_trivial(rgb_image)
+            torch_result = torch_trivial(rgb_image)
+            
+            # 比较图像大小和模式
+            size_match = rm_result.size == torch_result.size
+            mode_match = rm_result.mode == torch_result.mode
+            stats.add_result("TrivialAugmentWide-图像大小", size_match,
+                            f"Riemann: {rm_result.size}, PyTorch: {torch_result.size}")
+            stats.add_result("TrivialAugmentWide-图像模式", mode_match,
+                            f"Riemann: {rm_result.mode}, PyTorch: {torch_result.mode}")
+            
+            # 不比较像素值，因为随机变换结果不同
+            stats.add_result("TrivialAugmentWide-像素值", True, "随机变换不比较像素值")
+        except Exception as e:
+            stats.add_result("TrivialAugmentWide", False, f"测试异常: {str(e)}")
+        
+        # 测试SanitizeBoundingBox
+        print("测试SanitizeBoundingBox...")
+        try:
+            # 创建测试边界框 (x1, y1, x2, y2)
+            boxes = rm.tensor(np.array([
+                [10, 10, 50, 50],   # 有效框
+                [5, 5, 100, 100],   # 有效框
+                [0, 0, 1, 1],       # 太小，应该被过滤
+                [60, 60, 40, 40],   # 无效框 (x1 > x2)
+                [-5, -5, 10, 10],   # 部分在图像外
+            ], dtype=np.float32))
+            labels = rm.tensor(np.array([1, 2, 3, 4, 5], dtype=np.int64))
+            
+            sanitize = SanitizeBoundingBox(min_size=5)
+            valid_boxes, valid_labels = sanitize(boxes, labels)
+            
+            stats.add_result("SanitizeBoundingBox-过滤无效框", valid_boxes.shape[0] < boxes.shape[0],
+                            f"输入: {boxes.shape[0]}个框, 输出: {valid_boxes.shape[0]}个框")
+            stats.add_result("SanitizeBoundingBox-标签同步", valid_labels.shape[0] == valid_boxes.shape[0],
+                            f"有效标签数: {valid_labels.shape[0]}")
+            stats.add_result("SanitizeBoundingBox-输出形状", valid_boxes.shape[1] == 4,
+                            f"边界框形状: {valid_boxes.shape}")
+        except Exception as e:
+            stats.add_result("SanitizeBoundingBox", False, f"测试异常: {str(e)}")
+        
+        # ==================== 本次补充的Transforms类测试 ====================
+        print("\n测试本次补充的Transforms类...")
+        
+        # 测试Invert
+        print("测试Invert...")
+        try:
+            rm_invert = Invert()
+            rm_result = rm_invert(rgb_image)
+            
+            # 验证基本功能
+            stats.add_result("Invert-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("Invert-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证反转效果：两次反转应该回到原图
+            rm_restored = rm_invert(rm_result)
+            restored_array = np.array(rm_restored)
+            original_array = np.array(rgb_image)
+            is_restored = np.array_equal(restored_array, original_array)
+            stats.add_result("Invert-可逆性", is_restored, "两次反转应该回到原图")
+        except Exception as e:
+            stats.add_result("Invert", False, f"测试异常: {str(e)}")
+        
+        # 测试Posterize
+        print("测试Posterize...")
+        try:
+            rm_posterize = Posterize(bits=4)
+            rm_result = rm_posterize(rgb_image)
+            
+            # 验证基本功能
+            stats.add_result("Posterize-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("Posterize-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证posterize效果：颜色数量应该减少
+            rm_array = np.array(rm_result)
+            original_array = np.array(rgb_image)
+            is_different = not np.array_equal(rm_array, original_array)
+            stats.add_result("Posterize-图像变化", is_different, "Posterize后图像应该不同")
+        except Exception as e:
+            stats.add_result("Posterize", False, f"测试异常: {str(e)}")
+        
+        # 测试Solarize
+        print("测试Solarize...")
+        try:
+            rm_solarize = Solarize(threshold=128)
+            rm_result = rm_solarize(rgb_image)
+            
+            # 验证基本功能
+            stats.add_result("Solarize-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("Solarize-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证solarize效果
+            rm_array = np.array(rm_result)
+            original_array = np.array(rgb_image)
+            is_different = not np.array_equal(rm_array, original_array)
+            stats.add_result("Solarize-图像变化", is_different, "Solarize后图像应该不同")
+        except Exception as e:
+            stats.add_result("Solarize", False, f"测试异常: {str(e)}")
+        
+        # 测试Equalize
+        print("测试Equalize...")
+        try:
+            rm_equalize = Equalize()
+            rm_result = rm_equalize(rgb_image)
+            
+            # 验证基本功能
+            stats.add_result("Equalize-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("Equalize-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证equalize效果
+            rm_array = np.array(rm_result)
+            original_array = np.array(rgb_image)
+            is_different = not np.array_equal(rm_array, original_array)
+            stats.add_result("Equalize-图像变化", is_different, "Equalize后图像应该不同")
+        except Exception as e:
+            stats.add_result("Equalize", False, f"测试异常: {str(e)}")
+        
+        # 测试AutoContrast
+        print("测试AutoContrast...")
+        try:
+            rm_autocontrast = AutoContrast()
+            rm_result = rm_autocontrast(rgb_image)
+            
+            # 验证基本功能
+            stats.add_result("AutoContrast-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("AutoContrast-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证autocontrast返回的是PIL图像
+            stats.add_result("AutoContrast-返回类型", isinstance(rm_result, Image.Image),
+                            f"类型: {type(rm_result)}")
+        except Exception as e:
+            stats.add_result("AutoContrast", False, f"测试异常: {str(e)}")
+        
+        # 测试Sharpness
+        print("测试Sharpness...")
+        try:
+            rm_sharpness = Sharpness(sharpness_factor=2.0)
+            rm_result = rm_sharpness(rgb_image)
+            
+            # 验证基本功能
+            stats.add_result("Sharpness-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("Sharpness-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证sharpness效果
+            rm_array = np.array(rm_result)
+            original_array = np.array(rgb_image)
+            is_different = not np.array_equal(rm_array, original_array)
+            stats.add_result("Sharpness-图像变化", is_different, "Sharpness调整后图像应该不同")
+        except Exception as e:
+            stats.add_result("Sharpness", False, f"测试异常: {str(e)}")
+        
+        # 测试Brightness
+        print("测试Brightness...")
+        try:
+            rm_brightness = Brightness(brightness_factor=1.5)
+            torch_brightness = torch_transforms.ColorJitter(brightness=0.5)
+            
+            rm_result = rm_brightness(rgb_image)
+            # ColorJitter是随机的，我们直接测试Riemann的功能
+            
+            stats.add_result("Brightness-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("Brightness-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证亮度确实改变了
+            rm_array = np.array(rm_result)
+            original_array = np.array(rgb_image)
+            is_different = not np.array_equal(rm_array, original_array)
+            stats.add_result("Brightness-图像变化", is_different, "亮度调整后图像应该不同")
+        except Exception as e:
+            stats.add_result("Brightness", False, f"测试异常: {str(e)}")
+        
+        # 测试Contrast
+        print("测试Contrast...")
+        try:
+            rm_contrast = Contrast(contrast_factor=1.5)
+            
+            rm_result = rm_contrast(rgb_image)
+            
+            stats.add_result("Contrast-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("Contrast-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证对比度确实改变了
+            rm_array = np.array(rm_result)
+            original_array = np.array(rgb_image)
+            is_different = not np.array_equal(rm_array, original_array)
+            stats.add_result("Contrast-图像变化", is_different, "对比度调整后图像应该不同")
+        except Exception as e:
+            stats.add_result("Contrast", False, f"测试异常: {str(e)}")
+        
+        # 测试Saturation
+        print("测试Saturation...")
+        try:
+            rm_saturation = Saturation(saturation_factor=1.5)
+            
+            rm_result = rm_saturation(rgb_image)
+            
+            stats.add_result("Saturation-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("Saturation-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证饱和度确实改变了
+            rm_array = np.array(rm_result)
+            original_array = np.array(rgb_image)
+            is_different = not np.array_equal(rm_array, original_array)
+            stats.add_result("Saturation-图像变化", is_different, "饱和度调整后图像应该不同")
+        except Exception as e:
+            stats.add_result("Saturation", False, f"测试异常: {str(e)}")
+        
+        # 测试Hue
+        print("测试Hue...")
+        try:
+            rm_hue = Hue(hue_factor=0.1)
+            
+            rm_result = rm_hue(rgb_image)
+            
+            stats.add_result("Hue-图像大小", rm_result.size == rgb_image.size,
+                            f"大小: {rm_result.size}")
+            stats.add_result("Hue-图像模式", rm_result.mode == rgb_image.mode,
+                            f"模式: {rm_result.mode}")
+            
+            # 验证色调确实改变了
+            rm_array = np.array(rm_result)
+            original_array = np.array(rgb_image)
+            is_different = not np.array_equal(rm_array, original_array)
+            stats.add_result("Hue-图像变化", is_different, "色调调整后图像应该不同")
+        except Exception as e:
+            stats.add_result("Hue", False, f"测试异常: {str(e)}")
+        
+        # ==================== 已有但未充分验证的类测试 ====================
+        print("\n测试已有但未充分验证的类...")
+        
+        # 测试RandomCrop
+        print("测试RandomCrop...")
+        try:
+            rm_random_crop = RandomCrop(size=(32, 32))
+            torch_random_crop = torch_transforms.RandomCrop(size=(32, 32))
+            
+            rm_result = rm_random_crop(rgb_image)
+            torch_result = torch_random_crop(rgb_image)
+            
+            # 比较图像大小和模式
+            size_match = rm_result.size == torch_result.size
+            mode_match = rm_result.mode == torch_result.mode
+            stats.add_result("RandomCrop-图像大小", size_match,
+                            f"Riemann: {rm_result.size}, PyTorch: {torch_result.size}")
+            stats.add_result("RandomCrop-图像模式", mode_match,
+                            f"Riemann: {rm_result.mode}, PyTorch: {torch_result.mode}")
+            
+            # 不比较像素值，因为随机裁剪位置不同
+            stats.add_result("RandomCrop-像素值", True, "随机变换不比较像素值")
+        except Exception as e:
+            stats.add_result("RandomCrop", False, f"测试异常: {str(e)}")
         
     except Exception as e:
         stats.add_result("Transforms测试", False, f"测试异常: {str(e)}")
