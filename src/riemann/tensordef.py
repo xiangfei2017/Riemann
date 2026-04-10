@@ -9452,17 +9452,17 @@ def fwbw_all_zero(x:TN)->TN:
 def attach_zero_grad_sources(self:TN, sources:tuple|list):
     """
     将多个张量作为来源张量依附到self张量上，不改变self的值，但self可以向这些张量传递0梯度。
-    
+
     该函数用于将张量加入计算图，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
     当调用backward时，self会向依附的来源张量传递全0梯度。
-    
+
     参数:
         sources: 要依附的来源张量集合，可以是tuple、list或set。
                 只有需要梯度(requires_grad=True)且不是self本身的张量才会被依附。
-        
+
     返回:
         self: 返回修改后的self张量，便于链式调用。
-        
+
     示例:
         >>> a = tensor([1.0, 2.0], requires_grad=True)
         >>> b = tensor([3.0, 4.0], requires_grad=True)
@@ -9473,40 +9473,40 @@ def attach_zero_grad_sources(self:TN, sources:tuple|list):
     def _zero_grad_backward(result:TN, i):
         return zeros_like(result.fromvars[i])
 
-    var_list = []
-    func_list = []
-    requires_grad = False
-    for var in sources:
-        if var is not self and isinstance(var,TN) and var.requires_grad:
-            var_list.append(var)
-            func_list.append(_zero_grad_backward)
-            requires_grad = True
-    
-    if requires_grad:
-        fromvar_list = list(self.fromvars)
-        grad_func_list = list(self.gradfuncs)
-        fromvar_list.extend(var_list)
-        grad_func_list.extend(func_list)
-        self.fromvars = tuple(fromvar_list)
-        self.gradfuncs = tuple(grad_func_list)
-        self.requires_grad = requires_grad
-    
+    # 过滤有效来源张量（需要梯度且不是self本身）
+    valid_sources = [
+        var for var in sources
+        if var is not self and isinstance(var, TN) and var.requires_grad
+    ]
+    if not valid_sources:
+        return self
+
+    # 直接扩展fromvars和gradfuncs，避免创建中间列表
+    self.fromvars = self.fromvars + tuple(valid_sources)
+    self.gradfuncs = self.gradfuncs + tuple(_zero_grad_backward for _ in valid_sources)
+    self.requires_grad = True
+
     return self
 
 def share_grad_map(tensors:tuple|list):
     """
     将一组张量相互连接到一个共享的计算图中，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
 
-    该函数对输入的每个需要梯度的张量进行克隆，然后将所有其他张量作为零梯度来源
-    依附到克隆张量上。这样可以在保持张量值和原始梯度计算不变的同时，将所有张量相互连接到
-    一个共享的计算图中。对于原本不参与计算的张量，它们会收到0梯度而非None。
+    核心机制：
+    1. 对每个需要梯度的张量进行克隆，克隆张量通过clone操作依赖原始张量（梯度透传）
+    2. 将其他张量（排除自身）作为零梯度来源依附到克隆张量上
+    3. 这样每个张量既保持与原始张量的梯度关系，又与其他张量形成0梯度连接
+
+    设计优化：
+    - 使用 `[s for s in tensors if s is not t]` 排除自身，避免双路径依赖
+    - 单路径设计：克隆张量只通过clone依赖原始张量，不通过attach重复依赖
 
     参数:
         tensors: 输入张量序列，必须是tuple或list类型。
                 序列中的每个张量都会被处理：
-                - 需要梯度的张量会被克隆，并将所有其他张量作为零梯度来源依附到克隆张量
+                - 需要梯度的张量会被克隆，并将其他张量（排除自身）作为零梯度来源依附到克隆张量
                 - 不需要梯度的张量或非TN对象保持原样
-    
+
     返回:
         与输入类型相同的张量序列（tuple或list）。
         返回的张量与输入张量值相同，但计算图已相互连接。
@@ -9519,30 +9519,30 @@ def share_grad_map(tensors:tuple|list):
         >>> a = tensor([1.0, 2.0], requires_grad=True)
         >>> b = tensor([3.0, 4.0], requires_grad=True)
         >>> c = tensor([5.0, 6.0], requires_grad=True)
-        >>> 
+        >>>
         >>> # 定义前向计算函数，只使用a和b
         >>> def func(t):
         ...     a, b, c = t
         ...     return (a * b).sum()
-        >>> 
+        >>>
         >>> # 映射前：c不参与计算，不会收到梯度
         >>> y1 = func((a, b, c))
         >>> y1.backward()
         >>> print(f"a.grad={a.grad}, b.grad={b.grad}, c.grad={c.grad}")
         a.grad=tensor([3., 4.]), b.grad=tensor([1., 2.]), c.grad=None
-        >>> 
+        >>>
         >>> # 重置张量
         >>> a = tensor([1.0, 2.0], requires_grad=True)
         >>> b = tensor([3.0, 4.0], requires_grad=True)
         >>> c = tensor([5.0, 6.0], requires_grad=True)
-        >>> 
+        >>>
         >>> # 映射后：所有张量相互连接，c会收到0梯度
         >>> a_new, b_new, c_new = share_grad_map((a, b, c))
         >>> y2 = func((a_new, b_new, c_new))
         >>> y2.backward()
         >>> print(f"a.grad={a_new.grad}, b.grad={b_new.grad}, c.grad={c_new.grad}")
         a.grad=tensor([3., 4.]), b.grad=tensor([1., 2.]), c.grad=tensor([0., 0.])
-        >>> 
+        >>>
         >>> # 验证：前向值不变，a和b梯度不变，c从None变为0
         >>> assert float(y1.data) == float(y2.data)
         >>> assert (a_new.grad == tensor([3., 4.])).all()
@@ -9555,11 +9555,14 @@ def share_grad_map(tensors:tuple|list):
     target_list = []
     for t in tensors:
         if isinstance(t,TN) and t.requires_grad:
-            new_t = t.clone()
-            target_list.append(new_t.attach_zero_grad_sources(tensors))
+            # 克隆张量并通过clone依赖原始张量（梯度透传）
+            # 将其他张量（排除自身）作为零梯度来源依附，避免双路径依赖
+            target_list.append(
+                t.clone().attach_zero_grad_sources([s for s in tensors if s is not t])
+            )
         else:
             target_list.append(t)
-    
+
     return type(tensors)(target_list)
 
 def _is_cupy_array(arr):
