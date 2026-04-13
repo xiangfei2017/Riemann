@@ -22,6 +22,7 @@ import time
 import tempfile
 import numpy as np
 from PIL import Image
+import pytest
 
 # 添加Riemann库路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -57,6 +58,12 @@ class Colors:
     ENDC = '\033[0m'
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
+
+
+@pytest.fixture
+def stats():
+    """pytest fixture providing StatisticsCollector instance"""
+    return StatisticsCollector()
 
 # 清屏函数
 def clear_screen():
