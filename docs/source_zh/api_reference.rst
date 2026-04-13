@@ -3397,6 +3397,69 @@ CUDA支持
    :param divisor_override: 如果指定，将使用该值作为分母
    :type divisor_override: int, 可选
 
+自适应池化层
+~~~~~~~~~~~~
+
+.. class:: riemann.nn.AdaptiveAvgPool1d(output_size)
+
+   一维自适应平均池化层。
+
+   根据指定的输出尺寸自动计算池化核大小和步长，确保输出尺寸始终为指定值。
+
+   :param output_size: 输出序列长度，可以是整数或 None（表示保持原尺寸）
+   :type output_size: int 或 tuple
+
+.. class:: riemann.nn.AdaptiveAvgPool2d(output_size)
+
+   二维自适应平均池化层。
+
+   根据指定的输出尺寸自动计算池化核大小和步长，常用于将任意尺寸的特征图转换为固定尺寸。
+
+   :param output_size: 输出尺寸，可以是整数或二元组 (H, W)，或 None（表示保持原尺寸）
+   :type output_size: int 或 tuple
+
+.. class:: riemann.nn.AdaptiveAvgPool3d(output_size)
+
+   三维自适应平均池化层。
+
+   根据指定的输出尺寸自动计算池化核大小和步长，常用于体积数据的特征提取。
+
+   :param output_size: 输出尺寸，可以是整数或三元组 (D, H, W)，或 None（表示保持原尺寸）
+   :type output_size: int 或 tuple
+
+.. class:: riemann.nn.AdaptiveMaxPool1d(output_size, return_indices=False)
+
+   一维自适应最大池化层。
+
+   根据指定的输出尺寸自动计算池化核大小和步长，确保输出尺寸始终为指定值。
+
+   :param output_size: 输出序列长度，可以是整数或 None（表示保持原尺寸）
+   :type output_size: int 或 tuple
+   :param return_indices: 是否返回最大值的索引
+   :type return_indices: bool, 可选
+
+.. class:: riemann.nn.AdaptiveMaxPool2d(output_size, return_indices=False)
+
+   二维自适应最大池化层。
+
+   根据指定的输出尺寸自动计算池化核大小和步长，常用于将任意尺寸的特征图转换为固定尺寸。
+
+   :param output_size: 输出尺寸，可以是整数或二元组 (H, W)，或 None（表示保持原尺寸）
+   :type output_size: int 或 tuple
+   :param return_indices: 是否返回最大值的索引
+   :type return_indices: bool, 可选
+
+.. class:: riemann.nn.AdaptiveMaxPool3d(output_size, return_indices=False)
+
+   三维自适应最大池化层。
+
+   根据指定的输出尺寸自动计算池化核大小和步长，常用于体积数据的特征提取。
+
+   :param output_size: 输出尺寸，可以是整数或三元组 (D, H, W)，或 None（表示保持原尺寸）
+   :type output_size: int 或 tuple
+   :param return_indices: 是否返回最大值的索引
+   :type return_indices: bool, 可选
+
 归一化层
 ~~~~~~~~
 
@@ -4720,6 +4783,72 @@ Dropout函数
 
       获取指定索引处的样本数据。
 
+.. class:: riemann.vision.datasets.DatasetFolder(root, loader, extensions=None, transform=None, target_transform=None, is_valid_file=None, allow_empty=False)
+
+   通用文件夹数据集类，用于从文件夹加载自定义数据集。
+
+   :param root: 数据集的根目录路径
+   :type root: str
+   :param loader: 图像加载函数
+   :type loader: callable
+   :param extensions: 允许的文件扩展名元组
+   :type extensions: tuple, optional
+   :param transform: 应用于图像的变换函数
+   :type transform: callable, optional
+   :param target_transform: 应用于目标的变换函数
+   :type target_transform: callable, optional
+   :param is_valid_file: 验证文件是否有效的函数
+   :type is_valid_file: callable, optional
+   :param allow_empty: 是否允许空文件夹，默认为False
+   :type allow_empty: bool
+
+   .. attribute:: classes
+
+      类别名称列表。
+
+   .. attribute:: class_to_idx
+
+      类别名称到索引的映射字典。
+
+   .. method:: __len__()
+
+      返回数据集中的样本数量。
+
+   .. method:: __getitem__(index)
+
+      根据给定索引获取数据集中的单个样本。
+
+.. class:: riemann.vision.datasets.ImageFolder(root, transform=None, target_transform=None, loader=None, is_valid_file=None)
+
+   图像文件夹数据集类，继承自 DatasetFolder，用于从文件夹加载图像数据集。
+
+   :param root: 数据集的根目录路径
+   :type root: str
+   :param transform: 应用于图像的变换函数
+   :type transform: callable, optional
+   :param target_transform: 应用于目标的变换函数
+   :type target_transform: callable, optional
+   :param loader: 图像加载函数，默认为 PIL Image 加载
+   :type loader: callable, optional
+   :param is_valid_file: 验证文件是否有效的函数
+   :type is_valid_file: callable, optional
+
+   .. attribute:: classes
+
+      类别名称列表。
+
+   .. attribute:: class_to_idx
+
+      类别名称到索引的映射字典。
+
+   .. method:: __len__()
+
+      返回数据集中的样本数量。
+
+   .. method:: __getitem__(index)
+
+      根据给定索引获取数据集中的单个样本。
+
 图像变换
 ~~~~~~~~
 
@@ -4884,6 +5013,174 @@ Dropout函数
 
    :param lambd: Lambda函数
    :type lambd: function
+
+.. class:: riemann.vision.transforms.PILToTensor
+
+   将PIL Image转换为张量（不缩放）。
+
+.. class:: riemann.vision.transforms.ConvertImageDtype(dtype)
+
+   转换图像数据类型。
+
+   :param dtype: 目标数据类型
+   :type dtype: torch.dtype
+
+.. class:: riemann.vision.transforms.GaussianBlur(kernel_size, sigma=(0.1, 2.0))
+
+   对图像应用高斯模糊。
+
+   :param kernel_size: 高斯核的大小
+   :type kernel_size: int or tuple
+   :param sigma: 高斯核的标准差范围
+   :type sigma: tuple, optional
+
+.. class:: riemann.vision.transforms.RandomAffine(degrees, translate=None, scale=None, shear=None, resample=NEAREST, fillcolor=0)
+
+   随机仿射变换。
+
+   :param degrees: 旋转角度范围
+   :type degrees: float or tuple
+   :param translate: 平移范围
+   :type translate: tuple, optional
+   :param scale: 缩放范围
+   :type scale: tuple, optional
+   :param shear: 剪切角度范围
+   :type shear: float or tuple, optional
+   :param resample: 重采样模式
+   :type resample: int, optional
+   :param fillcolor: 填充颜色
+   :type fillcolor: int, optional
+
+.. class:: riemann.vision.transforms.RandomPerspective(distortion_scale=0.5, p=0.5, interpolation=BILINEAR, fill=0)
+
+   随机透视变换。
+
+   :param distortion_scale: 失真程度
+   :type distortion_scale: float
+   :param p: 应用变换的概率
+   :type p: float
+   :param interpolation: 插值模式
+   :type interpolation: int
+   :param fill: 填充值
+   :type fill: int or tuple
+
+.. class:: riemann.vision.transforms.RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0, inplace=False)
+
+   随机擦除，用于数据增强。
+
+   :param p: 应用擦除的概率
+   :type p: float
+   :param scale: 擦除区域面积范围
+   :type scale: tuple
+   :param ratio: 擦除区域长宽比范围
+   :type ratio: tuple
+   :param value: 擦除填充值
+   :type value: int or float or tuple
+   :param inplace: 是否原地操作
+   :type inplace: bool
+
+.. class:: riemann.vision.transforms.AutoAugment(policy=AutoAugmentPolicy.IMAGENET)
+
+   自动数据增强，基于学习策略。
+
+   :param policy: 增强策略
+   :type policy: AutoAugmentPolicy
+
+.. class:: riemann.vision.transforms.RandAugment(num_ops=2, magnitude=9, num_magnitude_bins=31, interpolation=BILINEAR, fill=None)
+
+   随机数据增强。
+
+   :param num_ops: 操作数量
+   :type num_ops: int
+   :param magnitude: 增强幅度
+   :type magnitude: int
+   :param num_magnitude_bins: 幅度分箱数
+   :type num_magnitude_bins: int
+   :param interpolation: 插值模式
+   :type interpolation: int
+   :param fill: 填充值
+   :type fill: int or tuple or None
+
+.. class:: riemann.vision.transforms.TrivialAugmentWide(num_magnitude_bins=31, interpolation=BILINEAR, fill=None)
+
+   宽范围简单增强。
+
+   :param num_magnitude_bins: 幅度分箱数
+   :type num_magnitude_bins: int
+   :param interpolation: 插值模式
+   :type interpolation: int
+   :param fill: 填充值
+   :type fill: int or tuple or None
+
+.. class:: riemann.vision.transforms.SanitizeBoundingBox(labels_format='xyxy', min_size=1)
+
+   边界框清理。
+
+   :param labels_format: 边界框格式
+   :type labels_format: str
+   :param min_size: 最小尺寸
+   :type min_size: int
+
+.. class:: riemann.vision.transforms.Invert
+
+   颜色反转。
+
+.. class:: riemann.vision.transforms.Posterize(bits)
+
+   减少颜色位数。
+
+   :param bits: 保留的位数
+   :type bits: int
+
+.. class:: riemann.vision.transforms.Solarize(threshold)
+
+   反转高于阈值的像素。
+
+   :param threshold: 阈值
+   :type threshold: int
+
+.. class:: riemann.vision.transforms.Equalize
+
+   直方图均衡化。
+
+.. class:: riemann.vision.transforms.AutoContrast
+
+   自动对比度调整。
+
+.. class:: riemann.vision.transforms.Sharpness(sharpness_factor)
+
+   锐度调整。
+
+   :param sharpness_factor: 锐度因子
+   :type sharpness_factor: float
+
+.. class:: riemann.vision.transforms.Brightness(brightness_factor)
+
+   亮度调整。
+
+   :param brightness_factor: 亮度因子
+   :type brightness_factor: float
+
+.. class:: riemann.vision.transforms.Contrast(contrast_factor)
+
+   对比度调整。
+
+   :param contrast_factor: 对比度因子
+   :type contrast_factor: float
+
+.. class:: riemann.vision.transforms.Saturation(saturation_factor)
+
+   饱和度调整。
+
+   :param saturation_factor: 饱和度因子
+   :type saturation_factor: float
+
+.. class:: riemann.vision.transforms.Hue(hue_factor)
+
+   色调调整。
+
+   :param hue_factor: 色调因子
+   :type hue_factor: float
 
 优化
 ----

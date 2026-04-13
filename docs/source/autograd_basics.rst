@@ -991,81 +991,21 @@ Riemann provides three ways to implement custom functions with gradient tracking
 Advanced Computational Graph Manipulation
 -----------------------------------------
 
-Riemann provides several advanced functions for manipulating the computational graph without affecting forward computation values or backward gradient values. These functions are useful for connecting tensors to the computational graph that wouldn't otherwise participate in gradient computation.
-
-fwbw_all_zero Function
-~~~~~~~~~~~~~~~~~~~~~~
-
-The ``fwbw_all_zero`` function returns a scalar tensor with value 0.0 in forward pass and returns a zero tensor with the same shape as input in backward pass.
-
-**Purpose:**
-Use this function to add a tensor to the computational graph without affecting the forward computation result or backward gradient values.
-
-**Usage:**
-Add ``fwbw_all_zero(x)`` to any tensor to "non-destructively" include ``x`` in the computational graph.
-
-**Example:**
-
-.. code-block:: python
-
-    import riemann as rm
-    
-    a = rm.tensor([1.0, 2.0], requires_grad=True)
-    x = rm.tensor([3.0, 4.0], requires_grad=True)
-    
-    # Add x to the computational graph without changing a's value
-    a = a + rm.fwbw_all_zero(x)
-    
-    # a's value remains unchanged, but x is now in the graph
-    print(f"a = {a}")  # Output: [1.0, 2.0]
-    
-    # When backward is called, x will receive zero gradient
-    a.sum().backward()
-    print(f"x.grad = {x.grad}")  # Output: [0.0, 0.0]
-
-attach_zero_grad_sources Method
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The ``attach_zero_grad_sources`` method attaches multiple tensors as source tensors to a tensor. This doesn't change the tensor's value, but allows it to pass zero gradients to these sources during backward pass.
-
-**Purpose:**
-Connect tensors to the computational graph so they receive zero gradients instead of None when backward is called.
-
-**Parameters:**
-
-- ``sources``: A tuple, list, or set of tensors to attach. Only tensors with ``requires_grad=True`` (and not the tensor itself) will be attached.
-
-**Returns:**
-The modified tensor (self) for method chaining.
-
-**Example:**
-
-.. code-block:: python
-
-    import riemann as rm
-    
-    a = rm.tensor([1.0, 2.0], requires_grad=True)
-    b = rm.tensor([3.0, 4.0], requires_grad=True)
-    c = rm.tensor([5.0, 6.0], requires_grad=True)
-    
-    # Attach a and b to c's computational graph
-    c.attach_zero_grad_sources([a, b])
-    
-    # c's value is unchanged, but backward will pass zero gradients to a and b
-    result = (c * 2).sum()
-    result.backward()
-    
-    print(f"a.grad = {a.grad}")  # Output: [0.0, 0.0]
-    print(f"b.grad = {b.grad}")  # Output: [0.0, 0.0]
-    print(f"c.grad = {c.grad}")  # Output: [2.0, 2.0]
+Riemann provides functions for manually manipulating the computational graph. These functions are designed for special use cases where you need to connect tensors to the computational graph without affecting forward computation values or backward gradient values. These are low-level tools typically used in framework internals (such as Riemann's hook handling mechanism) rather than common user scenarios.
 
 share_grad_map Function
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``share_grad_map`` function connects a group of tensors to a shared computational graph without changing existing forward computation values or backward gradient values.
+The ``share_grad_map`` function fully connects and maps a group of tensors to another group of tensors with the same count. The corresponding positions between the two groups have an identity mapping: forward pass transparently transmits tensor values, backward pass transparently transmits gradient values (equivalent to a clone relationship). For other connections, forward pass transmits zero values (i.e., does not affect the new tensor values), backward pass transmits zero gradients.
 
 **Purpose:**
-Ensure all tensors in a group participate in the computational graph and receive gradients (zero for tensors not directly involved in computation) rather than None.
+Ensure all tensors in a group participate in the computational graph and receive gradients (zero for tensors not directly involved in computation) rather than None. This is particularly useful when you want certain tensors to receive zero gradients without changing the existing computational graph's forward or backward computation values.
+
+**Core Mechanism:**
+
+1. For each tensor that requires gradients, create a clone. The cloned tensor depends on the original tensor through the ``clone`` operation (gradient passes through)
+2. Attach all other tensors (excluding itself) as zero-gradient sources to the cloned tensor
+3. This way, each tensor maintains its gradient relationship with the original tensor while forming zero-gradient connections with other tensors
 
 **Parameters:**
 
@@ -1115,17 +1055,30 @@ A tuple or list of tensors with the same values but connected to a shared comput
     assert (a_new.grad == rm.tensor([3., 4.])).all()
     assert (b_new.grad == rm.tensor([1., 2.])).all()
 
-**Use Cases:**
+**Typical Use Cases:**
 
-These functions are particularly useful in the following scenarios:
+1. **Module Hook Handling**: In Riemann's module hook mechanism, ``share_grad_map`` is used to create new module output tensors to replace the original output tensors. When only some tensors of a module participate in or contribute to the loss function computation, ``share_grad_map`` produces a new module output without changing forward computation or backward gradient values. This ensures that output tensors that previously didn't participate in loss computation can now receive zero gradients, and input tensors depending on these outputs will also receive zero gradients.
 
-1. **Multi-task Learning**: When some parameters don't participate in certain task's loss computation but you want them to receive zero gradients rather than None for gradient accumulation.
+2. **Multi-task Learning**: When some parameters don't participate in certain task's loss computation but you want them to receive zero gradients rather than None for gradient accumulation.
 
-2. **Conditional Computation**: When some tensors are conditionally used in forward pass but you want consistent gradient behavior regardless of the condition.
+3. **Conditional Computation**: When some tensors are conditionally used in forward pass but you want consistent gradient behavior regardless of the condition.
 
-3. **Gradient Monitoring**: When you want to monitor gradients of all parameters in a group, even those not directly involved in a specific computation.
+4. **Gradient Monitoring**: When you want to monitor gradients of all parameters in a group, even those not directly involved in a specific computation.
 
-4. **Parameter Sharing**: When implementing complex parameter sharing schemes where all shared parameters should be connected to the same computational graph.
+**Note:** This is a low-level function for manually building computational graphs. Most users should rely on Riemann's automatic graph construction rather than using this function directly.
+
+Supporting Functions and Methods
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following functions and methods are used internally by ``share_grad_map`` and are rarely needed directly by users:
+
+**fwbw_all_zero Function**
+
+Returns a scalar tensor with value 0.0 in forward pass and returns a zero tensor with the same shape as input in backward pass. Used to add a tensor to the computational graph without affecting forward or backward values.
+
+**attach_zero_grad_sources Method**
+
+Attaches multiple tensors as source tensors to a tensor. This doesn't change the tensor's value, but allows it to pass zero gradients to these sources during backward pass. Used internally to connect tensors to the computational graph so they receive zero gradients instead of None.
 
 Gradient Checking
 -----------------

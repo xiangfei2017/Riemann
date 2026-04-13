@@ -2001,7 +2001,7 @@ Conv3d 层
 池化层
 ------
 
-池化层用于降低特征图的空间维度，减少计算量，并提供平移不变性。Riemann 提供了最大池化和平均池化两种操作。
+池化层用于降低特征图的空间维度，减少计算量，并提供平移不变性。Riemann 提供最大池化和平均池化两种主要操作，每种都有标准和自适应变体。
 
 .. list-table:: 池化层类型
    :header-rows: 1
@@ -2013,12 +2013,26 @@ Conv3d 层
    * - ``MaxPool1d/2d/3d``
      - 取窗口内最大值
      - 保留显著特征，对噪声鲁棒
+   * - ``AdaptiveMaxPool1d/2d/3d``
+     - 自适应最大池化
+     - 自动计算池化参数，输出固定尺寸
    * - ``AvgPool1d/2d/3d``
      - 取窗口内平均值
      - 平滑下采样，保留整体信息
+   * - ``AdaptiveAvgPool1d/2d/3d``
+     - 自适应平均池化
+     - 自动计算池化参数，输出固定尺寸
+
+最大池化层
+~~~~~~~~~~
+
+最大池化层在池化窗口内选择最大值，保留最显著的特征，对噪声具有鲁棒性。Riemann 提供标准最大池化和自适应最大池化两种类型。
+
+标准最大池化
+^^^^^^^^^^^^
 
 MaxPool1d 层
-~~~~~~~~~~~~
+++++++++++++
 
 **用途**：
 
@@ -2049,7 +2063,7 @@ MaxPool1d 层
     print(output.shape)  # [4, 16, 50]
 
 MaxPool2d 层
-~~~~~~~~~~~~
+++++++++++++
 
 **用途**：
 
@@ -2080,7 +2094,7 @@ MaxPool2d 层
     print(output.shape)  # [4, 64, 112, 112]
 
 MaxPool3d 层
-~~~~~~~~~~~~
+++++++++++++
 
 **用途**：
 
@@ -2110,8 +2124,102 @@ MaxPool3d 层
     output = maxpool(features)
     print(output.shape)  # [4, 3, 8, 32, 32]
 
+自适应最大池化
+^^^^^^^^^^^^^^
+
+自适应池化层根据指定的输出尺寸自动计算池化核大小和步长，确保输出尺寸始终为指定值，无需手动计算池化参数。
+
+AdaptiveMaxPool1d 层
+++++++++++++++++++++
+
+**用途**：
+
+- 对序列数据应用一维自适应最大池化
+- 保留序列中最显著的特征，同时映射到固定长度
+- 适用于需要保留最大值信息的序列任务
+
+**参数**：
+
+- ``output_size``：输出序列长度
+- ``return_indices``：是否返回最大值位置索引，默认 False
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # 自适应最大池化
+    adaptive_pool = nn.AdaptiveMaxPool1d(output_size=10)
+    features = rm.randn(4, 16, 50)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 16, 10]
+
+AdaptiveMaxPool2d 层
+++++++++++++++++++++
+
+**用途**：
+
+- 对图像数据应用二维自适应最大池化
+- 保留局部区域最显著的特征
+- 适用于需要保留空间最大值信息的视觉任务
+
+**参数**：
+
+- ``output_size``：输出尺寸，可以是整数 (H, W) 元组或单个整数
+- ``return_indices``：是否返回最大值位置索引，默认 False
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # 自适应最大池化
+    adaptive_pool = nn.AdaptiveMaxPool2d(output_size=(7, 7))
+    features = rm.randn(4, 64, 224, 224)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 64, 7, 7]
+
+AdaptiveMaxPool3d 层
+++++++++++++++++++++
+
+**用途**：
+
+- 对三维数据应用三维自适应最大池化
+- 保留三维空间中最显著的特征
+- 适用于视频分析、医学图像等三维数据处理
+
+**参数**：
+
+- ``output_size``：输出尺寸，可以是整数 (D, H, W) 元组或单个整数
+- ``return_indices``：是否返回最大值位置索引，默认 False
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # 三维自适应最大池化
+    adaptive_pool = nn.AdaptiveMaxPool3d(output_size=(4, 7, 7))
+    features = rm.randn(4, 32, 16, 64, 64)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 32, 4, 7, 7]
+
+平均池化层
+~~~~~~~~~~
+
+平均池化层计算池化窗口内的平均值，提供平滑的下采样效果，保留整体统计信息。Riemann 提供标准平均池化和自适应平均池化两种类型。
+
+标准平均池化
+^^^^^^^^^^^^
+
 AvgPool1d 层
-~~~~~~~~~~~~
+++++++++++++
 
 **用途**：
 
@@ -2142,7 +2250,7 @@ AvgPool1d 层
     print(output.shape)  # [4, 16, 50]
 
 AvgPool2d 层
-~~~~~~~~~~~~
+++++++++++++
 
 **用途**：
 
@@ -2172,7 +2280,7 @@ AvgPool2d 层
     print(output.shape)  # [4, 64, 112, 112]
 
 AvgPool3d 层
-~~~~~~~~~~~~
+++++++++++++
 
 **用途**：
 
@@ -2201,6 +2309,105 @@ AvgPool3d 层
     features = rm.randn(4, 32, 16, 64, 64)  # batch=4, channels=32, depth=16, height=64, width=64
     output = avgpool(features)
     print(output.shape)  # [4, 32, 8, 32, 32]
+
+自适应平均池化
+^^^^^^^^^^^^^^
+
+自适应池化层根据指定的输出尺寸自动计算池化核大小和步长，确保输出尺寸始终为指定值，无需手动计算池化参数。
+
+AdaptiveAvgPool1d 层
+++++++++++++++++++++
+
+**用途**：
+
+- 对序列数据应用一维自适应平均池化
+- 将任意长度的序列映射到指定的固定长度
+- 常用于序列模型的输出层，统一不同长度序列的维度
+
+**参数**：
+
+- ``output_size``：输出序列长度，可以是整数或 None（表示保持原尺寸）
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # 将不同长度的序列映射到固定长度 10
+    adaptive_pool = nn.AdaptiveAvgPool1d(output_size=10)
+    
+    # 输入序列长度为 50
+    features = rm.randn(4, 16, 50)  # batch=4, channels=16, length=50
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 16, 10]
+    
+    # 输入序列长度为 100，输出仍为 10
+    features = rm.randn(4, 16, 100)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 16, 10]
+
+AdaptiveAvgPool2d 层
+++++++++++++++++++++
+
+**用途**：
+
+- 对图像数据应用二维自适应平均池化
+- 将任意尺寸的特征图映射到指定的固定尺寸
+- 常用于 CNN 末尾，将不同尺寸的图像特征转换为固定维度
+
+**参数**：
+
+- ``output_size``：输出尺寸，可以是整数 (H, W) 元组或单个整数（表示正方形输出）
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # 将任意尺寸的特征图映射到 7x7
+    adaptive_pool = nn.AdaptiveAvgPool2d(output_size=(7, 7))
+    
+    # 输入尺寸为 224x224
+    features = rm.randn(4, 64, 224, 224)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 64, 7, 7]
+    
+    # 输入尺寸为 128x128，输出仍为 7x7
+    features = rm.randn(4, 64, 128, 128)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 64, 7, 7]
+
+AdaptiveAvgPool3d 层
+++++++++++++++++++++
+
+**用途**：
+
+- 对视频、医学图像等三维数据应用三维自适应平均池化
+- 将任意尺寸的三维特征图映射到指定的固定尺寸
+- 常用于 3D CNN 末尾，统一不同尺寸的三维特征
+
+**参数**：
+
+- ``output_size``：输出尺寸，可以是整数 (D, H, W) 元组或单个整数（表示立方体输出）
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # 将任意尺寸的三维特征映射到 4x7x7
+    adaptive_pool = nn.AdaptiveAvgPool3d(output_size=(4, 7, 7))
+    
+    # 输入尺寸为 16x64x64
+    features = rm.randn(4, 32, 16, 64, 64)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 32, 4, 7, 7]
 
 MNIST 手写体识别示例
 --------------------

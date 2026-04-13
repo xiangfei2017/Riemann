@@ -3289,6 +3289,69 @@ Pooling Layers
    :param divisor_override: If specified, will be used as denominator
    :type divisor_override: int, optional
 
+Adaptive Pooling Layers
+~~~~~~~~~~~~~~~~~~~~~~~
+
+.. class:: riemann.nn.AdaptiveAvgPool1d(output_size)
+
+   1D adaptive average pooling layer.
+
+   Automatically computes pooling kernel size and stride based on the specified output size, ensuring the output dimensions are always fixed.
+
+   :param output_size: Output sequence length, can be an integer or None (indicating maintaining original size)
+   :type output_size: int or tuple
+
+.. class:: riemann.nn.AdaptiveAvgPool2d(output_size)
+
+   2D adaptive average pooling layer.
+
+   Automatically computes pooling kernel size and stride based on the specified output size, commonly used to convert feature maps of arbitrary sizes to fixed dimensions.
+
+   :param output_size: Output size, can be an integer or a tuple (H, W), or None (indicating maintaining original size)
+   :type output_size: int or tuple
+
+.. class:: riemann.nn.AdaptiveAvgPool3d(output_size)
+
+   3D adaptive average pooling layer.
+
+   Automatically computes pooling kernel size and stride based on the specified output size, commonly used for feature extraction in volumetric data.
+
+   :param output_size: Output size, can be an integer or a tuple (D, H, W), or None (indicating maintaining original size)
+   :type output_size: int or tuple
+
+.. class:: riemann.nn.AdaptiveMaxPool1d(output_size, return_indices=False)
+
+   1D adaptive max pooling layer.
+
+   Automatically computes pooling kernel size and stride based on the specified output size, ensuring the output dimensions are always fixed.
+
+   :param output_size: Output sequence length, can be an integer or None (indicating maintaining original size)
+   :type output_size: int or tuple
+   :param return_indices: Whether to return indices of maximum values
+   :type return_indices: bool, optional
+
+.. class:: riemann.nn.AdaptiveMaxPool2d(output_size, return_indices=False)
+
+   2D adaptive max pooling layer.
+
+   Automatically computes pooling kernel size and stride based on the specified output size, commonly used to convert feature maps of arbitrary sizes to fixed dimensions.
+
+   :param output_size: Output size, can be an integer or a tuple (H, W), or None (indicating maintaining original size)
+   :type output_size: int or tuple
+   :param return_indices: Whether to return indices of maximum values
+   :type return_indices: bool, optional
+
+.. class:: riemann.nn.AdaptiveMaxPool3d(output_size, return_indices=False)
+
+   3D adaptive max pooling layer.
+
+   Automatically computes pooling kernel size and stride based on the specified output size, commonly used for feature extraction in volumetric data.
+
+   :param output_size: Output size, can be an integer or a tuple (D, H, W), or None (indicating maintaining original size)
+   :type output_size: int or tuple
+   :param return_indices: Whether to return indices of maximum values
+   :type return_indices: bool, optional
+
 Normalization Layers
 ~~~~~~~~~~~~~~~~~~~~
 
@@ -4724,6 +4787,72 @@ Datasets
 
       Get sample data at the specified index.
 
+.. class:: riemann.vision.datasets.DatasetFolder(root, loader, extensions=None, transform=None, target_transform=None, is_valid_file=None, allow_empty=False)
+
+   Generic folder dataset class for loading custom datasets from folders.
+
+   :param root: Root directory path of the dataset
+   :type root: str
+   :param loader: Image loading function
+   :type loader: callable
+   :param extensions: Tuple of allowed file extensions
+   :type extensions: tuple, optional
+   :param transform: Transformation function applied to images
+   :type transform: callable, optional
+   :param target_transform: Transformation function applied to targets
+   :type target_transform: callable, optional
+   :param is_valid_file: Function to validate if a file is valid
+   :type is_valid_file: callable, optional
+   :param allow_empty: Whether to allow empty folders, defaults to False
+   :type allow_empty: bool
+
+   .. attribute:: classes
+
+      List of class names.
+
+   .. attribute:: class_to_idx
+
+      Dictionary mapping class names to indices.
+
+   .. method:: __len__()
+
+      Return the number of samples in the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get a single sample from the dataset at the given index.
+
+.. class:: riemann.vision.datasets.ImageFolder(root, transform=None, target_transform=None, loader=None, is_valid_file=None)
+
+   Image folder dataset class, inherited from DatasetFolder, for loading image datasets from folders.
+
+   :param root: Root directory path of the dataset
+   :type root: str
+   :param transform: Transformation function applied to images
+   :type transform: callable, optional
+   :param target_transform: Transformation function applied to targets
+   :type target_transform: callable, optional
+   :param loader: Image loading function, defaults to PIL Image loader
+   :type loader: callable, optional
+   :param is_valid_file: Function to validate if a file is valid
+   :type is_valid_file: callable, optional
+
+   .. attribute:: classes
+
+      List of class names.
+
+   .. attribute:: class_to_idx
+
+      Dictionary mapping class names to indices.
+
+   .. method:: __len__()
+
+      Return the number of samples in the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get a single sample from the dataset at the given index.
+
 Image Transforms
 ~~~~~~~~~~~~~~~~
 
@@ -4888,6 +5017,174 @@ Image Transforms
 
    :param lambd: Lambda function
    :type lambd: function
+
+.. class:: riemann.vision.transforms.PILToTensor
+
+   Convert PIL Image to tensor (without scaling).
+
+.. class:: riemann.vision.transforms.ConvertImageDtype(dtype)
+
+   Convert image data type.
+
+   :param dtype: Target data type
+   :type dtype: torch.dtype
+
+.. class:: riemann.vision.transforms.GaussianBlur(kernel_size, sigma=(0.1, 2.0))
+
+   Apply Gaussian blur to image.
+
+   :param kernel_size: Size of Gaussian kernel
+   :type kernel_size: int or tuple
+   :param sigma: Standard deviation range of Gaussian kernel
+   :type sigma: tuple, optional
+
+.. class:: riemann.vision.transforms.RandomAffine(degrees, translate=None, scale=None, shear=None, resample=NEAREST, fillcolor=0)
+
+   Random affine transformation.
+
+   :param degrees: Rotation angle range
+   :type degrees: float or tuple
+   :param translate: Translation range
+   :type translate: tuple, optional
+   :param scale: Scale range
+   :type scale: tuple, optional
+   :param shear: Shear angle range
+   :type shear: float or tuple, optional
+   :param resample: Resampling mode
+   :type resample: int, optional
+   :param fillcolor: Fill color
+   :type fillcolor: int, optional
+
+.. class:: riemann.vision.transforms.RandomPerspective(distortion_scale=0.5, p=0.5, interpolation=BILINEAR, fill=0)
+
+   Random perspective transformation.
+
+   :param distortion_scale: Distortion degree
+   :type distortion_scale: float
+   :param p: Probability of applying transformation
+   :type p: float
+   :param interpolation: Interpolation mode
+   :type interpolation: int
+   :param fill: Fill value
+   :type fill: int or tuple
+
+.. class:: riemann.vision.transforms.RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0, inplace=False)
+
+   Random erasing for data augmentation.
+
+   :param p: Probability of applying erasing
+   :type p: float
+   :param scale: Erasing area range
+   :type scale: tuple
+   :param ratio: Erasing aspect ratio range
+   :type ratio: tuple
+   :param value: Erasing fill value
+   :type value: int or float or tuple
+   :param inplace: Whether to operate in-place
+   :type inplace: bool
+
+.. class:: riemann.vision.transforms.AutoAugment(policy=AutoAugmentPolicy.IMAGENET)
+
+   Automatic data augmentation based on learning policy.
+
+   :param policy: Augmentation policy
+   :type policy: AutoAugmentPolicy
+
+.. class:: riemann.vision.transforms.RandAugment(num_ops=2, magnitude=9, num_magnitude_bins=31, interpolation=BILINEAR, fill=None)
+
+   Random data augmentation.
+
+   :param num_ops: Number of operations
+   :type num_ops: int
+   :param magnitude: Augmentation magnitude
+   :type magnitude: int
+   :param num_magnitude_bins: Number of magnitude bins
+   :type num_magnitude_bins: int
+   :param interpolation: Interpolation mode
+   :type interpolation: int
+   :param fill: Fill value
+   :type fill: int or tuple or None
+
+.. class:: riemann.vision.transforms.TrivialAugmentWide(num_magnitude_bins=31, interpolation=BILINEAR, fill=None)
+
+   Wide range simple augmentation.
+
+   :param num_magnitude_bins: Number of magnitude bins
+   :type num_magnitude_bins: int
+   :param interpolation: Interpolation mode
+   :type interpolation: int
+   :param fill: Fill value
+   :type fill: int or tuple or None
+
+.. class:: riemann.vision.transforms.SanitizeBoundingBox(labels_format='xyxy', min_size=1)
+
+   Sanitize bounding boxes.
+
+   :param labels_format: Bounding box format
+   :type labels_format: str
+   :param min_size: Minimum size
+   :type min_size: int
+
+.. class:: riemann.vision.transforms.Invert
+
+   Invert colors.
+
+.. class:: riemann.vision.transforms.Posterize(bits)
+
+   Reduce color bits.
+
+   :param bits: Number of bits to keep
+   :type bits: int
+
+.. class:: riemann.vision.transforms.Solarize(threshold)
+
+   Invert pixels above threshold.
+
+   :param threshold: Threshold value
+   :type threshold: int
+
+.. class:: riemann.vision.transforms.Equalize
+
+   Histogram equalization.
+
+.. class:: riemann.vision.transforms.AutoContrast
+
+   Auto contrast adjustment.
+
+.. class:: riemann.vision.transforms.Sharpness(sharpness_factor)
+
+   Sharpness adjustment.
+
+   :param sharpness_factor: Sharpness factor
+   :type sharpness_factor: float
+
+.. class:: riemann.vision.transforms.Brightness(brightness_factor)
+
+   Brightness adjustment.
+
+   :param brightness_factor: Brightness factor
+   :type brightness_factor: float
+
+.. class:: riemann.vision.transforms.Contrast(contrast_factor)
+
+   Contrast adjustment.
+
+   :param contrast_factor: Contrast factor
+   :type contrast_factor: float
+
+.. class:: riemann.vision.transforms.Saturation(saturation_factor)
+
+   Saturation adjustment.
+
+   :param saturation_factor: Saturation factor
+   :type saturation_factor: float
+
+.. class:: riemann.vision.transforms.Hue(hue_factor)
+
+   Hue adjustment.
+
+   :param hue_factor: Hue factor
+   :type hue_factor: float
 
 Optimization
 ------------

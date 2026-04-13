@@ -1977,7 +1977,7 @@ Conv3d Layer
 Pooling Layers
 --------------
 
-Pooling layers are used to reduce the spatial dimensions of feature maps, decrease computational cost, and provide translation invariance. Riemann provides two types of pooling operations: max pooling and average pooling.
+Pooling layers are used to reduce the spatial dimensions of feature maps, decrease computational cost, and provide translation invariance. Riemann provides three types of pooling operations: max pooling, average pooling, and adaptive pooling.
 
 .. list-table:: Pooling Layer Types
    :header-rows: 1
@@ -1992,9 +1992,23 @@ Pooling layers are used to reduce the spatial dimensions of feature maps, decrea
    * - ``AvgPool1d/2d/3d``
      - Average value in window
      - Smooth downsampling, preserves overall information
+   * - ``AdaptiveMaxPool1d/2d/3d``
+     - Adaptive max pooling
+     - Auto-computes pooling parameters, fixed output size
+   * - ``AdaptiveAvgPool1d/2d/3d``
+     - Adaptive average pooling
+     - Auto-computes pooling parameters, fixed output size
+
+Max Pooling Layers
+~~~~~~~~~~~~~~~~~~
+
+Max pooling layers select the maximum value within the pooling window, preserving the most salient features and providing robustness to noise. Riemann provides both standard max pooling and adaptive max pooling.
+
+Standard Max Pooling
+^^^^^^^^^^^^^^^^^^^^
 
 MaxPool1d Layer
-~~~~~~~~~~~~~~~
+++++++++++++++++
 
 **Purpose**:
 
@@ -2025,7 +2039,7 @@ MaxPool1d Layer
     print(output.shape)  # [4, 16, 50]
 
 MaxPool2d Layer
-~~~~~~~~~~~~~~~
+++++++++++++++++
 
 **Purpose**:
 
@@ -2056,7 +2070,7 @@ MaxPool2d Layer
     print(output.shape)  # [4, 64, 112, 112]
 
 MaxPool3d Layer
-~~~~~~~~~~~~~~~
+++++++++++++++++
 
 **Purpose**:
 
@@ -2086,8 +2100,102 @@ MaxPool3d Layer
     output = maxpool(features)
     print(output.shape)  # [4, 3, 8, 32, 32]
 
+Adaptive Max Pooling
+^^^^^^^^^^^^^^^^^^^^
+
+Adaptive pooling layers automatically compute the pooling kernel size and stride based on the specified output size, ensuring the output dimensions are always fixed without manual calculation of pooling parameters.
+
+AdaptiveMaxPool1d Layer
+++++++++++++++++++++++++
+
+**Purpose**:
+
+- Apply 1D adaptive max pooling to sequence data
+- Preserve the most salient features in sequences while mapping to fixed length
+- Suitable for sequence tasks requiring preservation of maximum value information
+
+**Parameters**:
+
+- ``output_size``: Output sequence length
+- ``return_indices``: Whether to return the indices of maximum values, default False
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Adaptive max pooling
+    adaptive_pool = nn.AdaptiveMaxPool1d(output_size=10)
+    features = rm.randn(4, 16, 50)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 16, 10]
+
+AdaptiveMaxPool2d Layer
+++++++++++++++++++++++++
+
+**Purpose**:
+
+- Apply 2D adaptive max pooling to image data
+- Preserve the most salient features in local regions
+- Suitable for vision tasks requiring preservation of spatial maximum value information
+
+**Parameters**:
+
+- ``output_size``: Output size, can be an integer tuple (H, W) or a single integer
+- ``return_indices``: Whether to return the indices of maximum values, default False
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Adaptive max pooling
+    adaptive_pool = nn.AdaptiveMaxPool2d(output_size=(7, 7))
+    features = rm.randn(4, 64, 224, 224)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 64, 7, 7]
+
+AdaptiveMaxPool3d Layer
+++++++++++++++++++++++++
+
+**Purpose**:
+
+- Apply 3D adaptive max pooling to 3D data
+- Preserve the most salient features in 3D space
+- Suitable for video analysis, medical images, and other 3D data processing
+
+**Parameters**:
+
+- ``output_size``: Output size, can be an integer tuple (D, H, W) or a single integer
+- ``return_indices``: Whether to return the indices of maximum values, default False
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # 3D adaptive max pooling
+    adaptive_pool = nn.AdaptiveMaxPool3d(output_size=(4, 7, 7))
+    features = rm.randn(4, 32, 16, 64, 64)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 32, 4, 7, 7]
+
+Average Pooling Layers
+~~~~~~~~~~~~~~~~~~~~~~
+
+Average pooling layers compute the average value within the pooling window, providing smooth downsampling and preserving overall statistical information. Riemann provides both standard average pooling and adaptive average pooling.
+
+Standard Average Pooling
+^^^^^^^^^^^^^^^^^^^^^^^^
+
 AvgPool1d Layer
-~~~~~~~~~~~~~~~
+++++++++++++++++
 
 **Purpose**:
 
@@ -2118,7 +2226,7 @@ AvgPool1d Layer
     print(output.shape)  # [4, 16, 50]
 
 AvgPool2d Layer
-~~~~~~~~~~~~~~~
+++++++++++++++++
 
 **Purpose**:
 
@@ -2148,7 +2256,7 @@ AvgPool2d Layer
     print(output.shape)  # [4, 64, 112, 112]
 
 AvgPool3d Layer
-~~~~~~~~~~~~~~~
+++++++++++++++++
 
 **Purpose**:
 
@@ -2177,6 +2285,59 @@ AvgPool3d Layer
     features = rm.randn(4, 32, 16, 64, 64)  # batch=4, channels=32, depth=16, height=64, width=64
     output = avgpool(features)
     print(output.shape)  # [4, 32, 8, 32, 32]
+
+Adaptive Average Pooling
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Adaptive pooling layers automatically compute the pooling kernel size and stride based on the specified output size, ensuring the output dimensions are always fixed without manual calculation of pooling parameters.
+
+AdaptiveAvgPool1d Layer
+++++++++++++++++++++++++
+
+**Purpose**:
+
+- Apply 1D adaptive average pooling to sequence data
+- Map sequences of arbitrary length to a specified fixed length
+- Commonly used in the output layer of sequence models to unify dimensions of different length sequences
+
+**Parameters**:
+
+- ``output_size``: Output sequence length, can be an integer or None (indicating maintaining original size)
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    # Map sequences of different lengths to fixed length 10
+    adaptive_pool = nn.AdaptiveAvgPool1d(output_size=10)
+    
+    # Input sequence length 50
+    features = rm.randn(4, 16, 50)  # batch=4, channels=16, length=50
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 16, 10]
+    
+    # Input sequence length 100, output still 10
+    features = rm.randn(4, 16, 100)
+    output = adaptive_pool(features)
+    print(output.shape)  # [4, 16, 10]
+
+AdaptiveAvgPool2d Layer
+++++++++++++++++++++++++
+
+**Purpose**:
+
+- Apply 2D adaptive average pooling to image data
+- Map feature maps of arbitrary sizes to a specified fixed size
+- Commonly used at the end of CNNs to convert image features of different sizes to fixed dimensions
+
+**Parameters**:
+
+- ``output_size``: Output size, can be an integer tuple (H, W) or a single integer (indicating square output)
+
+**Usage Example**
 
 MNIST Handwritten Digit Recognition Example
 -------------------------------------------
