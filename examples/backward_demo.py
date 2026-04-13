@@ -48,7 +48,7 @@ print(f'输出y = f(x): {y}')
 y.backward()
 
 # 查看梯度结果
-print(f'反向传播后，x的梯度 dx/dy: {x.grad}')
+print(f'反向传播后，x的梯度 dy/dx: {x.grad}')
 print('说明: 对于f(x)=x²，导数df/dx=2x，当x=3时，梯度值为6\n')
 
 # 示例2: 向量输出的反向传播 - 需要提供gradient参数
