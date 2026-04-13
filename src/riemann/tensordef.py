@@ -1025,7 +1025,7 @@ class TN:
 
     @property
     def is_leaf(self):
-        return self.requires_grad == False or self.fromvars == ()
+        return self.requires_grad == False or not self.fromvars
 
     def is_contiguous(self):
         """
@@ -3559,7 +3559,7 @@ class TN:
 
             # 检查是否需要钩子处理（只在尚未确定需要钩子时检查）
             # 短路逻辑：一旦need_hook_processing为True，跳过所有后续检查
-            if not need_hook_processing and not item.is_leaf and item._output_of is not None:
+            if not need_hook_processing and item._output_of is not None:
                 module = item._output_of
                 if module._backward_pre_hooks or module._backward_hooks:
                     need_hook_processing = True
@@ -3604,22 +3604,40 @@ class TN:
         return
     
     def _save_grad(self:TN):
-        '''将self的grad_value保存到self的grad中
+        '''将self的grad_value保存到self的grad中，返回是否是叶子节点
+        
+        1._backward_with_hooks或_backward_without_hooks里调用_save_grad，
+          self是出栈节点，已保证了self是一个requires_grad=True的叶子节点或中间节点。
+        2.叶子节点（is_leaf=True）总是保存梯度到self.grad，
+          中间节点只有在retains_grad=True时才保存梯度。
+        
         '''
-
-        if self.is_leaf or self.retains_grad:
+        
+        is_leaf = not self.fromvars
+        
+        # 叶子节点：总是保存梯度
+        # 注意：is_leaf为True意味着requires_grad=True且没有fromvars
+        if is_leaf:
             if self.grad is None:
                 # 如还没有梯度值，直接赋值
                 self.grad = self.grad_value
             else:
                 # 如已有梯度值，累计梯度，注意不要使用原地+=
                 self.grad = self.grad + self.grad_value
-        
-        # 叶子节点存完梯度后，梯度缓存置None
-        if self.is_leaf:
+            
+            # 叶子节点存完梯度后，梯度缓存置None
             self.grad_value = None
         
-        return
+        # 中间节点：只有retains_grad=True时才保存梯度
+        elif self.retains_grad:
+            if self.grad is None:
+                self.grad = self.grad_value
+            else:
+                self.grad = self.grad + self.grad_value
+            
+            # 中间节点保存梯度后，不清空grad_value，因为还要传播
+        
+        return is_leaf
 
     def _add_received_grad_value(self:TN, grad_value:TN):
         '''将grad_value添加到self的grad_value中
@@ -3664,11 +3682,13 @@ class TN:
             var: TN = fromvars[i]
             fn = gradfuncs[i]
 
+            # 只有requires_grad=True的节点才需要梯度传播
             if var.requires_grad:
                 rcv_grad_value: TN = fn(self, i)
                 var._add_received_grad_value(rcv_grad_value)
                 var.rcv_grad_count -= 1
 
+                # 如var的rcv_grad_count为0，说明所有梯度都已收集，可入栈传播
                 if var.rcv_grad_count == 0:
                     vars_received_grad.add(var)
 
@@ -3698,7 +3718,7 @@ class TN:
             # 在调用钩子之后保存梯度，确保钩子可以访问所有输入的梯度grad_value
             item._save_grad()
 
-            # 如果没有可传播节点（模块输出梯度未收集齐），跳过本次循环
+            # 如果没有可传播节点（模块输入或输出梯度未收集齐），跳过本次循环
             if not items_for_propagate:
                 continue
 
@@ -3723,9 +3743,11 @@ class TN:
         while stack:
             item: TN = stack.pop(-1)
             
-            # 保存梯度
-            item._save_grad()
-
+            # 保存叶子节点或retains_grad=True的中间节点的梯度，
+            # 如item是叶子节点，无须传播梯度，快速进入下一次循环
+            if item._save_grad():
+                continue
+            
             # 传播梯度到来源节点
             vars_received_grad = set()
             item._propagate_grad_to_sources(vars_received_grad)
