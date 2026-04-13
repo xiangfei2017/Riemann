@@ -19,6 +19,7 @@ Riemann vision模块测试脚本
 import sys
 import os
 import time
+import tempfile
 import numpy as np
 from PIL import Image
 
@@ -26,7 +27,7 @@ from PIL import Image
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import riemann as rm
-from riemann.vision.datasets import MNIST, EasyMNIST, CIFAR10
+from riemann.vision.datasets import MNIST, EasyMNIST, CIFAR10, DatasetFolder, ImageFolder, default_loader
 from riemann.vision.transforms import (
     Compose, ToTensor, ToPILImage, Normalize, Resize, CenterCrop,
     RandomHorizontalFlip, RandomVerticalFlip, RandomRotation, ColorJitter,
@@ -1293,6 +1294,276 @@ def test_transforms(stats=None):
     finally:
         stats.end_function()
 
+
+def create_test_imagefolder_dataset(root_dir):
+    """
+    创建测试数据集目录结构：
+    root/
+    ├── cat/
+    │   ├── cat1.jpg
+    │   ├── cat2.png
+    │   └── cat3.jpeg
+    ├── dog/
+    │   ├── dog1.jpg
+    │   ├── dog2.png
+    │   └── dog3.jpeg
+    └── bird/
+        └── bird1.png
+    """
+    # 创建类别目录
+    cat_dir = os.path.join(root_dir, 'cat')
+    dog_dir = os.path.join(root_dir, 'dog')
+    bird_dir = os.path.join(root_dir, 'bird')
+    
+    os.makedirs(cat_dir, exist_ok=True)
+    os.makedirs(dog_dir, exist_ok=True)
+    os.makedirs(bird_dir, exist_ok=True)
+    
+    # 创建测试图像
+    def create_test_image(path, size=(64, 64), color=(255, 0, 0)):
+        img = Image.new('RGB', size, color)
+        img.save(path)
+    
+    # cat 类别的图像
+    create_test_image(os.path.join(cat_dir, 'cat1.jpg'), color=(255, 100, 100))
+    create_test_image(os.path.join(cat_dir, 'cat2.png'), color=(255, 150, 150))
+    create_test_image(os.path.join(cat_dir, 'cat3.jpeg'), color=(255, 200, 200))
+    
+    # dog 类别的图像
+    create_test_image(os.path.join(dog_dir, 'dog1.jpg'), color=(100, 255, 100))
+    create_test_image(os.path.join(dog_dir, 'dog2.png'), color=(150, 255, 150))
+    create_test_image(os.path.join(dog_dir, 'dog3.jpeg'), color=(200, 255, 200))
+    
+    # bird 类别的图像
+    create_test_image(os.path.join(bird_dir, 'bird1.png'), color=(100, 100, 255))
+
+
+def test_datasetfolder(stats: StatisticsCollector):
+    """DatasetFolder 测试用例组"""
+    stats.start_function("DatasetFolder")
+    
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            create_test_imagefolder_dataset(tmpdir)
+            
+            # 测试1: 基本初始化
+            print("测试基本初始化...")
+            try:
+                dataset = DatasetFolder(tmpdir, loader=default_loader)
+                stats.add_result("基本初始化-数据集大小", len(dataset) == 7,
+                                f"大小: {len(dataset)}, 期望: 7")
+                stats.add_result("基本初始化-类别数", len(dataset.classes) == 3,
+                                f"类别: {dataset.classes}")
+                stats.add_result("基本初始化-class_to_idx", set(dataset.class_to_idx.keys()) == {'bird', 'cat', 'dog'},
+                                f"class_to_idx: {dataset.class_to_idx}")
+            except Exception as e:
+                stats.add_result("基本初始化", False, f"异常: {str(e)}")
+            
+            # 测试2: 获取样本
+            print("测试获取样本...")
+            try:
+                dataset = DatasetFolder(tmpdir, loader=default_loader)
+                img, label = dataset[0]
+                stats.add_result("获取样本-图像类型", isinstance(img, Image.Image),
+                                f"类型: {type(img)}")
+                stats.add_result("获取样本-标签类型", isinstance(label, int),
+                                f"类型: {type(label)}")
+            except Exception as e:
+                stats.add_result("获取样本", False, f"异常: {str(e)}")
+            
+            # 测试3: 扩展名过滤
+            print("测试扩展名过滤...")
+            try:
+                folder_with_ext = DatasetFolder(
+                    tmpdir, 
+                    loader=default_loader,
+                    extensions=('.jpg', '.jpeg')
+                )
+                stats.add_result("扩展名过滤", len(folder_with_ext) == 4,
+                                f"大小: {len(folder_with_ext)}, 期望: 4")
+            except Exception as e:
+                stats.add_result("扩展名过滤", False, f"异常: {str(e)}")
+            
+            # 测试4: is_valid_file 功能
+            print("测试is_valid_file...")
+            try:
+                def custom_validator(path):
+                    return 'cat' in path
+                folder_with_validator = DatasetFolder(
+                    tmpdir,
+                    loader=default_loader,
+                    is_valid_file=custom_validator
+                )
+                stats.add_result("is_valid_file", len(folder_with_validator) == 3,
+                                f"大小: {len(folder_with_validator)}, 期望: 3")
+            except Exception as e:
+                stats.add_result("is_valid_file", False, f"异常: {str(e)}")
+            
+            # 测试5: 参数互斥检测
+            print("测试参数互斥检测...")
+            try:
+                DatasetFolder(
+                    tmpdir,
+                    loader=default_loader,
+                    extensions=('.jpg',),
+                    is_valid_file=lambda x: True
+                )
+                stats.add_result("参数互斥检测", False, "应该抛出 ValueError")
+            except ValueError:
+                stats.add_result("参数互斥检测", True, "正确抛出 ValueError")
+            except Exception as e:
+                stats.add_result("参数互斥检测", False, f"异常: {str(e)}")
+            
+            # 测试6: 空目录检测
+            print("测试空目录检测...")
+            try:
+                empty_dir = os.path.join(tmpdir, 'empty')
+                os.makedirs(empty_dir)
+                DatasetFolder(empty_dir, loader=default_loader, allow_empty=False)
+                stats.add_result("空目录检测", False, "应该抛出 FileNotFoundError")
+            except FileNotFoundError:
+                stats.add_result("空目录检测", True, "正确抛出 FileNotFoundError")
+            except Exception as e:
+                stats.add_result("空目录检测", False, f"异常: {str(e)}")
+            
+            # 测试7: allow_empty=True
+            print("测试allow_empty=True...")
+            try:
+                empty_dir = os.path.join(tmpdir, 'empty')
+                os.makedirs(empty_dir, exist_ok=True)
+                folder = DatasetFolder(empty_dir, loader=default_loader, allow_empty=True)
+                stats.add_result("allow_empty=True", len(folder) == 0,
+                                f"大小: {len(folder)}, 期望: 0")
+            except Exception as e:
+                stats.add_result("allow_empty=True", False, f"异常: {str(e)}")
+            
+            # 测试8: __repr__
+            print("测试__repr__...")
+            try:
+                dataset = DatasetFolder(tmpdir, loader=default_loader)
+                repr_str = repr(dataset)
+                stats.add_result("__repr__", 'DatasetFolder' in repr_str,
+                                f"包含类名: {'DatasetFolder' in repr_str}")
+            except Exception as e:
+                stats.add_result("__repr__", False, f"异常: {str(e)}")
+                
+    except Exception as e:
+        stats.add_result("DatasetFolder测试", False, f"测试异常: {str(e)}")
+    
+    finally:
+        stats.end_function()
+
+
+def test_imagefolder(stats: StatisticsCollector):
+    """ImageFolder 测试用例组"""
+    stats.start_function("ImageFolder")
+    
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            create_test_imagefolder_dataset(tmpdir)
+            
+            # 测试1: 基本初始化
+            print("测试基本初始化...")
+            try:
+                dataset = ImageFolder(tmpdir)
+                stats.add_result("基本初始化-数据集大小", len(dataset) == 7,
+                                f"大小: {len(dataset)}, 期望: 7")
+                stats.add_result("基本初始化-类别数", len(dataset.classes) == 3,
+                                f"类别: {dataset.classes}")
+                stats.add_result("基本初始化-样本数", len(dataset.samples) == 7,
+                                f"样本数: {len(dataset.samples)}")
+            except Exception as e:
+                stats.add_result("基本初始化", False, f"异常: {str(e)}")
+            
+            # 测试2: 获取样本
+            print("测试获取样本...")
+            try:
+                dataset = ImageFolder(tmpdir)
+                img, label = dataset[0]
+                stats.add_result("获取样本-图像类型", isinstance(img, Image.Image),
+                                f"类型: {type(img)}")
+                stats.add_result("获取样本-标签类型", isinstance(label, int),
+                                f"类型: {type(label)}")
+            except Exception as e:
+                stats.add_result("获取样本", False, f"异常: {str(e)}")
+            
+            # 测试3: transform 功能
+            print("测试transform功能...")
+            try:
+                transform = ToTensor()
+                dataset_with_transform = ImageFolder(tmpdir, transform=transform)
+                img, label = dataset_with_transform[0]
+                stats.add_result("transform功能", hasattr(img, 'shape'),
+                                f"变换后类型: {type(img)}")
+            except Exception as e:
+                stats.add_result("transform功能", False, f"异常: {str(e)}")
+            
+            # 测试4: target_transform 功能
+            print("测试target_transform功能...")
+            try:
+                def target_transform(x):
+                    return x * 2
+                dataset_with_target = ImageFolder(tmpdir, target_transform=target_transform)
+                original_dataset = ImageFolder(tmpdir)
+                _, transformed_label = dataset_with_target[0]
+                _, original_label = original_dataset[0]
+                stats.add_result("target_transform功能", transformed_label == original_label * 2,
+                                f"原始: {original_label}, 变换后: {transformed_label}")
+            except Exception as e:
+                stats.add_result("target_transform功能", False, f"异常: {str(e)}")
+            
+            # 测试5: __repr__
+            print("测试__repr__...")
+            try:
+                dataset = ImageFolder(tmpdir)
+                repr_str = repr(dataset)
+                stats.add_result("__repr__", 'ImageFolder' in repr_str and 'Root location' in repr_str,
+                                f"包含类名和根目录: {'ImageFolder' in repr_str}, {'Root location' in repr_str}")
+            except Exception as e:
+                stats.add_result("__repr__", False, f"异常: {str(e)}")
+            
+            # 测试6: 与DataLoader集成
+            print("测试DataLoader集成...")
+            try:
+                from riemann.utils.data import DataLoader
+                dataset = ImageFolder(tmpdir, transform=ToTensor())
+                dataloader = DataLoader(dataset, batch_size=4, shuffle=False)
+                
+                batch_count = 0
+                for batch_images, batch_labels in dataloader:
+                    batch_count += 1
+                    if batch_count >= 1:
+                        break
+                
+                stats.add_result("DataLoader集成", batch_count > 0,
+                                f"成功获取批次: {batch_count > 0}")
+            except Exception as e:
+                stats.add_result("DataLoader集成", False, f"异常: {str(e)}")
+            
+            # 测试7: 类别分布
+            print("测试类别分布...")
+            try:
+                dataset = ImageFolder(tmpdir)
+                class_counts = {}
+                for _, label in dataset:
+                    class_name = dataset.classes[label]
+                    class_counts[class_name] = class_counts.get(class_name, 0) + 1
+                
+                correct = (class_counts.get('cat', 0) == 3 and 
+                          class_counts.get('dog', 0) == 3 and 
+                          class_counts.get('bird', 0) == 1)
+                stats.add_result("类别分布", correct,
+                                f"分布: {class_counts}")
+            except Exception as e:
+                stats.add_result("类别分布", False, f"异常: {str(e)}")
+                
+    except Exception as e:
+        stats.add_result("ImageFolder测试", False, f"测试异常: {str(e)}")
+    
+    finally:
+        stats.end_function()
+
+
 def main():
     """主测试函数"""
     print(f"{Colors.HEADER}Riemann vision模块测试{Colors.ENDC}")
@@ -1304,6 +1575,8 @@ def main():
     # 运行所有测试
     test_mnist_dataset(stats)
     test_cifar10_dataset(stats)
+    test_datasetfolder(stats)
+    test_imagefolder(stats)
     test_transforms(stats)
     
     # 打印测试汇总

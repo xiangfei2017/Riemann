@@ -393,3 +393,292 @@ class CIFAR10(Dataset):
             
         return img, target
 
+
+# ==================== DatasetFolder 和 ImageFolder ====================
+# 以下类参照 torchvision.datasets.DatasetFolder 和 ImageFolder 实现
+
+import os
+from pathlib import Path
+from typing import Callable, Optional, Tuple, Union, List, Any, Dict, cast
+
+
+class DatasetFolder(Dataset):
+    """
+    通用数据文件夹数据集类，参照 torchvision.datasets.DatasetFolder 实现。
+
+    从目录结构中加载数据，目录结构应为：
+    root/class_x/xxx.ext
+    root/class_x/xxy.ext
+    root/class_x/xxz.ext
+    root/class_y/123.ext
+    root/class_y/nsdf3.ext
+    root/class_y/asd932_.ext
+
+    参数:
+        root (str or Path): 根目录路径
+        loader (callable): 加载样本文件的函数，接收文件路径作为输入
+        extensions (tuple, optional): 允许的文件扩展名元组，如 ('.jpg', '.jpeg', '.png')
+        transform (callable, optional): 应用于样本的变换函数
+        target_transform (callable, optional): 应用于目标的变换函数
+        is_valid_file (callable, optional): 判断文件是否有效的函数，接收文件路径作为输入
+        allow_empty (bool, optional): 是否允许空文件夹，默认为False
+    """
+
+    def __init__(
+        self,
+        root: Union[str, Path],
+        loader: Callable[[str], Any],
+        extensions: Optional[Tuple[str, ...]] = None,
+        transform: Optional[Callable] = None,
+        target_transform: Optional[Callable] = None,
+        is_valid_file: Optional[Callable[[str], bool]] = None,
+        allow_empty: bool = False,
+    ):
+        """
+        初始化DatasetFolder数据集。
+
+        参数:
+            root: 根目录路径
+            loader: 加载样本文件的函数
+            extensions: 允许的文件扩展名元组
+            transform: 应用于样本的变换函数
+            target_transform: 应用于目标的变换函数
+            is_valid_file: 判断文件是否有效的函数
+            allow_empty: 是否允许空文件夹
+        """
+        super().__init__()
+
+        self.root = str(root)
+        self.loader = loader
+        self.extensions = extensions
+        self.transform = transform
+        self.target_transform = target_transform
+        self.is_valid_file = is_valid_file
+        self.allow_empty = allow_empty
+
+        # 验证参数
+        if extensions is not None and is_valid_file is not None:
+            raise ValueError("Both extensions and is_valid_file cannot be specified at the same time")
+
+        # 构建is_valid_file函数
+        if is_valid_file is None:
+            if extensions is not None:
+                def is_valid_file(x: str) -> bool:
+                    return self.has_file_allowed_extension(x, cast(Tuple[str, ...], self.extensions))
+            else:
+                # 如果没有指定extensions和is_valid_file，则接受所有文件
+                def is_valid_file(x: str) -> bool:
+                    return True
+
+        self.is_valid_file = is_valid_file
+
+        # 加载样本
+        self.samples, self.class_to_idx = self.make_dataset(
+            self.root, self.is_valid_file, self.allow_empty
+        )
+
+        if len(self.samples) == 0 and not self.allow_empty:
+            msg = f"Found 0 files in subfolders of: {self.root}\n"
+            if self.extensions is not None:
+                msg += f"Supported extensions are: {', '.join(self.extensions)}"
+            raise RuntimeError(msg)
+
+        self.targets = [s[1] for s in self.samples]
+        self.classes = list(self.class_to_idx.keys())
+
+    @staticmethod
+    def has_file_allowed_extension(filename: str, extensions: Union[str, Tuple[str, ...]]) -> bool:
+        """
+        检查文件是否具有允许的扩展名。
+
+        参数:
+            filename: 文件名
+            extensions: 允许的扩展名或扩展名元组
+
+        返回:
+            bool: 如果文件具有允许的扩展名则返回True
+        """
+        return filename.lower().endswith(extensions)
+
+    @staticmethod
+    def make_dataset(
+        directory: str,
+        is_valid_file: Callable[[str], bool],
+        allow_empty: bool = False,
+    ) -> Tuple[List[Tuple[str, int]], Dict[str, int]]:
+        """
+        从目录中创建数据集。
+
+        参数:
+            directory: 根目录路径
+            is_valid_file: 判断文件是否有效的函数
+            allow_empty: 是否允许空文件夹
+
+        返回:
+            tuple: (samples, class_to_idx)
+                - samples: 样本列表，每个元素是 (path, class_index) 元组
+                - class_to_idx: 类名到索引的映射字典
+        """
+        directory = os.path.expanduser(directory)
+
+        # 检查目录是否存在
+        if not os.path.isdir(directory):
+            raise FileNotFoundError(f"Directory not found: {directory}")
+
+        # 获取所有类别（子目录）
+        classes = sorted([d.name for d in os.scandir(directory) if d.is_dir()])
+
+        if not allow_empty and len(classes) == 0:
+            raise FileNotFoundError(f"Couldn't find any class folder in {directory}")
+
+        # 创建类名到索引的映射
+        class_to_idx: Dict[str, int] = {cls_name: i for i, cls_name in enumerate(classes)}
+
+        # 收集所有样本
+        samples: List[Tuple[str, int]] = []
+        for target_class in sorted(class_to_idx.keys()):
+            class_index = class_to_idx[target_class]
+            target_dir = os.path.join(directory, target_class)
+
+            if not os.path.isdir(target_dir):
+                continue
+
+            for root, _, fnames in sorted(os.walk(target_dir, followlinks=True)):
+                for fname in sorted(fnames):
+                    path = os.path.join(root, fname)
+                    if is_valid_file(path):
+                        samples.append((path, class_index))
+
+        return samples, class_to_idx
+
+    def __getitem__(self, index: int) -> Tuple[Any, int]:
+        """
+        获取指定索引的样本。
+
+        参数:
+            index: 样本索引
+
+        返回:
+            tuple: (sample, target) 样本和目标类别的元组
+        """
+        path, target = self.samples[index]
+        sample = self.loader(path)
+
+        if self.transform is not None:
+            sample = self.transform(sample)
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target
+
+    def __len__(self) -> int:
+        """
+        返回数据集的大小。
+
+        返回:
+            int: 数据集中的样本数量
+        """
+        return len(self.samples)
+
+    def __repr__(self) -> str:
+        """
+        返回数据集的字符串表示。
+
+        返回:
+            str: 数据集的描述信息
+        """
+        head = "Dataset " + self.__class__.__name__
+        body = [f"Number of datapoints: {self.__len__()}"]
+        body.append(f"Root location: {self.root}")
+        if self.extensions is not None:
+            body.append(f"Extensions: {self.extensions}")
+        body.append(f"Number of classes: {len(self.classes)}")
+        lines = [head] + ["    " + line for line in body]
+        return "\n".join(lines)
+
+
+def default_loader(path: str) -> Any:
+    """
+    默认的图像加载器，使用PIL打开图像。
+
+    参数:
+        path: 图像文件路径
+
+    返回:
+        PIL.Image: 打开的图像
+    """
+    from PIL import Image
+    return Image.open(path).convert('RGB')
+
+
+class ImageFolder(DatasetFolder):
+    """
+    图像文件夹数据集类，继承自DatasetFolder，参照 torchvision.datasets.ImageFolder 实现。
+
+    从目录结构中加载图像数据，目录结构应为：
+    root/dog/xxx.png
+    root/dog/xxy.png
+    root/dog/xxz.png
+    root/cat/123.png
+    root/cat/nsdf3.png
+    root/cat/asd932_.png
+
+    参数:
+        root (str or Path): 根目录路径
+        transform (callable, optional): 应用于图像的变换函数
+        target_transform (callable, optional): 应用于目标的变换函数
+        loader (callable, optional): 加载图像的函数，默认为default_loader
+        is_valid_file (callable, optional): 判断文件是否有效的函数
+        allow_empty (bool, optional): 是否允许空文件夹，默认为False
+    """
+
+    # 默认支持的图像扩展名
+    IMG_EXTENSIONS: Tuple[str, ...] = (
+        '.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.tif', '.tiff', '.webp'
+    )
+
+    def __init__(
+        self,
+        root: Union[str, Path],
+        transform: Optional[Callable] = None,
+        target_transform: Optional[Callable] = None,
+        loader: Callable[[str], Any] = default_loader,
+        is_valid_file: Optional[Callable[[str], bool]] = None,
+        allow_empty: bool = False,
+    ):
+        """
+        初始化ImageFolder数据集。
+
+        参数:
+            root: 根目录路径
+            transform: 应用于图像的变换函数
+            target_transform: 应用于目标的变换函数
+            loader: 加载图像的函数
+            is_valid_file: 判断文件是否有效的函数
+            allow_empty: 是否允许空文件夹
+        """
+        super().__init__(
+            root=root,
+            loader=loader,
+            extensions=self.IMG_EXTENSIONS if is_valid_file is None else None,
+            transform=transform,
+            target_transform=target_transform,
+            is_valid_file=is_valid_file,
+            allow_empty=allow_empty,
+        )
+
+    def __repr__(self) -> str:
+        """
+        返回数据集的字符串表示。
+
+        返回:
+            str: 数据集的描述信息
+        """
+        head = "Dataset " + self.__class__.__name__
+        body = [f"Number of datapoints: {self.__len__()}"]
+        body.append(f"Root location: {self.root}")
+        body.append(f"Number of classes: {len(self.classes)}")
+        lines = [head] + ["    " + line for line in body]
+        return "\n".join(lines)
+
