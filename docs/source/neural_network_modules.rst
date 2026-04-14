@@ -82,17 +82,36 @@ Data Transformation with Transforms
 Loading MNIST Dataset
 ~~~~~~~~~~~~~~~~~~~~~
 
+**Data Root Directory Management**
+
+To simplify data storage location management, Riemann provides the ``get_data_root()`` utility function to get the project's data root directory:
+
 .. code-block:: python
 
+    from riemann.utils import get_data_root
+    
+    # Get the data root directory path
+    data_root = get_data_root()
+    print(f"Data root: {data_root}")
+    # Example output: D:\\code\\Riemann\\data
+
+This function automatically locates the ``data`` folder under the project root directory, avoiding the need to manually specify paths in different environments.
+
+**Loading the Dataset**
+
+.. code-block:: python
+
+    from riemann.utils import get_data_root
+    
     # Load training and test datasets
     train_dataset = MNIST(
-        root='./data',      # Directory to store/load data
-        train=True,         # True for training set, False for test set
-        transform=transform # Data transformation to apply
+        root=get_data_root(),  # Use utility function to get data root
+        train=True,            # True for training set, False for test set
+        transform=transform    # Data transformation to apply
     )
     
     test_dataset = MNIST(
-        root='./data',
+        root=get_data_root(),
         train=False,
         transform=transform
     )
@@ -1449,23 +1468,28 @@ Riemann supports four types of module hooks, executed at different stages of for
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 35 35
+   :widths: 25 30 30 30
 
    * - Hook Type
      - Registration Method
      - Execution Timing
+     - Modifiable Value
    * - Forward Pre-Hook
      - ``register_forward_pre_hook``
      - Called before ``forward`` method execution
+     - Module input (``input``)
    * - Forward Hook
      - ``register_forward_hook``
      - Called after ``forward`` method execution
+     - Module output (``output``)
    * - Full Backward Pre-Hook
      - ``register_full_backward_pre_hook``
-     - Called at the start of backward propagation, before computing input gradients
+     - Called when all module outputs requiring gradients have received gradients
+     - Output gradients (``grad_output``)
    * - Full Backward Hook
      - ``register_full_backward_hook``
-     - Called at the end of backward propagation, after computing input gradients
+     - Called when all module inputs requiring gradients have received gradients
+     - Input gradients (``grad_input``)
 
 Hook Execution Order
 ~~~~~~~~~~~~~~~~~~~~
@@ -1555,13 +1579,24 @@ Forward Hook (register_forward_hook)
 **Parameters**:
 
 - ``module``: The module instance being called
-- ``input``: A tuple containing all input tensors (original inputs received by ``forward``)
-- ``output``: The return value of ``forward`` method, which may be a single tensor or a tuple of tensors
+- ``input``: A tuple containing all input tensors passed to ``forward``
+  
+  - **Always a tuple**: Even for single-input modules, ``input`` is a tuple with one element: ``(input_tensor,)``
+  - Multi-input modules: ``(input1, input2, ...)``
+  - **Note**: If a forward pre-hook modified the input, this will be the modified version, not the original input
+  
+- ``output``: The return value of ``forward`` method
+  
+  - Single-output modules: A single tensor
+  - Multi-output modules: A tuple of tensors ``(output1, output2, ...)``
 
 **Return Value**:
 
 - ``None``: Indicates no modification to output, use original output as module return value
 - ``Tensor`` or ``tuple``: Returns modified output, which will replace the original output
+  
+  - For single-output modules, return a tensor
+  - For multi-output modules, return a tuple with the same structure
 
 **Usage Example**:
 
@@ -1627,6 +1662,8 @@ Full Backward Pre-Hook (register_full_backward_pre_hook)
 
 - ``None``: Indicates no modification to gradients, continue computation with original ``grad_output``
 - ``tuple``: Returns modified ``grad_output``, which will be used for subsequent gradient computation
+  
+  **Important**: If you only want to modify some gradients, the returned tuple must contain **all** output gradients. For positions you don't want to modify, return the original gradient value; if you return ``None`` for a position, that gradient will be **zeroed** (set to 0)
 
 **Usage Example**:
 
@@ -1687,12 +1724,24 @@ Full Backward Hook (register_full_backward_hook)
   - Multi-input module: ``(grad_input1, grad_input2, ...)``
   - For inputs that don't require gradients, the corresponding position is ``None``
 
-- ``grad_output``: A tuple containing all output gradients (same as received by ``register_full_backward_pre_hook``)
+- ``grad_output``: A tuple containing all output gradients
+  
+  - **Note**: If a backward pre-hook modified the gradients, this will be the modified version
 
 **Return Value**:
 
 - ``None``: Indicates no modification to gradients, continue propagation with original ``grad_input``
 - ``tuple``: Returns modified ``grad_input``, which will replace the original gradients propagated to the previous layer
+  
+  **Important**: If you only want to modify some gradients, the returned tuple must contain **all** input gradients. For positions you don't want to modify, return the original gradient value; if you return ``None`` for a position, that gradient will be **zeroed** (set to 0)
+  
+  .. note::
+     This behavior differs from PyTorch. In PyTorch, returning ``None`` for a position keeps the gradient as ``None``.
+     Riemann chooses to zero out the gradient for the following reasons:
+     
+     1. **Semantic Consistency**: Consistent with backward pre-hook behavior (returning ``None`` means zeroing)
+     2. **Practicality**: Zeroing is an intuitive way to block gradient propagation, while ``None`` requires extra handling
+     3. **Safety**: A gradient of 0 is a valid numeric value that won't cause errors in subsequent computations
 
 **Usage Example**:
 
@@ -1784,69 +1833,394 @@ A module can register multiple hooks of the same type, which are executed in reg
 Typical Application Scenarios
 -----------------------------
 
-**1. Feature Visualization**:
+**1. Feature Visualization**
+
+Feature visualization is a common technique in deep learning to understand what patterns a neural network learns at different layers. By registering forward hooks on convolutional layers, you can capture and visualize intermediate feature maps.
+
+**Use Cases**:
+
+- Visualizing what features different convolutional filters detect (edges, textures, shapes)
+- Debugging model behavior by inspecting intermediate representations
+- Creating feature maps for research or presentation purposes
+
+**Example**: Capturing and visualizing feature maps from a CNN (using real MNIST data)
 
 .. code-block:: python
 
-    # Register hook to capture feature maps from convolutional layer
-    activation = {}
+    import riemann.nn as nn
+    from riemann.vision.datasets import EasyMNIST
+    from riemann.utils import get_data_root
+    import matplotlib.pyplot as plt
+
+    # Load MNIST dataset
+    print("Loading MNIST dataset...")
+    train_dataset = EasyMNIST(root=get_data_root(), train=True, onehot_label=False)
+
+    # Get a sample (handwritten digit image)
+    sample_data, sample_label = train_dataset[0]
+    print(f"Sample label: {int(sample_label)}")
+
+    # Reshape flattened data back to 28x28 image
+    sample_image = sample_data.reshape(28, 28)
+
+    # Create a simple CNN for demonstration
+    class SimpleCNN(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
+            self.relu = nn.ReLU()
+            self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+            self.fc = nn.Linear(32 * 28 * 28, 10)
+
+        def forward(self, x):
+            x = self.conv1(x)
+            x = self.relu(x)
+            x = self.conv2(x)
+            x = x.view(x.size(0), -1)
+            return self.fc(x)
+
+    # Dictionary to store activations
+    activations = {}
+
     def get_activation(name):
+        """Create a hook function that saves activations"""
         def hook(module, input, output):
-            activation[name] = output.detach()
+            # Detach to avoid saving computation graph
+            activations[name] = output.detach()
         return hook
-    
-    conv_layer.register_forward_hook(get_activation('conv1'))
 
-**2. Gradient Checking**:
+    # Create model and register hooks
+    model = SimpleCNN()
+    model.conv1.register_forward_hook(get_activation('conv1'))
+    model.conv2.register_forward_hook(get_activation('conv2'))
+
+    # Forward pass with MNIST sample
+    # Reshape to [batch_size, channels, height, width]
+    input_image = sample_image.unsqueeze(0).unsqueeze(0)  # [1, 1, 28, 28]
+    output = model(input_image)
+
+    # Now activations['conv1'] contains the feature maps from conv1 layer
+    # Shape: [1, 16, 28, 28] - 16 feature maps of size 28x28
+    print(f"Conv1 activations shape: {activations['conv1'].shape}")
+    print(f"Model prediction: {output.argmax(dim=1).item()}")
+
+    # Visualize the first 8 feature maps from conv1
+    fig, axes = plt.subplots(2, 4, figsize=(12, 6))
+    for i, ax in enumerate(axes.flat):
+        ax.imshow(activations['conv1'][0, i].numpy(), cmap='viridis')
+        ax.set_title(f'Filter {i}')
+        ax.axis('off')
+    plt.suptitle('Conv1 Layer Feature Maps', fontsize=14)
+    plt.tight_layout()
+    plt.show()
+
+**2. Gradient Checking**
+
+Gradient checking is essential for debugging training issues. Invalid gradients (NaN or Inf values) can cause training to fail silently or produce unexpected results. By using backward hooks, you can monitor gradients in real-time during training.
+
+**Use Cases**:
+
+- Detecting gradient explosion or vanishing gradients early
+- Identifying which layers produce invalid gradients
+- Automatically stopping training or adjusting learning rate when issues occur
+
+**Example**: Comprehensive gradient monitoring with automatic training stop
 
 .. code-block:: python
 
-    # Check if gradients contain NaN or Inf
-    def check_grad_hook(module, grad_input, grad_output):
-        for g in grad_input:
-            if g is not None:
-                if rm.isnan(g).any() or rm.isinf(g).any():
-                    print(f"Warning: Gradients in {module._get_name()} contain NaN or Inf!")
-    
-    module.register_full_backward_hook(check_grad_hook)
+    import riemann as rm
+    import riemann.nn as nn
 
-**3. Weight Statistics Monitoring**:
+    class GradientChecker:
+        """A comprehensive gradient checker that monitors for various issues"""
+        
+        def __init__(self, threshold=1e3):
+            self.threshold = threshold  # Threshold for gradient explosion
+            self.has_nan_inf = False
+            self.layer_stats = {}
+        
+        def hook(self, module, grad_input, grad_output):
+            module_name = module._get_name()
+            
+            # Check for NaN or Inf in grad_output
+            for i, g in enumerate(grad_output):
+                if g is not None:
+                    if rm.isnan(g).any():
+                        print(f"ERROR: NaN detected in {module_name} grad_output[{i}]")
+                        self.has_nan_inf = True
+                    if rm.isinf(g).any():
+                        print(f"ERROR: Inf detected in {module_name} grad_output[{i}]")
+                        self.has_nan_inf = True
+                    
+                    # Check for gradient explosion
+                    grad_norm = g.norm().item()
+                    if grad_norm > self.threshold:
+                        print(f"WARNING: Gradient explosion in {module_name}: norm={grad_norm:.2f}")
+            
+            # Check grad_input as well
+            for i, g in enumerate(grad_input):
+                if g is not None:
+                    if rm.isnan(g).any() or rm.isinf(g).any():
+                        print(f"ERROR: Invalid gradient in {module_name} grad_input[{i}]")
+                        self.has_nan_inf = True
+            
+            # Store statistics
+            self.layer_stats[module_name] = {
+                'grad_output_norms': [g.norm().item() if g is not None else 0 for g in grad_output],
+                'grad_input_norms': [g.norm().item() if g is not None else 0 for g in grad_input]
+            }
+            
+            return None  # Don't modify gradients, just monitor
+
+    # Usage in training
+    model = nn.Sequential(
+        nn.Linear(784, 256),
+        nn.ReLU(),
+        nn.Linear(256, 10)
+    )
+
+    checker = GradientChecker(threshold=100.0)
+    
+    # Register hooks on all layers
+    for layer in model:
+        layer.register_full_backward_hook(checker.hook)
+
+    # Training loop with gradient checking
+    for epoch in range(10):
+        # ... forward pass ...
+        # loss = criterion(output, target)
+        # loss.backward()
+        
+        # Check if gradients are valid before optimizer step
+        if checker.has_nan_inf:
+            print(f"Epoch {epoch}: Stopping due to invalid gradients")
+            break
+        
+        # optimizer.step()
+
+**3. Weight Statistics Monitoring**
+
+Monitoring weight statistics during training helps understand how the network is learning. Sudden changes in weight distribution can indicate issues like poor initialization, learning rate problems, or overfitting.
+
+**Use Cases**:
+
+- Tracking weight distribution changes over training epochs
+- Detecting dead neurons (weights stuck at zero)
+- Identifying potential overfitting (weights growing too large)
+- Validating proper weight initialization
+
+**Example**: Comprehensive weight and activation monitoring
 
 .. code-block:: python
 
-    # Monitor weight distribution during training
-    def weight_stats_hook(module, input, output):
-        if hasattr(module, 'weight'):
-            w = module.weight.data
-            print(f"Weight mean: {w.mean():.4f}, std: {w.std():.4f}")
+    import riemann as rm
+    import riemann.nn as nn
+
+    class TrainingMonitor:
+        """Monitor weights, biases, and activations during training"""
+        
+        def __init__(self):
+            self.history = []
+        
+        def forward_hook(self, module, input, output):
+            """Monitor forward pass statistics"""
+            stats = {
+                'module': module._get_name(),
+                'input_mean': input[0].mean().item() if input[0] is not None else 0,
+                'output_mean': output.mean().item(),
+                'output_std': output.std().item()
+            }
+            
+            # Monitor weights if available
+            if hasattr(module, 'weight') and module.weight is not None:
+                w = module.weight.data
+                stats.update({
+                    'weight_mean': w.mean().item(),
+                    'weight_std': w.std().item(),
+                    'weight_min': w.min().item(),
+                    'weight_max': w.max().item(),
+                    'dead_neurons': (w.abs() < 1e-6).sum().item()  # Near-zero weights
+                })
+            
+            # Monitor bias if available
+            if hasattr(module, 'bias') and module.bias is not None:
+                b = module.bias.data
+                stats.update({
+                    'bias_mean': b.mean().item(),
+                    'bias_std': b.std().item()
+                })
+            
+            self.history.append(stats)
+            
+            # Print warnings for potential issues
+            if stats.get('weight_std', 0) > 10:
+                print(f"WARNING: {stats['module']} weights have high std: {stats['weight_std']:.2f}")
+            if stats.get('dead_neurons', 0) > 0:
+                print(f"INFO: {stats['module']} has {stats['dead_neurons']} dead neurons")
+        
+        def print_summary(self):
+            """Print summary of monitored statistics"""
+            print("\n=== Training Monitor Summary ===")
+            for stats in self.history[-5:]:  # Show last 5 records
+                print(f"\n{stats['module']}:")
+                if 'weight_mean' in stats:
+                    print(f"  Weight: mean={stats['weight_mean']:.4f}, std={stats['weight_std']:.4f}")
+                if 'bias_mean' in stats:
+                    print(f"  Bias: mean={stats['bias_mean']:.4f}, std={stats['bias_std']:.4f}")
+                print(f"  Activation: mean={stats['output_mean']:.4f}, std={stats['output_std']:.4f}")
+
+    # Usage example
+    model = nn.Sequential(
+        nn.Linear(784, 128),
+        nn.ReLU(),
+        nn.Linear(128, 64),
+        nn.ReLU(),
+        nn.Linear(64, 10)
+    )
+
+    monitor = TrainingMonitor()
     
-    module.register_forward_hook(weight_stats_hook)
+    # Register forward hooks on all linear layers
+    for name, layer in model.named_modules():
+        if isinstance(layer, nn.Linear):
+            layer.register_forward_hook(monitor.forward_hook)
 
-Notes
------
+    # During training, statistics are automatically collected
+    # After training, view the summary
+    # monitor.print_summary()
 
-1. **Hook Return Values**: If a hook doesn't need to modify data, it should return ``None`` to avoid unnecessary side effects
+Important Notes
+---------------
 
-2. **Multi-Input/Multi-Output Modules**:
+1. **Hook Return Values**
+
+   If a hook doesn't need to modify data, it should return ``None`` to avoid unnecessary side effects. When modification is needed, return a tensor or tuple with the same structure as the input.
+
+2. **Multi-Input/Multi-Output Module Handling**
+
+   For modules with multiple inputs or outputs, hooks receive tuples containing all inputs/outputs:
+
+   - **Multi-input modules**: ``input`` and ``grad_input`` are tuples containing all input tensors/gradients
+   - **Multi-output modules**: ``output`` and ``grad_output`` are tuples containing all output tensors/gradients
+   - **Important**:
+     
+     - For multi-output modules, **backward pre-hooks** are called only when **all output gradients** (outputs with requires_grad=True that participate in loss computation) are ready
+     - For multi-input modules, **backward hooks** are called only when **all input gradients** (inputs with requires_grad=True) are ready
+     
+     This ensures the hook receives complete gradient information
    
-   - For multi-input modules, ``input`` and ``grad_input`` contain tuples of all inputs/input gradients
-   - For multi-output modules, ``output`` and ``grad_output`` contain tuples of all outputs/output gradients
-   - Even if modifying only one, you need to return a complete tuple
+   When modifying gradients, always return a complete tuple with the same structure, even if you only modify some elements.
 
-3. **Gradient Computation**:
-   
-   - Backward pre-hooks are called before ``grad_input`` computation; modifying ``grad_output`` affects subsequent gradient computation
-   - Backward hooks are called after ``grad_input`` computation; modifying ``grad_input`` affects gradients propagated to previous layers
+3. **Multiple Hooks Chain**
 
-4. **Performance Considerations**:
+   A module can register multiple hooks of the same type, which form a call chain in registration order:
+
+   - **Forward Pre-Hook Chain**: The return value of the previous hook becomes the input to the next hook
+     
+     - If a hook returns ``None``: The original input is passed to the next hook
+     - If a hook returns non-``None``: That return value is used as the next hook's input
+     - The last hook's output determines the final input passed to ``forward``
    
-   - Hooks add extra function call overhead; remove unnecessary hooks in production environments
+   - **Forward Hook Chain**: The return value of the previous hook becomes the output to the next hook
+     
+     - If a hook returns ``None``: The original output is passed to the next hook
+     - If a hook returns non-``None``: That return value is used as the next hook's output
+     - The last hook's output determines the module's final return value
+   
+   - **Backward Pre-Hook Chain**: Can modify ``grad_output``
+     
+     - The ``grad_output`` received by a hook may be the modified version from the previous hook
+     - If a hook returns ``None``: The current ``grad_output`` is used to compute ``grad_input``
+     - If a hook returns non-``None``: That return value replaces ``grad_output`` and is used to compute ``grad_input``
+   
+   - **Backward Hook Chain**: Can modify ``grad_input``
+     
+     - The ``grad_input`` received by a hook is the computed input gradient
+     - The ``grad_output`` received by a hook may be the modified version from backward pre-hooks
+     - If a hook returns ``None``: The original ``grad_input`` is propagated to the previous layer
+     - If a hook returns non-``None``: That return value replaces ``grad_input`` and is propagated to the previous layer
+
+   .. code-block:: python
+
+       # Multi-output module example
+       class MultiOutputModule(nn.Module):
+           def forward(self, x):
+               return x * 2, x * 3  # Two outputs
+       
+       module = MultiOutputModule()
+       
+       def grad_hook(module, grad_input, grad_output):
+           # grad_output contains gradients for BOTH outputs
+           # This hook is called only when both output gradients are ready
+           print(f"Output 1 grad shape: {grad_output[0].shape}")
+           print(f"Output 2 grad shape: {grad_output[1].shape}")
+           return None
+       
+       module.register_full_backward_hook(grad_hook)
+
+3. **Gradient Computation Flow**
+
+   Understanding the gradient computation flow helps correctly use backward hooks:
+
+   - **Backward pre-hooks** (``register_full_backward_pre_hook``): Called before ``grad_input`` computation. Modifying ``grad_output`` affects how gradients are computed for module inputs
+   - **Backward hooks** (``register_full_backward_hook``): Called after ``grad_input`` computation. Modifying ``grad_input`` affects gradients propagated to previous layers
+
+   .. code-block:: text
+
+       Backward propagation flow:
+       
+       1. Output gradients arrive from upstream
+       2. register_full_backward_pre_hook called (can modify grad_output)
+       3. Compute grad_input using (possibly modified) grad_output
+       4. register_full_backward_hook called (can modify grad_input)
+       5. Modified grad_input propagated to previous layers
+
+4. **Hook Execution Conditions**
+
+   Backward hooks have specific execution conditions to ensure meaningful gradient modification:
+
+   - At least one module input must require gradients, **OR**
+   - The module must have parameters that require gradients
+   
+   If neither condition is met, backward hooks won't be called because there's no gradient to modify.
+
+5. **Performance Considerations**
+
+   - Hooks add extra function call overhead. For production inference, remove all debugging and monitoring hooks
    - Avoid time-consuming operations in hooks, especially in training loops
+   - When multiple hooks are registered on the same module, they execute sequentially, compounding the overhead
 
-5. **Memory Management**:
-   
-   - Be careful about memory leaks when saving tensor references in hooks
-   - Use ``.clone()`` or ``.detach()`` to create copies, avoiding retaining computation graph references
+6. **Memory Management**
+
+   - Be careful about memory leaks when saving tensor references in hooks. Saved tensors retain the computation graph
+   - Always use ``.clone()`` or ``.detach()`` to create copies when storing tensors for later analysis
+   - Cached gradients are automatically cleaned up after backward propagation completes
+
+7. **Interaction with Computational Graph**
+
+   When modifying gradients in hooks, be aware of the computational graph:
+
+   - Modified gradients flow into subsequent computations
+   - For gradient clipping, ensure the operation doesn't break gradient flow
+   - For gradient monitoring, use ``.detach()`` to avoid affecting the graph
+
+   .. code-block:: python
+
+       # Safe gradient clipping (preserves gradient flow)
+       def safe_clip_hook(module, grad_output):
+           clipped = tuple(
+               g.clip(-1, 1) if g is not None else None 
+               for g in grad_output
+           )
+           return clipped
+       
+       # Safe gradient monitoring (doesn't affect graph)
+       def safe_monitor_hook(module, grad_input, grad_output):
+           # Detach before storing to avoid memory leak
+           stored_grads = [g.detach().clone() if g is not None else None 
+                          for g in grad_output]
+           # ... analyze stored_grads ...
+           return None
 
 Convolutional Networks
 ======================

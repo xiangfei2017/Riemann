@@ -75,17 +75,36 @@ Riemann 为常见任务提供了内置数据集，简化了数据加载过程。
 加载 MNIST 数据集
 ~~~~~~~~~~~~~~~~~
 
+**数据根目录管理**
+
+为了方便管理数据存储位置，Riemann 提供了 ``get_data_root()`` 工具函数，用于获取项目的数据根目录：
+
 .. code-block:: python
 
+    from riemann.utils import get_data_root
+    
+    # 获取数据根目录路径
+    data_root = get_data_root()
+    print(f"数据根目录: {data_root}")
+    # 输出示例: D:\\code\\Riemann\\data
+
+该函数会自动定位到项目根目录下的 ``data`` 文件夹，避免在不同环境中手动指定路径的问题。
+
+**加载数据集**
+
+.. code-block:: python
+
+    from riemann.utils import get_data_root
+    
     # 加载训练集和测试集
     train_dataset = MNIST(
-        root='./data',      # 数据存储/加载目录
-        train=True,         # True 表示训练集，False 表示测试集
-        transform=transform # 要应用的数据变换
+        root=get_data_root(),  # 使用工具函数获取数据根目录
+        train=True,            # True 表示训练集，False 表示测试集
+        transform=transform    # 要应用的数据变换
     )
     
     test_dataset = MNIST(
-        root='./data',
+        root=get_data_root(),
         train=False,
         transform=transform
     )
@@ -1473,23 +1492,28 @@ Riemann 支持四种类型的模块钩子，分别在前向传播和反向传播
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 25 50
+   :widths: 20 25 35 30
 
    * - 钩子类型
      - 注册方法
      - 执行时机
+     - 可修改的值
    * - 前向预处理钩子
      - ``register_forward_pre_hook``
      - 在 ``forward`` 方法执行之前调用
+     - 模块输入（``input``）
    * - 前向钩子
      - ``register_forward_hook``
      - 在 ``forward`` 方法执行之后调用
+     - 模块输出（``output``）
    * - 反向预处理钩子
      - ``register_full_backward_pre_hook``
-     - 在反向传播开始时，输入梯度计算之前调用
+     - 当模块所有需要梯度的输出都收到梯度时调用（不参与损失计算的输出不需要等待）
+     - 输出梯度（``grad_output``）
    * - 反向钩子
      - ``register_full_backward_hook``
-     - 在反向传播结束时，输入梯度计算之后调用
+     - 当模块所有需要梯度的输入都收到梯度时调用
+     - 输入梯度（``grad_input``）
 
 钩子执行顺序
 ~~~~~~~~~~~~
@@ -1579,13 +1603,24 @@ Riemann 支持四种类型的模块钩子，分别在前向传播和反向传播
 **参数说明**：
 
 - ``module``：当前被调用的模块实例
-- ``input``：包含所有输入张量的元组（``forward`` 接收的原始输入）
-- ``output``：``forward`` 方法的返回值，可能是单个张量或张量元组
+- ``input``：传递给 ``forward`` 的所有输入张量的元组
+  
+  - **始终是元组**：即使是单输入模块，``input`` 也是包含一个元素的元组：``(input_tensor,)``
+  - 多输入模块：``(input1, input2, ...)``
+  - **注意**：如果前向预处理钩子修改了输入，这里将是修改后的版本，而非原始输入
+  
+- ``output``：``forward`` 方法的返回值
+  
+  - 单输出模块：单个张量
+  - 多输出模块：张量元组 ``(output1, output2, ...)``
 
 **返回值**：
 
 - ``None``：表示不修改输出，使用原始输出作为模块返回值
 - ``Tensor`` 或 ``tuple``：返回修改后的输出，将替换原始输出
+  
+  - 单输出模块返回张量
+  - 多输出模块返回相同结构的元组
 
 **使用示例**：
 
@@ -1651,6 +1686,8 @@ Riemann 支持四种类型的模块钩子，分别在前向传播和反向传播
 
 - ``None``：表示不修改梯度，使用原始 ``grad_output`` 继续计算
 - ``tuple``：返回修改后的 ``grad_output``，将用于后续梯度计算
+  
+  **重要**：如果只想修改部分梯度，返回的元组必须包含**所有**输出梯度。对于不想修改的位置，返回原始梯度值；如果返回 ``None``，该位置梯度将被**清零**（设为0）
 
 **使用示例**：
 
@@ -1711,12 +1748,24 @@ Riemann 支持四种类型的模块钩子，分别在前向传播和反向传播
   - 多输入模块：``(grad_input1, grad_input2, ...)``
   - 对于不需要梯度的输入，对应位置为 ``None``
 
-- ``grad_output``：包含所有输出梯度的元组（与 ``register_full_backward_pre_hook`` 接收的相同）
+- ``grad_output``：包含所有输出梯度的元组
+  
+  - **注意**：如果反向预处理钩子修改了梯度，这里将是修改后的版本
 
 **返回值**：
 
 - ``None``：表示不修改梯度，使用原始 ``grad_input`` 继续传播
 - ``tuple``：返回修改后的 ``grad_input``，将替换原始梯度传播给前一层
+  
+  **重要**：如果只想修改部分梯度，返回的元组必须包含**所有**输入梯度。对于不想修改的位置，返回原始梯度值；如果返回 ``None``，该位置梯度将被**清零**（设为0）
+  
+  .. note::
+     Riemann 的这一行为与 PyTorch 不同。在 PyTorch 中，返回 ``None`` 会使该位置梯度保持为 ``None``。
+     Riemann 选择清零的方式是为了：
+     
+     1. **语义一致性**：与反向预处理钩子行为保持一致（返回 ``None`` 均表示清零）
+     2. **实用性**：清零是阻止梯度传播的直观方式，而 ``None`` 需要额外处理
+     3. **安全性**：梯度为 0 是合法数值，不会导致后续计算错误
 
 **使用示例**：
 
@@ -1810,67 +1859,401 @@ Riemann 支持四种类型的模块钩子，分别在前向传播和反向传播
 
 **1. 特征可视化**
 
+特征可视化是深度学习中常用的技术，用于理解神经网络在不同层学习到的模式。通过在卷积层上注册前向钩子，可以捕获并可视化中间特征图。
+
+**使用场景**：
+
+- 可视化不同卷积滤波器检测到的特征（边缘、纹理、形状）
+- 通过检查中间表示来调试模型行为
+- 为研究或演示目的创建特征图
+
+**示例**：捕获并可视化CNN的特征图（使用真实MNIST数据）
+
 .. code-block:: python
 
-    # 注册钩子捕获卷积层的特征图
-    activation = {}
+    import riemann.nn as nn
+    from riemann.vision.datasets import EasyMNIST
+    from riemann.utils import get_data_root
+    import matplotlib.pyplot as plt
+
+    # 设置中文字体（如果需要显示中文标题）
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+    plt.rcParams['axes.unicode_minus'] = False
+
+    # 加载MNIST数据集
+    print("加载MNIST数据集...")
+    train_dataset = EasyMNIST(root=get_data_root(), train=True, onehot_label=False)
+
+    # 获取一个样本（手写数字图像）
+    sample_data, sample_label = train_dataset[0]
+    print(f"样本标签: {int(sample_label)}")
+
+    # 将展平的数据重塑为28x28图像
+    sample_image = sample_data.reshape(28, 28)
+
+    # 创建一个简单的CNN用于演示
+    class SimpleCNN(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
+            self.relu = nn.ReLU()
+            self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+            self.fc = nn.Linear(32 * 28 * 28, 10)
+
+        def forward(self, x):
+            x = self.conv1(x)
+            x = self.relu(x)
+            x = self.conv2(x)
+            x = x.view(x.size(0), -1)
+            return self.fc(x)
+
+    # 用于存储激活值的字典
+    activations = {}
+
     def get_activation(name):
+        """创建保存激活值的钩子函数"""
         def hook(module, input, output):
-            activation[name] = output.detach()
+            # 使用detach避免保存计算图
+            activations[name] = output.detach()
         return hook
-    
-    conv_layer.register_forward_hook(get_activation('conv1'))
+
+    # 创建模型并注册钩子
+    model = SimpleCNN()
+    model.conv1.register_forward_hook(get_activation('conv1'))
+    model.conv2.register_forward_hook(get_activation('conv2'))
+
+    # 使用MNIST样本进行前向传播
+    # 将样本重塑为 [batch_size, channels, height, width]
+    input_image = sample_image.unsqueeze(0).unsqueeze(0)  # [1, 1, 28, 28]
+    output = model(input_image)
+
+    # 现在 activations['conv1'] 包含 conv1 层的特征图
+    # 形状: [1, 16, 28, 28] - 16个28x28的特征图
+    print(f"Conv1 激活值形状: {activations['conv1'].shape}")
+    print(f"模型预测: {output.argmax(dim=1).item()}")
+
+    # 可视化 conv1 的前8个特征图
+    fig, axes = plt.subplots(2, 4, figsize=(12, 6))
+    for i, ax in enumerate(axes.flat):
+        ax.imshow(activations['conv1'][0, i].numpy(), cmap='viridis')
+        ax.set_title(f'Filter {i}')
+        ax.axis('off')
+    plt.suptitle('Conv1 Layer Feature Maps', fontsize=14)
+    plt.tight_layout()
+    plt.show()
 
 **2. 梯度检查**
 
+梯度检查对于调试训练问题至关重要。无效的梯度（NaN或Inf值）可能导致训练静默失败或产生意外结果。通过使用反向钩子，可以在训练期间实时监控梯度。
+
+**使用场景**：
+
+- 及早检测梯度爆炸或梯度消失
+- 识别哪些层产生了无效梯度
+- 出现问题时自动停止训练或调整学习率
+
+**示例**：全面的梯度监控与自动训练停止
+
 .. code-block:: python
 
-    # 检查梯度是否包含 NaN 或 Inf
-    def check_grad_hook(module, grad_input, grad_output):
-        for g in grad_input:
-            if g is not None:
-                if rm.isnan(g).any() or rm.isinf(g).any():
-                    print(f"警告: {module._get_name()} 的梯度包含 NaN 或 Inf!")
+    import riemann as rm
+    import riemann.nn as nn
+
+    class GradientChecker:
+        """全面监控各种问题的梯度检查器"""
+        
+        def __init__(self, threshold=1e3):
+            self.threshold = threshold  # 梯度爆炸阈值
+            self.has_nan_inf = False
+            self.layer_stats = {}
+        
+        def hook(self, module, grad_input, grad_output):
+            module_name = module._get_name()
+            
+            # 检查 grad_output 中的 NaN 或 Inf
+            for i, g in enumerate(grad_output):
+                if g is not None:
+                    if rm.isnan(g).any():
+                        print(f"错误: 在 {module_name} 的 grad_output[{i}] 中检测到 NaN")
+                        self.has_nan_inf = True
+                    if rm.isinf(g).any():
+                        print(f"错误: 在 {module_name} 的 grad_output[{i}] 中检测到 Inf")
+                        self.has_nan_inf = True
+                    
+                    # 检查梯度爆炸
+                    grad_norm = g.norm().item()
+                    if grad_norm > self.threshold:
+                        print(f"警告: {module_name} 发生梯度爆炸: 范数={grad_norm:.2f}")
+            
+            # 同时检查 grad_input
+            for i, g in enumerate(grad_input):
+                if g is not None:
+                    if rm.isnan(g).any() or rm.isinf(g).any():
+                        print(f"错误: {module_name} 的 grad_input[{i}] 包含无效梯度")
+                        self.has_nan_inf = True
+            
+            # 存储统计信息
+            self.layer_stats[module_name] = {
+                'grad_output_norms': [g.norm().item() if g is not None else 0 for g in grad_output],
+                'grad_input_norms': [g.norm().item() if g is not None else 0 for g in grad_input]
+            }
+            
+            return None  # 不修改梯度，仅监控
+
+    # 在训练中使用
+    model = nn.Sequential(
+        nn.Linear(784, 256),
+        nn.ReLU(),
+        nn.Linear(256, 10)
+    )
+
+    checker = GradientChecker(threshold=100.0)
     
-    module.register_full_backward_hook(check_grad_hook)
+    # 在所有层上注册钩子
+    for layer in model:
+        layer.register_full_backward_hook(checker.hook)
+
+    # 带有梯度检查的训练循环
+    for epoch in range(10):
+        # ... 前向传播 ...
+        # loss = criterion(output, target)
+        # loss.backward()
+        
+        # 在优化器步骤前检查梯度是否有效
+        if checker.has_nan_inf:
+            print(f"第 {epoch} 轮: 由于无效梯度而停止训练")
+            break
+        
+        # optimizer.step()
 
 **3. 权重统计监控**
 
+监控训练期间的权重统计信息有助于理解网络的学习情况。权重分布的突然变化可能表明存在初始化不良、学习率问题或过拟合等问题。
+
+**使用场景**：
+
+- 跟踪训练轮次间的权重分布变化
+- 检测死亡神经元（权重卡在零值）
+- 识别潜在的过拟合（权重变得过大）
+- 验证正确的权重初始化
+
+**示例**：全面的权重和激活监控
+
 .. code-block:: python
 
-    # 监控训练过程中的权重分布
-    def weight_stats_hook(module, input, output):
-        if hasattr(module, 'weight'):
-            w = module.weight.data
-            print(f"权重均值: {w.mean():.4f}, 标准差: {w.std():.4f}")
+    import riemann as rm
+    import riemann.nn as nn
+
+    class TrainingMonitor:
+        """监控训练期间的权重、偏置和激活值"""
+        
+        def __init__(self):
+            self.history = []
+        
+        def forward_hook(self, module, input, output):
+            """监控前向传播统计信息"""
+            stats = {
+                'module': module._get_name(),
+                'input_mean': input[0].mean().item() if input[0] is not None else 0,
+                'output_mean': output.mean().item(),
+                'output_std': output.std().item()
+            }
+            
+            # 监控权重（如果可用）
+            if hasattr(module, 'weight') and module.weight is not None:
+                w = module.weight.data
+                stats.update({
+                    'weight_mean': w.mean().item(),
+                    'weight_std': w.std().item(),
+                    'weight_min': w.min().item(),
+                    'weight_max': w.max().item(),
+                    'dead_neurons': (w.abs() < 1e-6).sum().item()  # 接近零的权重
+                })
+            
+            # 监控偏置（如果可用）
+            if hasattr(module, 'bias') and module.bias is not None:
+                b = module.bias.data
+                stats.update({
+                    'bias_mean': b.mean().item(),
+                    'bias_std': b.std().item()
+                })
+            
+            self.history.append(stats)
+            
+            # 对潜在问题打印警告
+            if stats.get('weight_std', 0) > 10:
+                print(f"警告: {stats['module']} 的权重标准差过高: {stats['weight_std']:.2f}")
+            if stats.get('dead_neurons', 0) > 0:
+                print(f"信息: {stats['module']} 有 {stats['dead_neurons']} 个死亡神经元")
+        
+        def print_summary(self):
+            """打印监控统计信息摘要"""
+            print("\n=== 训练监控摘要 ===")
+            for stats in self.history[-5:]:  # 显示最近5条记录
+                print(f"\n{stats['module']}:")
+                if 'weight_mean' in stats:
+                    print(f"  权重: 均值={stats['weight_mean']:.4f}, 标准差={stats['weight_std']:.4f}")
+                if 'bias_mean' in stats:
+                    print(f"  偏置: 均值={stats['bias_mean']:.4f}, 标准差={stats['bias_std']:.4f}")
+                print(f"  激活值: 均值={stats['output_mean']:.4f}, 标准差={stats['output_std']:.4f}")
+
+    # 使用示例
+    model = nn.Sequential(
+        nn.Linear(784, 128),
+        nn.ReLU(),
+        nn.Linear(128, 64),
+        nn.ReLU(),
+        nn.Linear(64, 10)
+    )
+
+    monitor = TrainingMonitor()
     
-    module.register_forward_hook(weight_stats_hook)
+    # 在所有线性层上注册前向钩子
+    for name, layer in model.named_modules():
+        if isinstance(layer, nn.Linear):
+            layer.register_forward_hook(monitor.forward_hook)
+
+    # 在训练期间，统计信息会自动收集
+    # 训练结束后，查看摘要
+    # monitor.print_summary()
 
 注意事项
 --------
 
-1. **钩子返回值**：如果钩子不需要修改数据，应该返回 ``None`` 以避免不必要的副作用
+1. **钩子返回值**
 
-2. **多输入/多输出模块**：
-   
-   - 多输入模块的 ``input`` 和 ``grad_input`` 包含所有输入/输入梯度的元组
-   - 多输出模块的 ``output`` 和 ``grad_output`` 包含所有输出/输出梯度的元组
-   - 即使只修改其中一个，也需要返回完整的元组
+   如果钩子不需要修改数据，应该返回 ``None`` 以避免不必要的副作用。当需要修改时，返回与输入结构相同的张量或元组。
 
-3. **梯度计算**：
-   
-   - 反向预处理钩子在 ``grad_input`` 计算之前调用，修改 ``grad_output`` 会影响后续梯度计算
-   - 反向钩子在 ``grad_input`` 计算之后调用，修改 ``grad_input`` 会影响向前传播的梯度
+2. **多输入/多输出模块处理**
 
-4. **性能考虑**：
+   对于具有多个输入或输出的模块，钩子会接收包含所有输入/输出的元组：
+
+   - **多输入模块**：``input`` 和 ``grad_input`` 是包含所有输入张量/梯度的元组
+   - **多输出模块**：``output`` 和 ``grad_output`` 是包含所有输出张量/梯度的元组
+   - **重要**：
+     
+     - 对于多输出模块，反向预处理钩子仅在所有输出梯度（requires_grad=True且参与损失函数计算的输出）都就绪时才被调用
+     - 对于多输入模块，反向钩子仅在所有输入梯度（requires_grad=True的输入）都就绪时才被调用
+     
+     这确保钩子接收到完整的梯度信息
    
-   - 钩子会增加额外的函数调用开销，生产环境中应移除不必要的钩子
+   修改梯度时，即使只修改部分元素，也要始终返回结构完整的元组。
+
+3. **多钩子调用链**
+
+   一个模块可以注册多个同类型钩子，它们按注册顺序形成调用链：
+
+   - **前向预处理钩子链**：前一个钩子的返回值作为下一个钩子的输入
+     
+     - 如果钩子返回 ``None``：使用原始输入传递给下一个钩子
+     - 如果钩子返回非 ``None``：使用该返回值作为下一个钩子的输入
+     - 最后一个钩子的输出决定最终传递给 ``forward`` 的输入
+   
+   - **前向钩子链**：前一个钩子的返回值作为下一个钩子的输出
+     
+     - 如果钩子返回 ``None``：使用原始输出传递给下一个钩子
+     - 如果钩子返回非 ``None``：使用该返回值作为下一个钩子的输出
+     - 最后一个钩子的输出决定模块的最终返回值
+   
+   - **反向预处理钩子链**：可以修改 ``grad_output``
+     
+     - 钩子接收的 ``grad_output`` 可能是前一个钩子修改后的版本
+     - 如果钩子返回 ``None``：使用当前 ``grad_output`` 计算 ``grad_input``
+     - 如果钩子返回非 ``None``：使用该返回值替换 ``grad_output`` 并计算 ``grad_input``
+   
+   - **反向钩子链**：可以修改 ``grad_input``
+     
+     - 钩子接收的 ``grad_input`` 是计算完成的输入梯度
+     - 钩子接收的 ``grad_output`` 可能是反向预处理钩子修改后的版本
+     - 如果钩子返回 ``None``：使用原始 ``grad_input`` 传播给前一层
+     - 如果钩子返回非 ``None``：使用该返回值替换 ``grad_input`` 并传播给前一层
+
+   .. code-block:: python
+
+       # 多输出模块示例
+       class MultiOutputModule(nn.Module):
+           def forward(self, x):
+               return x * 2, x * 3  # 两个输出
+       
+       module = MultiOutputModule()
+       
+       def grad_hook(module, grad_input, grad_output):
+           # grad_output 包含两个输出的梯度
+           # 只有当两个输出梯度都就绪时才调用此钩子
+           print(f"输出1梯度形状: {grad_output[0].shape}")
+           print(f"输出2梯度形状: {grad_output[1].shape}")
+           return None
+       
+       module.register_full_backward_hook(grad_hook)
+
+3. **梯度计算流程**
+
+   理解梯度计算流程有助于正确使用反向钩子：
+
+   - 反向预处理钩子（``register_full_backward_pre_hook``）
+     
+     在 ``grad_input`` 计算之前调用。修改 ``grad_output`` 会影响模块输入的梯度计算方式
+     
+   - 反向钩子（``register_full_backward_hook``）
+     
+     在 ``grad_input`` 计算之后调用。修改 ``grad_input`` 会影响传播到前一层的梯度
+
+   .. code-block:: text
+
+       反向传播流程：
+       
+       1. 输出梯度从上游到达
+       2. 调用 register_full_backward_pre_hook（可修改 grad_output）
+       3. 使用（可能已修改的）grad_output 计算 grad_input
+       4. 调用 register_full_backward_hook（可修改 grad_input）
+       5. 将修改后的 grad_input 传播到前一层
+
+4. **钩子执行条件**
+
+   反向钩子有特定的执行条件，以确保有意义的梯度修改：
+
+   - 至少有一个模块输入需要梯度，**或者**
+   - 模块必须有需要梯度的参数
+   
+   如果两个条件都不满足，反向钩子不会被调用，因为没有梯度可以修改。
+
+5. **性能考虑**
+
+   - 钩子会增加额外的函数调用开销。对于生产环境推理，应移除所有调试和监控钩子
    - 在钩子中避免执行耗时操作，特别是在训练循环中
+   - 当在同一模块上注册多个钩子时，它们会顺序执行，开销会累积
 
-5. **内存管理**：
-   
-   - 在钩子中保存张量引用时要注意内存泄漏问题
-   - 使用 ``.clone()`` 或 ``.detach()`` 创建副本，避免保留计算图引用
+6. **内存管理**
+
+   - 在钩子中保存张量引用时要注意内存泄漏问题。保存的张量会保留计算图
+   - 存储张量供后续分析时，始终使用 ``.clone()`` 或 ``.detach()`` 创建副本
+   - 反向传播完成后，缓存的梯度会自动清理
+
+7. **与计算图的交互**
+
+   在钩子中修改梯度时，要注意计算图：
+
+   - 修改后的梯度会流入后续计算
+   - 对于梯度裁剪，确保操作不会破坏梯度流
+   - 对于梯度监控，使用 ``.detach()`` 避免影响计算图
+
+   .. code-block:: python
+
+       # 安全的梯度裁剪（保持梯度流）
+       def safe_clip_hook(module, grad_output):
+           clipped = tuple(
+               g.clip(-1, 1) if g is not None else None 
+               for g in grad_output
+           )
+           return clipped
+       
+       # 安全的梯度监控（不影响计算图）
+       def safe_monitor_hook(module, grad_input, grad_output):
+           # 存储前先detach，避免内存泄漏
+           stored_grads = [g.detach().clone() if g is not None else None 
+                          for g in grad_output]
+           # ... 分析 stored_grads ...
+           return None
 
 卷积网络
 ========
