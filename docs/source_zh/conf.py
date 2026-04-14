@@ -22,7 +22,7 @@ copyright = '2025, Fei Xiang'
 author = 'Fei Xiang'
 
 # The full version, including alpha/beta/rc tags
-release = '0.5.0'
+release = '0.5.2'
 
 # 设置语言为中文
 language = 'zh_CN'
