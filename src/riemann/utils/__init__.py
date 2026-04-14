@@ -38,3 +38,8 @@ def get_project_root():
     # 向上导航到项目根目录
     # utils -> riemann -> src -> project_root
     return os.path.abspath(os.path.join(utils_dir, '..', '..', '..'))
+
+
+def get_data_root():
+    """获取数据根目录"""
+    return os.path.join(get_project_root(), 'data')
