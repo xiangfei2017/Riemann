@@ -4743,7 +4743,7 @@ Dropout函数
 
       根据给定索引获取数据集中的单个样本。
 
-.. class:: riemann.vision.datasets.EasyMNIST(root, train=True, onehot_label=True)
+.. class:: riemann.vision.datasets.EasyMNIST(root, train=True, onehot_label=True, download=False)
 
    继承自MNIST的子类，在初始化时对图像数据应用归一化、标准化、展开转换，对标签作onehot编码或转换为标量张量。
 
@@ -4753,6 +4753,8 @@ Dropout函数
    :type train: bool
    :param onehot_label: 是否使用one-hot编码的标签，默认为True
    :type onehot_label: bool
+   :param download: 如果数据集不存在是否下载，默认为False
+   :type download: bool, optional
 
    .. method:: __len__()
 
@@ -4762,7 +4764,34 @@ Dropout函数
 
       获取指定索引处的样本数据。
 
-.. class:: riemann.vision.datasets.CIFAR10(root, train=True, transform=None, target_transform=None)
+.. class:: riemann.vision.datasets.FashionMNIST(root, train=True, transform=None, target_transform=None, download=False)
+
+   Fashion-MNIST数据集类，用于加载和处理Fashion-MNIST时尚产品数据集。
+
+   :param root: 数据集的根目录
+   :type root: str
+   :param train: 是否加载训练集，默认为True
+   :type train: bool
+   :param transform: 应用于图像的变换函数
+   :type transform: callable, optional
+   :param target_transform: 应用于目标的变换函数
+   :type target_transform: callable, optional
+   :param download: 如果数据集不存在是否下载，默认为False
+   :type download: bool, optional
+
+   .. attribute:: classes
+
+      类别名称列表：['T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat', 'Sandal', 'Shirt', 'Sneaker', 'Bag', 'Ankle boot']
+
+   .. method:: __len__()
+
+      返回数据集中的样本数量。
+
+   .. method:: __getitem__(index)
+
+      根据给定索引获取数据集中的单个样本。
+
+.. class:: riemann.vision.datasets.CIFAR10(root, train=True, transform=None, target_transform=None, download=False)
 
    CIFAR-10数据集类，用于加载和处理CIFAR-10图像数据集。
 
@@ -4774,6 +4803,108 @@ Dropout函数
    :type transform: callable, optional
    :param target_transform: 应用于目标的变换函数
    :type target_transform: callable, optional
+   :param download: 如果数据集不存在是否下载，默认为False
+   :type download: bool, optional
+
+   .. method:: __len__()
+
+      返回数据集的大小。
+
+   .. method:: __getitem__(index)
+
+      获取指定索引处的样本数据。
+
+.. class:: riemann.vision.datasets.Flowers102(root, split='train', transform=None, target_transform=None, download=False)
+
+   Oxford 102 Flower数据集类，用于加载和处理花卉分类数据集。
+
+   :param root: 数据集的根目录
+   :type root: str
+   :param split: 数据集划分（'train'、'val' 或 'test'），默认为'train'
+   :type split: str, optional
+   :param transform: 应用于图像的变换函数
+   :type transform: callable, optional
+   :param target_transform: 应用于目标的变换函数
+   :type target_transform: callable, optional
+   :param download: 如果数据集不存在是否下载，默认为False
+   :type download: bool, optional
+
+   .. method:: __len__()
+
+      返回数据集的大小。
+
+   .. method:: __getitem__(index)
+
+      获取指定索引处的样本数据。
+
+.. class:: riemann.vision.datasets.OxfordIIITPet(root, split='trainval', target_types='category', transform=None, target_transform=None, download=False)
+
+   Oxford-IIIT Pet数据集类，用于加载和处理宠物分类数据集。
+
+   :param root: 数据集的根目录
+   :type root: str
+   :param split: 数据集划分（'trainval' 或 'test'），默认为'trainval'
+   :type split: str, optional
+   :param target_types: 目标类型（'category'、'binary-category' 或 'segmentation'），默认为'category'
+   :type target_types: str 或 list, optional
+   :param transform: 应用于图像的变换函数
+   :type transform: callable, optional
+   :param target_transform: 应用于目标的变换函数
+   :type target_transform: callable, optional
+   :param download: 如果数据集不存在是否下载，默认为False
+   :type download: bool, optional
+
+   .. method:: __len__()
+
+      返回数据集的大小。
+
+   .. method:: __getitem__(index)
+
+      获取指定索引处的样本数据。
+
+.. class:: riemann.vision.datasets.LFWPeople(root, split='10fold', image_set='funneled', transform=None, target_transform=None, download=False)
+
+   LFW People数据集类，用于加载和处理人脸识别数据集。
+
+   :param root: 数据集的根目录
+   :type root: str
+   :param split: 数据集划分（'10fold'、'train' 或 'test'），默认为'10fold'
+   :type split: str, optional
+   :param image_set: 图像对齐类型（'original'、'funneled' 或 'deepfunneled'），默认为'funneled'
+   :type image_set: str, optional
+   :param transform: 应用于图像的变换函数
+   :type transform: callable, optional
+   :param target_transform: 应用于目标的变换函数
+   :type target_transform: callable, optional
+   :param download: 如果数据集不存在是否下载，默认为False
+   :type download: bool, optional
+
+   .. attribute:: classes
+
+      人物名称列表。
+
+   .. method:: __len__()
+
+      返回数据集的大小。
+
+   .. method:: __getitem__(index)
+
+      获取指定索引处的样本数据。
+
+.. class:: riemann.vision.datasets.SVHN(root, split='train', transform=None, target_transform=None, download=False)
+
+   SVHN（街景门牌号码）数据集类，用于加载和处理数字识别数据集。
+
+   :param root: 数据集的根目录
+   :type root: str
+   :param split: 数据集划分（'train'、'test' 或 'extra'），默认为'train'
+   :type split: str, optional
+   :param transform: 应用于图像的变换函数
+   :type transform: callable, optional
+   :param target_transform: 应用于目标的变换函数
+   :type target_transform: callable, optional
+   :param download: 如果数据集不存在是否下载，默认为False
+   :type download: bool, optional
 
    .. method:: __len__()
 

@@ -63,7 +63,7 @@ make.bat clean-all
 - Output directory: `build/html/`
 
 ### Chinese Documentation Configuration
-- Configuration file: `source_zh/conf_zh.py`
+- Configuration file: `source_zh/conf.py`
 - Language setting: `language = 'zh_CN'`
 - Output directory: `build/html_zh/`
 
@@ -81,4 +81,4 @@ make.bat clean-all
 
 1. Chinese documentation requires correct encoding and language configuration
 2. Ensure the system has installed Sphinx themes that support Chinese
-3. Specify the use of `source_zh/conf_zh.py` configuration file when building Chinese documentation
+3. Specify the use of `source_zh/conf.py` configuration file when building Chinese documentation

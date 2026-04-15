@@ -63,7 +63,7 @@ make.bat clean-all
 - 输出目录：`build/html/`
 
 ### 中文文档配置
-- 配置文件：`source_zh/conf_zh.py`
+- 配置文件：`source_zh/conf.py`
 - 语言设置：`language = 'zh_CN'`
 - 输出目录：`build/html_zh/`
 
@@ -81,4 +81,4 @@ make.bat clean-all
 
 1. 中文文档需要设置正确的编码和语言配置
 2. 确保系统已安装支持中文的 Sphinx 主题
-3. 构建中文文档时指定使用 `source_zh/conf_zh.py` 配置文件
+3. 构建中文文档时指定使用 `source_zh/conf.py` 配置文件

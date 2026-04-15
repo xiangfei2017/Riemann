@@ -12,7 +12,7 @@ Overview
 
 The ``riemann.vision`` module includes the following main components:
 
-- **Datasets**: Popular datasets like MNIST, CIFAR-10, ImageFolder, etc.
+- **Datasets**: Popular datasets like MNIST, CIFAR-10, Flowers102, OxfordIIITPet, LFWPeople, SVHN, ImageFolder, etc.
 - **Transforms**: Image preprocessing and data augmentation operations
 - **Data Loading**: Seamless integration with ``DataLoader``, supporting batch loading and parallel processing
 
@@ -46,6 +46,58 @@ Datasets
 
 Riemann provides various popular computer vision datasets. All datasets inherit from the ``Dataset`` class and can be used with ``DataLoader``.
 
+Dataset Overview
+~~~~~~~~~~~~~~~~
+
+.. list-table:: Supported Datasets
+   :header-rows: 1
+   :widths: 20 35 15 30
+
+   * - Dataset
+     - Description
+     - Size
+     - Download Source
+   * - MNIST
+     - Handwritten digit recognition (0-9), 28×28 grayscale images
+     - 60,000 train / 10,000 test
+     - AWS S3 (ossci-datasets)
+   * - FashionMNIST
+     - Fashion product images (10 categories), 28×28 grayscale
+     - 60,000 train / 10,000 test
+     - Zalando Research
+   * - CIFAR-10
+     - 10-class object recognition, 32×32 color images
+     - 50,000 train / 10,000 test
+     - University of Toronto
+   * - CIFAR-100
+     - 100-class object recognition with 20 superclasses, 32×32 color images
+     - 50,000 train / 10,000 test
+     - University of Toronto
+   * - Flowers102
+     - 102 flower categories classification
+     - 1,020 train / 1,020 val / 6,149 test
+     - Oxford VGG
+   * - OxfordIIITPet
+     - 37 pet breeds (cats and dogs) classification
+     - ~7,000 images (~200 per class)
+     - Oxford VGG
+   * - LFWPeople
+     - Face recognition dataset with multiple identities
+     - 13,233 images / 5,749 people
+     - UMass Amherst
+   * - SVHN
+     - Street View House Numbers, 32×32 color images
+     - 73,257 train / 26,032 test / 531,131 extra
+     - Stanford University
+   * - ImageFolder
+     - Generic folder-based dataset loader
+     - User-defined
+     - Local files
+   * - DatasetFolder
+     - Generic folder dataset with custom loader
+     - User-defined
+     - Local files
+
 MNIST Dataset
 ~~~~~~~~~~~~~
 
@@ -57,6 +109,7 @@ Handwritten digit recognition dataset containing 60,000 training images and 10,0
 - ``train`` (bool): ``True`` to load training set, ``False`` to load test set
 - ``transform`` (callable, optional): Image transformation function
 - ``target_transform`` (callable, optional): Label transformation function
+- ``download`` (bool, optional): If True, downloads the dataset from the internet
 
 **Usage Example**:
 
@@ -66,12 +119,68 @@ Handwritten digit recognition dataset containing 60,000 training images and 10,0
     from riemann.utils.data import DataLoader
 
     # Load training and test sets
-    train_dataset = MNIST(root='./data', train=True, transform=transforms.ToTensor())
-    test_dataset = MNIST(root='./data', train=False, transform=transforms.ToTensor())
+    train_dataset = MNIST(root='./data', train=True, download=True, transform=transforms.ToTensor())
+    test_dataset = MNIST(root='./data', train=False, download=True, transform=transforms.ToTensor())
 
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+
+EasyMNIST (Preprocessed MNIST)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+EasyMNIST is a preprocessed version of MNIST that applies normalization, standardization, and flattening during initialization. Labels can be converted to one-hot encoding. This saves preprocessing time during training as transformations are applied once at initialization rather than during each epoch.
+
+**Parameters**:
+
+- ``root`` (str): Root directory for data storage
+- ``train`` (bool): ``True`` to load training set, ``False`` to load test set
+- ``onehot_label`` (bool): If True, convert labels to one-hot encoding (default: True)
+- ``download`` (bool, optional): If True, downloads the dataset from the internet
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision.datasets import EasyMNIST
+
+    # Load EasyMNIST with one-hot labels (default)
+    train_dataset = EasyMNIST(root='./data', train=True, onehot_label=True, download=True)
+    
+    # Load with scalar labels
+    test_dataset = EasyMNIST(root='./data', train=False, onehot_label=False, download=True)
+
+    # Data is already preprocessed (normalized, flattened)
+    image, label = train_dataset[0]
+    print(f"Image shape: {image.shape}")  # [784] - flattened
+    print(f"Label shape: {label.shape}")  # [10] - one-hot if onehot_label=True
+
+FashionMNIST Dataset
+~~~~~~~~~~~~~~~~~~~~
+
+Fashion-MNIST is a dataset of Zalando's article images consisting of 60,000 training examples and 10,000 test examples. Each example is a 28×28 grayscale image, associated with a label from 10 classes. It is designed to be a drop-in replacement for MNIST.
+
+**Classes**: T-shirt/top, Trouser, Pullover, Dress, Coat, Sandal, Shirt, Sneaker, Bag, Ankle boot
+
+**Parameters**:
+
+- ``root`` (str): Root directory for data storage
+- ``train`` (bool): ``True`` to load training set, ``False`` to load test set
+- ``transform`` (callable, optional): Image transformation function
+- ``target_transform`` (callable, optional): Label transformation function
+- ``download`` (bool, optional): If True, downloads the dataset from the internet
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision.datasets import FashionMNIST
+
+    # Load FashionMNIST dataset
+    train_dataset = FashionMNIST(root='./data', train=True, download=True, transform=transforms.ToTensor())
+    test_dataset = FashionMNIST(root='./data', train=False, download=True, transform=transforms.ToTensor())
+
+    print(f"Classes: {train_dataset.classes}")
 
 CIFAR-10 Dataset
 ~~~~~~~~~~~~~~~~
@@ -84,6 +193,7 @@ Contains 60,000 32×32 color images in 10 classes (airplane, automobile, bird, c
 - ``train`` (bool): ``True`` to load training set (50,000 images), ``False`` to load test set (10,000 images)
 - ``transform`` (callable, optional): Image transformation function
 - ``target_transform`` (callable, optional): Label transformation function
+- ``download`` (bool, optional): If True, downloads the dataset from the internet
 
 **Usage Example**:
 
@@ -92,8 +202,178 @@ Contains 60,000 32×32 color images in 10 classes (airplane, automobile, bird, c
     from riemann.vision.datasets import CIFAR10
 
     # Load CIFAR-10 dataset
-    train_dataset = CIFAR10(root='./data', train=True, transform=transforms.ToTensor())
-    test_dataset = CIFAR10(root='./data', train=False, transform=transforms.ToTensor())
+    train_dataset = CIFAR10(root='./data', train=True, download=True, transform=transforms.ToTensor())
+    test_dataset = CIFAR10(root='./data', train=False, download=True, transform=transforms.ToTensor())
+
+CIFAR-100 Dataset
+~~~~~~~~~~~~~~~~~
+
+Contains 60,000 32×32 color images in 100 classes. Each class has 600 images (500 for training, 100 for testing). CIFAR-100 has 100 fine-grained classes and 20 superclasses.
+
+**Parameters**:
+
+- ``root`` (str): Root directory for data storage
+- ``train`` (bool): ``True`` to load training set (50,000 images), ``False`` to load test set (10,000 images)
+- ``transform`` (callable, optional): Image transformation function
+- ``target_transform`` (callable, optional): Label transformation function
+- ``download`` (bool, optional): If True, downloads the dataset from the internet
+- ``coarse`` (bool, optional): If True, uses 20 superclass labels; otherwise uses 100 fine-grained class labels (default: False)
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision.datasets import CIFAR100
+
+    # Load CIFAR-100 with fine-grained labels (100 classes)
+    train_dataset = CIFAR100(root='./data', train=True, download=True, coarse=False)
+    test_dataset = CIFAR100(root='./data', train=False, download=True, coarse=False)
+
+    # Load CIFAR-100 with superclass labels (20 classes)
+    train_dataset_coarse = CIFAR100(root='./data', train=True, download=True, coarse=True)
+
+Flowers102 Dataset
+~~~~~~~~~~~~~~~~~~
+
+Oxford 102 Flower is an image classification dataset consisting of 102 flower categories. The flowers were chosen to be flowers commonly occurring in the United Kingdom. Each class consists of between 40 and 258 images. The images have large scale, pose and light variations.
+
+**Note**: This class requires ``scipy`` to load target files from ``.mat`` format.
+
+**Parameters**:
+
+- ``root`` (str): Root directory of the dataset
+- ``split`` (str, optional): The dataset split, supports ``"train"`` (default), ``"val"``, or ``"test"``
+- ``transform`` (callable, optional): Image transformation function
+- ``target_transform`` (callable, optional): Target transformation function
+- ``download`` (bool, optional): If True, downloads the dataset from the internet
+
+**Dataset Statistics**:
+
+- Train: 1,020 images
+- Validation: 1,020 images  
+- Test: 6,149 images
+- Total: 8,189 images across 102 classes
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision.datasets import Flowers102
+
+    # Load Flowers102 dataset
+    train_dataset = Flowers102(root='./data', split='train', download=True, transform=transforms.ToTensor())
+    val_dataset = Flowers102(root='./data', split='val', download=True, transform=transforms.ToTensor())
+    test_dataset = Flowers102(root='./data', split='test', download=True, transform=transforms.ToTensor())
+
+    print(f"Train samples: {len(train_dataset)}")  # 1020
+    print(f"Validation samples: {len(val_dataset)}")  # 1020
+    print(f"Test samples: {len(test_dataset)}")  # 6149
+
+OxfordIIITPet Dataset
+~~~~~~~~~~~~~~~~~~~~~
+
+The Oxford-IIIT Pet Dataset is a 37 category pet dataset with roughly 200 images for each class. The images have large variations in scale, pose and lighting. All images have an associated ground truth annotation of species (cat or dog), breed, and pixel-level trimap segmentation.
+
+**Parameters**:
+
+- ``root`` (str): Root directory of the dataset
+- ``split`` (str, optional): The dataset split, supports ``"trainval"`` (default) or ``"test"``
+- ``target_types`` (str or list, optional): Types of target to use. Can be ``"category"`` (default), ``"binary-category"``, or ``"segmentation"``. Can also be a list to output a tuple with all specified target types.
+- ``transform`` (callable, optional): Image transformation function
+- ``target_transform`` (callable, optional): Target transformation function
+- ``download`` (bool, optional): If True, downloads the dataset from the internet
+
+**Target Types**:
+
+- ``category`` (int): Label for one of the 37 pet categories
+- ``binary-category`` (int): Binary label for cat (0) or dog (1)
+- ``segmentation`` (PIL Image): Segmentation trimap of the image
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision.datasets import OxfordIIITPet
+
+    # Load with category labels
+    dataset = OxfordIIITPet(root='./data', split='trainval', target_types='category', download=True)
+    
+    # Load with binary classification (cat vs dog)
+    dataset_bin = OxfordIIITPet(root='./data', split='trainval', target_types='binary-category', download=True)
+    
+    # Load with segmentation masks
+    dataset_seg = OxfordIIITPet(root='./data', split='trainval', target_types='segmentation', download=True)
+    
+    # Load with multiple target types
+    dataset_multi = OxfordIIITPet(root='./data', split='trainval', 
+                                   target_types=['category', 'segmentation'], download=True)
+
+LFWPeople Dataset
+~~~~~~~~~~~~~~~~~
+
+LFW (Labeled Faces in the Wild) People dataset contains 13,233 face images collected from the web. The images are organized into 5,749 different identities. This dataset is designed for face recognition research.
+
+**Parameters**:
+
+- ``root`` (str): Root directory of the dataset
+- ``split`` (str, optional): The dataset split, supports ``"10fold"`` (default), ``"train"``, or ``"test"``
+- ``image_set`` (str, optional): The image alignment type, supports ``"original"``, ``"funneled"`` (default), or ``"deepfunneled"``
+- ``transform`` (callable, optional): Image transformation function
+- ``target_transform`` (callable, optional): Target transformation function
+- ``download`` (bool, optional): If True, downloads the dataset from the internet
+
+**Image Sets**:
+
+- ``original``: Original images without alignment
+- ``funneled``: Geometrically normalized face images (default)
+- ``deepfunneled``: Deep funneled images with better alignment
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision.datasets import LFWPeople
+
+    # Load LFWPeople dataset with funneled images
+    train_dataset = LFWPeople(root='./data', split='train', image_set='funneled', download=True)
+    test_dataset = LFWPeople(root='./data', split='test', image_set='funneled', download=True)
+
+    print(f"Number of classes (people): {len(train_dataset.classes)}")
+    print(f"Train samples: {len(train_dataset)}")
+
+SVHN Dataset
+~~~~~~~~~~~~
+
+SVHN (Street View House Numbers) dataset contains 32×32 color images of house numbers collected from Google Street View. The dataset includes 10 digit classes (0-9).
+
+**Note**: This class requires ``scipy`` to load data from ``.mat`` format.
+
+**Parameters**:
+
+- ``root`` (str): Root directory of the dataset
+- ``split`` (str): The dataset split, supports ``"train"``, ``"test"``, or ``"extra"``
+- ``transform`` (callable, optional): Image transformation function
+- ``target_transform`` (callable, optional): Target transformation function
+- ``download`` (bool, optional): If True, downloads the dataset from the internet
+
+**Dataset Statistics**:
+
+- Train: 73,257 images
+- Test: 26,032 images
+- Extra: 531,131 additional images (less difficult samples)
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision.datasets import SVHN
+
+    # Load SVHN dataset
+    train_dataset = SVHN(root='./data', split='train', download=True, transform=transforms.ToTensor())
+    test_dataset = SVHN(root='./data', split='test', download=True, transform=transforms.ToTensor())
+    
+    # Also available: extra split with additional training data
+    extra_dataset = SVHN(root='./data', split='extra', download=True, transform=transforms.ToTensor())
 
 ImageFolder Dataset
 ~~~~~~~~~~~~~~~~~~~
@@ -299,90 +579,53 @@ Advanced Transforms
     import riemann as rm
     from riemann.vision import transforms
 
-    # Five crop on image
+    # Five crop: returns a tuple of 5 images
     five_crop = transforms.FiveCrop(224)
-    image = rm.randn(3, 256, 256)  # [C, H, W]
-    crops = five_crop(image)  # Returns tuple of 5 tensors
+    
+    # Apply to image
+    crops = five_crop(image)  # (top_left, top_right, bottom_left, bottom_right, center)
+    
+    # Stack into batch
+    tensor_crops = rm.stack([transforms.ToTensor()(crop) for crop in crops])
 
-**TenCrop**: Ten crop (five crop + horizontal flip)
-
-.. code-block:: python
-
-    # Ten crop on image
-    ten_crop = transforms.TenCrop(224, vertical_flip=False)
-    crops = ten_crop(image)  # Returns tuple of 10 tensors
-
-**Pad**: Image padding
+**TenCrop**: Ten crop (FiveCrop + horizontal flips)
 
 .. code-block:: python
 
-    # Pad image
+    # Ten crop: returns a tuple of 10 images
+    ten_crop = transforms.TenCrop(224)
+
+**Pad**: Pad image
+
+.. code-block:: python
+
+    # Pad image with specified padding
     pad = transforms.Pad(padding=4, fill=0)
 
-AutoAugment Family
-~~~~~~~~~~~~~~~~~~
-
-**AutoAugment**: Automatic data augmentation
+**Lambda**: Custom transform using lambda
 
 .. code-block:: python
 
-    from riemann.vision.transforms import AutoAugment, AutoAugmentPolicy
+    # Define custom transform
+    custom_transform = transforms.Lambda(lambda x: x.rotate(90))
 
-    # Use ImageNet policy
-    augment = AutoAugment(policy=AutoAugmentPolicy.IMAGENET)
-    augmented_image = augment(image)
+Complete Example
+----------------
 
-**RandAugment**: Random data augmentation
-
-.. code-block:: python
-
-    from riemann.vision.transforms import RandAugment
-
-    # Randomly select transformation combination
-    augment = RandAugment(num_ops=2, magnitude=9)
-    augmented_image = augment(image)
-
-**TrivialAugmentWide**: Wide range simple augmentation
-
-.. code-block:: python
-
-    from riemann.vision.transforms import TrivialAugmentWide
-
-    # Wide range simple augmentation
-    augment = TrivialAugmentWide()
-    augmented_image = augment(image)
-
-Utilities
----------
-
-**default_loader**: Default image loader
-
-.. code-block:: python
-
-    from riemann.vision.datasets import default_loader
-
-    # Load image file
-    image = default_loader('path/to/image.jpg')
-
-Complete Examples
------------------
-
-Image Classification Training Pipeline
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Complete image classification training workflow:
 
 .. code-block:: python
 
     import riemann as rm
-    import riemann.nn as nn
-    import riemann.optim as optim
     from riemann.vision import datasets, transforms
     from riemann.utils.data import DataLoader
+    from riemann.nn import Module, Linear, ReLU, CrossEntropyLoss
+    from riemann.optim import SGD
 
-    # Define data transformations
+    # Define training and test transformations
     train_transform = transforms.Compose([
         transforms.RandomResizedCrop(224),
         transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                            std=[0.229, 0.224, 0.225])
@@ -396,213 +639,123 @@ Image Classification Training Pipeline
                            std=[0.229, 0.224, 0.225])
     ])
 
-    # Load datasets
-    train_dataset = datasets.CIFAR10(
-        root='./data',
-        train=True,
-        transform=train_transform
-    )
-    test_dataset = datasets.CIFAR10(
-        root='./data',
-        train=False,
-        transform=test_transform
-    )
+    # Load dataset
+    train_dataset = datasets.CIFAR10(root='./data', train=True, 
+                                      download=True, transform=train_transform)
+    test_dataset = datasets.CIFAR10(root='./data', train=False, 
+                                     download=True, transform=test_transform)
 
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=64, 
+                              shuffle=True, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=64, 
+                             shuffle=False, num_workers=4)
 
     # Define model
-    model = nn.Sequential(
-        nn.Conv2d(3, 64, kernel_size=3, padding=1),
-        nn.ReLU(),
-        nn.MaxPool2d(2),
-        nn.Conv2d(64, 128, kernel_size=3, padding=1),
-        nn.ReLU(),
-        nn.MaxPool2d(2),
-        nn.Flatten(),
-        nn.Linear(128 * 8 * 8, 10)
-    )
+    class SimpleNet(Module):
+        def __init__(self):
+            super().__init__()
+            self.fc1 = Linear(224 * 224 * 3, 256)
+            self.relu = ReLU()
+            self.fc2 = Linear(256, 10)
+        
+        def forward(self, x):
+            x = x.view(x.size(0), -1)
+            x = self.fc1(x)
+            x = self.relu(x)
+            x = self.fc2(x)
+            return x
 
-    # Define loss function and optimizer
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    model = SimpleNet()
+    criterion = CrossEntropyLoss()
+    optimizer = SGD(model.parameters(), lr=0.01)
 
     # Training loop
     for epoch in range(10):
-        model.train()
         for images, labels in train_loader:
-            optimizer.zero_grad()
+            # Forward pass
             outputs = model(images)
             loss = criterion(outputs, labels)
+            
+            # Backward pass
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-Custom Dataset
-~~~~~~~~~~~~~~
-
-.. code-block:: python
-
-    from riemann.utils.data import Dataset
-    from PIL import Image
-    import os
-
-    class CustomImageDataset(Dataset):
-        def __init__(self, root_dir, transform=None):
-            self.root_dir = root_dir
-            self.transform = transform
-            self.images = []
-            self.labels = []
-            
-            # Load data list
-            for label in os.listdir(root_dir):
-                label_dir = os.path.join(root_dir, label)
-                if os.path.isdir(label_dir):
-                    for img_name in os.listdir(label_dir):
-                        self.images.append(os.path.join(label_dir, img_name))
-                        self.labels.append(int(label))
-
-        def __len__(self):
-            return len(self.images)
-
-        def __getitem__(self, idx):
-            img_path = self.images[idx]
-            image = Image.open(img_path).convert('RGB')
-            label = self.labels[idx]
-            
-            if self.transform:
-                image = self.transform(image)
-            
-            return image, label
-
-    # Use custom dataset
-    dataset = CustomImageDataset(
-        root_dir='./custom_data',
-        transform=transforms.ToTensor()
-    )
-    loader = DataLoader(dataset, batch_size=32, shuffle=True)
+        
+        print(f"Epoch {epoch+1} completed")
 
 API Reference
 -------------
 
-Dataset Classes
-~~~~~~~~~~~~~~~
+.. py:module:: riemann.vision.datasets
 
-.. list-table:: Dataset Classes
-   :header-rows: 1
-   :widths: 25 75
+.. py:class:: MNIST
+   
+   MNIST handwritten digits dataset. Includes EasyMNIST variant with preprocessing.
 
-   * - Class Name
-     - Description
-   * - ``MNIST``
-     - MNIST handwritten digit dataset
-   * - ``EasyMNIST``
-     - Simplified MNIST dataset
-   * - ``CIFAR10``
-     - CIFAR-10 image classification dataset
-   * - ``ImageFolder``
-     - Load image dataset from folder
-   * - ``DatasetFolder``
-     - Generic folder dataset base class
+.. py:class:: FashionMNIST
+   
+   Fashion-MNIST dataset.
 
-Transform Classes
-~~~~~~~~~~~~~~~~~
+.. py:class:: CIFAR10
+   
+   CIFAR-10 dataset.
 
-.. list-table:: Transform Classes
-   :header-rows: 1
-   :widths: 25 75
+.. py:class:: Flowers102
+   
+   Oxford 102 Flower dataset.
 
-   * - Class Name
-     - Description
-   * - **Composition**
-     -
-   * - ``Compose``
-     - Compose multiple transforms and apply sequentially
-   * - **Type Conversion**
-     -
-   * - ``ToTensor``
-     - Convert PIL Image or numpy.ndarray to tensor
-   * - ``PILToTensor``
-     - Convert PIL Image to tensor (without scaling)
-   * - ``ToPILImage``
-     - Convert tensor to PIL Image
-   * - ``ConvertImageDtype``
-     - Convert image data type
-   * - **Geometric Transforms**
-     -
-   * - ``Resize``
-     - Resize image
-   * - ``CenterCrop``
-     - Center crop
-   * - ``RandomCrop``
-     - Random crop
-   * - ``RandomResizedCrop``
-     - Random resized crop
-   * - ``FiveCrop``
-     - Five crop (corners and center)
-   * - ``TenCrop``
-     - Ten crop (five crop + horizontal flip)
-   * - ``Pad``
-     - Image padding
-   * - **Flip and Rotation**
-     -
-   * - ``RandomHorizontalFlip``
-     - Random horizontal flip
-   * - ``RandomVerticalFlip``
-     - Random vertical flip
-   * - ``RandomRotation``
-     - Random rotation
-   * - ``RandomAffine``
-     - Random affine transformation
-   * - ``RandomPerspective``
-     - Random perspective transformation
-   * - **Color Transforms**
-     -
-   * - ``ColorJitter``
-     - Color jitter (brightness, contrast, saturation, hue)
-   * - ``Grayscale``
-     - Convert to grayscale
-   * - ``RandomGrayscale``
-     - Randomly convert to grayscale
-   * - ``Invert``
-     - Invert colors
-   * - ``Posterize``
-     - Reduce color bits
-   * - ``Solarize``
-     - Invert pixels above threshold
-   * - ``Equalize``
-     - Histogram equalization
-   * - ``AutoContrast``
-     - Auto contrast adjustment
-   * - ``Sharpness``
-     - Sharpness adjustment
-   * - ``Brightness``
-     - Brightness adjustment
-   * - ``Contrast``
-     - Contrast adjustment
-   * - ``Saturation``
-     - Saturation adjustment
-   * - ``Hue``
-     - Hue adjustment
-   * - **Normalization**
-     -
-   * - ``Normalize``
-     - Normalize with mean and standard deviation
-   * - **Advanced Augmentation**
-     -
-   * - ``AutoAugment``
-     - Automatic data augmentation (learning-based policy)
-   * - ``RandAugment``
-     - Random data augmentation
-   * - ``TrivialAugmentWide``
-     - Wide range simple augmentation
-   * - **Other Transforms**
-     -
-   * - ``Lambda``
-     - Apply custom lambda function
-   * - ``GaussianBlur``
-     - Gaussian blur
-   * - ``RandomErasing``
-     - Random erasing (for data augmentation)
-   * - ``SanitizeBoundingBox``
-     - Sanitize bounding boxes
+.. py:class:: OxfordIIITPet
+   
+   Oxford-IIIT Pet dataset.
+
+.. py:class:: LFWPeople
+   
+   Labeled Faces in the Wild People dataset.
+
+.. py:class:: SVHN
+   
+   Street View House Numbers dataset.
+
+.. py:class:: ImageFolder
+   
+   Generic data loader for images from local folders.
+
+.. py:class:: DatasetFolder
+   
+   Generic data loader for custom image formats.
+
+.. py:module:: riemann.vision.transforms
+   :noindex:
+
+.. py:class:: Compose
+   
+   Compose multiple transforms.
+
+.. py:class:: ToTensor
+   
+   Convert PIL Image or numpy.ndarray to tensor.
+
+.. py:class:: ToPILImage
+   
+   Convert tensor to PIL Image.
+
+.. py:class:: Resize
+   
+   Resize image.
+
+.. py:class:: CenterCrop
+   
+   Center crop image.
+
+.. py:class:: RandomResizedCrop
+   
+   Random resized crop.
+
+.. py:class:: RandomHorizontalFlip
+   
+   Random horizontal flip.
+
+.. py:class:: Normalize
+   
+   Normalize tensor.

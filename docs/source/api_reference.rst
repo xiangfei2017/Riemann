@@ -4747,7 +4747,7 @@ Datasets
 
       Get a single sample from the dataset at the given index.
 
-.. class:: riemann.vision.datasets.EasyMNIST(root, train=True, onehot_label=True)
+.. class:: riemann.vision.datasets.EasyMNIST(root, train=True, onehot_label=True, download=False)
 
    Subclass inherited from MNIST, applies normalization, standardization, and flattening transformations to image data during initialization, and performs one-hot encoding or conversion to scalar tensors for labels.
 
@@ -4757,6 +4757,8 @@ Datasets
    :type train: bool
    :param onehot_label: Whether to use one-hot encoded labels, defaults to True
    :type onehot_label: bool
+   :param download: Whether to download the dataset if not found, defaults to False
+   :type download: bool, optional
 
    .. method:: __len__()
 
@@ -4766,7 +4768,34 @@ Datasets
 
       Get sample data at the specified index.
 
-.. class:: riemann.vision.datasets.CIFAR10(root, train=True, transform=None, target_transform=None)
+.. class:: riemann.vision.datasets.FashionMNIST(root, train=True, transform=None, target_transform=None, download=False)
+
+   Fashion-MNIST dataset class for loading and processing the Fashion-MNIST fashion product dataset.
+
+   :param root: Root directory of the dataset
+   :type root: str
+   :param train: Whether to load the training set, defaults to True
+   :type train: bool
+   :param transform: Transformation function applied to images
+   :type transform: callable, optional
+   :param target_transform: Transformation function applied to targets
+   :type target_transform: callable, optional
+   :param download: Whether to download the dataset if not found, defaults to False
+   :type download: bool, optional
+
+   .. attribute:: classes
+
+      List of class names: ['T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat', 'Sandal', 'Shirt', 'Sneaker', 'Bag', 'Ankle boot']
+
+   .. method:: __len__()
+
+      Return the number of samples in the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get a single sample from the dataset at the given index.
+
+.. class:: riemann.vision.datasets.CIFAR10(root, train=True, transform=None, target_transform=None, download=False)
 
    CIFAR-10 dataset class for loading and processing the CIFAR-10 image dataset.
 
@@ -4778,6 +4807,108 @@ Datasets
    :type transform: callable, optional
    :param target_transform: Transformation function applied to targets
    :type target_transform: callable, optional
+   :param download: Whether to download the dataset if not found, defaults to False
+   :type download: bool, optional
+
+   .. method:: __len__()
+
+      Return the size of the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get sample data at the specified index.
+
+.. class:: riemann.vision.datasets.Flowers102(root, split='train', transform=None, target_transform=None, download=False)
+
+   Oxford 102 Flower dataset class for loading and processing the flower classification dataset.
+
+   :param root: Root directory of the dataset
+   :type root: str
+   :param split: Dataset split ('train', 'val', or 'test'), defaults to 'train'
+   :type split: str, optional
+   :param transform: Transformation function applied to images
+   :type transform: callable, optional
+   :param target_transform: Transformation function applied to targets
+   :type target_transform: callable, optional
+   :param download: Whether to download the dataset if not found, defaults to False
+   :type download: bool, optional
+
+   .. method:: __len__()
+
+      Return the size of the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get sample data at the specified index.
+
+.. class:: riemann.vision.datasets.OxfordIIITPet(root, split='trainval', target_types='category', transform=None, target_transform=None, download=False)
+
+   Oxford-IIIT Pet dataset class for loading and processing the pet classification dataset.
+
+   :param root: Root directory of the dataset
+   :type root: str
+   :param split: Dataset split ('trainval' or 'test'), defaults to 'trainval'
+   :type split: str, optional
+   :param target_types: Type of target ('category', 'binary-category', or 'segmentation'), defaults to 'category'
+   :type target_types: str or list, optional
+   :param transform: Transformation function applied to images
+   :type transform: callable, optional
+   :param target_transform: Transformation function applied to targets
+   :type target_transform: callable, optional
+   :param download: Whether to download the dataset if not found, defaults to False
+   :type download: bool, optional
+
+   .. method:: __len__()
+
+      Return the size of the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get sample data at the specified index.
+
+.. class:: riemann.vision.datasets.LFWPeople(root, split='10fold', image_set='funneled', transform=None, target_transform=None, download=False)
+
+   LFW People dataset class for loading and processing the face recognition dataset.
+
+   :param root: Root directory of the dataset
+   :type root: str
+   :param split: Dataset split ('10fold', 'train', or 'test'), defaults to '10fold'
+   :type split: str, optional
+   :param image_set: Image alignment type ('original', 'funneled', or 'deepfunneled'), defaults to 'funneled'
+   :type image_set: str, optional
+   :param transform: Transformation function applied to images
+   :type transform: callable, optional
+   :param target_transform: Transformation function applied to targets
+   :type target_transform: callable, optional
+   :param download: Whether to download the dataset if not found, defaults to False
+   :type download: bool, optional
+
+   .. attribute:: classes
+
+      List of person names.
+
+   .. method:: __len__()
+
+      Return the size of the dataset.
+
+   .. method:: __getitem__(index)
+
+      Get sample data at the specified index.
+
+.. class:: riemann.vision.datasets.SVHN(root, split='train', transform=None, target_transform=None, download=False)
+
+   SVHN (Street View House Numbers) dataset class for loading and processing the digit recognition dataset.
+
+   :param root: Root directory of the dataset
+   :type root: str
+   :param split: Dataset split ('train', 'test', or 'extra'), defaults to 'train'
+   :type split: str, optional
+   :param transform: Transformation function applied to images
+   :type transform: callable, optional
+   :param target_transform: Transformation function applied to targets
+   :type target_transform: callable, optional
+   :param download: Whether to download the dataset if not found, defaults to False
+   :type download: bool, optional
 
    .. method:: __len__()
 

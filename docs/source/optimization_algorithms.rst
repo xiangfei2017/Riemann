@@ -1076,6 +1076,7 @@ StepLR
 **Function**: Adjusts the learning rate by a fixed step size and decay factor.
 
 **Parameters**:
+
 - `optimizer`: The optimizer whose learning rate is to be adjusted
 - `step_size`: The step size for learning rate decay
 - `gamma`: The learning rate decay factor, default is 0.1
@@ -1089,6 +1090,7 @@ MultiStepLR
 **Function**: Adjusts the learning rate at specified milestones.
 
 **Parameters**:
+
 - `optimizer`: The optimizer whose learning rate is to be adjusted
 - `milestones`: A list of milestones for learning rate decay
 - `gamma`: The learning rate decay factor, default is 0.1
@@ -1102,6 +1104,7 @@ ExponentialLR
 **Function**: Adjusts the learning rate with exponential decay.
 
 **Parameters**:
+
 - `optimizer`: The optimizer whose learning rate is to be adjusted
 - `gamma`: The learning rate decay factor
 - `last_epoch`: The index of the last epoch, default is -1
@@ -1114,6 +1117,7 @@ CosineAnnealingLR
 **Function**: Adjusts the learning rate according to the shape of a cosine function.
 
 **Parameters**:
+
 - `optimizer`: The optimizer whose learning rate is to be adjusted
 - `T_max`: The period of cosine annealing
 - `eta_min`: The minimum learning rate, default is 0
@@ -1127,6 +1131,7 @@ ReduceLROnPlateau
 **Function**: Adjusts the learning rate when a metric stops improving.
 
 **Parameters**:
+
 - `optimizer`: The optimizer whose learning rate is to be adjusted
 - `mode`: Mode, 'min' or 'max', default is 'min'
 - `factor`: The learning rate decay factor, default is 0.1
