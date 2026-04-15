@@ -54,3 +54,6 @@ docs/build_zh
 docs/build_html
 docs/build_html_zh
 _site/
+
+# 测试数据
+data/
