@@ -414,7 +414,7 @@ class EasyMNIST(MNIST):
     # __len__和__getitem__直接继承自父类MNIST，无需重写
 
 
-class FashionMNIST(MNIST):
+class FashionMNIST(Dataset):
     """
     Fashion-MNIST数据集类，用于加载和处理时尚产品图像数据集。
     
@@ -437,6 +437,10 @@ class FashionMNIST(MNIST):
         ("http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-images-idx3-ubyte.gz", "bef4ecab320f06d8554ea6380940ec79"),
         ("http://fashion-mnist.s3-website.eu-central-1.amazonaws.com/t10k-labels-idx1-ubyte.gz", "bb300cfdad3c16e7a12a480ee83cd310"),
     ]
+    
+    # 训练集和测试集文件映射
+    train_files = ("train-images-idx3-ubyte", "train-labels-idx1-ubyte")
+    test_files = ("t10k-images-idx3-ubyte", "t10k-labels-idx1-ubyte")
     
     # 类别名称
     classes = ['T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat',
@@ -537,6 +541,38 @@ class FashionMNIST(MNIST):
             
             # 解压文件（使用通用工具函数）
             extract_archive(filepath, fashion_dir, 'gzip')
+    
+    def __len__(self):
+        """
+        返回数据集的大小。
+        
+        返回:
+            int: 数据集中的样本数量
+        """
+        return len(self.data_list)
+    
+    def __getitem__(self, index):
+        """
+        获取指定索引的样本。
+        
+        参数:
+            index (int): 样本索引
+            
+        返回:
+            tuple: (image, target) 图像和目标的元组
+        """
+        # 直接获取预转换的PIL Image和标签
+        img, target = self.data_list[index]
+        
+        # 应用transform，如果提供的话
+        if self.transform is not None:
+            img = self.transform(img)
+        
+        # 应用target_transform，如果提供的话
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        
+        return img, target
 
 
 class CIFAR10(Dataset):
@@ -1184,7 +1220,7 @@ class LFWPeople(Dataset):
         return image, label
 
 
-class CIFAR100(CIFAR10):
+class CIFAR100(Dataset):
     """
     CIFAR-100数据集类，用于加载和处理CIFAR-100图像数据集。
     
@@ -1230,7 +1266,7 @@ class CIFAR100(CIFAR10):
         
         # 如果需要，下载数据集
         if download:
-            self._download_cifar100(root)
+            self._download(root)
         
         # 加载类别名称
         meta_file = os.path.join(cifar100_dir, 'meta')
@@ -1285,7 +1321,7 @@ class CIFAR100(CIFAR10):
             del batch_data, batch_images, batch_labels
             print(f"Loaded and converted test data")
     
-    def _download_cifar100(self, root):
+    def _download(self, root):
         """
         下载CIFAR-100数据集文件。
         
@@ -1311,6 +1347,58 @@ class CIFAR100(CIFAR10):
         
         # 解压文件（使用通用工具函数）
         extract_archive(filepath, root, 'tar')
+    
+    def _load_batch(self, file_path):
+        """
+        加载CIFAR-100批次文件。
+        
+        参数:
+            file_path (str): 批次文件路径
+            
+        返回:
+            dict: 包含数据和标签的字典
+        """
+        import pickle
+        with open(file_path, 'rb') as f:
+            # 兼容Python 2和3的pickle加载
+            try:
+                batch_dict = pickle.load(f, encoding='latin1')
+            except (UnicodeDecodeError, TypeError):
+                batch_dict = pickle.load(f)
+        
+        return batch_dict
+    
+    def __len__(self):
+        """
+        返回数据集的大小。
+        
+        返回:
+            int: 数据集中的样本数量
+        """
+        return len(self.data_list)
+    
+    def __getitem__(self, index):
+        """
+        获取指定索引的样本。
+        
+        参数:
+            index (int): 样本索引
+            
+        返回:
+            tuple: (image, target) 图像和目标的元组
+        """
+        # 直接获取预转换的PIL Image和标签
+        img, target = self.data_list[index]
+        
+        # 应用transform，如果提供的话
+        if self.transform is not None:
+            img = self.transform(img)
+        
+        # 应用target_transform，如果提供的话
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        
+        return img, target
 
 
 class DatasetFolder(Dataset):
