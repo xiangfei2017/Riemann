@@ -94,7 +94,7 @@ starttime = time.time()
 data_root = os.path.join(os.path.dirname(__file__), '..','data')
 
 # 使用继承自MNIST的预处理版本，复用MNIST代码同时保持高效
-minist_dataset = EasyMNIST(root=data_root, train=True)
+minist_dataset = EasyMNIST(root=data_root, train=True,download=True)
 endtime = time.time()
 print(f"loading seconds:{endtime-starttime:.2f}")
 print(f"dataset size: {len(minist_dataset)}")

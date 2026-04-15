@@ -42,7 +42,7 @@ def clear_screen():
 
 class EasyCIFAR10(datasets.CIFAR10):
     """
-    继承自CFAIR10的子类，在初始化时对图像数据应用归一化、标准化转换，
+    继承自CIFAR10的子类，在初始化时对图像数据应用归一化、标准化转换，
     这样训练过程中不再需要转换数据，可节省训练时间。
     """
     
@@ -58,7 +58,7 @@ class EasyCIFAR10(datasets.CIFAR10):
         def tensor_transform(img):
             # 将图像转换为张量
             tensor_img = transforms.ToTensor()(img)
-            # 使用CFAIR10数据集的实际均值和标准差进行标准化
+            # 使用CIFAR10数据集的实际均值和标准差进行标准化
             # 根据数据分析：R(134.57,69.84), G(135.19,69.56), B(136.95,66.95)
             # 转换为0-1范围的均值和标准差
             normalized_img = transforms.Normalize(
@@ -70,38 +70,17 @@ class EasyCIFAR10(datasets.CIFAR10):
         def tensor_label_transform(label):
             return tensor(label, dtype=get_default_dtype())
         
-        # 初始化父类，传入转换函数
-        super().__init__(root, train=train, transform=tensor_transform, target_transform=tensor_label_transform)
+        # 初始化父类，不传入转换函数，直接获取PIL Image
+        super().__init__(root, train=train, transform=None, target_transform=None)
         
-        # 预处理所有数据
+        # 预处理所有数据，直接更新父类的data_list
         print("Transforming CIFAR-10 to EasyCIFAR10 ...")
-        self.data_list = []
-        # 使用父类的长度，而不是子类的长度
-        parent_length = super().__len__()
-        for i in tqdm(range(parent_length)):
-            # 通过父类的__getitem__获取转换后的数据
-            self.data_list.append(super().__getitem__(i))
+        for i in tqdm(range(len(self.data_list))):
+            img, target = self.data_list[i]  # 获取PIL Image和标签
+            # 应用转换并更新
+            self.data_list[i] = (tensor_transform(img), tensor_label_transform(target))
     
-    def __len__(self):
-        """
-        返回数据集的大小。
-        
-        返回:
-            int: 数据集中的样本数量
-        """
-        return len(self.data_list)
-    
-    def __getitem__(self, index):
-        """
-        获取指定索引的样本。
-        
-        参数:
-            index (int): 样本索引
-            
-        返回:
-            tuple: (image, target) 预处理后的图像张量和目标张量的元组
-        """
-        return self.data_list[index]
+    # __len__和__getitem__直接继承自父类CIFAR10，无需重写
 
 
 class LeNet(nn.Module):
