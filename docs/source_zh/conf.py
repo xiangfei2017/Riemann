@@ -59,8 +59,15 @@ html_theme = 'sphinx_rtd_theme'
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
-# so a file named "default.css" will overwrite the builtin "default.css".
+# so a file named 'default.css' will overwrite the builtin 'default.css'.
 html_static_path = ['_static']
+
+# 中文搜索语言设置
+html_search_language = 'zh'
+
+# 中文文档标题
+html_title = 'Riemann 文档'
+html_short_title = 'Riemann'
 
 # -- Extension configuration -------------------------------------------------
 

@@ -1,5 +1,5 @@
-# .readthedocs.yml
-# Read the Docs configuration file for English documentation
+# .readthedocs.zh.yml
+# Read the Docs configuration file for Chinese documentation
 # See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
 
 # Required
@@ -11,9 +11,9 @@ build:
   tools:
     python: "3.9"
 
-# Build documentation in the docs/ directory with Sphinx
+# Build documentation in the docs/ directory with Sphinx (Chinese version)
 sphinx:
-  configuration: docs/source/conf.py
+  configuration: docs/source_zh/conf.py
   builder: html
   fail_on_warning: false
 
@@ -26,7 +26,7 @@ python:
 formats:
   - htmlzip
 
-# Search configuration
+# Search configuration for Chinese
 search:
   ranking:
     api/*: 5
