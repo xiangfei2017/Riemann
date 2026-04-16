@@ -447,15 +447,174 @@ Generic folder dataset class, similar to ``ImageFolder`` but allows custom image
         transform=transforms.ToTensor()
     )
 
+default_loader
+~~~~~~~~~~~~~~
+
+``default_loader`` is the default image loading function used by ``ImageFolder`` and ``DatasetFolder``. It automatically selects the appropriate loading method based on file extension:
+
+- Image formats supported by PIL (e.g., .jpg, .png, .bmp, etc.): Loaded using PIL.Image.open() and converted to RGB mode
+- Other formats: Attempts to load using PIL
+
+**Purpose**:
+
+``default_loader`` is mainly used for the ``loader`` parameter of ``ImageFolder`` and ``DatasetFolder`` to specify the image loading method. When using these two dataset classes, if the ``loader`` parameter is not specified, ``default_loader`` will be used by default.
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision.datasets import DatasetFolder, default_loader
+
+    # Load image using default_loader
+    image = default_loader('path/to/image.jpg')
+    
+    # Use in DatasetFolder
+    dataset = DatasetFolder(
+        root='./custom_dataset',
+        loader=default_loader,  # Specify to use default_loader
+        extensions=('.jpg', '.png')
+    )
+
 Transforms
 ----------
 
 ``riemann.vision.transforms`` provides rich image transformation operations for data preprocessing and data augmentation.
 
+Transform Overview
+~~~~~~~~~~~~~~~~~~
+
+.. list-table:: Supported Transforms
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - Transform
+     - Description
+     - Category
+   * - Compose
+     - Combine multiple transforms into one
+     - Utility
+   * - PILToTensor
+     - Convert PIL Image to tensor without scaling
+     - Conversion
+   * - ToTensor
+     - Convert PIL Image or numpy.ndarray to tensor (scales to [0, 1])
+     - Conversion
+   * - ToPILImage
+     - Convert tensor to PIL Image
+     - Conversion
+   * - ConvertImageDtype
+     - Convert image to specified data type
+     - Conversion
+   * - Normalize
+     - Normalize tensor with mean and std
+     - Normalization
+   * - Resize
+     - Resize image to specified size
+     - Geometric
+   * - CenterCrop
+     - Crop image from center
+     - Geometric
+   * - RandomHorizontalFlip
+     - Randomly flip image horizontally
+     - Augmentation
+   * - RandomVerticalFlip
+     - Randomly flip image vertically
+     - Augmentation
+   * - RandomRotation
+     - Randomly rotate image by angle
+     - Augmentation
+   * - ColorJitter
+     - Randomly change brightness, contrast, saturation, hue
+     - Augmentation
+   * - Grayscale
+     - Convert image to grayscale
+     - Color
+   * - RandomGrayscale
+     - Randomly convert image to grayscale
+     - Augmentation
+   * - RandomCrop
+     - Randomly crop image to specified size
+     - Augmentation
+   * - RandomResizedCrop
+     - Random crop and resize image
+     - Augmentation
+   * - FiveCrop
+     - Crop image into 5 regions (4 corners + center)
+     - Geometric
+   * - TenCrop
+     - Crop image into 10 regions (FiveCrop + flips)
+     - Geometric
+   * - Pad
+     - Pad image with specified value
+     - Geometric
+   * - Lambda
+     - Apply custom lambda function
+     - Utility
+   * - GaussianBlur
+     - Apply Gaussian blur to image
+     - Filter
+   * - RandomAffine
+     - Random affine transformation
+     - Augmentation
+   * - RandomPerspective
+     - Random perspective transformation
+     - Augmentation
+   * - RandomErasing
+     - Randomly erase rectangular regions
+     - Augmentation
+   * - AutoAugment
+     - AutoAugment data augmentation policy
+     - Auto Augmentation
+   * - RandAugment
+     - RandAugment data augmentation policy
+     - Auto Augmentation
+   * - TrivialAugmentWide
+     - TrivialAugmentWide data augmentation policy
+     - Auto Augmentation
+   * - SanitizeBoundingBox
+     - Sanitize and validate bounding boxes
+     - Detection
+   * - Invert
+     - Invert image colors
+     - Color
+   * - Posterize
+     - Reduce number of bits for each color channel
+     - Color
+   * - Solarize
+     - Invert pixels above threshold
+     - Color
+   * - Equalize
+     - Equalize image histogram
+     - Color
+   * - AutoContrast
+     - Maximize image contrast
+     - Color
+   * - Sharpness
+     - Adjust image sharpness
+     - Color
+   * - Brightness
+     - Adjust image brightness
+     - Color
+   * - Contrast
+     - Adjust image contrast
+     - Color
+   * - Saturation
+     - Adjust image saturation
+     - Color
+   * - Hue
+     - Adjust image hue
+     - Color
+
 Compose
 ~~~~~~~
 
 Combine multiple transformations and apply them in sequence.
+
+**Parameters**:
+
+- ``transforms`` (list): List of transform objects to compose
+
+**Usage Example**:
 
 .. code-block:: python
 
@@ -470,292 +629,1004 @@ Combine multiple transformations and apply them in sequence.
                            std=[0.229, 0.224, 0.225])
     ])
 
-Basic Transforms
-~~~~~~~~~~~~~~~~
+PILToTensor
+~~~~~~~~~~~
 
-**ToTensor**: Convert PIL Image or numpy.ndarray to tensor
+Convert PIL Image to tensor without scaling. Unlike ToTensor, PILToTensor does not scale values from [0, 255] to [0.0, 1.0].
 
-.. code-block:: python
-
-    # PIL Image -> Tensor (value range [0, 1])
-    tensor = transforms.ToTensor()(pil_image)
-
-**ToPILImage**: Convert tensor to PIL Image
+**Usage Example**:
 
 .. code-block:: python
 
-    # Tensor -> PIL Image
-    pil_image = transforms.ToPILImage()(tensor)
+    from riemann.vision import transforms
 
-**Resize**: Resize image
+    # Convert PIL Image to tensor (values in [0, 255])
+    pil_to_tensor = transforms.PILToTensor()
+    tensor_img = pil_to_tensor(pil_image)
 
-.. code-block:: python
+ToTensor
+~~~~~~~~
 
-    # Resize to specified size
-    resize = transforms.Resize((224, 224))
-    
-    # Resize proportionally by shorter side
-    resize = transforms.Resize(256)
+Convert PIL Image or numpy.ndarray to tensor. Scales values from [0, 255] to [0.0, 1.0].
 
-**CenterCrop**: Center crop
+**Usage Example**:
 
 .. code-block:: python
 
-    # Crop specified size from image center
-    crop = transforms.CenterCrop(224)
+    from riemann.vision import transforms
 
-**Normalize**: Normalization
+    # Convert PIL Image to tensor (values in [0, 1])
+    to_tensor = transforms.ToTensor()
+    tensor_img = to_tensor(pil_image)
+
+ToPILImage
+~~~~~~~~~~
+
+Convert tensor to PIL Image.
+
+**Parameters**:
+
+- ``mode`` (str, optional): Color mode of the output image
+
+**Usage Example**:
 
 .. code-block:: python
 
-    # Normalize using mean and standard deviation
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                    std=[0.229, 0.224, 0.225])
+    from riemann.vision import transforms
 
-Data Augmentation
+    # Convert tensor to PIL Image
+    to_pil = transforms.ToPILImage()
+    pil_img = to_pil(tensor)
+
+ConvertImageDtype
 ~~~~~~~~~~~~~~~~~
 
-**RandomResizedCrop**: Random resized crop
+Convert image to specified data type.
+
+**Parameters**:
+
+- ``dtype`` (dtype): Target data type
+
+**Usage Example**:
 
 .. code-block:: python
 
-    # Random crop and resize to specified size
-    crop = transforms.RandomResizedCrop(224, scale=(0.08, 1.0))
+    from riemann.vision import transforms
 
-**RandomHorizontalFlip**: Random horizontal flip
+    # Convert to float32
+    convert_dtype = transforms.ConvertImageDtype(dtype='float32')
+    converted_img = convert_dtype(img)
+
+Normalize
+~~~~~~~~~
+
+Normalize tensor with mean and standard deviation.
+
+**Parameters**:
+
+- ``mean`` (sequence): Mean values for each channel
+- ``std`` (sequence): Standard deviation values for each channel
+
+**Usage Example**:
 
 .. code-block:: python
 
-    # Flip horizontally with 50% probability
-    flip = transforms.RandomHorizontalFlip(p=0.5)
+    from riemann.vision import transforms
 
-**RandomVerticalFlip**: Random vertical flip
+    # Normalize using ImageNet statistics
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    normalized_img = normalize(tensor_img)
+
+Resize
+~~~~~~
+
+Resize image to specified size.
+
+**Parameters**:
+
+- ``size`` (int or tuple): Target size. If int, smaller edge is resized to size. If tuple, (height, width).
+
+**Usage Example**:
 
 .. code-block:: python
 
-    # Flip vertically with 50% probability
-    flip = transforms.RandomVerticalFlip(p=0.5)
+    from riemann.vision import transforms
 
-**RandomRotation**: Random rotation
+    # Resize to specific size
+    resize = transforms.Resize((224, 224))
+    resized_img = resize(pil_image)
+
+    # Resize by shorter side
+    resize = transforms.Resize(256)
+    resized_img = resize(pil_image)
+
+CenterCrop
+~~~~~~~~~~
+
+Crop image from center.
+
+**Parameters**:
+
+- ``size`` (int or tuple): Crop size
+
+**Usage Example**:
 
 .. code-block:: python
 
-    # Random rotation between (-15, 15) degrees
+    from riemann.vision import transforms
+
+    # Center crop to 224x224
+    center_crop = transforms.CenterCrop(224)
+    cropped_img = center_crop(pil_image)
+
+RandomHorizontalFlip
+~~~~~~~~~~~~~~~~~~~~
+
+Randomly flip image horizontally.
+
+**Parameters**:
+
+- ``p`` (float): Probability of flipping (default: 0.5)
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Flip with 50% probability
+    hflip = transforms.RandomHorizontalFlip(p=0.5)
+    flipped_img = hflip(pil_image)
+
+RandomVerticalFlip
+~~~~~~~~~~~~~~~~~~
+
+Randomly flip image vertically.
+
+**Parameters**:
+
+- ``p`` (float): Probability of flipping (default: 0.5)
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Flip with 50% probability
+    vflip = transforms.RandomVerticalFlip(p=0.5)
+    flipped_img = vflip(pil_image)
+
+RandomRotation
+~~~~~~~~~~~~~~
+
+Randomly rotate image by angle.
+
+**Parameters**:
+
+- ``degrees`` (sequence or float): Range of degrees (-degrees, +degrees)
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Rotate between -15 and 15 degrees
     rotation = transforms.RandomRotation(degrees=15)
+    rotated_img = rotation(pil_image)
 
-**ColorJitter**: Color jitter
+ColorJitter
+~~~~~~~~~~~
+
+Randomly change brightness, contrast, saturation, and hue.
+
+**Parameters**:
+
+- ``brightness`` (float): Brightness jitter factor
+- ``contrast`` (float): Contrast jitter factor
+- ``saturation`` (float): Saturation jitter factor
+- ``hue`` (float): Hue jitter factor
+
+**Usage Example**:
 
 .. code-block:: python
 
-    # Randomly adjust brightness, contrast, saturation, and hue
+    from riemann.vision import transforms
+
+    # Randomly adjust color
     jitter = transforms.ColorJitter(
         brightness=0.2,
         contrast=0.2,
         saturation=0.2,
         hue=0.1
     )
+    jittered_img = jitter(pil_image)
 
-**RandomCrop**: Random crop
+Grayscale
+~~~~~~~~~
+
+Convert image to grayscale.
+
+**Parameters**:
+
+- ``num_output_channels`` (int): Number of output channels (1 or 3)
+
+**Usage Example**:
 
 .. code-block:: python
 
-    # Random crop to specified size
-    crop = transforms.RandomCrop(224, padding=4)
+    from riemann.vision import transforms
 
-**RandomGrayscale**: Random grayscale
+    # Convert to grayscale (1 channel)
+    gray = transforms.Grayscale(num_output_channels=1)
+    gray_img = gray(pil_image)
+
+RandomGrayscale
+~~~~~~~~~~~~~~~
+
+Randomly convert image to grayscale.
+
+**Parameters**:
+
+- ``p`` (float): Probability of conversion (default: 0.1)
+
+**Usage Example**:
 
 .. code-block:: python
+
+    from riemann.vision import transforms
 
     # Convert to grayscale with 10% probability
     gray = transforms.RandomGrayscale(p=0.1)
+    gray_img = gray(pil_image)
 
-Advanced Transforms
-~~~~~~~~~~~~~~~~~~~
+RandomCrop
+~~~~~~~~~~
 
-**FiveCrop**: Five crop (corners and center)
+Randomly crop image to specified size.
+
+**Parameters**:
+
+- ``size`` (int or tuple): Crop size
+- ``padding`` (int, optional): Padding size
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Random crop with padding
+    crop = transforms.RandomCrop(224, padding=4)
+    cropped_img = crop(pil_image)
+
+RandomResizedCrop
+~~~~~~~~~~~~~~~~~
+
+Random crop and resize image.
+
+**Parameters**:
+
+- ``size`` (int or tuple): Target size
+- ``scale`` (tuple): Scale range for cropping
+- ``ratio`` (tuple): Aspect ratio range
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Random resized crop
+    crop = transforms.RandomResizedCrop(224, scale=(0.08, 1.0))
+    cropped_img = crop(pil_image)
+
+FiveCrop
+~~~~~~~~
+
+Crop image into 5 regions (4 corners + center).
+
+**Parameters**:
+
+- ``size`` (int or tuple): Crop size
+
+**Usage Example**:
 
 .. code-block:: python
 
     import riemann as rm
     from riemann.vision import transforms
 
-    # Five crop: returns a tuple of 5 images
+    # Five crop
     five_crop = transforms.FiveCrop(224)
-    
-    # Apply to image
-    crops = five_crop(image)  # (top_left, top_right, bottom_left, bottom_right, center)
+    crops = five_crop(pil_image)  # Returns tuple of 5 images
     
     # Stack into batch
     tensor_crops = rm.stack([transforms.ToTensor()(crop) for crop in crops])
 
-**TenCrop**: Ten crop (FiveCrop + horizontal flips)
+TenCrop
+~~~~~~~
 
-.. code-block:: python
+Crop image into 10 regions (FiveCrop + horizontal flips).
 
-    # Ten crop: returns a tuple of 10 images
-    ten_crop = transforms.TenCrop(224)
+**Parameters**:
 
-**Pad**: Pad image
+- ``size`` (int or tuple): Crop size
+- ``vertical_flip`` (bool): Also apply vertical flip
 
-.. code-block:: python
-
-    # Pad image with specified padding
-    pad = transforms.Pad(padding=4, fill=0)
-
-**Lambda**: Custom transform using lambda
-
-.. code-block:: python
-
-    # Define custom transform
-    custom_transform = transforms.Lambda(lambda x: x.rotate(90))
-
-Complete Example
-----------------
-
-Complete image classification training workflow:
+**Usage Example**:
 
 .. code-block:: python
 
     import riemann as rm
+    from riemann.vision import transforms
+
+    # Ten crop
+    ten_crop = transforms.TenCrop(224)
+    crops = ten_crop(pil_image)  # Returns tuple of 10 images
+
+Pad
+~~~
+
+Pad image with specified value.
+
+**Parameters**:
+
+- ``padding`` (int or tuple): Padding size
+- ``fill`` (int or tuple): Fill value
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Pad image
+    pad = transforms.Pad(padding=4, fill=0)
+    padded_img = pad(pil_image)
+
+Lambda
+~~~~~~
+
+Apply custom lambda function.
+
+**Parameters**:
+
+- ``lambd`` (function): Lambda function to apply
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Custom lambda transform
+    lambd = transforms.Lambda(lambda x: x.rotate(45))
+    transformed_img = lambd(pil_image)
+
+GaussianBlur
+~~~~~~~~~~~~
+
+Apply Gaussian blur to image.
+
+**Parameters**:
+
+- ``kernel_size`` (int): Gaussian kernel size
+- ``sigma`` (float or tuple): Standard deviation
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Apply Gaussian blur
+    blur = transforms.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))
+    blurred_img = blur(pil_image)
+
+RandomAffine
+~~~~~~~~~~~~
+
+Random affine transformation.
+
+**Parameters**:
+
+- ``degrees`` (float or tuple): Rotation degrees
+- ``translate`` (tuple): Translation range
+- ``scale`` (tuple): Scale range
+- ``shear`` (float or tuple): Shear range
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Random affine transformation
+    affine = transforms.RandomAffine(
+        degrees=15,
+        translate=(0.1, 0.1),
+        scale=(0.9, 1.1)
+    )
+    transformed_img = affine(pil_image)
+
+RandomPerspective
+~~~~~~~~~~~~~~~~~
+
+Random perspective transformation.
+
+**Parameters**:
+
+- ``distortion_scale`` (float): Distortion scale
+- ``p`` (float): Probability of applying transform
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Random perspective
+    perspective = transforms.RandomPerspective(distortion_scale=0.5, p=0.5)
+    transformed_img = perspective(pil_image)
+
+RandomErasing
+~~~~~~~~~~~~~
+
+Randomly erase rectangular regions.
+
+**Parameters**:
+
+- ``p`` (float): Probability of applying
+- ``scale`` (tuple): Erasing area range
+- ``ratio`` (tuple): Aspect ratio range
+- ``value`` (str or float): Erasing value
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Random erasing (typically used on tensors)
+    erasing = transforms.RandomErasing(p=0.5, scale=(0.02, 0.33))
+    erased_tensor = erasing(tensor_img)
+
+AutoAugment
+~~~~~~~~~~~
+
+AutoAugment data augmentation policy.
+
+**Parameters**:
+
+- ``policy`` (str): Policy to use ('imagenet', 'cifar10', 'svhn')
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # AutoAugment with ImageNet policy
+    auto_augment = transforms.AutoAugment(policy='imagenet')
+    augmented_img = auto_augment(pil_image)
+
+RandAugment
+~~~~~~~~~~~
+
+RandAugment data augmentation policy.
+
+**Parameters**:
+
+- ``num_ops`` (int): Number of operations
+- ``magnitude`` (int): Magnitude of operations
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # RandAugment
+    rand_augment = transforms.RandAugment(num_ops=2, magnitude=9)
+    augmented_img = rand_augment(pil_image)
+
+TrivialAugmentWide
+~~~~~~~~~~~~~~~~~~
+
+TrivialAugmentWide data augmentation policy.
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # TrivialAugmentWide
+    trivial_augment = transforms.TrivialAugmentWide()
+    augmented_img = trivial_augment(pil_image)
+
+SanitizeBoundingBox
+~~~~~~~~~~~~~~~~~~~
+
+Sanitize and validate bounding boxes.
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Sanitize bounding boxes
+    sanitize = transforms.SanitizeBoundingBox()
+    sanitized_boxes = sanitize(boxes, image_size)
+
+Invert
+~~~~~~
+
+Invert image colors.
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Invert image
+    invert = transforms.Invert()
+    inverted_img = invert(pil_image)
+
+Posterize
+~~~~~~~~~
+
+Reduce number of bits for each color channel.
+
+**Parameters**:
+
+- ``bits`` (int): Number of bits to keep
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Posterize image
+    posterize = transforms.Posterize(bits=4)
+    posterized_img = posterize(pil_image)
+
+Solarize
+~~~~~~~~
+
+Invert pixels above threshold.
+
+**Parameters**:
+
+- ``threshold`` (int): Threshold value
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Solarize image
+    solarize = transforms.Solarize(threshold=128)
+    solarized_img = solarize(pil_image)
+
+Equalize
+~~~~~~~~
+
+Equalize image histogram.
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Equalize image
+    equalize = transforms.Equalize()
+    equalized_img = equalize(pil_image)
+
+AutoContrast
+~~~~~~~~~~~~
+
+Maximize image contrast.
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Auto contrast
+    auto_contrast = transforms.AutoContrast()
+    contrasted_img = auto_contrast(pil_image)
+
+Sharpness
+~~~~~~~~~
+
+Adjust image sharpness.
+
+**Parameters**:
+
+- ``sharpness_factor`` (float): Sharpness factor
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Adjust sharpness
+    sharpness = transforms.Sharpness(sharpness_factor=2.0)
+    sharpened_img = sharpness(pil_image)
+
+Brightness
+~~~~~~~~~~
+
+Adjust image brightness.
+
+**Parameters**:
+
+- ``brightness_factor`` (float): Brightness factor
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Adjust brightness
+    brightness = transforms.Brightness(brightness_factor=1.5)
+    brightened_img = brightness(pil_image)
+
+Contrast
+~~~~~~~~
+
+Adjust image contrast.
+
+**Parameters**:
+
+- ``contrast_factor`` (float): Contrast factor
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Adjust contrast
+    contrast = transforms.Contrast(contrast_factor=1.5)
+    contrasted_img = contrast(pil_image)
+
+Saturation
+~~~~~~~~~~
+
+Adjust image saturation.
+
+**Parameters**:
+
+- ``saturation_factor`` (float): Saturation factor
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Adjust saturation
+    saturation = transforms.Saturation(saturation_factor=1.5)
+    saturated_img = saturation(pil_image)
+
+Hue
+~~~
+
+Adjust image hue.
+
+**Parameters**:
+
+- ``hue_factor`` (float): Hue factor (-0.5 to 0.5)
+
+**Usage Example**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # Adjust hue
+    hue = transforms.Hue(hue_factor=0.1)
+    hue_adjusted_img = hue(pil_image)
+
+Complete Examples
+-----------------
+
+The following examples demonstrate how to use Riemann's computer vision module for common deep learning tasks.
+
+Image Classification Training Pipeline
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This example demonstrates the complete workflow of image classification using the CIFAR-10 dataset, including data loading, data augmentation, model definition, training, and evaluation.
+
+**Pipeline Overview**:
+
+1. **Data Preprocessing**: Use random cropping, horizontal flipping, and color jittering for data augmentation
+2. **Normalization**: Normalize using ImageNet statistics
+3. **Model Definition**: Simple convolutional neural network
+4. **Training Loop**: Standard training flow including forward propagation, loss calculation, backward propagation, and parameter updates
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    import riemann.optim as optim
     from riemann.vision import datasets, transforms
     from riemann.utils.data import DataLoader
-    from riemann.nn import Module, Linear, ReLU, CrossEntropyLoss
-    from riemann.optim import SGD
 
-    # Define training and test transformations
+    # Define training data transforms (with data augmentation)
     train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])
+        transforms.RandomResizedCrop(224),      # Random crop and resize
+        transforms.RandomHorizontalFlip(),       # Random horizontal flip
+        transforms.ColorJitter(                  # Color jitter (data augmentation)
+            brightness=0.2, 
+            contrast=0.2
+        ),
+        transforms.ToTensor(),                   # Convert to tensor
+        transforms.Normalize(                    # Normalize
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
     ])
 
+    # Define test data transforms (without data augmentation)
     test_transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
+        transforms.Resize(256),                  # Resize
+        transforms.CenterCrop(224),              # Center crop
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
     ])
 
-    # Load dataset
-    train_dataset = datasets.CIFAR10(root='./data', train=True, 
-                                      download=True, transform=train_transform)
-    test_dataset = datasets.CIFAR10(root='./data', train=False, 
-                                     download=True, transform=test_transform)
+    # Load CIFAR-10 dataset
+    train_dataset = datasets.CIFAR10(
+        root='./data',
+        train=True,
+        download=True,
+        transform=train_transform
+    )
+    test_dataset = datasets.CIFAR10(
+        root='./data',
+        train=False,
+        download=True,
+        transform=test_transform
+    )
 
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=64, 
-                              shuffle=True, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=64, 
-                             shuffle=False, num_workers=4)
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=32, 
+        shuffle=True,           # Shuffle data during training
+        num_workers=4           # Use 4 subprocesses to load data
+    )
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=32, 
+        shuffle=False
+    )
 
-    # Define model
-    class SimpleNet(Module):
-        def __init__(self):
-            super().__init__()
-            self.fc1 = Linear(224 * 224 * 3, 256)
-            self.relu = ReLU()
-            self.fc2 = Linear(256, 10)
-        
-        def forward(self, x):
-            x = x.view(x.size(0), -1)
-            x = self.fc1(x)
-            x = self.relu(x)
-            x = self.fc2(x)
-            return x
+    # Define convolutional neural network model
+    model = nn.Sequential(
+        # First convolutional block
+        nn.Conv2d(3, 64, kernel_size=3, padding=1),
+        nn.ReLU(),
+        nn.MaxPool2d(2),
+        # Second convolutional block
+        nn.Conv2d(64, 128, kernel_size=3, padding=1),
+        nn.ReLU(),
+        nn.MaxPool2d(2),
+        # Fully connected layer
+        nn.Flatten(),
+        nn.Linear(128 * 8 * 8, 10)  # CIFAR-10 has 10 classes
+    )
 
-    model = SimpleNet()
-    criterion = CrossEntropyLoss()
-    optimizer = SGD(model.parameters(), lr=0.01)
+    # Define loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(
+        model.parameters(), 
+        lr=0.01, 
+        momentum=0.9
+    )
 
     # Training loop
-    for epoch in range(10):
-        for images, labels in train_loader:
-            # Forward pass
+    num_epochs = 10
+    for epoch in range(num_epochs):
+        model.train()  # Set model to training mode
+        running_loss = 0.0
+        
+        for batch_idx, (images, labels) in enumerate(train_loader):
+            # Forward propagation
             outputs = model(images)
             loss = criterion(outputs, labels)
             
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # Backward propagation and optimization
+            optimizer.zero_grad()   # Clear gradients
+            loss.backward()         # Compute gradients
+            optimizer.step()        # Update parameters
+            
+            running_loss += loss.item()
+            
+            # Print progress every 100 batches
+            if (batch_idx + 1) % 100 == 0:
+                print(f'Epoch [{epoch+1}/{num_epochs}], '
+                      f'Batch [{batch_idx+1}/{len(train_loader)}], '
+                      f'Loss: {running_loss/100:.4f}')
+                running_loss = 0.0
         
-        print(f"Epoch {epoch+1} completed")
+        print(f'Epoch {epoch+1} completed')
 
-API Reference
--------------
+    print('Training completed!')
 
-.. py:module:: riemann.vision.datasets
+Loading Custom Dataset with ImageFolder
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. py:class:: MNIST
-   
-   MNIST handwritten digits dataset. Includes EasyMNIST variant with preprocessing.
+When you have your own image dataset, you can use ``ImageFolder`` for convenient loading. Just organize images by folders, with each folder representing a class.
 
-.. py:class:: FashionMNIST
-   
-   Fashion-MNIST dataset.
+**Required Folder Structure**:
 
-.. py:class:: CIFAR10
-   
-   CIFAR-10 dataset.
+.. code-block:: text
 
-.. py:class:: Flowers102
-   
-   Oxford 102 Flower dataset.
+    custom_dataset/
+    ├── class_a/           # Images for class A
+    │   ├── img1.jpg
+    │   └── img2.png
+    ├── class_b/           # Images for class B
+    │   ├── img1.jpg
+    │   └── img2.jpg
+    └── class_c/           # Images for class C
+        └── img1.jpg
 
-.. py:class:: OxfordIIITPet
-   
-   Oxford-IIIT Pet dataset.
+**Loading Example**:
 
-.. py:class:: LFWPeople
-   
-   Labeled Faces in the Wild People dataset.
+.. code-block:: python
 
-.. py:class:: SVHN
-   
-   Street View House Numbers dataset.
+    from riemann.vision import datasets, transforms
+    from riemann.utils.data import DataLoader
 
-.. py:class:: ImageFolder
-   
-   Generic data loader for images from local folders.
+    # Define data transforms
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
 
-.. py:class:: DatasetFolder
-   
-   Generic data loader for custom image formats.
+    # Load dataset using ImageFolder
+    dataset = datasets.ImageFolder(
+        root='./custom_dataset',
+        transform=transform
+    )
 
-.. py:module:: riemann.vision.transforms
-   :noindex:
+    # View dataset information
+    print(f"Number of classes: {len(dataset.classes)}")
+    print(f"Class names: {dataset.classes}")
+    print(f"Class to index mapping: {dataset.class_to_idx}")
+    print(f"Total samples: {len(dataset)}")
 
-.. py:class:: Compose
-   
-   Compose multiple transforms.
+    # Create data loader
+    loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-.. py:class:: ToTensor
-   
-   Convert PIL Image or numpy.ndarray to tensor.
+    # Iterate through data
+    for images, labels in loader:
+        print(f"Image batch shape: {images.shape}")  # [32, 3, 224, 224]
+        print(f"Label batch shape: {labels.shape}")  # [32]
+        break
 
-.. py:class:: ToPILImage
-   
-   Convert tensor to PIL Image.
+Creating Custom Dataset Class
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. py:class:: Resize
-   
-   Resize image.
+When ``ImageFolder`` cannot meet your needs, you can inherit from the ``Dataset`` class to create a custom dataset. The following example shows how to create a custom dataset that loads images from folders.
 
-.. py:class:: CenterCrop
-   
-   Center crop image.
+**Applicable Scenarios**:
 
-.. py:class:: RandomResizedCrop
-   
-   Random resized crop.
+- Need custom file organization
+- Need to load data from other sources (e.g., database, network)
+- Need complex preprocessing
 
-.. py:class:: RandomHorizontalFlip
-   
-   Random horizontal flip.
+.. code-block:: python
 
-.. py:class:: Normalize
-   
-   Normalize tensor.
+    from riemann.utils.data import Dataset
+    from PIL import Image
+    import os
+
+    class CustomImageDataset(Dataset):
+        """
+        Custom image dataset class
+        
+        Load images from folders with structure:
+        root/
+            label1/
+                image1.jpg
+                image2.jpg
+            label2/
+                image1.jpg
+        """
+        
+        def __init__(self, root_dir, transform=None):
+            """
+            Parameters:
+                root_dir (str): Root directory of dataset
+                transform (callable, optional): Image transform function
+            """
+            self.root_dir = root_dir
+            self.transform = transform
+            self.images = []
+            self.labels = []
+            
+            # Scan folders, collect all image paths and labels
+            for label in sorted(os.listdir(root_dir)):
+                label_dir = os.path.join(root_dir, label)
+                if os.path.isdir(label_dir):
+                    for img_name in os.listdir(label_dir):
+                        if img_name.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+                            self.images.append(os.path.join(label_dir, img_name))
+                            self.labels.append(int(label))
+            
+            print(f"Loaded {len(self.images)} images, {len(set(self.labels))} classes")
+
+        def __len__(self):
+            """Return dataset size"""
+            return len(self.images)
+
+        def __getitem__(self, idx):
+            """
+            Get sample at specified index
+            
+            Parameters:
+                idx (int): Sample index
+                
+            Returns:
+                tuple: (image, label)
+            """
+            # Load image
+            img_path = self.images[idx]
+            image = Image.open(img_path).convert('RGB')
+            label = self.labels[idx]
+            
+            # Apply transforms
+            if self.transform:
+                image = self.transform(image)
+            
+            return image, label
+
+    # Use custom dataset
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
+
+    dataset = CustomImageDataset(
+        root_dir='./custom_data',
+        transform=transform
+    )
+    
+    loader = DataLoader(
+        dataset, 
+        batch_size=32, 
+        shuffle=True,
+        num_workers=2
+    )
+
+    # Test data loading
+    for images, labels in loader:
+        print(f"Batch image shape: {images.shape}")
+        print(f"Batch labels: {labels}")
+        break

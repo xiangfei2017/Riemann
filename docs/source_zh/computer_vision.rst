@@ -447,15 +447,174 @@ DatasetFolder 数据集
         transform=transforms.ToTensor()
     )
 
+default_loader
+~~~~~~~~~~~~~~
+
+``default_loader`` 是 ImageFolder 和 DatasetFolder 使用的默认图像加载函数。它会根据文件扩展名自动选择合适的加载方式：
+
+- PIL 可以处理的图像格式（如 .jpg, .png, .bmp 等）：使用 PIL.Image.open() 加载并转换为 RGB 模式
+- 其他格式：尝试使用 PIL 加载
+
+**用途说明**:
+
+``default_loader`` 主要用于 ``ImageFolder`` 和 ``DatasetFolder`` 的 ``loader`` 参数，用于指定加载图像的方法。当使用这两个数据集类时，如果不指定 ``loader`` 参数，默认就会使用 ``default_loader``。
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision.datasets import DatasetFolder, default_loader
+
+    # 使用 default_loader 加载图像
+    image = default_loader('path/to/image.jpg')
+    
+    # 在 DatasetFolder 中使用
+    dataset = DatasetFolder(
+        root='./custom_dataset',
+        loader=default_loader,  # 指定使用 default_loader
+        extensions=('.jpg', '.png')
+    )
+
 图像变换 (Transforms)
 ---------------------
 
 ``riemann.vision.transforms`` 提供了丰富的图像变换操作，用于数据预处理和数据增强。
 
-变换组合 (Compose)
-~~~~~~~~~~~~~~~~~~
+变换概览
+~~~~~~~~
+
+.. list-table:: 支持的图像变换
+   :header-rows: 1
+   :widths: 25 35 40
+
+   * - 变换类
+     - 说明
+     - 类别
+   * - Compose
+     - 将多个变换组合成一个
+     - 工具类
+   * - PILToTensor
+     - 将 PIL Image 转换为张量（不缩放）
+     - 类型转换
+   * - ToTensor
+     - 将 PIL Image 或 numpy.ndarray 转换为张量（缩放到 [0, 1]）
+     - 类型转换
+   * - ToPILImage
+     - 将张量转换为 PIL Image
+     - 类型转换
+   * - ConvertImageDtype
+     - 将图像转换为指定数据类型
+     - 类型转换
+   * - Normalize
+     - 使用均值和标准差对张量进行标准化
+     - 标准化
+   * - Resize
+     - 调整图像大小到指定尺寸
+     - 几何变换
+   * - CenterCrop
+     - 从图像中心裁剪
+     - 几何变换
+   * - RandomHorizontalFlip
+     - 随机水平翻转图像
+     - 数据增强
+   * - RandomVerticalFlip
+     - 随机垂直翻转图像
+     - 数据增强
+   * - RandomRotation
+     - 随机旋转图像
+     - 数据增强
+   * - ColorJitter
+     - 随机调整亮度、对比度、饱和度、色调
+     - 数据增强
+   * - Grayscale
+     - 将图像转换为灰度图像
+     - 颜色变换
+   * - RandomGrayscale
+     - 随机将图像转换为灰度图像
+     - 数据增强
+   * - RandomCrop
+     - 随机裁剪图像到指定尺寸
+     - 数据增强
+   * - RandomResizedCrop
+     - 随机裁剪并调整图像大小
+     - 数据增强
+   * - FiveCrop
+     - 将图像裁剪为 5 个区域（四角 + 中心）
+     - 几何变换
+   * - TenCrop
+     - 将图像裁剪为 10 个区域（五裁剪 + 水平翻转）
+     - 几何变换
+   * - Pad
+     - 使用指定值填充图像
+     - 几何变换
+   * - Lambda
+     - 应用自定义 lambda 函数
+     - 工具类
+   * - GaussianBlur
+     - 对图像应用高斯模糊
+     - 滤波器
+   * - RandomAffine
+     - 随机仿射变换
+     - 数据增强
+   * - RandomPerspective
+     - 随机透视变换
+     - 数据增强
+   * - RandomErasing
+     - 随机擦除矩形区域
+     - 数据增强
+   * - AutoAugment
+     - AutoAugment 数据增强策略
+     - 自动增强
+   * - RandAugment
+     - RandAugment 数据增强策略
+     - 自动增强
+   * - TrivialAugmentWide
+     - TrivialAugmentWide 数据增强策略
+     - 自动增强
+   * - SanitizeBoundingBox
+     - 清理和验证边界框
+     - 目标检测
+   * - Invert
+     - 反转图像颜色
+     - 颜色变换
+   * - Posterize
+     - 减少每个颜色通道的位数
+     - 颜色变换
+   * - Solarize
+     - 反转高于阈值的像素
+     - 颜色变换
+   * - Equalize
+     - 均衡化图像直方图
+     - 颜色变换
+   * - AutoContrast
+     - 最大化图像对比度
+     - 颜色变换
+   * - Sharpness
+     - 调整图像锐度
+     - 颜色变换
+   * - Brightness
+     - 调整图像亮度
+     - 颜色变换
+   * - Contrast
+     - 调整图像对比度
+     - 颜色变换
+   * - Saturation
+     - 调整图像饱和度
+     - 颜色变换
+   * - Hue
+     - 调整图像色调
+     - 颜色变换
+
+Compose
+~~~~~~~
 
 将多个变换组合在一起，按顺序应用。
+
+**参数说明**:
+
+- ``transforms`` (list): 要组合的变换对象列表
+
+**使用示例**:
 
 .. code-block:: python
 
@@ -470,185 +629,736 @@ DatasetFolder 数据集
                            std=[0.229, 0.224, 0.225])
     ])
 
-基本变换
+PILToTensor
+~~~~~~~~~~~
+
+将 PIL Image 转换为张量，不进行缩放。与 ToTensor 不同，PILToTensor 不会将值从 [0, 255] 缩放到 [0.0, 1.0]。
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 将 PIL Image 转换为张量（值范围 [0, 255]）
+    pil_to_tensor = transforms.PILToTensor()
+    tensor_img = pil_to_tensor(pil_image)
+
+ToTensor
 ~~~~~~~~
 
-**ToTensor**: 将 PIL Image 或 numpy.ndarray 转换为张量
+将 PIL Image 或 numpy.ndarray 转换为张量。将值从 [0, 255] 缩放到 [0.0, 1.0]。
+
+**使用示例**:
 
 .. code-block:: python
 
-    # PIL Image -> Tensor (值范围 [0, 1])
-    tensor = transforms.ToTensor()(pil_image)
+    from riemann.vision import transforms
 
-**ToPILImage**: 将张量转换为 PIL Image
+    # 将 PIL Image 转换为张量（值范围 [0, 1]）
+    to_tensor = transforms.ToTensor()
+    tensor_img = to_tensor(pil_image)
+
+ToPILImage
+~~~~~~~~~~
+
+将张量转换为 PIL Image。
+
+**参数说明**:
+
+- ``mode`` (str, optional): 输出图像的颜色模式
+
+**使用示例**:
 
 .. code-block:: python
 
-    # Tensor -> PIL Image
-    pil_image = transforms.ToPILImage()(tensor)
+    from riemann.vision import transforms
 
-**Resize**: 调整图像大小
+    # 将张量转换为 PIL Image
+    to_pil = transforms.ToPILImage()
+    pil_img = to_pil(tensor)
+
+ConvertImageDtype
+~~~~~~~~~~~~~~~~~
+
+将图像转换为指定数据类型。
+
+**参数说明**:
+
+- ``dtype`` (dtype): 目标数据类型
+
+**使用示例**:
 
 .. code-block:: python
 
-    # 调整为指定尺寸
+    from riemann.vision import transforms
+
+    # 转换为 float32
+    convert_dtype = transforms.ConvertImageDtype(dtype='float32')
+    converted_img = convert_dtype(img)
+
+Normalize
+~~~~~~~~~
+
+使用均值和标准差对张量进行标准化。
+
+**参数说明**:
+
+- ``mean`` (sequence): 每个通道的均值
+- ``std`` (sequence): 每个通道的标准差
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 使用 ImageNet 统计数据进行标准化
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    normalized_img = normalize(tensor_img)
+
+Resize
+~~~~~~
+
+调整图像大小到指定尺寸。
+
+**参数说明**:
+
+- ``size`` (int or tuple): 目标尺寸。如果是 int，短边调整为该尺寸；如果是 tuple，(高度, 宽度)。
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 调整到特定尺寸
     resize = transforms.Resize((224, 224))
-    
-    # 按短边等比例调整
+    resized_img = resize(pil_image)
+
+    # 按短边调整
     resize = transforms.Resize(256)
+    resized_img = resize(pil_image)
 
-**CenterCrop**: 中心裁剪
+CenterCrop
+~~~~~~~~~~
 
-.. code-block:: python
+从图像中心裁剪。
 
-    # 从图像中心裁剪指定尺寸
-    crop = transforms.CenterCrop(224)
+**参数说明**:
 
-**Normalize**: 标准化
+- ``size`` (int or tuple): 裁剪尺寸
 
-.. code-block:: python
-
-    # 使用均值和标准差进行标准化
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                    std=[0.229, 0.224, 0.225])
-
-数据增强变换
-~~~~~~~~~~~~
-
-**RandomResizedCrop**: 随机缩放裁剪
+**使用示例**:
 
 .. code-block:: python
 
-    # 随机裁剪并缩放到指定尺寸
-    crop = transforms.RandomResizedCrop(224, scale=(0.08, 1.0))
+    from riemann.vision import transforms
 
-**RandomHorizontalFlip**: 随机水平翻转
+    # 中心裁剪为 224x224
+    center_crop = transforms.CenterCrop(224)
+    cropped_img = center_crop(pil_image)
 
-.. code-block:: python
+RandomHorizontalFlip
+~~~~~~~~~~~~~~~~~~~~
 
-    # 以 50% 概率水平翻转
-    flip = transforms.RandomHorizontalFlip(p=0.5)
+随机水平翻转图像。
 
-**RandomVerticalFlip**: 随机垂直翻转
+**参数说明**:
 
-.. code-block:: python
+- ``p`` (float): 翻转概率（默认：0.5）
 
-    # 以 50% 概率垂直翻转
-    flip = transforms.RandomVerticalFlip(p=0.5)
-
-**RandomRotation**: 随机旋转
+**使用示例**:
 
 .. code-block:: python
 
-    # 随机旋转 (-15, 15) 度
+    from riemann.vision import transforms
+
+    # 以 50% 概率翻转
+    hflip = transforms.RandomHorizontalFlip(p=0.5)
+    flipped_img = hflip(pil_image)
+
+RandomVerticalFlip
+~~~~~~~~~~~~~~~~~~
+
+随机垂直翻转图像。
+
+**参数说明**:
+
+- ``p`` (float): 翻转概率（默认：0.5）
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 以 50% 概率翻转
+    vflip = transforms.RandomVerticalFlip(p=0.5)
+    flipped_img = vflip(pil_image)
+
+RandomRotation
+~~~~~~~~~~~~~~
+
+随机旋转图像。
+
+**参数说明**:
+
+- ``degrees`` (sequence or float): 旋转角度范围 (-degrees, +degrees)
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 在 -15 到 15 度之间随机旋转
     rotation = transforms.RandomRotation(degrees=15)
+    rotated_img = rotation(pil_image)
 
-**ColorJitter**: 颜色抖动
+ColorJitter
+~~~~~~~~~~~
+
+随机调整亮度、对比度、饱和度和色调。
+
+**参数说明**:
+
+- ``brightness`` (float): 亮度抖动因子
+- ``contrast`` (float): 对比度抖动因子
+- ``saturation`` (float): 饱和度抖动因子
+- ``hue`` (float): 色调抖动因子
+
+**使用示例**:
 
 .. code-block:: python
 
-    # 随机调整亮度、对比度、饱和度和色调
+    from riemann.vision import transforms
+
+    # 随机调整颜色
     jitter = transforms.ColorJitter(
         brightness=0.2,
         contrast=0.2,
         saturation=0.2,
         hue=0.1
     )
+    jittered_img = jitter(pil_image)
 
-**RandomCrop**: 随机裁剪
+Grayscale
+~~~~~~~~~
+
+将图像转换为灰度图像。
+
+**参数说明**:
+
+- ``num_output_channels`` (int): 输出通道数（1 或 3）
+
+**使用示例**:
 
 .. code-block:: python
 
-    # 随机裁剪到指定尺寸
-    crop = transforms.RandomCrop(224, padding=4)
+    from riemann.vision import transforms
 
-**RandomGrayscale**: 随机灰度化
+    # 转换为灰度图像（1 通道）
+    gray = transforms.Grayscale(num_output_channels=1)
+    gray_img = gray(pil_image)
+
+RandomGrayscale
+~~~~~~~~~~~~~~~
+
+随机将图像转换为灰度图像。
+
+**参数说明**:
+
+- ``p`` (float): 转换概率（默认：0.1）
+
+**使用示例**:
 
 .. code-block:: python
+
+    from riemann.vision import transforms
 
     # 以 10% 概率转换为灰度图像
     gray = transforms.RandomGrayscale(p=0.1)
+    gray_img = gray(pil_image)
 
-高级变换
+RandomCrop
+~~~~~~~~~~
+
+随机裁剪图像到指定尺寸。
+
+**参数说明**:
+
+- ``size`` (int or tuple): 裁剪尺寸
+- ``padding`` (int, optional): 填充尺寸
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 带填充的随机裁剪
+    crop = transforms.RandomCrop(224, padding=4)
+    cropped_img = crop(pil_image)
+
+RandomResizedCrop
+~~~~~~~~~~~~~~~~~
+
+随机裁剪并调整图像大小。
+
+**参数说明**:
+
+- ``size`` (int or tuple): 目标尺寸
+- ``scale`` (tuple): 裁剪的缩放范围
+- ``ratio`` (tuple): 宽高比范围
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 随机裁剪并调整大小
+    crop = transforms.RandomResizedCrop(224, scale=(0.08, 1.0))
+    cropped_img = crop(pil_image)
+
+FiveCrop
 ~~~~~~~~
 
-**FiveCrop**: 五裁剪（四角和中心）
+将图像裁剪为 5 个区域（四角 + 中心）。
+
+**参数说明**:
+
+- ``size`` (int or tuple): 裁剪尺寸
+
+**使用示例**:
 
 .. code-block:: python
 
     import riemann as rm
     from riemann.vision import transforms
 
-    # 对图像进行五裁剪
+    # 五裁剪
     five_crop = transforms.FiveCrop(224)
-    image = rm.randn(3, 256, 256)  # [C, H, W]
-    crops = five_crop(image)  # 返回5个张量的元组
+    crops = five_crop(pil_image)  # 返回 5 个图像的元组
+    
+    # 堆叠成批次
+    tensor_crops = rm.stack([transforms.ToTensor()(crop) for crop in crops])
 
-**TenCrop**: 十裁剪（五裁剪 + 水平翻转）
+TenCrop
+~~~~~~~
+
+将图像裁剪为 10 个区域（五裁剪 + 水平翻转）。
+
+**参数说明**:
+
+- ``size`` (int or tuple): 裁剪尺寸
+- ``vertical_flip`` (bool): 是否也应用垂直翻转
+
+**使用示例**:
 
 .. code-block:: python
 
-    # 对图像进行十裁剪
-    ten_crop = transforms.TenCrop(224, vertical_flip=False)
-    crops = ten_crop(image)  # 返回10个张量的元组
+    import riemann as rm
+    from riemann.vision import transforms
 
-**Pad**: 图像填充
+    # 十裁剪
+    ten_crop = transforms.TenCrop(224)
+    crops = ten_crop(pil_image)  # 返回 10 个图像的元组
+
+Pad
+~~~
+
+使用指定值填充图像。
+
+**参数说明**:
+
+- ``padding`` (int or tuple): 填充尺寸
+- ``fill`` (int or tuple): 填充值
+
+**使用示例**:
 
 .. code-block:: python
 
-    # 对图像进行填充
+    from riemann.vision import transforms
+
+    # 填充图像
     pad = transforms.Pad(padding=4, fill=0)
+    padded_img = pad(pil_image)
 
-AutoAugment 系列
-~~~~~~~~~~~~~~~~
+Lambda
+~~~~~~
 
-**AutoAugment**: 自动数据增强
+应用自定义 lambda 函数。
 
-.. code-block:: python
+**参数说明**:
 
-    from riemann.vision.transforms import AutoAugment, AutoAugmentPolicy
+- ``lambd`` (function): 要应用的 lambda 函数
 
-    # 使用 ImageNet 策略
-    augment = AutoAugment(policy=AutoAugmentPolicy.IMAGENET)
-    augmented_image = augment(image)
-
-**RandAugment**: 随机数据增强
+**使用示例**:
 
 .. code-block:: python
 
-    from riemann.vision.transforms import RandAugment
+    from riemann.vision import transforms
 
-    # 随机选择变换组合
-    augment = RandAugment(num_ops=2, magnitude=9)
-    augmented_image = augment(image)
+    # 自定义 lambda 变换
+    lambd = transforms.Lambda(lambda x: x.rotate(45))
+    transformed_img = lambd(pil_image)
 
-**TrivialAugmentWide**: 宽范围简单增强
+GaussianBlur
+~~~~~~~~~~~~
 
-.. code-block:: python
+对图像应用高斯模糊。
 
-    from riemann.vision.transforms import TrivialAugmentWide
+**参数说明**:
 
-    # 宽范围简单增强
-    augment = TrivialAugmentWide()
-    augmented_image = augment(image)
+- ``kernel_size`` (int): 高斯核大小
+- ``sigma`` (float or tuple): 标准差
 
-实用工具
---------
-
-**default_loader**: 默认图像加载器
+**使用示例**:
 
 .. code-block:: python
 
-    from riemann.vision.datasets import default_loader
+    from riemann.vision import transforms
 
-    # 加载图像文件
-    image = default_loader('path/to/image.jpg')
+    # 应用高斯模糊
+    blur = transforms.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))
+    blurred_img = blur(pil_image)
+
+RandomAffine
+~~~~~~~~~~~~
+
+随机仿射变换。
+
+**参数说明**:
+
+- ``degrees`` (float or tuple): 旋转角度
+- ``translate`` (tuple): 平移范围
+- ``scale`` (tuple): 缩放范围
+- ``shear`` (float or tuple): 剪切范围
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 随机仿射变换
+    affine = transforms.RandomAffine(
+        degrees=15,
+        translate=(0.1, 0.1),
+        scale=(0.9, 1.1)
+    )
+    transformed_img = affine(pil_image)
+
+RandomPerspective
+~~~~~~~~~~~~~~~~~
+
+随机透视变换。
+
+**参数说明**:
+
+- ``distortion_scale`` (float): 扭曲程度
+- ``p`` (float): 应用变换的概率
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 随机透视
+    perspective = transforms.RandomPerspective(distortion_scale=0.5, p=0.5)
+    transformed_img = perspective(pil_image)
+
+RandomErasing
+~~~~~~~~~~~~~
+
+随机擦除矩形区域。
+
+**参数说明**:
+
+- ``p`` (float): 应用的概率
+- ``scale`` (tuple): 擦除区域范围
+- ``ratio`` (tuple): 宽高比范围
+- ``value`` (str or float): 擦除值
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 随机擦除（通常用于张量）
+    erasing = transforms.RandomErasing(p=0.5, scale=(0.02, 0.33))
+    erased_tensor = erasing(tensor_img)
+
+AutoAugment
+~~~~~~~~~~~
+
+AutoAugment 数据增强策略。
+
+**参数说明**:
+
+- ``policy`` (str): 使用的策略（'imagenet', 'cifar10', 'svhn'）
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 使用 ImageNet 策略的 AutoAugment
+    auto_augment = transforms.AutoAugment(policy='imagenet')
+    augmented_img = auto_augment(pil_image)
+
+RandAugment
+~~~~~~~~~~~
+
+RandAugment 数据增强策略。
+
+**参数说明**:
+
+- ``num_ops`` (int): 操作数量
+- ``magnitude`` (int): 操作强度
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # RandAugment
+    rand_augment = transforms.RandAugment(num_ops=2, magnitude=9)
+    augmented_img = rand_augment(pil_image)
+
+TrivialAugmentWide
+~~~~~~~~~~~~~~~~~~
+
+TrivialAugmentWide 数据增强策略。
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # TrivialAugmentWide
+    trivial_augment = transforms.TrivialAugmentWide()
+    augmented_img = trivial_augment(pil_image)
+
+SanitizeBoundingBox
+~~~~~~~~~~~~~~~~~~~
+
+清理和验证边界框。
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 清理边界框
+    sanitize = transforms.SanitizeBoundingBox()
+    sanitized_boxes = sanitize(boxes, image_size)
+
+Invert
+~~~~~~
+
+反转图像颜色。
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 反转图像
+    invert = transforms.Invert()
+    inverted_img = invert(pil_image)
+
+Posterize
+~~~~~~~~~
+
+减少每个颜色通道的位数。
+
+**参数说明**:
+
+- ``bits`` (int): 保留的位数
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 色调分离
+    posterize = transforms.Posterize(bits=4)
+    posterized_img = posterize(pil_image)
+
+Solarize
+~~~~~~~~
+
+反转高于阈值的像素。
+
+**参数说明**:
+
+- ``threshold`` (int): 阈值
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 曝光
+    solarize = transforms.Solarize(threshold=128)
+    solarized_img = solarize(pil_image)
+
+Equalize
+~~~~~~~~
+
+均衡化图像直方图。
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 均衡化图像
+    equalize = transforms.Equalize()
+    equalized_img = equalize(pil_image)
+
+AutoContrast
+~~~~~~~~~~~~
+
+最大化图像对比度。
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 自动对比度
+    auto_contrast = transforms.AutoContrast()
+    contrasted_img = auto_contrast(pil_image)
+
+Sharpness
+~~~~~~~~~
+
+调整图像锐度。
+
+**参数说明**:
+
+- ``sharpness_factor`` (float): 锐度因子
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 调整锐度
+    sharpness = transforms.Sharpness(sharpness_factor=2.0)
+    sharpened_img = sharpness(pil_image)
+
+Brightness
+~~~~~~~~~~
+
+调整图像亮度。
+
+**参数说明**:
+
+- ``brightness_factor`` (float): 亮度因子
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 调整亮度
+    brightness = transforms.Brightness(brightness_factor=1.5)
+    brightened_img = brightness(pil_image)
+
+Contrast
+~~~~~~~~
+
+调整图像对比度。
+
+**参数说明**:
+
+- ``contrast_factor`` (float): 对比度因子
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 调整对比度
+    contrast = transforms.Contrast(contrast_factor=1.5)
+    contrasted_img = contrast(pil_image)
+
+Saturation
+~~~~~~~~~~
+
+调整图像饱和度。
+
+**参数说明**:
+
+- ``saturation_factor`` (float): 饱和度因子
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 调整饱和度
+    saturation = transforms.Saturation(saturation_factor=1.5)
+    saturated_img = saturation(pil_image)
+
+Hue
+~~~
+
+调整图像色调。
+
+**参数说明**:
+
+- ``hue_factor`` (float): 色调因子（-0.5 到 0.5）
+
+**使用示例**:
+
+.. code-block:: python
+
+    from riemann.vision import transforms
+
+    # 调整色调
+    hue = transforms.Hue(hue_factor=0.1)
+    hue_adjusted_img = hue(pil_image)
 
 完整示例
 --------
 
-图像分类训练流程
-~~~~~~~~~~~~~~~~
+以下示例展示了如何使用 Riemann 的计算机视觉模块进行常见的深度学习任务。
+
+图像分类完整训练流程
+~~~~~~~~~~~~~~~~~~~~
+
+本示例演示了使用 CIFAR-10 数据集进行图像分类的完整流程，包括数据加载、数据增强、模型定义、训练和评估。
+
+**流程说明**:
+
+1. **数据预处理**: 使用随机裁剪、水平翻转和颜色抖动进行数据增强
+2. **标准化**: 使用 ImageNet 统计数据进行标准化
+3. **模型定义**: 简单的卷积神经网络
+4. **训练循环**: 标准的训练流程，包括前向传播、损失计算、反向传播和参数更新
 
 .. code-block:: python
 
@@ -658,68 +1368,178 @@ AutoAugment 系列
     from riemann.vision import datasets, transforms
     from riemann.utils.data import DataLoader
 
-    # 定义数据变换
+    # 定义训练数据变换（包含数据增强）
     train_transform = transforms.Compose([
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])
+        transforms.RandomResizedCrop(224),      # 随机裁剪并调整大小
+        transforms.RandomHorizontalFlip(),       # 随机水平翻转
+        transforms.ColorJitter(                  # 颜色抖动（数据增强）
+            brightness=0.2, 
+            contrast=0.2
+        ),
+        transforms.ToTensor(),                   # 转换为张量
+        transforms.Normalize(                    # 标准化
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
     ])
 
+    # 定义测试数据变换（不包含数据增强）
     test_transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
+        transforms.Resize(256),                  # 调整大小
+        transforms.CenterCrop(224),              # 中心裁剪
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
     ])
 
-    # 加载数据集
+    # 加载 CIFAR-10 数据集
     train_dataset = datasets.CIFAR10(
         root='./data',
         train=True,
+        download=True,
         transform=train_transform
     )
     test_dataset = datasets.CIFAR10(
         root='./data',
         train=False,
+        download=True,
         transform=test_transform
     )
 
     # 创建数据加载器
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=32, 
+        shuffle=True,           # 训练时打乱数据
+        num_workers=4           # 使用4个子进程加载数据
+    )
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=32, 
+        shuffle=False
+    )
 
-    # 定义模型
+    # 定义卷积神经网络模型
     model = nn.Sequential(
+        # 第一个卷积块
         nn.Conv2d(3, 64, kernel_size=3, padding=1),
         nn.ReLU(),
         nn.MaxPool2d(2),
+        # 第二个卷积块
         nn.Conv2d(64, 128, kernel_size=3, padding=1),
         nn.ReLU(),
         nn.MaxPool2d(2),
+        # 全连接层
         nn.Flatten(),
-        nn.Linear(128 * 8 * 8, 10)
+        nn.Linear(128 * 8 * 8, 10)  # CIFAR-10 有10个类别
     )
 
     # 定义损失函数和优化器
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    optimizer = optim.SGD(
+        model.parameters(), 
+        lr=0.01, 
+        momentum=0.9
+    )
 
     # 训练循环
-    for epoch in range(10):
-        model.train()
-        for images, labels in train_loader:
-            optimizer.zero_grad()
+    num_epochs = 10
+    for epoch in range(num_epochs):
+        model.train()  # 设置模型为训练模式
+        running_loss = 0.0
+        
+        for batch_idx, (images, labels) in enumerate(train_loader):
+            # 前向传播
             outputs = model(images)
             loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            
+            # 反向传播和优化
+            optimizer.zero_grad()   # 清空梯度
+            loss.backward()         # 计算梯度
+            optimizer.step()        # 更新参数
+            
+            running_loss += loss.item()
+            
+            # 每100个批次打印一次进度
+            if (batch_idx + 1) % 100 == 0:
+                print(f'Epoch [{epoch+1}/{num_epochs}], '
+                      f'Batch [{batch_idx+1}/{len(train_loader)}], '
+                      f'Loss: {running_loss/100:.4f}')
+                running_loss = 0.0
+        
+        print(f'Epoch {epoch+1} 完成')
 
-自定义数据集
-~~~~~~~~~~~~
+    print('训练完成！')
+
+使用 ImageFolder 加载自定义数据集
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+当你有自己的图像数据集时，可以使用 ``ImageFolder`` 方便地加载。只需要将图像按文件夹组织，每个文件夹代表一个类别。
+
+**文件夹结构要求**:
+
+.. code-block:: text
+
+    custom_dataset/
+    ├── class_a/           # 类别 A 的图像
+    │   ├── img1.jpg
+    │   └── img2.png
+    ├── class_b/           # 类别 B 的图像
+    │   ├── img1.jpg
+    │   └── img2.jpg
+    └── class_c/           # 类别 C 的图像
+        └── img1.jpg
+
+**加载示例**:
+
+.. code-block:: python
+
+    from riemann.vision import datasets, transforms
+    from riemann.utils.data import DataLoader
+
+    # 定义数据变换
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+
+    # 使用 ImageFolder 加载数据集
+    dataset = datasets.ImageFolder(
+        root='./custom_dataset',
+        transform=transform
+    )
+
+    # 查看数据集信息
+    print(f"类别数: {len(dataset.classes)}")
+    print(f"类别名称: {dataset.classes}")
+    print(f"类别到索引映射: {dataset.class_to_idx}")
+    print(f"样本总数: {len(dataset)}")
+
+    # 创建数据加载器
+    loader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+    # 遍历数据
+    for images, labels in loader:
+        print(f"图像批次形状: {images.shape}")  # [32, 3, 224, 224]
+        print(f"标签批次形状: {labels.shape}")  # [32]
+        break
+
+创建自定义数据集类
+~~~~~~~~~~~~~~~~~~
+
+当 ``ImageFolder`` 无法满足需求时，你可以继承 ``Dataset`` 类创建自定义数据集。以下示例展示了如何创建一个从文件夹加载图像的自定义数据集。
+
+**适用场景**:
+
+- 需要自定义文件组织方式
+- 需要从其他数据源（如数据库、网络）加载数据
+- 需要进行复杂的预处理
 
 .. code-block:: python
 
@@ -728,169 +1548,85 @@ AutoAugment 系列
     import os
 
     class CustomImageDataset(Dataset):
+        """
+        自定义图像数据集类
+        
+        从文件夹加载图像，文件夹结构为：
+        root/
+            label1/
+                image1.jpg
+                image2.jpg
+            label2/
+                image1.jpg
+        """
+        
         def __init__(self, root_dir, transform=None):
+            """
+            参数:
+                root_dir (str): 数据集根目录
+                transform (callable, optional): 图像变换函数
+            """
             self.root_dir = root_dir
             self.transform = transform
             self.images = []
             self.labels = []
             
-            # 加载数据列表
-            for label in os.listdir(root_dir):
+            # 扫描文件夹，收集所有图像路径和标签
+            for label in sorted(os.listdir(root_dir)):
                 label_dir = os.path.join(root_dir, label)
                 if os.path.isdir(label_dir):
                     for img_name in os.listdir(label_dir):
-                        self.images.append(os.path.join(label_dir, img_name))
-                        self.labels.append(int(label))
+                        if img_name.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+                            self.images.append(os.path.join(label_dir, img_name))
+                            self.labels.append(int(label))
+            
+            print(f"加载了 {len(self.images)} 张图像，共 {len(set(self.labels))} 个类别")
 
         def __len__(self):
+            """返回数据集大小"""
             return len(self.images)
 
         def __getitem__(self, idx):
+            """
+            获取指定索引的样本
+            
+            参数:
+                idx (int): 样本索引
+                
+            返回:
+                tuple: (图像, 标签)
+            """
+            # 加载图像
             img_path = self.images[idx]
             image = Image.open(img_path).convert('RGB')
             label = self.labels[idx]
             
+            # 应用变换
             if self.transform:
                 image = self.transform(image)
             
             return image, label
 
     # 使用自定义数据集
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+    ])
+
     dataset = CustomImageDataset(
         root_dir='./custom_data',
-        transform=transforms.ToTensor()
+        transform=transform
     )
-    loader = DataLoader(dataset, batch_size=32, shuffle=True)
+    
+    loader = DataLoader(
+        dataset, 
+        batch_size=32, 
+        shuffle=True,
+        num_workers=2
+    )
 
-API 参考
---------
-
-数据集类
-~~~~~~~~
-
-.. list-table:: 数据集类
-   :header-rows: 1
-   :widths: 25 75
-
-   * - 类名
-     - 说明
-   * - ``MNIST``
-     - MNIST 手写数字数据集（包含 EasyMNIST 预处理版本）
-   * - ``FashionMNIST``
-     - Fashion-MNIST 时尚产品数据集
-   * - ``CIFAR10``
-     - CIFAR-10 图像分类数据集
-   * - ``Flowers102``
-     - Oxford 102 Flower 花卉分类数据集
-   * - ``OxfordIIITPet``
-     - Oxford-IIIT Pet 宠物分类数据集
-   * - ``LFWPeople``
-     - LFW People 人脸识别数据集
-   * - ``SVHN``
-     - Street View House Numbers 街景门牌号数据集
-   * - ``ImageFolder``
-     - 从文件夹加载图像数据集
-   * - ``DatasetFolder``
-     - 通用文件夹数据集基类
-
-变换类
-~~~~~~
-
-.. list-table:: 变换类
-   :header-rows: 1
-   :widths: 25 75
-
-   * - 类名
-     - 说明
-   * - **组合变换**
-     -
-   * - ``Compose``
-     - 组合多个变换，按顺序应用
-   * - **类型转换**
-     -
-   * - ``ToTensor``
-     - 将 PIL Image 或 numpy.ndarray 转换为张量
-   * - ``PILToTensor``
-     - 将 PIL Image 转换为张量（不缩放）
-   * - ``ToPILImage``
-     - 将张量转换为 PIL Image
-   * - ``ConvertImageDtype``
-     - 转换图像数据类型
-   * - **几何变换**
-     -
-   * - ``Resize``
-     - 调整图像大小
-   * - ``CenterCrop``
-     - 中心裁剪
-   * - ``RandomCrop``
-     - 随机裁剪
-   * - ``RandomResizedCrop``
-     - 随机缩放裁剪
-   * - ``FiveCrop``
-     - 五裁剪（四角和中心）
-   * - ``TenCrop``
-     - 十裁剪（五裁剪 + 水平翻转）
-   * - ``Pad``
-     - 图像填充
-   * - **翻转与旋转**
-     -
-   * - ``RandomHorizontalFlip``
-     - 随机水平翻转
-   * - ``RandomVerticalFlip``
-     - 随机垂直翻转
-   * - ``RandomRotation``
-     - 随机旋转
-   * - ``RandomAffine``
-     - 随机仿射变换
-   * - ``RandomPerspective``
-     - 随机透视变换
-   * - **颜色变换**
-     -
-   * - ``ColorJitter``
-     - 颜色抖动（亮度、对比度、饱和度、色调）
-   * - ``Grayscale``
-     - 转换为灰度图像
-   * - ``RandomGrayscale``
-     - 随机转换为灰度图像
-   * - ``Invert``
-     - 颜色反转
-   * - ``Posterize``
-     - 减少颜色位数
-   * - ``Solarize``
-     - 反转高于阈值的像素
-   * - ``Equalize``
-     - 直方图均衡化
-   * - ``AutoContrast``
-     - 自动对比度调整
-   * - ``Sharpness``
-     - 锐度调整
-   * - ``Brightness``
-     - 亮度调整
-   * - ``Contrast``
-     - 对比度调整
-   * - ``Saturation``
-     - 饱和度调整
-   * - ``Hue``
-     - 色调调整
-   * - **标准化与归一化**
-     -
-   * - ``Normalize``
-     - 使用均值和标准差进行标准化
-   * - **数据增强（高级）**
-     -
-   * - ``AutoAugment``
-     - 自动数据增强（基于学习策略）
-   * - ``RandAugment``
-     - 随机数据增强
-   * - ``TrivialAugmentWide``
-     - 宽范围简单增强
-   * - **其他变换**
-     -
-   * - ``Lambda``
-     - 应用自定义 lambda 函数
-   * - ``GaussianBlur``
-     - 高斯模糊
-   * - ``RandomErasing``
-     - 随机擦除（用于数据增强）
-   * - ``SanitizeBoundingBox``
-     - 边界框清理
+    # 测试数据加载
+    for images, labels in loader:
+        print(f"批次图像形状: {images.shape}")
+        print(f"批次标签: {labels}")
+        break
