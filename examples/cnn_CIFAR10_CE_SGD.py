@@ -46,13 +46,14 @@ class EasyCIFAR10(datasets.CIFAR10):
     这样训练过程中不再需要转换数据，可节省训练时间。
     """
     
-    def __init__(self, root, train=True):
+    def __init__(self, root, train=True, download=False):
         """
         初始化预处理的CIFAR-10数据集。
         
         参数:
             root (str): 数据集的根目录
             train (bool): 是否加载训练集，默认为True
+            download (bool): 如果为True，从互联网下载数据集，默认为False
         """
         # 定义图像转换：将PIL图像转换为张量并标准化
         def tensor_transform(img):
@@ -70,8 +71,8 @@ class EasyCIFAR10(datasets.CIFAR10):
         def tensor_label_transform(label):
             return tensor(label, dtype=get_default_dtype())
         
-        # 初始化父类，不传入转换函数，直接获取PIL Image
-        super().__init__(root, train=train, transform=None, target_transform=None)
+        # 初始化父类，传入download参数，不传入转换函数，直接获取PIL Image
+        super().__init__(root, train=train, download=download, transform=None, target_transform=None)
         
         # 预处理所有数据，直接更新父类的data_list
         print("Transforming CIFAR-10 to EasyCIFAR10 ...")
@@ -242,11 +243,13 @@ def main():
     print("加载数据集...")
     train_dataset = EasyCIFAR10(
         root=data_root,
-        train=True
+        train=True,
+        download=True  # 下载数据集（训练集和测试集在同一个压缩包中）
     )
     test_dataset = EasyCIFAR10(
         root=data_root,
-        train=False
+        train=False,
+        download=False  # 测试集与训练集在同一个压缩包中，无需重复下载
     )
     
     # 创建数据加载器，使用极小的批次大小
