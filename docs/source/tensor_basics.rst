@@ -1353,8 +1353,23 @@ The following table lists all shape and dimension manipulation functions support
     - Horizontally stacks tensors, 1D tensors concatenated, multi-dimensional along axis 1
     - ``rm.hstack([x, y])``
   * - ``split``
-    - Splits tensor into chunks along specified dimension
-    - ``rm.split(x, 2, dim=0)``
+    - Splits tensor into chunks along specified dimension (by chunk size)
+    - ``rm.split(x, 2, dim=0)`` or ``rm.split(x, [2, 3], dim=0)``
+  * - ``tensor_split``
+    - Splits tensor into chunks along specified dimension (by number of sections or indices)
+    - ``rm.tensor_split(x, 3, dim=0)`` or ``rm.tensor_split(x, [2, 4], dim=0)``
+  * - ``vsplit``
+    - Vertically splits tensor (along dimension 0), splits tensor into multiple subtensors
+    - ``rm.vsplit(x, 3)`` or ``rm.vsplit(x, [2, 4])``
+  * - ``hsplit``
+    - Horizontally splits tensor (along dimension 1), splits tensor into multiple subtensors
+    - ``rm.hsplit(x, 2)`` or ``rm.hsplit(x, [1, 3])``
+  * - ``dsplit``
+    - Depth splits tensor (along dimension 2), splits 3D+ tensor into multiple subtensors
+    - ``rm.dsplit(x, 3)`` or ``rm.dsplit(x, [2, 4])``
+  * - ``dstack``
+    - Depth stacks tensors along dimension 2 (1D/2D tensors will be reshaped first)
+    - ``rm.dstack([x, y])``
 
 Tensor Type Conversion
 ----------------------

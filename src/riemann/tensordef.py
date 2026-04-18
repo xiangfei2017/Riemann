@@ -3425,7 +3425,7 @@ class TN:
         return abs(self)
     
     def pow(self, exponent)->TN:
-        return pow(self,exponent)  # type: ignore
+        return pow(self,exponent)
     
     def sqrt(self):
         return sqrt(self)
@@ -3435,6 +3435,15 @@ class TN:
     
     def log(self):
         return log(self)
+
+    def log10(self):
+        return log10(self)
+    
+    def log2(self):
+        return log2(self)
+    
+    def log1p(self):
+        return log1p(self)
 
     def sin(self):
         return sin(self)
@@ -7959,49 +7968,120 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
         # 无限制，返回原张量
         return x
 
-def split(ts: TN, split_indices, dim: int = 0) -> list[TN]:
+def _split_with_indices(input: TN, indices_or_sections, dim: int) -> tuple[TN, ...]:
     """
-    沿指定轴分割TN张量，支持计算图记录和梯度反向传播
+    内部函数：使用 numpy 风格的语义分割张量。
+
+    该函数根据 `indices_or_sections` 的类型决定分割方式：
+    - 当 `indices_or_sections` 为整数时，表示将张量分割成 N 段。如果维度大小不能被 N 整除，
+      最后一段将包含剩余的元素。
+    - 当 `indices_or_sections` 为列表时，表示在指定的索引位置进行分割。
+
     参数：
-        ts: 输入TN张量
-        split_indices: 分割点列表或分割份数（整数）
-        dim: 分割轴（默认0）
+        input (TN): 输入的 TN 张量。
+        indices_or_sections (int | list): 分割参数。
+            - int: 分割的段数。
+            - list: 分割点的索引列表。
+        dim (int): 进行分割的维度。默认为 0。
+
+    返回：
+        tuple[TN, ...]: 包含分割后子张量的元组。
+
+    示例：
+        >>> # 按段数分割
+        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])
+        >>> _split_with_indices(x, 2, dim=1)
+        (tensor([[1, 2], [5, 6]]), tensor([[3, 4], [7, 8]]))
+        >>>
+        >>> # 按索引分割
+        >>> _split_with_indices(x, [1, 3], dim=1)
+        (tensor([[1], [5]]), tensor([[2, 3], [6, 7]]), tensor([[4], [8]]))
     """
-    arrlib = ts._get_array_lib()
-    # 改用array_split支持不均等分割
-    split_data = arrlib.array_split(ts.data, split_indices, axis=dim)
+    arrlib = input._get_array_lib()
+    
+    if isinstance(indices_or_sections, int):
+        # 整数：分割成 N 段
+        n_sections = indices_or_sections
+        if n_sections <= 0:
+            raise ValueError(f"number of sections must be positive, got {n_sections}")
+        split_data = arrlib.array_split(input.data, n_sections, axis=dim)
+    else:
+        # 列表：分割点索引
+        split_points = list(indices_or_sections)
+        if len(split_points) == 0:
+            split_data = [input.data]
+        else:
+            split_data = arrlib.split(input.data, split_points, axis=dim)
+    
+    # 从分割结果计算每段的大小（用于反向传播）
+    split_sizes = [s.shape[dim] for s in split_data]
     
     # 创建子张量列表（保留计算图）
     sub_tensors = []
     for i, data in enumerate(split_data):
-        subt = tensor(data, device=ts.device, requires_grad = (is_grad_enabled() and ts.requires_grad))
+        subt = tensor(data, device=input.device, requires_grad=(is_grad_enabled() and input.requires_grad))
         
         # 记录计算图信息
-        if ts.requires_grad:
-            subt.fromvars = (ts,)
-            subt.parms = ((split_indices, dim, i),)  # 新增索引i记录分割位置
+        if input.requires_grad:
+            subt.fromvars = (input,)
+            subt.parms = ((split_sizes, dim, i),)
             subt.gradfuncs = (_split_backward,)
         
         sub_tensors.append(subt)
     
-    return sub_tensors
+    return tuple(sub_tensors)
+
+def split(input: TN, split_size_or_sections, dim: int = 0) -> tuple[TN, ...]:
+    """
+    沿指定轴分割TN张量，支持计算图记录和梯度反向传播
+    
+    参数：
+        input: 输入TN张量
+        split_size_or_sections: 
+            - 整数：每段的大小（最后一段可能较小）
+            - 列表：每段的大小列表，总和必须等于该维度大小
+        dim: 分割轴（默认0）
+    
+    返回：
+        tuple[TN, ...]: 分割后的张量元组
+    
+    示例：
+        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])  # shape (2, 4)
+        >>> rm.split(x, 2, dim=1)  # 每段大小为2
+        (tensor([[1, 2], [5, 6]]), tensor([[3, 4], [7, 8]]))
+        >>> rm.split(x, [1, 3], dim=1)  # 段大小为[1, 3]
+        (tensor([[1], [5]]), tensor([[2, 3, 4], [6, 7, 8]]))
+    """
+    dim_size = input.shape[dim]
+    
+    if isinstance(split_size_or_sections, int):
+        # 整数：每段的大小，转换为分割点
+        section_size = split_size_or_sections
+        if section_size <= 0:
+            raise ValueError(f"split_size_or_sections must be positive, got {section_size}")
+        # 计算分割点
+        split_points = list(range(section_size, dim_size, section_size))
+    else:
+        # 列表：每段的大小，转换为分割点
+        split_sizes = list(split_size_or_sections)
+        total_size = builtins.sum(split_sizes)
+        if total_size != dim_size:
+            raise ValueError(f"sum of split sections ({total_size}) must equal dimension size ({dim_size})")
+        # 计算分割点（累积和）
+        split_points = list(accumulate(split_sizes[:-1]))
+    
+    # 使用 _split_with_indices 进行分割
+    return _split_with_indices(input, split_points, dim)
 
 def _split_backward(result_tensor: TN, i: int) -> TN:
-    split_indices, dim, split_pos = result_tensor.parms[i]
+    split_sizes, dim, split_pos = result_tensor.parms[i]
     parent = result_tensor.fromvars[i]
     
     grad = zeros_like(parent)
 
-    # 梯度切片计算逻辑
-    if isinstance(split_indices, int):
-        total_size = parent.data.shape[dim]
-        base_size, remainder = divmod(total_size, split_indices)
-        split_sizes = [base_size + 1 if j < remainder else base_size for j in range(split_indices)]
-        start = builtins.sum(split_sizes[:split_pos])
-        end = start + split_sizes[split_pos]
-    else:
-        start = builtins.sum(split_indices[:split_pos]) if split_pos > 0 else 0
-        end = start + split_indices[split_pos]
+    # 计算起始和结束位置
+    start = builtins.sum(split_sizes[:split_pos]) if split_pos > 0 else 0
+    end = start + split_sizes[split_pos]
     
     # 累加归一化后的梯度
     slice_obj = [slice(None)] * parent.data.ndim
@@ -8010,6 +8090,88 @@ def _split_backward(result_tensor: TN, i: int) -> TN:
     
     return grad
 
+def vsplit(input: TN, indices_or_sections):
+    """
+    垂直分割（沿 dim=0），将张量分割为多个子张量
+    
+    参数：
+        input: 输入张量，至少2维
+        indices_or_sections: 
+            - 整数：分割成 N 段
+            - 列表：分割点索引列表
+    
+    示例：
+        >>> x = rm.tensor([[1, 2], [3, 4], [5, 6], [7, 8]])  # shape (4, 2)
+        >>> rm.vsplit(x, 2)  # 分割成 2 段
+        (tensor([[1, 2], [3, 4]]), tensor([[5, 6], [7, 8]]))
+        >>> rm.vsplit(x, [1, 3])  # 在索引 1 和 3 处分割
+        (tensor([[1, 2]]), tensor([[3, 4], [5, 6]]), tensor([[7, 8]]))
+    """
+    return _split_with_indices(input, indices_or_sections, dim=0)
+
+def hsplit(input: TN, indices_or_sections):
+    """
+    水平分割（沿 dim=1），将张量分割为多个子张量
+    
+    参数：
+        input: 输入张量，至少2维
+        indices_or_sections: 
+            - 整数：分割成 N 段
+            - 列表：分割点索引列表
+    
+    示例：
+        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])  # shape (2, 4)
+        >>> rm.hsplit(x, 2)  # 分割成 2 段
+        (tensor([[1, 2], [5, 6]]), tensor([[3, 4], [7, 8]]))
+    """
+    return _split_with_indices(input, indices_or_sections, dim=1)
+
+def dsplit(input: TN, indices_or_sections):
+    """
+    深度分割（沿 dim=2），将张量分割为多个子张量
+    
+    参数：
+        input: 输入张量，至少3维
+        indices_or_sections: 
+            - 整数：分割成 N 段
+            - 列表：分割点索引列表
+    
+    示例：
+        >>> x = rm.tensor(np.random.randn(2, 3, 6))  # shape (2, 3, 6)
+        >>> rm.dsplit(x, 3)  # 分割成 3 段
+        # 返回 3 个 shape 为 (2, 3, 2) 的张量
+    """
+    return _split_with_indices(input, indices_or_sections, dim=2)
+
+def tensor_split(input: TN, indices_or_sections, dim: int = 0) -> tuple[TN, ...]:
+    """
+    将张量沿指定维度分割为多个子张量。
+
+    该函数根据 `indices_or_sections` 的类型决定分割方式：
+    - 当 `indices_or_sections` 为整数时，表示将张量分割成 N 段。如果维度大小不能被 N 整除，
+      前 `size % N` 个段的大小为 `size // N + 1`，其余段的大小为 `size // N`。
+    - 当 `indices_or_sections` 为列表时，表示在指定的索引位置进行分割。
+
+    参数：
+        input (TN): 输入的 TN 张量。
+        indices_or_sections (int | list): 分割参数。
+            - int: 分割的段数。
+            - list: 分割点的索引列表。
+        dim (int): 进行分割的维度。默认为 0。
+
+    返回：
+        tuple[TN, ...]: 包含分割后子张量的元组。
+
+    示例：
+        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]])  # shape (3, 4)
+        >>> # 按段数分割
+        >>> tensor_split(x, 3, dim=0)
+        (tensor([[1, 2, 3, 4]]), tensor([[5, 6, 7, 8]]), tensor([[9, 10, 11, 12]]))
+        >>> # 按索引分割
+        >>> tensor_split(x, [1, 2], dim=0)
+        (tensor([[1, 2, 3, 4]]), tensor([[5, 6, 7, 8]]), tensor([[9, 10, 11, 12]]))
+    """
+    return _split_with_indices(input, indices_or_sections, dim)
 
 def _sort_backward(result_tensor: TN, i: int) -> TN:
     """
@@ -8286,6 +8448,40 @@ def hstack(tensors: tuple[TN, ...]|list[TN]) -> TN:
         # 对于多维张量，沿第1轴连接
         return concatenate(tensors, dim=1)
 
+def dstack(tensors):
+    """
+    深度堆叠（沿第三维）
+    
+    根据输入张量的维度自动处理：
+    - 1D 张量 (N,) -> reshape 为 (1, N, 1)，然后沿第2维堆叠
+    - 2D 张量 (M, N) -> reshape 为 (M, N, 1)，然后沿第2维堆叠  
+    - 3D+ 张量 (M, N, P, ...) -> 沿第2维拼接
+    
+    参数：
+        tensors: 张量列表
+    
+    返回：
+        堆叠后的张量
+    """
+    if not tensors:
+        raise ValueError("dstack requires at least one tensor")
+    
+    # 获取第一个张量的维度数
+    first_tensor = tensors[0]
+    ndim = first_tensor.ndim
+    
+    if ndim == 1:
+        # 1D: (N,) -> (1, N, 1)，然后沿第2维堆叠
+        reshaped = [t.reshape((1, -1, 1)) for t in tensors]
+        return concatenate(reshaped, dim=2)
+    elif ndim == 2:
+        # 2D: (M, N) -> (M, N, 1)，然后沿第2维堆叠
+        reshaped = [t.reshape((*t.shape, 1)) for t in tensors]
+        return concatenate(reshaped, dim=2)
+    else:
+        # 3D+: 沿第2维拼接
+        return concatenate(tensors, dim=2)
+
 def _stack_backward(result_tensor: TN, i: int) -> TN:
     dim = result_tensor.parms[i]
     grad = result_tensor.grad_value
@@ -8304,7 +8500,8 @@ def _concatenate_backward(result_tensor: TN, i: int) -> TN:
     split_points = list(accumulate(split_sizes[:-1])) if len(split_sizes) > 1 else []
     
     try:
-        grads = split(grad_data,split_points, dim=dim)
+        # 使用 _split_with_indices 进行分割（numpy风格语义）
+        grads = _split_with_indices(grad_data, split_points, dim=dim)
         return grads[i]
     
     except ValueError as e:

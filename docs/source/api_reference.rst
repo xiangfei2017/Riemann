@@ -591,6 +591,72 @@ Tensor Shape Operations
    :return: Horizontally stacked tensor
    :rtype: riemann.TN
 
+.. function:: riemann.dstack(tensors)
+
+   Stack tensors in depth (along dimension 2).
+
+   1D tensors are first reshaped to (1, N, 1), 2D tensors are reshaped to (M, N, 1), then stacked along dimension 2.
+
+   :param tensors: Sequence of tensors to stack
+   :type tensors: Sequence of riemann.TN
+   :return: Depth-stacked tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.tensor_split(input, indices_or_sections, dim=0)
+
+   Split a tensor into multiple sub-tensors along a specified dimension.
+
+   When ``indices_or_sections`` is an integer, it specifies the number of sections to split the tensor into.
+   When ``indices_or_sections`` is a list, it specifies the indices at which to split.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param indices_or_sections: Split parameter (number of sections or list of indices)
+   :type indices_or_sections: int or list[int]
+   :param dim: Dimension along which to split, defaults to 0
+   :type dim: int, optional
+   :return: Tuple of split tensors
+   :rtype: tuple[riemann.TN, ...]
+
+.. function:: riemann.vsplit(input, indices_or_sections)
+
+   Split a tensor vertically (along dimension 0).
+
+   Splits the tensor along dimension 0 (vertical direction) into multiple sub-tensors.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param indices_or_sections: Split parameter (number of sections or list of indices)
+   :type indices_or_sections: int or list[int]
+   :return: Tuple of split tensors
+   :rtype: tuple[riemann.TN, ...]
+
+.. function:: riemann.hsplit(input, indices_or_sections)
+
+   Split a tensor horizontally (along dimension 1).
+
+   Splits the tensor along dimension 1 (horizontal direction) into multiple sub-tensors.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param indices_or_sections: Split parameter (number of sections or list of indices)
+   :type indices_or_sections: int or list[int]
+   :return: Tuple of split tensors
+   :rtype: tuple[riemann.TN, ...]
+
+.. function:: riemann.dsplit(input, indices_or_sections)
+
+   Split a tensor in depth (along dimension 2).
+
+   Splits a 3D+ tensor along dimension 2 (depth direction) into multiple sub-tensors.
+
+   :param input: Input tensor (at least 3D)
+   :type input: riemann.TN
+   :param indices_or_sections: Split parameter (number of sections or list of indices)
+   :type indices_or_sections: int or list[int]
+   :return: Tuple of split tensors
+   :rtype: tuple[riemann.TN, ...]
+
 Tensor Operators
 ~~~~~~~~~~~~~~~~
 

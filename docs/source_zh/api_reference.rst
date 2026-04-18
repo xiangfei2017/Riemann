@@ -591,6 +591,72 @@ API 参考
    :return: 水平堆叠的张量
    :rtype: riemann.TN
 
+.. function:: riemann.dstack(tensors)
+
+   深度堆叠张量（沿第2维）。
+
+   1D张量会先reshape为(1, N, 1)，2D张量会reshape为(M, N, 1)，然后沿第2维堆叠。
+
+   :param tensors: 要堆叠的张量序列
+   :type tensors: riemann.TN 的序列
+   :return: 深度堆叠的张量
+   :rtype: riemann.TN
+
+.. function:: riemann.tensor_split(input, indices_or_sections, dim=0)
+
+   将张量沿指定维度分割为多个子张量。
+
+   当 ``indices_or_sections`` 为整数时，表示将张量分割成N段；
+   当 ``indices_or_sections`` 为列表时，表示在指定的索引位置进行分割。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :param indices_or_sections: 分割参数（段数或索引列表）
+   :type indices_or_sections: int 或 list[int]
+   :param dim: 沿其分割的维度，默认为0
+   :type dim: int, optional
+   :return: 分割后的张量元组
+   :rtype: tuple[riemann.TN, ...]
+
+.. function:: riemann.vsplit(input, indices_or_sections)
+
+   垂直分割张量（沿第0维）。
+
+   将张量沿第0维（垂直方向）分割为多个子张量。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :param indices_or_sections: 分割参数（段数或索引列表）
+   :type indices_or_sections: int 或 list[int]
+   :return: 分割后的张量元组
+   :rtype: tuple[riemann.TN, ...]
+
+.. function:: riemann.hsplit(input, indices_or_sections)
+
+   水平分割张量（沿第1维）。
+
+   将张量沿第1维（水平方向）分割为多个子张量。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :param indices_or_sections: 分割参数（段数或索引列表）
+   :type indices_or_sections: int 或 list[int]
+   :return: 分割后的张量元组
+   :rtype: tuple[riemann.TN, ...]
+
+.. function:: riemann.dsplit(input, indices_or_sections)
+
+   深度分割张量（沿第2维）。
+
+   将3D+张量沿第2维（深度方向）分割为多个子张量。
+
+   :param input: 输入张量（至少3维）
+   :type input: riemann.TN
+   :param indices_or_sections: 分割参数（段数或索引列表）
+   :type indices_or_sections: int 或 list[int]
+   :return: 分割后的张量元组
+   :rtype: tuple[riemann.TN, ...]
+
 张量运算符
 ~~~~~~~~~~
 
