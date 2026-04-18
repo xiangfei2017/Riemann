@@ -457,8 +457,8 @@ test_transform = Compose([
     Normalize((0.5279, 0.5303, 0.5373), (0.2739, 0.2728, 0.2625))  # CIFAR10 actual normalization parameters
 ])
 
-train_dataset = CIFAR10(root='data', train=True, transform=train_transform)
-test_dataset = CIFAR10(root='data', train=False, transform=test_transform)
+train_dataset = CIFAR10(root='data', train=True, transform=train_transform, download=True)
+test_dataset = CIFAR10(root='data', train=False, transform=test_transform, download=True)
 
 # Reduce batch size and data volume to speed up testing
 train_loader = r.utils.DataLoader(train_dataset, batch_size=100, shuffle=True)
@@ -558,8 +558,8 @@ transform = Compose([
     Normalize((0.1307,), (0.3081,))
 ])
 
-train_dataset = MNIST(root='data', train=True, transform=transform)
-test_dataset = MNIST(root='data', train=False, transform=transform)
+train_dataset = MNIST(root='data', train=True, transform=transform, download=True)
+test_dataset = MNIST(root='data', train=False, transform=transform, download=True)
 
 train_loader = r.utils.DataLoader(train_dataset, batch_size=128, shuffle=True)
 test_loader = r.utils.DataLoader(test_dataset, batch_size=1, shuffle=False)

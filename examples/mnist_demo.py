@@ -113,7 +113,8 @@ class MNISTGUI:
             self.test_dataset = MNIST(
                 root=self.data_root,
                 train=False,
-                transform=transform
+                transform=transform,
+                download=True  # 下载数据集到本地
             )
             print(f"MNIST测试数据集加载完成，共 {len(self.test_dataset)} 个样本")
         except Exception as e:

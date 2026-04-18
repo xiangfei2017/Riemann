@@ -114,7 +114,7 @@ endtime = time.time()
 print(f"train seconds:{endtime-starttime:.2f}")
 
 # test the neural network
-minist_test_dataset = EasyMNIST(root=data_root, train=False)
+minist_test_dataset = EasyMNIST(root=data_root, train=False,download=True)
 print("start testing...")
 starttime = time.time()
 

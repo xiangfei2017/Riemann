@@ -197,12 +197,14 @@ def main():
     train_dataset = MNIST(
         root=data_root,
         train=True,
-        transform=transform
+        transform=transform,
+        download=True  # 下载数据集到本地
     )
     test_dataset = MNIST(
         root=data_root,
         train=False,
-        transform=transform
+        transform=transform,
+        download=True  # 下载数据集到本地
     )
     
     # 创建数据加载器

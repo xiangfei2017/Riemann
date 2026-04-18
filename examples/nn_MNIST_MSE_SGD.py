@@ -92,7 +92,7 @@ if __name__ == '__main__':
     # 设置数据集路径
     data_root = os.path.join(os.path.dirname(__file__), '..','data')
     
-    minist_dataset = EasyMNIST(root=data_root, train=True)
+    minist_dataset = EasyMNIST(root=data_root, train=True,download=True)
     endtime = time.time()
     print(f"loading seconds:{endtime-starttime:.2f}")
 

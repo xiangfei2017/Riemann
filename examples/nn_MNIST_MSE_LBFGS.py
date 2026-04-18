@@ -218,12 +218,14 @@ def main():
     train_dataset = EasyMNIST(
         root=data_root,
         train=True,
-        onehot_label=use_onehot  # 使用one-hot编码的标签
+        onehot_label=use_onehot,
+        download=True  # 下载数据集到本地
     )
     test_dataset = EasyMNIST(
         root=data_root,
         train=False,
-        onehot_label=use_onehot  # 使用one-hot编码的标签
+        onehot_label=use_onehot,
+        download=True  # 下载数据集到本地
     )
     
     # 创建数据加载器
