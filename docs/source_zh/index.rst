@@ -16,6 +16,7 @@ Riemann 是一个开源的轻量级自动微分库，专为学习、教育和研
    :caption: 张量
 
    tensor_basics
+   einsum_chapter
 
 .. toctree::
    :maxdepth: 2

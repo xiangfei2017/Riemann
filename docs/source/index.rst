@@ -16,6 +16,7 @@ Riemann is an open-source lightweight automatic differentiation library designed
    :caption: Tensors
 
    tensor_basics
+   einsum_chapter
 
 .. toctree::
    :maxdepth: 2

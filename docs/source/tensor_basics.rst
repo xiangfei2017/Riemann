@@ -596,6 +596,168 @@ Tensors support standard arithmetic operations:
     b = rm.tensor([[5, 6], [7, 8]])
     c = a @ b  # Matrix multiplication
 
+Tensor Product Operations
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Riemann supports various tensor product operations, each with different mathematical meanings and application scenarios:
+
+**1. Dot Product (Inner Product)**
+
+The dot product of two vectors is a scalar, calculated as:
+
+.. math::
+
+    \mathbf{a} \cdot \mathbf{b} = \sum_{i} a_i b_i
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    a = rm.tensor([1, 2, 3])
+    b = rm.tensor([4, 5, 6])
+    
+    # Using dot function
+    result = rm.dot(a, b)  # tensor(32.)
+    
+    # Or using einsum
+    result = rm.einsum('i,i->', a, b)  # tensor(32.)
+
+**2. Outer Product**
+
+The outer product of two vectors is a matrix:
+
+.. math::
+
+    (\mathbf{a} \otimes \mathbf{b})_{ij} = a_i b_j
+
+.. code-block:: python
+
+    a = rm.tensor([1, 2, 3])
+    b = rm.tensor([4, 5])
+    
+    # Using outer function
+    result = rm.outer(a, b)  # shape: (3, 2)
+    
+    # Or using einsum
+    result = rm.einsum('i,j->ij', a, b)  # shape: (3, 2)
+
+**3. Hadamard Product (Element-wise Multiplication)**
+
+Element-wise product of two tensors with the same shape:
+
+.. math::
+
+    (\mathbf{A} \circ \mathbf{B})_{ij} = A_{ij} B_{ij}
+
+.. code-block:: python
+
+    A = rm.tensor([[1, 2], [3, 4]])
+    B = rm.tensor([[5, 6], [7, 8]])
+    
+    # Using * operator
+    C = A * B  # tensor([[5, 12], [21, 32]])
+    
+    # Or using einsum
+    C = rm.einsum('ij,ij->ij', A, B)  # tensor([[5, 12], [21, 32]])
+
+**4. Kronecker Product**
+
+The Kronecker product of two tensors is a block matrix:
+
+.. math::
+
+    \mathbf{A} \otimes \mathbf{B} = \begin{bmatrix} a_{11}\mathbf{B} & a_{12}\mathbf{B} & \cdots \\ a_{21}\mathbf{B} & a_{22}\mathbf{B} & \cdots \\ \vdots & \vdots & \ddots \end{bmatrix}
+
+.. code-block:: python
+
+    A = rm.tensor([[1, 2], [3, 4]])
+    B = rm.tensor([[0, 5], [6, 7]])
+    
+    # Using kron function
+    C = rm.kron(A, B)
+    # tensor([[ 0,  5,  0, 10],
+    #         [ 6,  7, 12, 14],
+    #         [ 0, 15,  0, 20],
+    #         [18, 21, 24, 28]])
+
+**5. Matrix Multiplication**
+
+Standard matrix multiplication:
+
+.. math::
+
+    (\mathbf{A} \mathbf{B})_{ik} = \sum_{j} A_{ij} B_{jk}
+
+.. code-block:: python
+
+    A = rm.tensor([[1, 2], [3, 4]])
+    B = rm.tensor([[5, 6], [7, 8]])
+    
+    # Using @ operator
+    C = A @ B  # tensor([[19, 22], [43, 50]])
+    
+    # Or using matmul function
+    C = rm.matmul(A, B)
+    
+    # Or using einsum
+    C = rm.einsum('ij,jk->ik', A, B)
+
+**6. Cross Product**
+
+The cross product of two 3D vectors is a vector perpendicular to both input vectors:
+
+.. math::
+
+    \mathbf{a} \times \mathbf{b} = \begin{bmatrix} a_2 b_3 - a_3 b_2 \\ a_3 b_1 - a_1 b_3 \\ a_1 b_2 - a_2 b_1 \end{bmatrix}
+
+.. code-block:: python
+
+    a = rm.tensor([1., 2., 3.])
+    b = rm.tensor([4., 5., 6.])
+    
+    # Using cross function
+    result = rm.cross(a, b)  # tensor([-3., 6., -3.])
+    
+    # Batch cross product
+    a_batch = rm.tensor([[1., 2., 3.], [4., 5., 6.]])
+    b_batch = rm.tensor([[4., 5., 6.], [1., 2., 3.]])
+    result = rm.cross(a_batch, b_batch)  # shape: (2, 3)
+
+**Product Operations Comparison Table**
+
+.. list-table:: Tensor Product Operations Comparison
+    :widths: 20 25 30 25
+    :header-rows: 1
+
+    * - Operation Type
+      - Input Shapes
+      - Output Shape
+      - Function/Operator
+    * - Dot Product
+      - (n,), (n,)
+      - ()
+      - ``dot``, ``einsum('i,i->')``
+    * - Outer Product
+      - (m,), (n,)
+      - (m, n)
+      - ``outer``, ``einsum('i,j->ij')``
+    * - Hadamard Product
+      - (m, n), (m, n)
+      - (m, n)
+      - ``*``, ``einsum('ij,ij->ij')``
+    * - Kronecker Product
+      - (m, n), (p, q)
+      - (m*p, n*q)
+      - ``kron``
+    * - Matrix Multiplication
+      - (m, n), (n, p)
+      - (m, p)
+      - ``@``, ``matmul``, ``einsum('ij,jk->ik')``
+    * - Cross Product
+      - (3,), (3,) or (..., 3), (..., 3)
+      - (3,) or (..., 3)
+      - ``cross``
+
 Mathematical Functions
 ~~~~~~~~~~~~~~~~~~~~~~
 
@@ -2651,3 +2813,110 @@ Important Notes
 4. **Gradient Information**: When saving tensors, gradient computation graph information (requires_grad attribute) is preserved
 
 5. **Large File Handling**: For large models, it is recommended to use checkpoint mechanisms to save in chunks to avoid memory issues
+
+Einstein Summation Convention (einsum)
+--------------------------------------
+
+The Einstein summation convention is a concise notation for tensor operations in mathematics and physics. Riemann's ``einsum`` function leverages this convention to provide a unified, elegant, and powerful way to express various tensor operations.
+
+**Core Concept**
+
+The core rule of the Einstein summation convention is: **when the same index appears twice in a term, it indicates summation over that index**.
+
+For example, matrix multiplication :math:`C_{ik} = \sum_{j} A_{ij} B_{jk}` can be written as ``ij,jk->ik``.
+
+**Basic Syntax**
+
+.. code-block:: python
+
+    # Matrix multiplication
+    C = rm.einsum('ij,jk->ik', A, B)
+
+    # Batch matrix multiplication
+    C = rm.einsum('bij,bjk->bik', A, B)
+
+    # Using ellipsis to support arbitrary batch dimensions
+    C = rm.einsum('...ij,...jk->...ik', A, B)
+
+    # Matrix trace
+    trace = rm.einsum('ii->', A)
+
+    # Diagonal extraction
+    diag = rm.einsum('ii->i', A)
+
+**Operations einsum Can Replace**
+
+einsum can uniformly express various tensor operations:
+
+.. list-table:: einsum Computation Scenarios
+    :widths: 25 35 40
+    :header-rows: 1
+
+    * - Operation Type
+      - einsum Equation
+      - Description
+    * - Matrix Multiplication
+      - ``ij,jk->ik``
+      - Standard matrix multiplication
+    * - Batch Matrix Multiplication
+      - ``...ij,...jk->...ik``
+      - Supports arbitrary batch dimensions
+    * - Matrix Trace
+      - ``ii->``
+      - Sum of diagonal elements
+    * - Diagonal Extraction
+      - ``ii->i``
+      - Extract diagonal elements as vector
+    * - Matrix Transpose
+      - ``ij->ji``
+      - Swap rows and columns
+    * - Vector Dot Product
+      - ``i,i->``
+      - Vector inner product
+    * - Vector Outer Product
+      - ``i,j->ij``
+      - Generate rank-1 matrix
+    * - Hadamard Product
+      - ``ij,ij->ij``
+      - Element-wise multiplication
+    * - Frobenius Inner Product
+      - ``ij,ij->``
+      - Matrix inner product
+    * - Sum All Elements
+      - ``ij->``
+      - Sum of all elements
+    * - Sum Along Rows/Columns
+      - ``ij->i`` / ``ij->j``
+      - Sum along specified dimension
+    * - Multi-Operand Chain
+      - ``ij,jk,kl->il``
+      - Sequential matrix multiplication
+
+**Usage Examples**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # Matrix multiplication
+    A = rm.tensor([[1, 2], [3, 4]])
+    B = rm.tensor([[5, 6], [7, 8]])
+    C = rm.einsum('ij,jk->ik', A, B)
+
+    # Batch matrix multiplication
+    batch_A = rm.randn(2, 3, 4)
+    batch_B = rm.randn(2, 4, 5)
+    batch_C = rm.einsum('bij,bjk->bik', batch_A, batch_B)
+
+    # Trace operation
+    trace = rm.einsum('ii->', A)
+
+    # Vector operations
+    a = rm.tensor([1, 2, 3])
+    b = rm.tensor([4, 5, 6])
+    dot = rm.einsum('i,i->', a, b)  # Dot product
+    outer = rm.einsum('i,j->ij', a, b)  # Outer product
+
+**Detailed Documentation**
+
+For complete documentation on einsum, including detailed syntax rules, all computation scenarios, and more examples, please refer to :doc:`einsum_chapter`.

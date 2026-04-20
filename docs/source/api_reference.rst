@@ -982,6 +982,66 @@ Mathematical Operations
    :return: Dot product result
    :rtype: riemann.TN
 
+.. function:: riemann.outer(x, y)
+
+   Calculate the outer product of two tensors.
+
+   :param x: First tensor
+   :type x: riemann.TN
+   :param y: Second tensor
+   :type y: riemann.TN
+   :return: Outer product result
+   :rtype: riemann.TN
+
+.. function:: riemann.cross(input, other, dim=-1)
+
+   Calculate the cross product of two tensors.
+
+   :param input: First tensor
+   :type input: riemann.TN
+   :param other: Second tensor
+   :type other: riemann.TN
+   :param dim: Dimension for cross product calculation, defaults to last dimension
+   :type dim: int, optional
+   :return: Cross product result
+   :rtype: riemann.TN
+
+.. function:: riemann.einsum(equation, *operands)
+
+   Compute tensor operations using Einstein summation convention.
+
+   :param equation: Einstein summation equation string, e.g., "ij,jk->ik"
+   :type equation: str
+   :param operands: Input tensor sequence
+   :type operands: riemann.TN
+   :return: Result tensor
+   :rtype: riemann.TN
+   :raises ValueError: If equation format is invalid or tensor dimensions don't match
+
+.. function:: riemann.trace(input)
+
+   Return the sum of the elements of the diagonal of the input 2-D matrix.
+
+   :param input: Input 2-D tensor
+   :type input: riemann.TN
+   :return: Scalar tensor with sum of diagonal elements
+   :rtype: riemann.TN
+   :raises ValueError: If input is not a 2-D tensor
+
+.. function:: riemann.kron(input, other, *, out=None)
+
+   Compute the Kronecker product of input and other.
+
+   :param input: First input tensor
+   :type input: riemann.TN
+   :param other: Second input tensor
+   :type other: riemann.TN
+   :param out: Optional output tensor for storing result
+   :type out: riemann.TN, optional
+   :return: Kronecker product result tensor
+   :rtype: riemann.TN
+   :raises ValueError: If the two tensors have different number of dimensions
+
 .. function:: riemann.sum(x, dim=None, keepdim=False)
 
    Calculate the sum of elements across dimensions.
@@ -1623,17 +1683,6 @@ Mathematical Operations
    :param dim: Dimension along which to repeat, default is None (flattened)
    :type dim: int, optional
    :return: Repeated tensor
-   :rtype: riemann.TN
-
-.. function:: riemann.outer(input, vec2)
-
-   Compute the outer product of two vectors.
-
-   :param input: First input vector
-   :type input: riemann.TN
-   :param vec2: Second input vector
-   :type vec2: riemann.TN
-   :return: Outer product matrix
    :rtype: riemann.TN
 
 Comparison Operations

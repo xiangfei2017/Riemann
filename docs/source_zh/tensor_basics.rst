@@ -596,6 +596,168 @@ Riemann 提供了丰富的特殊张量创建函数，下表列出了所有支持
     b = rm.tensor([[5, 6], [7, 8]])
     c = a @ b  # 矩阵乘法
 
+张量乘积运算
+~~~~~~~~~~~~
+
+Riemann 支持多种张量乘积运算，每种运算有不同的数学含义和应用场景：
+
+**1. 内积（Dot Product）**
+
+两个向量的内积是一个标量，计算公式为：
+
+.. math::
+
+    \mathbf{a} \cdot \mathbf{b} = \sum_{i} a_i b_i
+
+.. code-block:: python
+
+    import riemann as rm
+    
+    a = rm.tensor([1, 2, 3])
+    b = rm.tensor([4, 5, 6])
+    
+    # 使用 dot 函数
+    result = rm.dot(a, b)  # tensor(32.)
+    
+    # 或使用 einsum
+    result = rm.einsum('i,i->', a, b)  # tensor(32.)
+
+**2. 外积（Outer Product）**
+
+两个向量的外积是一个矩阵：
+
+.. math::
+
+    (\mathbf{a} \otimes \mathbf{b})_{ij} = a_i b_j
+
+.. code-block:: python
+
+    a = rm.tensor([1, 2, 3])
+    b = rm.tensor([4, 5])
+    
+    # 使用 outer 函数
+    result = rm.outer(a, b)  # shape: (3, 2)
+    
+    # 或使用 einsum
+    result = rm.einsum('i,j->ij', a, b)  # shape: (3, 2)
+
+**3. Hadamard 积（逐元素乘法）**
+
+两个相同形状张量的逐元素乘积：
+
+.. math::
+
+    (\mathbf{A} \circ \mathbf{B})_{ij} = A_{ij} B_{ij}
+
+.. code-block:: python
+
+    A = rm.tensor([[1, 2], [3, 4]])
+    B = rm.tensor([[5, 6], [7, 8]])
+    
+    # 使用 * 运算符
+    C = A * B  # tensor([[5, 12], [21, 32]])
+    
+    # 或使用 einsum
+    C = rm.einsum('ij,ij->ij', A, B)  # tensor([[5, 12], [21, 32]])
+
+**4. Kronecker 积**
+
+两个张量的 Kronecker 积是一个块矩阵：
+
+.. math::
+
+    \mathbf{A} \otimes \mathbf{B} = \begin{bmatrix} a_{11}\mathbf{B} & a_{12}\mathbf{B} & \cdots \\ a_{21}\mathbf{B} & a_{22}\mathbf{B} & \cdots \\ \vdots & \vdots & \ddots \end{bmatrix}
+
+.. code-block:: python
+
+    A = rm.tensor([[1, 2], [3, 4]])
+    B = rm.tensor([[0, 5], [6, 7]])
+    
+    # 使用 kron 函数
+    C = rm.kron(A, B)
+    # tensor([[ 0,  5,  0, 10],
+    #         [ 6,  7, 12, 14],
+    #         [ 0, 15,  0, 20],
+    #         [18, 21, 24, 28]])
+
+**5. 矩阵乘法**
+
+标准矩阵乘法：
+
+.. math::
+
+    (\mathbf{A} \mathbf{B})_{ik} = \sum_{j} A_{ij} B_{jk}
+
+.. code-block:: python
+
+    A = rm.tensor([[1, 2], [3, 4]])
+    B = rm.tensor([[5, 6], [7, 8]])
+    
+    # 使用 @ 运算符
+    C = A @ B  # tensor([[19, 22], [43, 50]])
+    
+    # 或使用 matmul 函数
+    C = rm.matmul(A, B)
+    
+    # 或使用 einsum
+    C = rm.einsum('ij,jk->ik', A, B)
+
+**6. 矢量积（Cross Product）**
+
+两个三维向量的矢量积（叉积）是一个垂直于这两个向量的向量：
+
+.. math::
+
+    \mathbf{a} \times \mathbf{b} = \begin{bmatrix} a_2 b_3 - a_3 b_2 \\ a_3 b_1 - a_1 b_3 \\ a_1 b_2 - a_2 b_1 \end{bmatrix}
+
+.. code-block:: python
+
+    a = rm.tensor([1., 2., 3.])
+    b = rm.tensor([4., 5., 6.])
+    
+    # 使用 cross 函数
+    result = rm.cross(a, b)  # tensor([-3., 6., -3.])
+    
+    # 批量矢量积
+    a_batch = rm.tensor([[1., 2., 3.], [4., 5., 6.]])
+    b_batch = rm.tensor([[4., 5., 6.], [1., 2., 3.]])
+    result = rm.cross(a_batch, b_batch)  # shape: (2, 3)
+
+**乘积运算对比表**
+
+.. list-table:: 张量乘积运算对比
+    :widths: 20 25 30 25
+    :header-rows: 1
+
+    * - 运算类型
+      - 输入形状
+      - 输出形状
+      - 函数/运算符
+    * - 内积
+      - (n,), (n,)
+      - ()
+      - ``dot``, ``einsum('i,i->')``
+    * - 外积
+      - (m,), (n,)
+      - (m, n)
+      - ``outer``, ``einsum('i,j->ij')``
+    * - Hadamard 积
+      - (m, n), (m, n)
+      - (m, n)
+      - ``*``, ``einsum('ij,ij->ij')``
+    * - Kronecker 积
+      - (m, n), (p, q)
+      - (m*p, n*q)
+      - ``kron``
+    * - 矩阵乘法
+      - (m, n), (n, p)
+      - (m, p)
+      - ``@``, ``matmul``, ``einsum('ij,jk->ik')``
+    * - 矢量积
+      - (3,), (3,) 或 (..., 3), (..., 3)
+      - (3,) 或 (..., 3)
+      - ``cross``
+
 数学函数
 ~~~~~~~~
 
@@ -1358,7 +1520,7 @@ Riemann 提供了多种张量检查和比较函数，用于检查张量的属性
     - 沿指定维度将张量分割成多个块（按段数或索引分割）
     - ``rm.tensor_split(x, 3, dim=0)`` 或 ``rm.tensor_split(x, [2, 4], dim=0)``
   * - ``vsplit``
- - 垂直分割张量（沿第0维），将张量分割为多个子张量
+    - 垂直分割张量（沿第0维），将张量分割为多个子张量
     - ``rm.vsplit(x, 3)`` 或 ``rm.vsplit(x, [2, 4])``
   * - ``hsplit``
     - 水平分割张量（沿第1维），将张量分割为多个子张量
@@ -2650,3 +2812,110 @@ Riemann 提供了与 PyTorch 兼容的序列化功能，支持保存和加载张
 4. **梯度信息**：保存张量时会保留梯度计算图信息（requires_grad 属性）
 
 5. **大文件处理**：对于大型模型，建议使用检查点机制分块保存，避免内存不足
+
+爱因斯坦求和约定 (einsum)
+--------------------------
+
+爱因斯坦求和约定是数学和物理学中描述张量运算的简洁表示法。Riemann 的 ``einsum`` 函数利用这一约定，提供了一种统一、优雅且强大的方式来表达各种张量运算。
+
+**核心概念**
+
+爱因斯坦求和约定的核心规则是：**当同一个索引在一个项中出现两次时，表示对该索引进行求和**。
+
+例如，矩阵乘法 :math:`C_{ik} = \sum_{j} A_{ij} B_{jk}` 可以简写为 ``ij,jk->ik``。
+
+**基本语法**
+
+.. code-block:: python
+
+    # 矩阵乘法
+    C = rm.einsum('ij,jk->ik', A, B)
+
+    # 批量矩阵乘法
+    C = rm.einsum('bij,bjk->bik', A, B)
+
+    # 使用省略号支持任意批量维度
+    C = rm.einsum('...ij,...jk->...ik', A, B)
+
+    # 矩阵迹
+    trace = rm.einsum('ii->', A)
+
+    # 对角线提取
+    diag = rm.einsum('ii->i', A)
+
+**einsum 可以替代的计算**
+
+einsum 可以统一表达多种张量运算：
+
+.. list-table:: einsum 计算场景
+    :widths: 25 35 40
+    :header-rows: 1
+
+    * - 运算类型
+      - einsum 方程
+      - 说明
+    * - 矩阵乘法
+      - ``ij,jk->ik``
+      - 标准矩阵乘法
+    * - 批量矩阵乘法
+      - ``...ij,...jk->...ik``
+      - 支持任意批量维度
+    * - 矩阵迹
+      - ``ii->``
+      - 对角线元素求和
+    * - 对角线提取
+      - ``ii->i``
+      - 提取对角线元素为向量
+    * - 矩阵转置
+      - ``ij->ji``
+      - 行列互换
+    * - 向量点积
+      - ``i,i->``
+      - 向量内积
+    * - 向量外积
+      - ``i,j->ij``
+      - 生成秩1矩阵
+    * - Hadamard积
+      - ``ij,ij->ij``
+      - 逐元素乘法
+    * - Frobenius内积
+      - ``ij,ij->``
+      - 矩阵内积
+    * - 全元素求和
+      - ``ij->``
+      - 所有元素求和
+    * - 按行/列求和
+      - ``ij->i`` / ``ij->j``
+      - 沿指定维度求和
+    * - 多操作数链式
+      - ``ij,jk,kl->il``
+      - 连续矩阵乘法
+
+**使用示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 矩阵乘法
+    A = rm.tensor([[1, 2], [3, 4]])
+    B = rm.tensor([[5, 6], [7, 8]])
+    C = rm.einsum('ij,jk->ik', A, B)
+
+    # 批量矩阵乘法
+    batch_A = rm.randn(2, 3, 4)
+    batch_B = rm.randn(2, 4, 5)
+    batch_C = rm.einsum('bij,bjk->bik', batch_A, batch_B)
+
+    # 迹运算
+    trace = rm.einsum('ii->', A)
+
+    # 向量运算
+    a = rm.tensor([1, 2, 3])
+    b = rm.tensor([4, 5, 6])
+    dot = rm.einsum('i,i->', a, b)  # 点积
+    outer = rm.einsum('i,j->ij', a, b)  # 外积
+
+**详细文档**
+
+关于 einsum 的完整文档，包括详细的语法规则、所有计算场景和更多示例，请参阅 :doc:`einsum_chapter`。
