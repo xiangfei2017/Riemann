@@ -1122,7 +1122,7 @@ class TN:
         """
         # 1. 叶子节点检查：所有原地操作都需要这个检查
         # 叶子节点是计算图的起点，直接修改会破坏梯度追踪
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
 
         # 2. 快速路径：简单赋值（右值不是张量，没有 _is_view 属性）
@@ -1623,7 +1623,7 @@ class TN:
             原地修改后的张量（self）
         """
         
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         
         # 标记value是否来自非命名参数
@@ -1774,7 +1774,7 @@ class TN:
             原地修改后的张量（self）
         """
 
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         
         dev = self.device
@@ -2049,7 +2049,7 @@ class TN:
         Raises:
             RuntimeError: 如果当前张量是需要梯度的叶子节点
         """
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
         # 视图的原始索引会在_inplace_oper_at_方法中自动处理
@@ -2071,7 +2071,7 @@ class TN:
         Raises:
             RuntimeError: 如果当前张量是需要梯度的叶子节点
         """
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
         return self.subat_((), other)
@@ -2092,7 +2092,7 @@ class TN:
         Raises:
             RuntimeError: 如果当前张量是需要梯度的叶子节点
         """
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
         return self.mulat_((), other)
@@ -2113,7 +2113,7 @@ class TN:
         Raises:
             RuntimeError: 如果当前张量是需要梯度的叶子节点
         """
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
         return self.divat_((), other)
@@ -2134,7 +2134,7 @@ class TN:
         Raises:
             RuntimeError: 如果当前张量是需要梯度的叶子节点
         """
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         # 对于in-place操作，我们总是对整个视图进行操作，所以传递空索引
         return self.powat_((), other)
@@ -2471,7 +2471,7 @@ class TN:
 
     def copy_(self,src):
         '''原地复制src到self'''
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         
         # 会自动调用__setitem__，触发梯度计算
@@ -2580,7 +2580,7 @@ class TN:
         return tensor(arr, device=dev, requires_grad=requires_grad)
 
     def zero_(self):
-        if self.is_leaf and self.requires_grad:
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
             raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
         
         arrlib = self._get_array_lib()
@@ -2604,8 +2604,8 @@ class TN:
             - 这是原地操作，会直接修改张量数据
             - 如果张量是需要梯度的叶子节点，会抛出运行时错误
         """
-        # 检查是否是需要梯度的叶子节点
-        if self.requires_grad and self.is_leaf:
+        # 检查是否是需要梯度的叶子节点（仅在梯度启用时检查）
+        if is_grad_enabled() and self.requires_grad and self.is_leaf:
             raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
         
         # 处理不同类型的value参数
@@ -2636,7 +2636,7 @@ class TN:
             - 支持对min和max参数的梯度跟踪
         """
         # 检查是否是需要梯度的叶子节点
-        if self.requires_grad and self.is_leaf:
+        if is_grad_enabled() and self.requires_grad and self.is_leaf:
             raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
         
         # 执行原地裁剪操作，使用setat_实现
@@ -2703,7 +2703,7 @@ class TN:
                 print(arr)  # 输出: [1, -1, 3, -1, 5]
         """
         # 检查是否是需要梯度的叶子节点，原地操作不允许对需要梯度的叶子节点执行
-        if self.requires_grad and self.is_leaf:
+        if is_grad_enabled() and self.requires_grad and self.is_leaf:
             raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
         
         # 检查mask是否为布尔类型

@@ -187,9 +187,10 @@ class Parameter(TN):
             >>> weight.is_leaf        # True
         """
         super().__init__()
-        # 处理空参数情况
+        # 处理空参数情况 - 与PyTorch一致，创建空tensor而不是None
         if data is None:
-            self.data = None # type:ignore
+            # 使用默认dtype，与PyTorch的get_default_dtype()行为一致
+            self.data = np.array([], dtype=get_default_dtype())
         else:
             # 确保输入是张量
             if not isinstance(data, TN):
@@ -201,17 +202,27 @@ class Parameter(TN):
     def __str__(self):
         """
         参数的字符串表示 (Parameter String Representation)
-        
-        特殊处理data为None的情况，其他情况复用父类的__str__方法。
+       
+        与PyTorch的Parameter.__str__保持一致的格式，显示'Parameter containing:'前缀。
         
         Returns:
             str: 参数的字符串表示
+            
+        Examples:
+            >>> param = Parameter(rm.randn(2, 3))
+            >>> str(param)
+            Parameter containing:
+            tensor([[ 0.1234, -0.5678,  0.9012],
+                    [ 0.3456, -0.7890,  0.2345]], requires_grad=True)
+            
+            >>> empty_param = Parameter()
+            >>> str(empty_param)
+            Parameter containing:
+            tensor([], requires_grad=True)
         """
-        if self.data is None:
-            return 'Parameter containing:\nNone'
-        else:
-            # 复用父类的__str__方法
-            return super().__str__()
+        # 与PyTorch一致，显示'Parameter containing:'前缀
+        tensor_str = super().__str__()
+        return f'Parameter containing:\n{tensor_str}'
         
     def __repr__(self):
         """
@@ -233,14 +244,38 @@ class Parameter(TN):
             >>> empty_param = Parameter()
             >>> print(empty_param)
             Parameter containing:
-            None
+            tensor([], requires_grad=True)
         """
-        if self.data is None:
-            return 'Parameter containing:\nNone'
-        else:
-            # 直接复用父类的__repr__方法，TN类已支持requires_grad属性的显示
-            tensor_str = super().__repr__()
-            return f'Parameter containing:\n{tensor_str}'
+        # 直接复用父类的__repr__方法，TN类已支持requires_grad属性的显示
+        tensor_str = super().__repr__()
+        return f'Parameter containing:\n{tensor_str}'
+
+    def __format__(self, format_spec):
+        """
+        参数的格式化字符串表示 (Parameter Format)
+        
+        支持在f-string中正确显示参数，与PyTorch的Parameter.__format__保持一致。
+        复用__str__方法，确保所有格式化输出都显示'Parameter containing:'前缀。
+        
+        Args:
+            format_spec: 格式规范字符串（当前忽略，与PyTorch行为一致）
+            
+        Returns:
+            str: 参数的格式化字符串表示
+            
+        Examples:
+            >>> param = Parameter(rm.randn(2, 3))
+            >>> f"{param}"
+            Parameter containing:
+            tensor([[ 0.1234, -0.5678,  0.9012],
+                    [ 0.3456, -0.7890,  0.2345]], requires_grad=True)
+            
+            >>> empty_param = Parameter()
+            >>> f"{empty_param}"
+            Parameter containing:
+            tensor([], requires_grad=True)
+        """
+        return self.__str__()
     
     def __reduce__(self):
         """
@@ -713,6 +748,22 @@ class Module:
         # 特殊属性直接设置
         if name in ['_modules', '_parameters', '_buffers', 'training']:
             super().__setattr__(name, value)
+            return
+        
+        # 处理None值：如果name已存在于_parameters或_buffers中，设为None（与PyTorch一致）
+        if value is None:
+            if name in self._parameters:
+                self._parameters[name] = None
+                return
+            if name in self._buffers:
+                self._buffers[name] = None
+                return
+            # 注意：PyTorch对子模块赋None不会从_modules删除，而是设为None
+            if name in self._modules:
+                self._modules[name] = None
+                return
+            # 其他属性设为None
+            super().__setattr__(name, None)
             return
         
         # 处理模块注册

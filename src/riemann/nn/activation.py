@@ -517,3 +517,57 @@ class Tanh(Module):
     """
     def forward(self, x: TN) -> TN:
         return tanh(x)  # 直接调用全局tanh函数
+
+
+class SiLU(Module):
+    """Sigmoid线性单元激活模块 (Sigmoid Linear Unit / Swish)
+    
+    应用SiLU函数逐元素到输入张量，也称为Swish函数。
+    SiLU是一种平滑的非单调激活函数，在MobileNetV3、EfficientNet等
+    现代神经网络架构中表现优异。
+    
+    数学公式::
+    
+        SiLU(x) = x * sigmoid(x)
+                = x / (1 + exp(-x))
+    
+    特性分析::
+    
+        - 当 x → +∞ 时, sigmoid(x) → 1, SiLU(x) → x
+        - 当 x → -∞ 时, sigmoid(x) → 0, SiLU(x) → 0
+        - 当 x = 0 时, sigmoid(0) = 0.5, SiLU(0) = 0
+        - 函数处处可导且平滑
+    
+    Args:
+        无参数
+    
+    Shape:
+        - Input: 任意形状的张量 (*)
+        - Output: 与输入相同形状的张量 (*)
+    
+    Examples::
+    
+        >>> m = SiLU()
+        >>> input = rm.tensor([-2.0, 0.0, 2.0])
+        >>> output = m(input)
+        >>> print(output)  # 结果约: [-0.2384, 0.0, 1.7616]
+        
+        >>> # 在神经网络中使用
+        >>> layer = rm.nn.Linear(10, 20)
+        >>> activation = rm.nn.SiLU()
+        >>> x = rm.randn(5, 10)
+        >>> out = activation(layer(x))
+    
+    Note:
+        SiLU函数的特点：
+        - 平滑的非单调激活函数，处处可导
+        - 在负值区域有轻微的负输出，有助于表达能力
+        - 在正值区域近似线性，有利于梯度传播
+        - 自门控机制：输出是输入的加权和，权重由sigmoid决定
+        - 在MobileNetV3、EfficientNet等现代架构中广泛使用
+        - 相比ReLU具有更好的平滑性和表达能力
+        - 计算复杂度适中，涉及sigmoid计算
+        - 在图像分类、目标检测等任务中表现优异
+    """
+    def forward(self, x: TN) -> TN:
+        return silu(x)  # 直接调用functional模块中的silu函数

@@ -29,9 +29,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from . import functional
+from . import init
 from .module import *
 from .activation import *
 from .loss import *
 from .conv import *
 from .transformer import *
+from .kan import * 
 
