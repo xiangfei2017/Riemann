@@ -6372,16 +6372,16 @@ def _is_array_type(obj):
 def isum(*args, **kwargs):
     """
     智能sum函数：
-    - 如果第一个参数是TN类型，且只有1个位置参数或有dim/keepdim关键字参数，调用 _sum(tensor, dim, keepdim)
-    - 如果参数中包含张量、numpy数组或cupy数组，调用 sumall
-    - 否则调用 builtins.sum（Python内置sum）
+    - 如果第一个参数是TN或数组类型，且只有1个位置参数，调用参数对象的sum方法函数
+    - 如果多个参数中包含张量、numpy数组或cupy数组、python数值，调用python内置sum(args)
+    - 否则直接调用 builtins.sum（Python内置sum）
     
     参数:
         *args: 可变参数
         **kwargs: 关键字参数，可包含 dim 和 keepdim（用于张量求和）
     
     返回:
-        根据参数类型返回张量或Python数值
+        根据参数类型返回张量、numpy/cupy数组或Python数值
     
     示例:
         >>> isum(tensor([1, 2, 3]))  # 张量求和
@@ -6394,46 +6394,29 @@ def isum(*args, **kwargs):
         6
     """
     
-    # 情况1：第一个参数是TN类型，且符合 _sum 的调用模式
-    # _sum 的调用模式：sum(tensor) 或 sum(tensor, dim=...) 或 sum(tensor, keepdim=...)
-    if len(args) >= 1 and isinstance(args[0], TN):
-        if len(args) == 1 or kwargs:
+    # 情况1：只有一个位置参数且是TN或numpy/cupy数组类型
+    if len(args) == 1 :
+        x = args[0]
+        if (isinstance(x, TN) or 
+           _is_array_type(x)
+        ):
             # 只有一个位置参数，或有关键字参数 -> 调用 _sum
-            x = args[0]
-            dim = kwargs.get('dim', None)
-            keepdim = kwargs.get('keepdim', False)
-            return sum(x, dim, keepdim)
-        # 多个位置参数且第一个是张量 -> 进入 sumall 处理
+            return x.sum(**kwargs)
     
-    # 情况2：检查参数中是否包含张量、numpy数组或cupy数组
-    # 如果包含，调用 sumall；否则调用 builtins.sum
-    # 特殊情况：如果只有一个参数且是包含张量/数组的列表/元组，需要展开调用 sumall
-    if len(args) == 1:
-        arg = args[0]
-        # 检查是否是张量或数组类型
-        if isinstance(arg, TN) or _is_array_type(arg):
-            return sumall(arg)
-        # 检查是否是包含张量/数组的列表/元组
-        if isinstance(arg, (list, tuple)) and len(arg) > 0:
-            if any(isinstance(item, TN) or _is_array_type(item) for item in arg):
-                # 展开列表调用 sumall
-                return sumall(*arg)
-    
-    # 情况3：多个参数，检查是否包含张量或数组类型
+    # 情况2：多个位置参数，检查参数是否张量、数组或python数值类型
     if len(args) >= 2:
-        has_tensor_or_array = any(isinstance(arg, TN) or _is_array_type(arg) for arg in args)
-        if has_tensor_or_array:
-            # 特殊情况：如果第一个参数是包含张量/数组的列表，第二个是start
-            # 例如：sum([t1, t2], start_tensor) -> sumall(t1, t2, start_tensor)
-            first_arg = args[0]
-            if isinstance(first_arg, (list, tuple)) and len(first_arg) > 0:
-                if any(isinstance(item, TN) or _is_array_type(item) for item in first_arg):
-                    # 展开第一个列表，其余参数作为start
-                    return sumall(*first_arg, *args[1:])
-            # 普通情况：直接调用 sumall
-            return sumall(*args)
+        data_types = (
+            TN, int, float, complex, bool,
+            np.integer, np.floating, np.complexfloating, np.bool_,
+            np.ndarray
+        )
+        if cp:
+            data_types = data_types + (cp.ndarray,)
+        
+        if all(isinstance(arg, data_types) for arg in args):
+            return builtins.sum(args)
     
-    # 情况4：全是Python数据类型 -> 调用 builtins.sum
+    # 情况3：其它情况，调用 builtins.sum
     return builtins.sum(*args, **kwargs)
 
 def _cumsum_backward(result_tensor: TN, i: int) -> TN:
