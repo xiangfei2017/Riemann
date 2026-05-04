@@ -71,12 +71,17 @@ class MultiheadAttention(Module):
         
     前向计算流程:
         1. 将 Query、Key、Value 通过输入投影层得到 q、k、v
-        2. 将 q、k、v 分头 (num_heads 个头，每个头 head_dim=embed_dim/num_heads)
-        3. 计算注意力权重：attention = softmax(q @ k.T / sqrt(head_dim))
-        4. 应用注意力掩码和 key_padding_mask（如果提供）
-        5. 对注意力权重应用 dropout（训练时）
-        6. 计算输出：output = attention @ v
-        7. 多头合并并通过输出投影层
+        2. 可选：添加 bias_k/bias_v（当 add_bias_kv=True）
+        3. 可选：添加零注意力（当 add_zero_attn=True）
+        4. 将 q、k、v 分头 reshape: (seq_len, bsz, embed_dim) -> (bsz*num_heads, seq_len, head_dim)
+        5. 计算注意力分数：attn_scores = q @ k.T / sqrt(head_dim)
+        6. 应用因果掩码（当 is_causal=True）
+        7. 应用注意力掩码 attn_mask（如果提供，支持2D/3D）
+        8. 应用 key_padding_mask（如果提供，支持bool/float）
+        9. 计算 softmax 得到注意力权重，应用 dropout
+        10. 计算输出：output = attn_weights @ v
+        11. 多头合并: (bsz*num_heads, tgt_len, head_dim) -> (tgt_len, bsz, embed_dim)
+        12. 通过输出投影层 out_proj
     """
     
     def __init__(
@@ -232,9 +237,9 @@ class MultiheadAttention(Module):
                 设为 False 可以节省计算和内存
                 
             attn_mask (TN, optional): 注意力掩码，用于控制注意力模式。
-                支持两种形状:
-                - 2D: (seq_len, key_len) - 对所有批次和头部使用相同的掩码
-                - 3D/4D: (batch_size, num_heads, seq_len, key_len) - 对不同批次/头部使用不同掩码
+                支持两种形状（与PyTorch一致）:
+                - 2D: (tgt_len, src_len) - 对所有批次和头部使用相同的掩码
+                - 3D: (batch_size * num_heads, tgt_len, src_len) - 对不同批次/头部使用不同掩码
                 使用场景: 因果掩码、自定义注意力模式等
                 默认为 None
                 
@@ -276,6 +281,7 @@ class MultiheadAttention(Module):
                     [key_padding_mask, zeros((bsz, 1), dtype=key_padding_mask.dtype, device=key_padding_mask.device)],
                     dim=1
                 )
+            src_len += 1  # 更新src_len
         
         if self.add_zero_attn:
             k = concatenate([k, zeros((1, bsz, self.embed_dim), dtype=k.dtype, device=k.device)], dim=0)
@@ -285,57 +291,70 @@ class MultiheadAttention(Module):
                     [key_padding_mask, zeros((bsz, 1), dtype=key_padding_mask.dtype, device=key_padding_mask.device)],
                     dim=1
                 )
+            src_len += 1  # 更新src_len
         
         q = q.view(tgt_len, bsz * self.num_heads, self.head_dim).transpose(0, 1)
         k = k.view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)
         v = v.view(-1, bsz * self.num_heads, self.head_dim).transpose(0, 1)
         
-        attn_output_weights = q @ k.mT / math.sqrt(self.head_dim)
+        # 计算注意力分数
+        attn_scores = q @ k.mT / math.sqrt(self.head_dim)
         
-        combined_attn_mask = attn_mask
-        
+        # 应用因果掩码：直接在attn_scores上操作，避免创建完整掩码矩阵
         if is_causal:
-            mask_shape = (tgt_len, src_len)
-            causal_mask = full(mask_shape, fill_value=float('-inf'), dtype=q.dtype, device=q.device)
-            causal_mask = causal_mask.triu(diagonal=1)
-            
-            if combined_attn_mask is None:
-                combined_attn_mask = causal_mask
-            else:
-                if combined_attn_mask.ndim == 2:
-                    combined_attn_mask = combined_attn_mask + causal_mask
-                elif combined_attn_mask.ndim == 3:
-                    combined_attn_mask = combined_attn_mask + causal_mask.unsqueeze(0)
+            attn_scores = attn_scores.view(bsz, self.num_heads, tgt_len, src_len)
+            # 创建因果掩码：上三角（不包括对角线）为True，需要被mask
+            causal_mask = ones((tgt_len, src_len), dtype=bool, device=attn_scores.device).triu(diagonal=1)
+            attn_scores.masked_fill_(causal_mask, float('-inf'))
+            attn_scores = attn_scores.view(bsz * self.num_heads, tgt_len, src_len)
         
-        if combined_attn_mask is not None:
-            if combined_attn_mask.ndim == 2:
-                attn_output_weights += combined_attn_mask.unsqueeze(0)
-            elif combined_attn_mask.ndim == 3:
-                attn_output_weights += combined_attn_mask.view(bsz * self.num_heads, tgt_len, -1)
+        # 处理注意力掩码（与因果掩码叠加）
+        # 只支持2D或3D mask，与PyTorch保持一致
+        if attn_mask is not None:
+            if attn_mask.ndim == 2:
+                # 2D mask: (tgt_len, src_len) -> (1, tgt_len, src_len)
+                attn_scores += attn_mask.unsqueeze(0)
+            elif attn_mask.ndim == 3:
+                # 3D mask: (bsz * num_heads, tgt_len, src_len)
+                attn_scores += attn_mask.view(bsz * self.num_heads, tgt_len, src_len)
+            else:
+                raise ValueError(f"attn_mask must be 2D or 3D, got {attn_mask.ndim}D")
         
         if key_padding_mask is not None:
-            attn_output_weights = attn_output_weights.view(bsz, self.num_heads, tgt_len, -1)
-            attn_output_weights.masked_fill_(
-                key_padding_mask.unsqueeze((1, 2)),
-                float('-inf')
-            )
-            attn_output_weights = attn_output_weights.view(bsz * self.num_heads, tgt_len, -1)
-        
-        attn_output_weights = softmax(attn_output_weights, dim=-1)
-        
-        if self.dropout > 0:
-            attn_output_weights = dropout(attn_output_weights, p=self.dropout, training=self.training)
-        
-        attn_output = attn_output_weights @ v
-        attn_output = attn_output.transpose(0, 1).view(tgt_len, bsz, self.embed_dim)
-        attn_output = self.out_proj(attn_output)
+            # 支持bool或float类型的key_padding_mask
+            attn_scores = attn_scores.view(bsz, self.num_heads, tgt_len, src_len)
+            if key_padding_mask.dtype == bool:
+                # bool类型：使用masked_fill_
+                attn_scores.masked_fill_(
+                    key_padding_mask.unsqueeze((1, 2)),
+                    float('-inf')
+                )
+            else:
+                # float类型：直接加到attn_scores上（与attn_mask处理方式一致）
+                attn_scores += key_padding_mask.unsqueeze((1, 2))
+            attn_scores = attn_scores.view(bsz * self.num_heads, tgt_len, src_len)
         
         if need_weights:
-            attn_output_weights = attn_output_weights.view(bsz, self.num_heads, tgt_len, -1)
+            # 需要返回权重时，计算完整的注意力权重矩阵并保存
+            attn_weights = softmax(attn_scores, dim=-1)
+            attn_weights = dropout(attn_weights, p=self.dropout, training=self.training)
+            
+            attn_output = attn_weights @ v
+            
+            # 处理返回的权重形状
+            attn_output_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
             if average_attn_weights:
                 attn_output_weights = attn_output_weights.mean(dim=1)
         else:
+            # 不需要权重时，直接计算输出，不保存中间权重矩阵以节省内存
+            attn_weights = softmax(attn_scores, dim=-1)
+            attn_weights = dropout(attn_weights, p=self.dropout, training=self.training)
+            
+            attn_output = attn_weights @ v
             attn_output_weights = None
+        
+        attn_output = attn_output.transpose(0, 1).view(tgt_len, bsz, self.embed_dim)
+        attn_output = self.out_proj(attn_output)
         
         if self.batch_first:
             attn_output = attn_output.transpose(0, 1)

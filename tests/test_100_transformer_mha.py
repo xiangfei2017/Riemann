@@ -229,6 +229,73 @@ def sync_parameters(rm_attn, torch_attn, embed_dim, kdim=None):
         rm_attn.bias_k.data[:] = rm.tensor(torch_attn.bias_k.detach().numpy())
         rm_attn.bias_v.data[:] = rm.tensor(torch_attn.bias_v.detach().numpy())
 
+
+def check_forward_backward(rm_tensors, torch_tensors, rm_attn, torch_attn, rm_output, torch_output,
+                          test_name, check_params=True):
+    """
+    测试前向和反向传播的一致性
+    
+    Args:
+        rm_tensors: Riemann输入张量列表 [rm_q, rm_k, rm_v]
+        torch_tensors: PyTorch输入张量列表 [torch_q, torch_k, torch_v]
+        rm_attn: Riemann MultiheadAttention模块
+        torch_attn: PyTorch MultiheadAttention模块
+        rm_output: Riemann前向输出
+        torch_output: PyTorch前向输出
+        test_name: 测试名称
+        check_params: 是否检查参数梯度
+    
+    Returns:
+        tuple: (forward_passed, backward_passed, input_grad_passed, param_grad_passed)
+    """
+    rm_q, rm_k, rm_v = rm_tensors
+    torch_q, torch_k, torch_v = torch_tensors
+    
+    # 测试前向输出
+    forward_passed = compare_values(rm_output, torch_output)
+    
+    if not forward_passed:
+        return False, False, False, False
+    
+    # 反向传播测试
+    rm_loss = rm_output.sum()
+    torch_loss = torch_output.sum()
+    
+    rm_loss.backward()
+    torch_loss.backward()
+    
+    # 测试输入梯度
+    input_grad_passed = True
+    if rm_q.grad is not None and torch_q.grad is not None:
+        input_grad_passed = input_grad_passed and compare_values(rm_q.grad, torch_q.grad)
+    if rm_k.grad is not None and torch_k.grad is not None:
+        input_grad_passed = input_grad_passed and compare_values(rm_k.grad, torch_k.grad)
+    if rm_v.grad is not None and torch_v.grad is not None:
+        input_grad_passed = input_grad_passed and compare_values(rm_v.grad, torch_v.grad)
+    
+    # 测试参数梯度
+    param_grad_passed = True
+    if check_params:
+        if rm_attn._qkv_same_embed_dim:
+            if rm_attn.in_proj_weight.grad is not None:
+                param_grad_passed = param_grad_passed and compare_values(
+                    rm_attn.in_proj_weight.grad, torch_attn.in_proj_weight.grad)
+        else:
+            if rm_attn.q_proj_weight.grad is not None:
+                param_grad_passed = param_grad_passed and compare_values(
+                    rm_attn.q_proj_weight.grad, torch_attn.q_proj_weight.grad)
+                param_grad_passed = param_grad_passed and compare_values(
+                    rm_attn.k_proj_weight.grad, torch_attn.k_proj_weight.grad)
+                param_grad_passed = param_grad_passed and compare_values(
+                    rm_attn.v_proj_weight.grad, torch_attn.v_proj_weight.grad)
+        if rm_attn.out_proj.weight.grad is not None:
+            param_grad_passed = param_grad_passed and compare_values(
+                rm_attn.out_proj.weight.grad, torch_attn.out_proj.weight.grad)
+    
+    backward_passed = input_grad_passed and param_grad_passed
+    
+    return forward_passed, backward_passed, input_grad_passed, param_grad_passed
+
 class TestTransformerMHA(unittest.TestCase):
     def setUp(self):
         # 设置随机种子以确保结果可重复
@@ -315,7 +382,8 @@ class TestTransformerMHA(unittest.TestCase):
             torch_key_padding_mask = None
             if use_key_padding_mask:
                 mask_shape = (batch_size, seq_len)
-                mask_data = np.random.choice([False, True], size=mask_shape, p=[0.8, 0.2])
+                # 使用float类型与attn_mask保持一致，避免PyTorch警告
+                mask_data = np.random.choice([0.0, float('-inf')], size=mask_shape, p=[0.8, 0.2]).astype(np.float32)
                 rm_key_padding_mask = rm.tensor(mask_data)
                 torch_key_padding_mask = torch.tensor(mask_data)
             
@@ -355,36 +423,32 @@ class TestTransformerMHA(unittest.TestCase):
             # 同步参数
             sync_parameters(rm_attn, torch_attn, embed_dim, kdim)
             
+            # PyTorch 要求 is_causal 时需要同时提供 attn_mask
+            if is_causal:
+                # 创建明确的因果掩码
+                tgt_len = seq_len
+                src_len = seq_len
+                np_causal_mask = np.triu(np.ones((tgt_len, src_len), dtype=np.float32), k=1) * -1e4
+                if torch_attn_mask is not None:
+                    # 叠加到现有的 attn_mask
+                    np_causal_mask = np_causal_mask + torch_attn_mask.numpy()
+                torch_attn_mask = torch.tensor(np_causal_mask)
+                rm_attn_mask_actual = rm.tensor(np_causal_mask)
+                # 两者都使用显式掩码，不使用 is_causal
+                is_causal_actual = False
+            else:
+                rm_attn_mask_actual = rm_attn_mask
+                is_causal_actual = False
+            
             # 前向传播
             rm_output, rm_attn_weights = rm_attn(
                 rm_q, rm_k, rm_v,
                 key_padding_mask=rm_key_padding_mask,
                 need_weights=need_weights,
-                attn_mask=rm_attn_mask,
+                attn_mask=rm_attn_mask_actual,
                 average_attn_weights=average_attn_weights,
-                is_causal=is_causal
+                is_causal=is_causal_actual
             )
-            
-            # PyTorch 要求 is_causal 时需要同时提供 attn_mask，所以我们需要先创建因果掩码
-            if is_causal and torch_attn_mask is None:
-                # 创建明确的因果掩码
-                tgt_len = seq_len
-                src_len = seq_len
-                np_causal_mask = np.triu(np.ones((tgt_len, src_len), dtype=np.float32), k=1) * -1e4
-                torch_attn_mask = torch.tensor(np_causal_mask)
-                rm_attn_mask_actual = rm.tensor(np_causal_mask)
-                # 重新调用 Riemann，也使用明确的掩码而不是 is_causal，以保持一致
-                rm_output, rm_attn_weights = rm_attn(
-                    rm_q, rm_k, rm_v,
-                    key_padding_mask=rm_key_padding_mask,
-                    need_weights=need_weights,
-                    attn_mask=rm_attn_mask_actual,
-                    average_attn_weights=average_attn_weights,
-                    is_causal=False
-                )
-            elif is_causal and torch_attn_mask is not None:
-                # 如果已经有 attn_mask，继续使用 is_causal
-                pass
             
             torch_output, torch_attn_weights = torch_attn(
                 torch_q, torch_k, torch_v,
@@ -392,7 +456,7 @@ class TestTransformerMHA(unittest.TestCase):
                 need_weights=need_weights,
                 attn_mask=torch_attn_mask,
                 average_attn_weights=average_attn_weights,
-                is_causal=is_causal if torch_attn_mask is not None else False
+                is_causal=is_causal_actual
             )
             
             # 比较前向输出
@@ -508,6 +572,626 @@ class TestTransformerMHA(unittest.TestCase):
     def test_is_causal(self):
         """测试is_causal=True（因果掩码）"""
         self._run_test_case("is_causal=True", is_causal=True)
+    
+    def test_is_causal_with_attn_mask(self):
+        """测试is_causal=True与attn_mask叠加"""
+        self._run_test_case("is_causal=True与attn_mask叠加", is_causal=True, use_attn_mask_2d=True)
+    
+    def test_is_causal_no_need_weights(self):
+        """测试is_causal=True且need_weights=False"""
+        self._run_test_case("is_causal=True且need_weights=False", is_causal=True, need_weights=False)
+    
+    def test_different_seq_len(self):
+        """测试不同的tgt_len和src_len（交叉注意力）"""
+        # 手动创建测试，因为_run_test_case假设seq_len相同
+        embed_dim, num_heads = 128, 4
+        tgt_len, src_len, batch_size = 5, 10, 8
+        
+        np.random.seed(42)
+        numpy_q = np.random.randn(tgt_len, batch_size, embed_dim).astype(np.float32)
+        numpy_k = np.random.randn(src_len, batch_size, embed_dim).astype(np.float32)
+        numpy_v = np.random.randn(src_len, batch_size, embed_dim).astype(np.float32)
+        
+        rm_q = rm.tensor(numpy_q, requires_grad=True)
+        rm_k = rm.tensor(numpy_k, requires_grad=True)
+        rm_v = rm.tensor(numpy_v, requires_grad=True)
+        
+        rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_q = torch.tensor(numpy_q, requires_grad=True)
+            torch_k = torch.tensor(numpy_k, requires_grad=True)
+            torch_v = torch.tensor(numpy_v, requires_grad=True)
+            
+            torch_attn = torch_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            
+            # 同步参数
+            sync_parameters(rm_attn, torch_attn, embed_dim)
+            
+            rm_output, _ = rm_attn(rm_q, rm_k, rm_v)
+            torch_output, _ = torch_attn(torch_q, torch_k, torch_v)
+            
+            # 验证输出形状
+            self.assertEqual(rm_output.shape, (tgt_len, batch_size, embed_dim))
+            passed = compare_values(rm_output, torch_output)
+            self.assertTrue(passed)
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("不同seq_len对比", passed)
+        else:
+            rm_output, _ = rm_attn(rm_q, rm_k, rm_v)
+            # 验证输出形状
+            self.assertEqual(rm_output.shape, (tgt_len, batch_size, embed_dim))
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("不同seq_len形状", True)
+    
+    def test_3d_attn_mask(self):
+        """测试3D attn_mask (batch_size * num_heads, tgt_len, src_len)"""
+        embed_dim, num_heads = 128, 4
+        seq_len, batch_size = 5, 8
+        
+        np.random.seed(42)
+        numpy_q = np.random.randn(seq_len, batch_size, embed_dim).astype(np.float32)
+        numpy_k = np.random.randn(seq_len, batch_size, embed_dim).astype(np.float32)
+        numpy_v = np.random.randn(seq_len, batch_size, embed_dim).astype(np.float32)
+        
+        # 3D mask: (batch_size * num_heads, tgt_len, src_len)
+        mask_shape = (batch_size * num_heads, seq_len, seq_len)
+        mask_data = np.random.choice([0.0, -1e4], size=mask_shape, p=[0.8, 0.2]).astype(np.float32)
+        rm_attn_mask = rm.tensor(mask_data)
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_q = torch.tensor(numpy_q, requires_grad=True)
+            torch_k = torch.tensor(numpy_k, requires_grad=True)
+            torch_v = torch.tensor(numpy_v, requires_grad=True)
+            torch_attn = torch_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            
+            rm_q = rm.tensor(numpy_q, requires_grad=True)
+            rm_k = rm.tensor(numpy_k, requires_grad=True)
+            rm_v = rm.tensor(numpy_v, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            sync_parameters(rm_attn, torch_attn, embed_dim)
+            
+            rm_output, _ = rm_attn(rm_q, rm_k, rm_v, attn_mask=rm_attn_mask)
+            
+            torch_attn_mask = torch.tensor(mask_data)
+            torch_output, _ = torch_attn(torch_q, torch_k, torch_v, attn_mask=torch_attn_mask)
+            
+            # 测试前向和反向
+            f_passed, b_passed, ig_passed, pg_passed = check_forward_backward(
+                [rm_q, rm_k, rm_v], [torch_q, torch_k, torch_v],
+                rm_attn, torch_attn, rm_output, torch_output, "3D attn_mask"
+            )
+            
+            self.assertTrue(f_passed, "前向传播不一致")
+            self.assertTrue(b_passed, "反向传播不一致")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("3D attn_mask前向", f_passed)
+                stats.add_result("3D attn_mask输入梯度", ig_passed)
+                stats.add_result("3D attn_mask参数梯度", pg_passed)
+        else:
+            rm_q = rm.tensor(numpy_q, requires_grad=True)
+            rm_k = rm.tensor(numpy_k, requires_grad=True)
+            rm_v = rm.tensor(numpy_v, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            rm_output, _ = rm_attn(rm_q, rm_k, rm_v, attn_mask=rm_attn_mask)
+            
+            self.assertIsNotNone(rm_output)
+            self.assertEqual(rm_output.shape, (seq_len, batch_size, embed_dim))
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("3D attn_mask形状", True)
+    
+    def test_key_padding_mask_with_is_causal(self):
+        """测试key_padding_mask与is_causal同时使用"""
+        self._run_test_case("key_padding_mask与is_causal", use_key_padding_mask=True, is_causal=True)
+    
+    def test_add_bias_kv_and_add_zero_attn(self):
+        """测试add_bias_kv与add_zero_attn同时使用"""
+        self._run_test_case("add_bias_kv与add_zero_attn", add_bias_kv=True, add_zero_attn=True)
+    
+    def test_single_head(self):
+        """测试单头注意力(num_heads=1)"""
+        self._run_test_case("单头注意力", embed_dim=128, num_heads=1)
+    
+    def test_single_seq_len(self):
+        """测试序列长度为1的边界情况"""
+        self._run_test_case("序列长度为1", seq_len=1)
+    
+    def test_causal_mask_effect(self):
+        """验证因果掩码是否正确阻止对未来位置的关注"""
+        embed_dim, num_heads = 8, 2
+        seq_len, batch_size = 4, 2
+        
+        np.random.seed(42)
+        numpy_x = np.random.randn(seq_len, batch_size, embed_dim).astype(np.float32)
+        
+        rm_x = rm.tensor(numpy_x, requires_grad=True)
+        
+        rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+        rm_output, rm_weights = rm_attn(rm_x, rm_x, rm_x, is_causal=True, need_weights=True, average_attn_weights=False)
+        
+        # 验证权重形状: (batch_size, num_heads, tgt_len, src_len)
+        self.assertEqual(rm_weights.shape, (batch_size, num_heads, seq_len, seq_len))
+        
+        # 转换为numpy检查上三角是否为0（softmax后的权重）
+        weights_np = rm_weights.detach().numpy()
+        
+        # 检查上三角（不包括对角线）是否接近0（被mask掉）
+        all_masked = True
+        for b in range(batch_size):
+            for h in range(num_heads):
+                for i in range(seq_len):
+                    for j in range(i + 1, seq_len):  # 上三角，j > i
+                        if abs(weights_np[b, h, i, j]) > 1e-5:
+                            all_masked = False
+                        self.assertAlmostEqual(weights_np[b, h, i, j], 0.0, places=5,
+                                               msg=f"位置({b},{h},{i},{j})应该被mask为0")
+        if IS_RUNNING_AS_SCRIPT:
+            stats.add_result("因果掩码效果", all_masked)
+    
+    def test_float_key_padding_mask(self):
+        """测试float类型的key_padding_mask（与bool类型行为一致）"""
+        embed_dim, num_heads = 64, 4
+        seq_len, batch_size = 5, 8
+        
+        np.random.seed(42)
+        numpy_x = np.random.randn(seq_len, batch_size, embed_dim).astype(np.float32)
+        
+        # float类型的key_padding_mask: 0表示保留，-inf表示mask
+        key_padding_mask_float = np.zeros((batch_size, seq_len), dtype=np.float32)
+        key_padding_mask_float[:, -2:] = float('-inf')  # 最后两个位置mask
+        rm_key_padding_mask = rm.tensor(key_padding_mask_float)
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_x = torch.tensor(numpy_x, requires_grad=True)
+            torch_attn = torch_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            
+            # 先创建Riemann模块并同步PyTorch的参数
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            sync_parameters(rm_attn, torch_attn, embed_dim)
+            
+            rm_output, _ = rm_attn(rm_x, rm_x, rm_x, key_padding_mask=rm_key_padding_mask)
+            
+            torch_key_padding_mask = torch.tensor(key_padding_mask_float)
+            torch_output, _ = torch_attn(torch_x, torch_x, torch_x, key_padding_mask=torch_key_padding_mask)
+            
+            # 测试前向和反向
+            f_passed, b_passed, ig_passed, pg_passed = check_forward_backward(
+                [rm_x, rm_x, rm_x], [torch_x, torch_x, torch_x],
+                rm_attn, torch_attn, rm_output, torch_output, "float key_padding_mask"
+            )
+            
+            self.assertTrue(f_passed, "前向传播不一致")
+            self.assertTrue(b_passed, "反向传播不一致")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("float key_padding_mask前向", f_passed)
+                stats.add_result("float key_padding_mask输入梯度", ig_passed)
+                stats.add_result("float key_padding_mask参数梯度", pg_passed)
+        else:
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            rm_output, _ = rm_attn(rm_x, rm_x, rm_x, key_padding_mask=rm_key_padding_mask)
+            
+            self.assertIsNotNone(rm_output)
+            self.assertEqual(rm_output.shape, (seq_len, batch_size, embed_dim))
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("float key_padding_mask形状", True)
+    
+    def test_3d_attn_mask_batch_first(self):
+        """测试3D attn_mask与batch_first=True组合"""
+        embed_dim, num_heads = 64, 4
+        seq_len, batch_size = 5, 8
+        
+        np.random.seed(42)
+        # batch_first=True: (batch_size, seq_len, embed_dim)
+        numpy_x = np.random.randn(batch_size, seq_len, embed_dim).astype(np.float32)
+        
+        # 3D mask: (batch_size * num_heads, tgt_len, src_len)
+        mask_shape = (batch_size * num_heads, seq_len, seq_len)
+        mask_data = np.random.choice([0.0, -1e4], size=mask_shape, p=[0.8, 0.2]).astype(np.float32)
+        rm_attn_mask = rm.tensor(mask_data)
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_x = torch.tensor(numpy_x, requires_grad=True)
+            torch_attn = torch_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
+            
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
+            sync_parameters(rm_attn, torch_attn, embed_dim)
+            
+            rm_output, _ = rm_attn(rm_x, rm_x, rm_x, attn_mask=rm_attn_mask)
+            
+            torch_attn_mask = torch.tensor(mask_data)
+            torch_output, _ = torch_attn(torch_x, torch_x, torch_x, attn_mask=torch_attn_mask)
+            
+            # 测试前向和反向
+            f_passed, b_passed, ig_passed, pg_passed = check_forward_backward(
+                [rm_x, rm_x, rm_x], [torch_x, torch_x, torch_x],
+                rm_attn, torch_attn, rm_output, torch_output, "3D attn_mask + batch_first"
+            )
+            
+            self.assertTrue(f_passed, "前向传播不一致")
+            self.assertTrue(b_passed, "反向传播不一致")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("3D attn_mask + batch_first前向", f_passed)
+                stats.add_result("3D attn_mask + batch_first输入梯度", ig_passed)
+                stats.add_result("3D attn_mask + batch_first参数梯度", pg_passed)
+        else:
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
+            rm_output, _ = rm_attn(rm_x, rm_x, rm_x, attn_mask=rm_attn_mask)
+            
+            self.assertEqual(rm_output.shape, (batch_size, seq_len, embed_dim))
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("3D attn_mask + batch_first形状", True)
+    
+    def test_is_causal_different_seq_len(self):
+        """测试is_causal与不同序列长度组合（tgt_len != src_len）"""
+        embed_dim, num_heads = 64, 4
+        tgt_len, src_len, batch_size = 3, 5, 8
+        
+        np.random.seed(42)
+        numpy_q = np.random.randn(tgt_len, batch_size, embed_dim).astype(np.float32)
+        numpy_kv = np.random.randn(src_len, batch_size, embed_dim).astype(np.float32)
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_q = torch.tensor(numpy_q, requires_grad=True)
+            torch_k = torch.tensor(numpy_kv, requires_grad=True)
+            torch_v = torch.tensor(numpy_kv, requires_grad=True)
+            torch_attn = torch_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            
+            rm_q = rm.tensor(numpy_q, requires_grad=True)
+            rm_k = rm.tensor(numpy_kv, requires_grad=True)
+            rm_v = rm.tensor(numpy_kv, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            sync_parameters(rm_attn, torch_attn, embed_dim)
+            
+            # 当 tgt_len != src_len 时，PyTorch要求提供attn_mask
+            # 创建一个合适的causal mask
+            attn_mask_data = np.zeros((tgt_len, src_len), dtype=np.float32)
+            for i in range(tgt_len):
+                for j in range(i + 1, src_len):
+                    attn_mask_data[i, j] = float('-inf')
+            rm_attn_mask = rm.tensor(attn_mask_data)
+            torch_attn_mask = torch.tensor(attn_mask_data)
+            
+            rm_output, rm_weights = rm_attn(rm_q, rm_k, rm_v, attn_mask=rm_attn_mask, is_causal=True, need_weights=True, average_attn_weights=False)
+            torch_output, torch_weights = torch_attn(torch_q, torch_k, torch_v, attn_mask=torch_attn_mask, is_causal=True, need_weights=True, average_attn_weights=False)
+            
+            # 测试前向和反向
+            f_passed, b_passed, ig_passed, pg_passed = check_forward_backward(
+                [rm_q, rm_k, rm_v], [torch_q, torch_k, torch_v],
+                rm_attn, torch_attn, rm_output, torch_output, "is_causal + different_seq_len"
+            )
+            
+            self.assertTrue(f_passed, "前向传播不一致")
+            self.assertTrue(b_passed, "反向传播不一致")
+            
+            # 验证权重形状和上三角mask
+            self.assertEqual(rm_weights.shape, (batch_size, num_heads, tgt_len, src_len))
+            weights_np = rm_weights.detach().numpy()
+            for b in range(batch_size):
+                for h in range(num_heads):
+                    for i in range(tgt_len):
+                        for j in range(i + 1, src_len):
+                            self.assertAlmostEqual(weights_np[b, h, i, j], 0.0, places=5)
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("is_causal + different_seq_len", f_passed and b_passed)
+                stats.add_result("is_causal + different_seq_len前向", f_passed)
+                stats.add_result("is_causal + different_seq_len输入梯度", ig_passed)
+                stats.add_result("is_causal + different_seq_len参数梯度", pg_passed)
+        else:
+            rm_q = rm.tensor(numpy_q, requires_grad=True)
+            rm_k = rm.tensor(numpy_kv, requires_grad=True)
+            rm_v = rm.tensor(numpy_kv, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            rm_output, rm_weights = rm_attn(rm_q, rm_k, rm_v, is_causal=True, need_weights=True, average_attn_weights=False)
+            
+            self.assertEqual(rm_output.shape, (tgt_len, batch_size, embed_dim))
+            self.assertEqual(rm_weights.shape, (batch_size, num_heads, tgt_len, src_len))
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("is_causal + different_seq_len形状", True)
+    
+    def test_no_need_weights_no_average(self):
+        """测试need_weights=False + average_attn_weights=False组合"""
+        embed_dim, num_heads = 64, 4
+        seq_len, batch_size = 5, 8
+        
+        np.random.seed(42)
+        numpy_x = np.random.randn(seq_len, batch_size, embed_dim).astype(np.float32)
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_x = torch.tensor(numpy_x, requires_grad=True)
+            torch_attn = torch_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            sync_parameters(rm_attn, torch_attn, embed_dim)
+            
+            rm_output, rm_weights = rm_attn(rm_x, rm_x, rm_x, need_weights=False, average_attn_weights=False)
+            
+            torch_output, torch_weights = torch_attn(torch_x, torch_x, torch_x, need_weights=False, average_attn_weights=False)
+            
+            self.assertIsNone(torch_weights)
+            self.assertIsNone(rm_weights)
+            
+            # 测试前向和反向
+            f_passed, b_passed, ig_passed, pg_passed = check_forward_backward(
+                [rm_x, rm_x, rm_x], [torch_x, torch_x, torch_x],
+                rm_attn, torch_attn, rm_output, torch_output, "need_weights=False + average=False"
+            )
+            
+            self.assertTrue(f_passed, "前向传播不一致")
+            self.assertTrue(b_passed, "反向传播不一致")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("need_weights=False + average=False前向", f_passed)
+                stats.add_result("need_weights=False + average=False输入梯度", ig_passed)
+                stats.add_result("need_weights=False + average=False参数梯度", pg_passed)
+        else:
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            rm_output, rm_weights = rm_attn(rm_x, rm_x, rm_x, need_weights=False, average_attn_weights=False)
+            
+            self.assertEqual(rm_output.shape, (seq_len, batch_size, embed_dim))
+            self.assertIsNone(rm_weights)
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("need_weights=False + average=False形状", True)
+    
+    def test_kdim_vdim_batch_first(self):
+        """测试kdim/vdim不同与batch_first=True组合"""
+        embed_dim, kdim, vdim, num_heads = 64, 32, 48, 4
+        seq_len, batch_size = 5, 8
+        
+        np.random.seed(42)
+        # batch_first=True
+        numpy_q = np.random.randn(batch_size, seq_len, embed_dim).astype(np.float32)
+        numpy_k = np.random.randn(batch_size, seq_len, kdim).astype(np.float32)
+        numpy_v = np.random.randn(batch_size, seq_len, vdim).astype(np.float32)
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_q = torch.tensor(numpy_q, requires_grad=True)
+            torch_k = torch.tensor(numpy_k, requires_grad=True)
+            torch_v = torch.tensor(numpy_v, requires_grad=True)
+            
+            torch_attn = torch_nn.MultiheadAttention(
+                embed_dim=embed_dim, num_heads=num_heads,
+                kdim=kdim, vdim=vdim, batch_first=True
+            )
+            
+            rm_q = rm.tensor(numpy_q, requires_grad=True)
+            rm_k = rm.tensor(numpy_k, requires_grad=True)
+            rm_v = rm.tensor(numpy_v, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(
+                embed_dim=embed_dim, num_heads=num_heads,
+                kdim=kdim, vdim=vdim, batch_first=True
+            )
+            sync_parameters(rm_attn, torch_attn, embed_dim, kdim=kdim)
+            
+            rm_output, _ = rm_attn(rm_q, rm_k, rm_v)
+            
+            torch_output, _ = torch_attn(torch_q, torch_k, torch_v)
+            
+            # 测试前向和反向
+            f_passed, b_passed, ig_passed, pg_passed = check_forward_backward(
+                [rm_q, rm_k, rm_v], [torch_q, torch_k, torch_v],
+                rm_attn, torch_attn, rm_output, torch_output, "kdim/vdim不同 + batch_first"
+            )
+            
+            self.assertTrue(f_passed, "前向传播不一致")
+            self.assertTrue(b_passed, "反向传播不一致")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("kdim/vdim不同 + batch_first前向", f_passed)
+                stats.add_result("kdim/vdim不同 + batch_first输入梯度", ig_passed)
+                stats.add_result("kdim/vdim不同 + batch_first参数梯度", pg_passed)
+        else:
+            rm_q = rm.tensor(numpy_q, requires_grad=True)
+            rm_k = rm.tensor(numpy_k, requires_grad=True)
+            rm_v = rm.tensor(numpy_v, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(
+                embed_dim=embed_dim, num_heads=num_heads,
+                kdim=kdim, vdim=vdim, batch_first=True
+            )
+            rm_output, _ = rm_attn(rm_q, rm_k, rm_v)
+            
+            self.assertEqual(rm_output.shape, (batch_size, seq_len, embed_dim))
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("kdim/vdim不同 + batch_first形状", True)
+    
+    def test_all_masks_combined(self):
+        """测试所有掩码同时使用：attn_mask + key_padding_mask + is_causal"""
+        embed_dim, num_heads = 64, 4
+        seq_len, batch_size = 5, 8
+        
+        np.random.seed(42)
+        numpy_x = np.random.randn(seq_len, batch_size, embed_dim).astype(np.float32)
+        
+        # 2D attn_mask (k=2表示保留对角线和下对角线)
+        attn_mask_data = np.zeros((seq_len, seq_len), dtype=np.float32)
+        for i in range(seq_len):
+            for j in range(i + 2, seq_len):  # j > i + 1
+                attn_mask_data[i, j] = float('-inf')
+        
+        # float key_padding_mask (与attn_mask类型一致)
+        key_padding_mask_data = np.zeros((batch_size, seq_len), dtype=np.float32)
+        key_padding_mask_data[:, -1] = float('-inf')  # mask最后一个位置
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_x = torch.tensor(numpy_x, requires_grad=True)
+            torch_attn = torch_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            sync_parameters(rm_attn, torch_attn, embed_dim)
+            
+            # PyTorch需要将is_causal的mask合并到attn_mask中
+            # 生成causal mask
+            causal_mask = torch.triu(torch.ones(seq_len, seq_len) * float('-inf'), diagonal=1)
+            combined_attn_mask = torch.tensor(attn_mask_data) + causal_mask
+            
+            rm_attn_mask = rm.tensor(attn_mask_data)  # Riemann单独处理is_causal
+            rm_key_padding_mask = rm.tensor(key_padding_mask_data)
+            
+            rm_output, rm_weights = rm_attn(
+                rm_x, rm_x, rm_x,
+                attn_mask=rm_attn_mask,
+                key_padding_mask=rm_key_padding_mask,
+                is_causal=True,
+                need_weights=True,
+                average_attn_weights=False
+            )
+            
+            torch_key_padding_mask = torch.tensor(key_padding_mask_data)
+            
+            torch_output, torch_weights = torch_attn(
+                torch_x, torch_x, torch_x,
+                attn_mask=combined_attn_mask,
+                key_padding_mask=torch_key_padding_mask,
+                is_causal=False,  # PyTorch的is_causal已合并到attn_mask
+                need_weights=True,
+                average_attn_weights=False
+            )
+            
+            # 测试前向和反向
+            f_passed, b_passed, ig_passed, pg_passed = check_forward_backward(
+                [rm_x, rm_x, rm_x], [torch_x, torch_x, torch_x],
+                rm_attn, torch_attn, rm_output, torch_output, "所有掩码组合"
+            )
+            
+            self.assertTrue(f_passed, "前向传播不一致")
+            self.assertTrue(b_passed, "反向传播不一致")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("所有掩码组合", f_passed and b_passed)
+                stats.add_result("所有掩码组合前向", f_passed)
+                stats.add_result("所有掩码组合输入梯度", ig_passed)
+                stats.add_result("所有掩码组合参数梯度", pg_passed)
+        else:
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            rm_attn_mask = rm.tensor(attn_mask_data)
+            rm_key_padding_mask = rm.tensor(key_padding_mask_data)
+            rm_output, rm_weights = rm_attn(
+                rm_x, rm_x, rm_x,
+                attn_mask=rm_attn_mask,
+                key_padding_mask=rm_key_padding_mask,
+                is_causal=True,
+                need_weights=True,
+                average_attn_weights=False
+            )
+            
+            self.assertEqual(rm_output.shape, (seq_len, batch_size, embed_dim))
+            self.assertEqual(rm_weights.shape, (batch_size, num_heads, seq_len, seq_len))
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("所有掩码组合形状", True)
+    
+    def test_large_num_heads(self):
+        """测试大num_heads（小head_dim）"""
+        embed_dim, num_heads = 64, 8  # head_dim = 8
+        seq_len, batch_size = 5, 8
+        
+        np.random.seed(42)
+        numpy_x = np.random.randn(seq_len, batch_size, embed_dim).astype(np.float32)
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_x = torch.tensor(numpy_x, requires_grad=True)
+            torch_attn = torch_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            sync_parameters(rm_attn, torch_attn, embed_dim)
+            
+            rm_output, _ = rm_attn(rm_x, rm_x, rm_x)
+            
+            torch_output, _ = torch_attn(torch_x, torch_x, torch_x)
+            
+            # 测试前向和反向
+            f_passed, b_passed, ig_passed, pg_passed = check_forward_backward(
+                [rm_x, rm_x, rm_x], [torch_x, torch_x, torch_x],
+                rm_attn, torch_attn, rm_output, torch_output, "大num_heads"
+            )
+            
+            self.assertTrue(f_passed, "前向传播不一致")
+            self.assertTrue(b_passed, "反向传播不一致")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("大num_heads前向", f_passed)
+                stats.add_result("大num_heads输入梯度", ig_passed)
+                stats.add_result("大num_heads参数梯度", pg_passed)
+        else:
+            rm_x = rm.tensor(numpy_x, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            rm_output, _ = rm_attn(rm_x, rm_x, rm_x)
+            
+            self.assertEqual(rm_output.shape, (seq_len, batch_size, embed_dim))
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("大num_heads形状", True)
+    
+    def test_cross_attention_different_lengths(self):
+        """测试交叉注意力场景：query/key/value完全不同且长度都不同"""
+        embed_dim, num_heads = 64, 4
+        tgt_len, src_len, batch_size = 3, 7, 8
+        
+        np.random.seed(42)
+        numpy_q = np.random.randn(tgt_len, batch_size, embed_dim).astype(np.float32)
+        numpy_k = np.random.randn(src_len, batch_size, embed_dim).astype(np.float32)
+        numpy_v = np.random.randn(src_len, batch_size, embed_dim).astype(np.float32)
+        
+        if TORCH_AVAILABLE:
+            torch.manual_seed(42)
+            torch_q = torch.tensor(numpy_q, requires_grad=True)
+            torch_k = torch.tensor(numpy_k, requires_grad=True)
+            torch_v = torch.tensor(numpy_v, requires_grad=True)
+            
+            torch_attn = torch_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            
+            rm_q = rm.tensor(numpy_q, requires_grad=True)
+            rm_k = rm.tensor(numpy_k, requires_grad=True)
+            rm_v = rm.tensor(numpy_v, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            sync_parameters(rm_attn, torch_attn, embed_dim)
+            
+            rm_output, _ = rm_attn(rm_q, rm_k, rm_v)
+            
+            torch_output, _ = torch_attn(torch_q, torch_k, torch_v)
+            
+            # 测试前向和反向
+            f_passed, b_passed, ig_passed, pg_passed = check_forward_backward(
+                [rm_q, rm_k, rm_v], [torch_q, torch_k, torch_v],
+                rm_attn, torch_attn, rm_output, torch_output, "交叉注意力不同长度"
+            )
+            
+            self.assertTrue(f_passed, "前向传播不一致")
+            self.assertTrue(b_passed, "反向传播不一致")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("交叉注意力不同长度前向", f_passed)
+                stats.add_result("交叉注意力不同长度输入梯度", ig_passed)
+                stats.add_result("交叉注意力不同长度参数梯度", pg_passed)
+        else:
+            rm_q = rm.tensor(numpy_q, requires_grad=True)
+            rm_k = rm.tensor(numpy_k, requires_grad=True)
+            rm_v = rm.tensor(numpy_v, requires_grad=True)
+            rm_attn = rm_nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads)
+            rm_output, _ = rm_attn(rm_q, rm_k, rm_v)
+            
+            self.assertEqual(rm_output.shape, (tgt_len, batch_size, embed_dim))
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("交叉注意力不同长度形状", True)
 
 if __name__ == '__main__':
     IS_RUNNING_AS_SCRIPT = True
