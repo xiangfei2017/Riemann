@@ -3146,12 +3146,23 @@ Multi-head attention projects Query, Key, and Value inputs into multiple subspac
 **Parameters**:
 
 - ``embed_dim``: Input and output dimension
-- ``num_heads``: Number of attention heads
+- ``num_heads``: Number of attention heads, must divide embed_dim evenly
 - ``dropout``: Dropout probability for attention weights, default 0.0
 - ``bias``: Whether to use bias, default True
-- ``batch_first``: Whether input format is (batch, seq, feature), default False
+- ``add_bias_kv``: Whether to add learnable bias to key and value, default False
+- ``add_zero_attn``: Whether to add zero vectors at the end of key and value sequences, default False
 - ``kdim``: Key dimension, default None (uses embed_dim)
 - ``vdim``: Value dimension, default None (uses embed_dim)
+- ``batch_first``: Whether input format is (batch, seq, feature), default False
+
+**Forward Parameters**:
+
+- ``query``, ``key``, ``value``: Input tensors, shape depends on batch_first
+- ``attn_mask``: Attention mask, supports 2D (tgt_len, src_len) or 3D (batch*num_heads, tgt_len, src_len)
+- ``key_padding_mask``: Key padding mask, supports bool or float type, shape (batch, src_len)
+- ``is_causal``: Whether to use causal mask (prevent attending to future positions), default False
+- ``need_weights``: Whether to return attention weights, default True
+- ``average_attn_weights``: Whether to average attention weights across heads, default True
 
 **Usage Example**:
 
@@ -3172,7 +3183,34 @@ Multi-head attention projects Query, Key, and Value inputs into multiple subspac
     # Forward propagation
     output, attn_weights = mha(query, key, value)
     print(f"Output shape: {output.shape}")  # [2, 10, 512]
-    print(f"Attention weights shape: {attn_weights.shape}")  # [2, 10, 10]
+    print(f"Attention weights shape: {attn_weights.shape}")  # [2, 8, 10, 10] (batch, num_heads, tgt_len, src_len)
+
+**Using Masks Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    mha = nn.MultiheadAttention(embed_dim=512, num_heads=8, batch_first=True)
+
+    batch_size, seq_len, embed_dim = 2, 10, 512
+    query = rm.randn(batch_size, seq_len, embed_dim)
+    key = rm.randn(batch_size, seq_len, embed_dim)
+    value = rm.randn(batch_size, seq_len, embed_dim)
+
+    # Causal mask (for autoregressive models)
+    output, attn_weights = mha(query, key, value, is_causal=True)
+
+    # Custom attention mask (2D)
+    attn_mask = rm.zeros(seq_len, seq_len)
+    attn_mask[0, 5:] = float('-inf')  # Position 0 cannot attend to positions 5 and beyond
+    output, _ = mha(query, key, value, attn_mask=attn_mask)
+
+    # Key padding mask (ignore padding positions)
+    key_padding_mask = rm.zeros(batch_size, seq_len)
+    key_padding_mask[0, 8:] = float('-inf')  # Positions 8+ in sample 0 are padding
+    output, _ = mha(query, key, value, key_padding_mask=key_padding_mask)
 
 Transformer Encoder
 -------------------
@@ -3362,8 +3400,9 @@ Below is a complete machine translation model example demonstrating the use of T
             tgt = rm.full((src.shape[0], 1), start_token, dtype=rm.int64)
             
             for _ in range(max_len):
-                # Generate causal mask
-                tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1])
+                # Generate causal mask (upper triangle is True, prevent attending to future positions)
+                tgt_mask = rm.full((tgt.shape[1], tgt.shape[1]), float('-inf'))
+                tgt_mask = tgt_mask.triu(diagonal=1)  # Upper triangle (excluding diagonal) set to -inf
                 
                 # Decode
                 tgt_pos = rm.arange(tgt.shape[1]).expand(tgt.shape[0], -1)

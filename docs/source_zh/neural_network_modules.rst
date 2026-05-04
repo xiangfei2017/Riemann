@@ -3225,12 +3225,23 @@ Transformer 由编码器（Encoder）和解码器（Decoder）两部分组成：
 **参数**：
 
 - ``embed_dim``：输入和输出的维度
-- ``num_heads``：注意力头的数量
+- ``num_heads``：注意力头的数量，必须能整除 embed_dim
 - ``dropout``：注意力权重的 dropout 概率，默认 0.0
 - ``bias``：是否使用偏置，默认 True
-- ``batch_first``：输入格式是否为 (batch, seq, feature)，默认 False
+- ``add_bias_kv``：是否为 key 和 value 添加可学习的偏置，默认 False
+- ``add_zero_attn``：是否在 key 和 value 序列末尾添加零向量，默认 False
 - ``kdim``：Key 的维度，默认 None（使用 embed_dim）
 - ``vdim``：Value 的维度，默认 None（使用 embed_dim）
+- ``batch_first``：输入格式是否为 (batch, seq, feature)，默认 False
+
+**前向传播参数**：
+
+- ``query``, ``key``, ``value``：输入张量，形状取决于 batch_first
+- ``attn_mask``：注意力掩码，支持 2D (tgt_len, src_len) 或 3D (batch*num_heads, tgt_len, src_len)
+- ``key_padding_mask``：key 的填充掩码，支持 bool 或 float 类型，形状 (batch, src_len)
+- ``is_causal``：是否使用因果掩码（防止关注未来位置），默认 False
+- ``need_weights``：是否返回注意力权重，默认 True
+- ``average_attn_weights``：是否对多头注意力权重取平均，默认 True
 
 **使用示例**：
 
@@ -3251,7 +3262,34 @@ Transformer 由编码器（Encoder）和解码器（Decoder）两部分组成：
     # 前向传播
     output, attn_weights = mha(query, key, value)
     print(f"输出形状: {output.shape}")  # [2, 10, 512]
-    print(f"注意力权重形状: {attn_weights.shape}")  # [2, 10, 10]
+    print(f"注意力权重形状: {attn_weights.shape}")  # [2, 8, 10, 10] (batch, num_heads, tgt_len, src_len)
+
+**使用掩码的示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+
+    mha = nn.MultiheadAttention(embed_dim=512, num_heads=8, batch_first=True)
+
+    batch_size, seq_len, embed_dim = 2, 10, 512
+    query = rm.randn(batch_size, seq_len, embed_dim)
+    key = rm.randn(batch_size, seq_len, embed_dim)
+    value = rm.randn(batch_size, seq_len, embed_dim)
+
+    # 因果掩码（用于自回归模型）
+    output, attn_weights = mha(query, key, value, is_causal=True)
+
+    # 自定义注意力掩码（2D）
+    attn_mask = rm.zeros(seq_len, seq_len)
+    attn_mask[0, 5:] = float('-inf')  # 第0个位置不能关注第5个及之后的位置
+    output, _ = mha(query, key, value, attn_mask=attn_mask)
+
+    # key 填充掩码（忽略填充位置）
+    key_padding_mask = rm.zeros(batch_size, seq_len)
+    key_padding_mask[0, 8:] = float('-inf')  # 第0个样本的第8个及之后位置为填充
+    output, _ = mha(query, key, value, key_padding_mask=key_padding_mask)
 
 Transformer 编码器
 ------------------
@@ -3441,8 +3479,9 @@ Riemann 提供了完整的 Transformer 模型，包含编码器和解码器。
             tgt = rm.full((src.shape[0], 1), start_token, dtype=rm.int64)
             
             for _ in range(max_len):
-                # 生成因果掩码
-                tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.shape[1])
+                # 生成因果掩码（上三角为True，防止关注未来位置）
+                tgt_mask = rm.full((tgt.shape[1], tgt.shape[1]), float('-inf'))
+                tgt_mask = tgt_mask.triu(diagonal=1)  # 上三角（不包括对角线）设为-inf
                 
                 # 解码
                 tgt_pos = rm.arange(tgt.shape[1]).expand(tgt.shape[0], -1)
