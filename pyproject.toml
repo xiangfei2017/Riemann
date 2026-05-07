@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "riemann"
-version = "0.5.3"
+version = "0.5.5"
 description = "A framework for tensor computation, automatic differentiation, and neural network development with PyTorch-compatible APIs."
 readme = "README.md"
 authors = [
