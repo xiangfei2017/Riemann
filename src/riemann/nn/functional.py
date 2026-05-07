@@ -339,14 +339,13 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
     # 训练时随机生成alpha，测试时用平均值作为alpha
-    # 使用标量alpha + 广播，避免创建与输入同shape的大张量
     arrlib = x._get_array_lib()
-    if training:
-        # 只生成一个随机标量，利用广播机制
-        alpha = arrlib.random.uniform(low=lower, high=upper)
-    else:
-        alpha = (lower + upper) / 2.0
-    alpha = arrlib.array(alpha, dtype=x.dtype)
+    with device_context(x):
+        if training:
+            alpha = arrlib.random.uniform(low=lower, high=upper)
+        else:
+            alpha = (lower + upper) / 2.0
+        alpha = arrlib.array(alpha, dtype=x.dtype)
 
     # 前向计算
     data = arrlib.where(x.data > 0, x.data, alpha * x.data)
@@ -949,16 +948,17 @@ def unfold(input: TN, kernel_size, dilation=1, padding=0, stride=1) -> TN:
     
     # 完全向量化版本：展开输入，避免双重循环
     arrlib = input._get_array_lib()
-    h_starts = arrlib.arange(H_out) * stride[0]
-    w_starts = arrlib.arange(W_out) * stride[1]
-    h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
-    w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
-    
-    # 生成所有内核位置的坐标偏移 (kh, kw)
-    kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
-    
-    # 生成所有输出位置的坐标网格 (H_out, W_out)
-    h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
+    with device_context(input):
+        h_starts = arrlib.arange(H_out) * stride[0]
+        w_starts = arrlib.arange(W_out) * stride[1]
+        h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
+        w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
+        
+        # 生成所有内核位置的坐标偏移 (kh, kw)
+        kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
+        
+        # 生成所有输出位置的坐标网格 (H_out, W_out)
+        h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
     
     # 计算所有需要提取的高度和宽度索引，形状为 (kh, kw, H_out, W_out)
     all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kh_indices[:, :, arrlib.newaxis, arrlib.newaxis]
@@ -1073,20 +1073,21 @@ def unfold2d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
         
     # 完全向量化版本：展开输入，避免双重循环
     arrlib = input._get_array_lib()
-    h_starts = arrlib.arange(H_out) * stride[0]
-    w_starts = arrlib.arange(W_out) * stride[1]
-    h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
-    w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
+    with device_context(input):
+        h_starts = arrlib.arange(H_out) * stride[0]
+        w_starts = arrlib.arange(W_out) * stride[1]
+        h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
+        w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
 
-    # 生成所有内核位置的坐标偏移 (kh, kw)
-    kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
+        # 生成所有内核位置的坐标偏移 (kh, kw)
+        kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
 
-    # 生成所有输出位置的坐标网格 (H_out, W_out)
-    h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
+        # 生成所有输出位置的坐标网格 (H_out, W_out)
+        h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
 
-    # 计算所有需要提取的高度和宽度索引，形状为 (kh, kw, H_out, W_out)
-    all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kh_indices[:, :, arrlib.newaxis, arrlib.newaxis]
-    all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kw_indices[:, :, arrlib.newaxis, arrlib.newaxis]
+        # 计算所有需要提取的高度和宽度索引，形状为 (kh, kw, H_out, W_out)
+        all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kh_indices[:, :, arrlib.newaxis, arrlib.newaxis]
+        all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kw_indices[:, :, arrlib.newaxis, arrlib.newaxis]
 
     # 一次性提取所有展开块，避免双重循环，直接得到形状 (N, C, kh, kw, H_out, W_out)
     unfolded_blocks = padded_input[:, :, all_h_indices, all_w_indices]
@@ -1148,22 +1149,23 @@ def fold(input: TN, output_size, kernel_size, dilation=1, padding=0, stride=1) -
     
     # 向量化版本：将展开的块放回输出张量的正确位置
     arrlib = input._get_array_lib()
-    h_starts = arrlib.arange(H_out) * stride[0]
-    w_starts = arrlib.arange(W_out) * stride[1]
-    h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
-    w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
-    
-    kh, kw = kernel_size
-    
-    # 生成所有内核位置的坐标偏移 (kh, kw)
-    kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
-    
-    # 生成所有输出位置的坐标网格 (H_out, W_out)
-    h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
-    
-    # 计算所有需要更新的高度和宽度索引，形状为 (kh, kw, H_out, W_out)
-    all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kh_indices[:, :, arrlib.newaxis, arrlib.newaxis]
-    all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kw_indices[:, :, arrlib.newaxis, arrlib.newaxis]
+    with device_context(input):
+        h_starts = arrlib.arange(H_out) * stride[0]
+        w_starts = arrlib.arange(W_out) * stride[1]
+        h_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
+        w_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
+        
+        kh, kw = kernel_size
+        
+        # 生成所有内核位置的坐标偏移 (kh, kw)
+        kh_indices, kw_indices = arrlib.meshgrid(h_k_range, w_k_range, indexing='ij')
+        
+        # 生成所有输出位置的坐标网格 (H_out, W_out)
+        h_indices, w_indices = arrlib.meshgrid(h_starts, w_starts, indexing='ij')
+        
+        # 计算所有需要更新的高度和宽度索引，形状为 (kh, kw, H_out, W_out)
+        all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kh_indices[:, :, arrlib.newaxis, arrlib.newaxis]
+        all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, :, :] + kw_indices[:, :, arrlib.newaxis, arrlib.newaxis]
     
     # 直接将输入重塑为 (N, C, kh, kw, H_out, W_out)，无需额外reshape
     folded_input = input._reshape((N, C, kh, kw, H_out, W_out))
@@ -1308,25 +1310,26 @@ def unfold3d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
         
     # 完全向量化版本：展开输入，避免三重循环
     arrlib = input._get_array_lib()
-    d_starts = arrlib.arange(D_out) * stride[0]
-    h_starts = arrlib.arange(H_out) * stride[1]
-    w_starts = arrlib.arange(W_out) * stride[2]
-    d_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
-    h_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
-    w_k_range = arrlib.arange(kernel_size[2]) * dilation[2]
-    
-    kd, kh, kw = kernel_size
-    
-    # 生成所有内核位置的坐标偏移 (kd, kh, kw)
-    kd_indices, kh_indices, kw_indices = arrlib.meshgrid(d_k_range, h_k_range, w_k_range, indexing='ij')
-    
-    # 生成所有输出位置的坐标网格 (D_out, H_out, W_out)
-    d_indices, h_indices, w_indices = arrlib.meshgrid(d_starts, h_starts, w_starts, indexing='ij')
-    
-    # 计算所有需要提取的深度、高度和宽度索引，形状为 (kd, kh, kw, D_out, H_out, W_out)
-    all_d_indices = d_indices[arrlib.newaxis, arrlib.newaxis, arrlib.newaxis, :, :, :] + kd_indices[:, :, :, arrlib.newaxis, arrlib.newaxis, arrlib.newaxis]
-    all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, arrlib.newaxis, :, :, :] + kh_indices[:, :, :, arrlib.newaxis, arrlib.newaxis, arrlib.newaxis]
-    all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, arrlib.newaxis, :, :, :] + kw_indices[:, :, :, arrlib.newaxis, arrlib.newaxis, arrlib.newaxis]
+    with device_context(input):
+        d_starts = arrlib.arange(D_out) * stride[0]
+        h_starts = arrlib.arange(H_out) * stride[1]
+        w_starts = arrlib.arange(W_out) * stride[2]
+        d_k_range = arrlib.arange(kernel_size[0]) * dilation[0]
+        h_k_range = arrlib.arange(kernel_size[1]) * dilation[1]
+        w_k_range = arrlib.arange(kernel_size[2]) * dilation[2]
+        
+        kd, kh, kw = kernel_size
+        
+        # 生成所有内核位置的坐标偏移 (kd, kh, kw)
+        kd_indices, kh_indices, kw_indices = arrlib.meshgrid(d_k_range, h_k_range, w_k_range, indexing='ij')
+        
+        # 生成所有输出位置的坐标网格 (D_out, H_out, W_out)
+        d_indices, h_indices, w_indices = arrlib.meshgrid(d_starts, h_starts, w_starts, indexing='ij')
+        
+        # 计算所有需要提取的深度、高度和宽度索引，形状为 (kd, kh, kw, D_out, H_out, W_out)
+        all_d_indices = d_indices[arrlib.newaxis, arrlib.newaxis, arrlib.newaxis, :, :, :] + kd_indices[:, :, :, arrlib.newaxis, arrlib.newaxis, arrlib.newaxis]
+        all_h_indices = h_indices[arrlib.newaxis, arrlib.newaxis, arrlib.newaxis, :, :, :] + kh_indices[:, :, :, arrlib.newaxis, arrlib.newaxis, arrlib.newaxis]
+        all_w_indices = w_indices[arrlib.newaxis, arrlib.newaxis, arrlib.newaxis, :, :, :] + kw_indices[:, :, :, arrlib.newaxis, arrlib.newaxis, arrlib.newaxis]
     
     # 一次性提取所有展开块，避免三重循环，直接得到形状 (N, C, kd, kh, kw, D_out, H_out, W_out)
     unfolded_blocks = padded_input[:, :, all_d_indices, all_h_indices, all_w_indices]
@@ -1398,15 +1401,15 @@ def conv1d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, d
         padded_input = input
     
     # 展开输入 - 向量化实现
-    # 使用numpy.arange生成所有内核索引的起始位置
     arrlib = input._get_array_lib()
-    l_starts = arrlib.arange(L_out) * stride
-    
-    # 预计算所有内核块的索引范围
-    k_range = arrlib.arange(K) * dilation
-    
-    # 一次性生成所有需要的索引
-    all_indices = l_starts[:, arrlib.newaxis] + k_range
+    with device_context(input):
+        l_starts = arrlib.arange(L_out) * stride
+        
+        # 预计算所有内核块的索引范围
+        k_range = arrlib.arange(K) * dilation
+        
+        # 一次性生成所有需要的索引
+        all_indices = l_starts[:, arrlib.newaxis] + k_range
     
     # 使用高级索引一次性提取所有内核块
     # 首先创建一个形状为 (N, C_in, L_out, K) 的临时张量
@@ -1760,11 +1763,12 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     
     # 展开输入 - 优化版本
     # 直接生成形状为 (N*C, L_out, K) 的张量，避免多次转置和重塑
-    l_starts = arrlib.arange(L_out) * stride
-    k_range = arrlib.arange(K) * dilation
-    # 优化：使用 arrlib.newaxis 替代 np.newaxis，避免 GPU/CPU 数据传输
-    all_indices = l_starts[:, arrlib.newaxis] + k_range
-    all_indices = arrlib.clip(all_indices, 0, padded_input.shape[2] - 1)
+    with device_context(input):
+        l_starts = arrlib.arange(L_out) * stride
+        k_range = arrlib.arange(K) * dilation
+        # 优化：使用 arrlib.newaxis 替代 np.newaxis，避免 GPU/CPU 数据传输
+        all_indices = l_starts[:, arrlib.newaxis] + k_range
+        all_indices = arrlib.clip(all_indices, 0, padded_input.shape[2] - 1)
     
     # 使用高级索引提取所有内核块，然后直接重塑为 (N*C, L_out, K)
     unfolded_temp = padded_input[:, :, all_indices]
@@ -1788,7 +1792,8 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         indices_reshaped = indices_data.reshape(N * C, L_out)
         
         # 创建网格坐标 (L_out)
-        grid_l = arrlib.arange(L_out).reshape(1, L_out).repeat(N * C, axis=0)
+        with device_context(input):
+            grid_l = arrlib.arange(L_out).reshape(1, L_out).repeat(N * C, axis=0)
         
         # 计算核内坐标
         indices_k = indices_reshaped
@@ -1883,8 +1888,8 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         indices_reshaped = indices_data.reshape((N * C, H_out*W_out))
         
         # 创建网格坐标 (H_out, W_out)
-        # arrlib 已在前面获取
-        grid_y, grid_x = arrlib.meshgrid(arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
+        with device_context(input):
+            grid_y, grid_x = arrlib.meshgrid(arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
         grid_y = grid_y.reshape(1, H_out*W_out).repeat(N*C, axis=0)
         grid_x = grid_x.reshape(1, H_out*W_out).repeat(N*C, axis=0)
         
@@ -1983,8 +1988,8 @@ def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         indices_reshaped = indices_data.reshape(N*C, D_out*H_out*W_out)
         
         # 创建网格坐标 (D_out, H_out, W_out)
-        # arrlib 已在前面获取
-        grid_d, grid_h, grid_w = arrlib.meshgrid(arrlib.arange(D_out), arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
+        with device_context(input):
+            grid_d, grid_h, grid_w = arrlib.meshgrid(arrlib.arange(D_out), arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
         grid_d = grid_d.reshape(1, D_out*H_out*W_out).repeat(N*C, axis=0)
         grid_h = grid_h.reshape(1, D_out*H_out*W_out).repeat(N*C, axis=0)
         grid_w = grid_w.reshape(1, D_out*H_out*W_out).repeat(N*C, axis=0)
@@ -2084,18 +2089,18 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         padded_input = input
     
     # 展开输入 - 优化版本
-    # 使用numpy生成所有内核索引的起始位置
     arrlib = input._get_array_lib()
-    l_starts = arrlib.arange(L_out) * stride
-    
-    # 预计算所有内核块的索引范围
-    k_range = arrlib.arange(K) * dilation
-    
-    # 一次性生成所有需要的索引
-    all_indices = l_starts[:, arrlib.newaxis] + k_range
-    
-    # 确保索引在有效范围内
-    all_indices = arrlib.clip(all_indices, 0, padded_input.shape[2] - 1)
+    with device_context(input):
+        l_starts = arrlib.arange(L_out) * stride
+        
+        # 预计算所有内核块的索引范围
+        k_range = arrlib.arange(K) * dilation
+        
+        # 一次性生成所有需要的索引
+        all_indices = l_starts[:, arrlib.newaxis] + k_range
+        
+        # 确保索引在有效范围内
+        all_indices = arrlib.clip(all_indices, 0, padded_input.shape[2] - 1)
     
     # 使用高级索引一次性提取所有内核块
     # 首先创建一个形状为 (N, C, L_out, K) 的临时张量
@@ -2139,20 +2144,21 @@ def avg_pool1d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # 包含填充区域时的处理，与avg_pool2d保持一致
         # 辅助函数：向量化计算所有窗口位置的有效元素数
         def compute_effective_counts_vectorized():
-            # 生成所有窗口的起始位置
-            l_starts = arrlib.arange(L_out) * stride
-            
-            # 计算每个窗口的结束位置
-            l_ends = l_starts + effective_K
-            
-            # 显式padding后的输入边界
-            padded_l_start = 0
-            padded_l_end = L_in + 2 * padding
-            
-            # 计算窗口与显式padding后输入的交集（向量化操作）
-            valid_l_starts = arrlib.maximum(l_starts, padded_l_start)
-            valid_l_ends = arrlib.minimum(l_ends, padded_l_end)
-            valid_l = arrlib.maximum(0, valid_l_ends - valid_l_starts)
+            with device_context(input):
+                # 生成所有窗口的起始位置
+                l_starts = arrlib.arange(L_out) * stride
+                
+                # 计算每个窗口的结束位置
+                l_ends = l_starts + effective_K
+                
+                # 显式padding后的输入边界
+                padded_l_start = 0
+                padded_l_end = L_in + 2 * padding
+                
+                # 计算窗口与显式padding后输入的交集（向量化操作）
+                valid_l_starts = arrlib.maximum(l_starts, padded_l_start)
+                valid_l_ends = arrlib.minimum(l_ends, padded_l_end)
+                valid_l = arrlib.maximum(0, valid_l_ends - valid_l_starts)
             
             return valid_l
                 
@@ -2246,36 +2252,37 @@ def avg_pool2d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # count_include_pad=True时的处理
         # 辅助函数：向量化计算所有窗口位置的有效元素数
         def compute_effective_counts_vectorized():
-            # 生成所有窗口的坐标网格 (H_out, W_out)
             arrlib = input._get_array_lib()
-            i_indices, j_indices = arrlib.meshgrid(arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
-            
-            # 计算每个窗口的起始和结束位置
-            h_start = i_indices * stride[0]
-            h_end = h_start + kh
-            w_start = j_indices * stride[1]
-            w_end = w_start + kw
-            
-            # 显式padding后的输入边界
-            padded_h_start = 0
-            padded_h_end = H_in + 2 * padding[0]
-            padded_w_start = 0
-            padded_w_end = W_in + 2 * padding[1]
-            
-            # 计算窗口与显式padding后输入的交集
-            valid_h_start = arrlib.maximum(h_start, padded_h_start)
-            valid_h_end = arrlib.minimum(h_end, padded_h_end)
-            valid_h = arrlib.maximum(0, valid_h_end - valid_h_start)
-            
-            valid_w_start = arrlib.maximum(w_start, padded_w_start)
-            valid_w_end = arrlib.minimum(w_end, padded_w_end)
-            valid_w = arrlib.maximum(0, valid_w_end - valid_w_start)
-            
-            # 计算每个窗口的有效元素数
-            counts = valid_h * valid_w
-            
-            # 将结果展平为1D数组
-            return counts.flatten()
+            with device_context(input):
+                # 生成所有窗口的坐标网格 (H_out, W_out)
+                i_indices, j_indices = arrlib.meshgrid(arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
+                
+                # 计算每个窗口的起始和结束位置
+                h_start = i_indices * stride[0]
+                h_end = h_start + kh
+                w_start = j_indices * stride[1]
+                w_end = w_start + kw
+                
+                # 显式padding后的输入边界
+                padded_h_start = 0
+                padded_h_end = H_in + 2 * padding[0]
+                padded_w_start = 0
+                padded_w_end = W_in + 2 * padding[1]
+                
+                # 计算窗口与显式padding后输入的交集
+                valid_h_start = arrlib.maximum(h_start, padded_h_start)
+                valid_h_end = arrlib.minimum(h_end, padded_h_end)
+                valid_h = arrlib.maximum(0, valid_h_end - valid_h_start)
+                
+                valid_w_start = arrlib.maximum(w_start, padded_w_start)
+                valid_w_end = arrlib.minimum(w_end, padded_w_end)
+                valid_w = arrlib.maximum(0, valid_w_end - valid_w_start)
+                
+                # 计算每个窗口的有效元素数
+                counts = valid_h * valid_w
+                
+                # 将结果展平为1D数组
+                return counts.flatten()
         
         # 使用向量化方法计算所有窗口的有效元素数
         all_counts = compute_effective_counts_vectorized()
@@ -2368,43 +2375,44 @@ def avg_pool3d(input: TN, kernel_size, stride=None, padding=0, ceil_mode=False, 
         # count_include_pad=True时的处理
         # 辅助函数：向量化计算所有窗口位置的有效元素数
         def compute_effective_counts_vectorized():
-            # 生成所有窗口的坐标网格
             arrlib = input._get_array_lib()
-            d_indices, h_indices, w_indices = arrlib.meshgrid(arrlib.arange(D_out), arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
-            
-            # 计算每个窗口的起始和结束位置
-            d_start = d_indices * stride[0]
-            d_end = d_start + kd
-            h_start = h_indices * stride[1]
-            h_end = h_start + kh
-            w_start = w_indices * stride[2]
-            w_end = w_start + kw
-            
-            # 显式padding后的输入边界
-            padded_d_start = 0
-            padded_d_end = D_in + 2 * padding[0]
-            padded_h_start = 0
-            padded_h_end = H_in + 2 * padding[1]
-            padded_w_start = 0
-            padded_w_end = W_in + 2 * padding[2]
-            
-            # 计算窗口与显式padding后输入的交集
-            valid_d_start = arrlib.maximum(d_start, padded_d_start)
-            valid_d_end = arrlib.minimum(d_end, padded_d_end)
-            valid_d = arrlib.maximum(0, valid_d_end - valid_d_start)
-            
-            valid_h_start = arrlib.maximum(h_start, padded_h_start)
-            valid_h_end = arrlib.minimum(h_end, padded_h_end)
-            valid_h = arrlib.maximum(0, valid_h_end - valid_h_start)
-            
-            valid_w_start = arrlib.maximum(w_start, padded_w_start)
-            valid_w_end = arrlib.minimum(w_end, padded_w_end)
-            valid_w = arrlib.maximum(0, valid_w_end - valid_w_start)
-            
-            # 计算每个窗口的有效元素数
-            counts = valid_d * valid_h * valid_w
-            
-            # 将结果展平为1D数组
+            with device_context(input):
+                # 生成所有窗口的坐标网格
+                d_indices, h_indices, w_indices = arrlib.meshgrid(arrlib.arange(D_out), arrlib.arange(H_out), arrlib.arange(W_out), indexing='ij')
+                
+                # 计算每个窗口的起始和结束位置
+                d_start = d_indices * stride[0]
+                d_end = d_start + kd
+                h_start = h_indices * stride[1]
+                h_end = h_start + kh
+                w_start = w_indices * stride[2]
+                w_end = w_start + kw
+                
+                # 显式padding后的输入边界
+                padded_d_start = 0
+                padded_d_end = D_in + 2 * padding[0]
+                padded_h_start = 0
+                padded_h_end = H_in + 2 * padding[1]
+                padded_w_start = 0
+                padded_w_end = W_in + 2 * padding[2]
+                
+                # 计算窗口与显式padding后输入的交集
+                valid_d_start = arrlib.maximum(d_start, padded_d_start)
+                valid_d_end = arrlib.minimum(d_end, padded_d_end)
+                valid_d = arrlib.maximum(0, valid_d_end - valid_d_start)
+                
+                valid_h_start = arrlib.maximum(h_start, padded_h_start)
+                valid_h_end = arrlib.minimum(h_end, padded_h_end)
+                valid_h = arrlib.maximum(0, valid_h_end - valid_h_start)
+                
+                valid_w_start = arrlib.maximum(w_start, padded_w_start)
+                valid_w_end = arrlib.minimum(w_end, padded_w_end)
+                valid_w = arrlib.maximum(0, valid_w_end - valid_w_start)
+                
+                # 计算每个窗口的有效元素数
+                counts = valid_d * valid_h * valid_w
+                
+                # 将结果展平为1D数组
             return counts.flatten()
         
         # 使用向量化方法计算所有窗口的有效元素数

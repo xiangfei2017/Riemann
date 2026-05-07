@@ -65,6 +65,7 @@ from itertools import accumulate
 import builtins
 import warnings
 from typing import Callable, Any, TypeAlias, overload
+from contextlib import contextmanager
 import math
 import numpy as np
 from .cuda import Device, cp, is_in_cuda_context, get_default_device
@@ -1463,13 +1464,12 @@ class TN:
         if dim < 0:
             dim = dim + len(target_shape)
         
-        arrlib = self._get_array_lib()
         # 检查索引值是否在有效范围内
-        if arrlib.any(index_data < 0) or arrlib.any(index_data >= target_shape[dim]):
+        if np.any(index_data < 0) or np.any(index_data >= target_shape[dim]):
             raise IndexError(f"Index value out of range [0, {target_shape[dim]}-1]")
 
-        # 使用np.indices一次性创建所有网格索引，这是高效的关键
-        grid_indices = arrlib.indices(index_shape)
+        # 使用np.indices一次性创建所有网格索引（使用numpy即可，索引值不依赖于设备）
+        grid_indices = np.indices(index_shape)
         
         # 为每个维度创建索引
         direct_indices = []
@@ -1485,9 +1485,9 @@ class TN:
         
         # 处理目标张量维度大于index_data的情况 - 简化版本
         for i in range(len(index_shape), len(target_shape)):
-            # 对于额外维度，直接使用全0索引
+            # 对于额外维度，直接使用全0索引（使用numpy即可）
             # 这与gather函数原始实现保持一致
-            direct_indices.append(arrlib.zeros(index_shape, dtype=arrlib.int64))
+            direct_indices.append(np.zeros(index_shape, dtype=np.int64))
         
         return tuple(direct_indices)
     # end of _compute_direct_indices
@@ -4626,6 +4626,28 @@ class BackwardHookManager:
         self._popped_tensors.clear()
 
 
+@contextmanager
+def device_context(tensor_obj: TN):
+    """根据张量设备类型，提供相应的设备上下文管理器
+    
+    对于CPU张量，不产生任何上下文
+    对于CUDA张量，设置对应的CUDA设备
+    
+    参数:
+        tensor_obj (TN): 输入张量
+        
+    示例:
+        with device_context(x):
+            # 在此上下文中，arrlib操作会在正确的设备上执行
+            arr = x._get_array_lib()
+            result = arr.some_operation(x.data)
+    """
+    if tensor_obj.device.type == 'cpu':
+        yield
+    else:
+        with cp.cuda.Device(tensor_obj.device.index):
+            yield
+
 def _get_device(device:str|int|Device=None)->Device:
     """
     获取设备，该函数根据输入的设备参数，返回一个Device对象。
@@ -5410,8 +5432,11 @@ def arange(start: float, end: float | None = None, step: float = 1.0, dtype: np.
 
     # 使用numpy/cupy的arange创建数组
     dev = _get_device(device)
-    arrlib = np if dev.type == 'cpu' else cp
-    data = arrlib.arange(start, end, step, dtype=dt)
+    if dev.type == 'cpu':
+        data = np.arange(start, end, step, dtype=dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            data = cp.arange(start, end, step, dtype=dt)
     
     # 创建并返回张量
     return tensor(data, device=dev, requires_grad=requires_grad)
@@ -5436,10 +5461,13 @@ def linspace(start: float, end: float, steps: int = 100, endpoint: bool = True, 
     # 如果没有指定dtype，使用默认浮点类型
     dt = get_default_dtype() if dtype is None else dtype
     
-    # 使用numpy的linspace创建数组
+    # 使用numpy/cupy的linspace创建数组
     dev = _get_device(device)
-    arrlib = np if dev.type == 'cpu' else cp
-    data = arrlib.linspace(start, end, num=steps, endpoint=endpoint, dtype=dt)
+    if dev.type == 'cpu':
+        data = np.linspace(start, end, num=steps, endpoint=endpoint, dtype=dt)
+    else:
+        with cp.cuda.Device(dev.index):
+            data = cp.linspace(start, end, num=steps, endpoint=endpoint, dtype=dt)
     
     # 创建并返回张量
     return tensor(data, device=dev, requires_grad=requires_grad)
@@ -6914,7 +6942,8 @@ def _max_backward(result_tensor:TN, i:int)->TN:
     dim, keepdim = result_tensor.parms[i]
     
     arrlib = x._get_array_lib()
-    max_pos_one_like_x = _create_maxmin_mask(x.data, arrlib.argmax, dim)
+    with device_context(x):
+        max_pos_one_like_x = _create_maxmin_mask(x.data, arrlib.argmax, dim)
     max_pos_one_tensor = tensor(max_pos_one_like_x,device=x.device)
     
     # 如果sum计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
@@ -6932,7 +6961,8 @@ def _min_backward(result_tensor:TN, i:int)->TN:
     dim, keepdim = result_tensor.parms[i]
     
     arrlib = x._get_array_lib()
-    min_pos_one_like_x = _create_maxmin_mask(x.data, arrlib.argmin, dim)
+    with device_context(x):
+        min_pos_one_like_x = _create_maxmin_mask(x.data, arrlib.argmin, dim)
     min_pos_one_tensor = tensor(min_pos_one_like_x, device=x.device)
     
     # 如果sum计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
@@ -7954,7 +7984,9 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
     arrlib = cond._get_array_lib()
 
     if x is None and y is None:
-        tup = arrlib.where(cond.data)
+        # 在对应设备上计算非零索引，避免跨设备数据传输
+        with device_context(cond):
+            tup = arrlib.where(cond.data)
         lst = []
         for idx_arr in tup:
             lst.append(tensor(idx_arr,device=cond.device))
@@ -7983,7 +8015,7 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
         ret.fromvars = (x, y)
         # 缓存条件掩码，避免在梯度计算中重复转换
         cond_mask = cond.data
-        # 使用1.0 - cond_mask获取反向掩码，简洁高效
+        # 计算反向掩码，元素级操作自动在正确设备上执行
         neg_cond_mask = 1.0 - cond_mask
         ret.parms = (cond_mask, neg_cond_mask)
         # 使用外部定义的梯度函数，避免每次调用where都创建新的闭包
@@ -8035,8 +8067,9 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
         
         # 使用现有的实现
         arrlib = x._get_array_lib()
-        np_min = scalar_min if scalar_min is not None else -arrlib.inf
-        np_max = scalar_max if scalar_max is not None else arrlib.inf
+        # 使用Python的inf，可与NumPy/CuPy数组直接运算
+        np_min = scalar_min if scalar_min is not None else -float('inf')
+        np_max = scalar_max if scalar_max is not None else float('inf')
         arrlib.clip(x.data, np_min, np_max, out=out.data)
         return out
     
@@ -8347,10 +8380,12 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
         # 对于每个子数组，计算原始位置的反转
         # 这部分比较复杂，需要根据具体维度处理
         # 创建一个与sorted_indices形状相同的数组，用于存储反转后的索引
-        reverse_indices = arrlib.empty_like(sorted_indices)
+        with device_context(input):
+            reverse_indices = arrlib.empty_like(sorted_indices)
         # 获取指定维度的大小
         dim_size = input.data.shape[dim]
         # 对每个子数组进行处理
+        # 注意：nditer在CPU上执行，但操作的是已有数组
         it = np.nditer(sorted_indices, flags=['multi_index', 'refs_ok'])
         while not it.finished:
             # 获取当前元素的多维索引
@@ -8432,8 +8467,10 @@ def argsort(input: TN, dim: int = -1, descending: bool = False, stable: bool = F
     sorted_indices = arrlib.argsort(input.data, axis=dim)
     
     if descending:
-        reverse_indices = arrlib.empty_like(sorted_indices)
+        with device_context(input):
+            reverse_indices = arrlib.empty_like(sorted_indices)
         dim_size = input.data.shape[dim]
+        # 注意：nditer在CPU上执行，但操作的是已有数组
         it = arrlib.nditer(sorted_indices, flags=['multi_index', 'refs_ok'])
         while not it.finished:
             idx = list(it.multi_index)
@@ -8764,19 +8801,15 @@ def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
     input_tensor = result_tensor.fromvars[i]  # 第一个输入
     other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
     
-    # 创建比较掩码
-    input_data = input_tensor.data
-    other_data = other_tensor.data
+    
     
     # 计算梯度掩码
     # input > other: 1.0
     # input == other: 0.5  # 与PyTorch一致
     # input < other: 0.0
-    # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
-    mask_dtype = input_tensor.dtype
-    arrlib = input_tensor._get_array_lib()
-    mask = arrlib.where(input_data > other_data, arrlib.array(1.0, dtype=mask_dtype), 
-                   arrlib.where(input_data < other_data, arrlib.array(0.0, dtype=mask_dtype), arrlib.array(0.5, dtype=mask_dtype)))
+    # 使用riemann的where函数，自动处理设备上下文
+    mask = where(input_tensor > other_tensor, 1.0, 
+                 where(input_tensor < other_tensor, 0.0, 0.5))
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -8804,19 +8837,15 @@ def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
     other_tensor = result_tensor.fromvars[i]  # 第二个输入
     input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
     
-    # 创建比较掩码
-    other_data = other_tensor.data
-    input_data = input_tensor.data
+    
     
     # 计算梯度掩码
     # other > input: 1.0
     # other == input: 0.5  # 与PyTorch一致
     # other < input: 0.0
-    # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
-    mask_dtype = other_tensor.dtype
-    arrlib = other_tensor._get_array_lib()
-    mask = arrlib.where(other_data > input_data, arrlib.array(1.0, dtype=mask_dtype),
-                   arrlib.where(other_data < input_data, arrlib.array(0.0, dtype=mask_dtype), arrlib.array(0.5, dtype=mask_dtype)))
+    # 使用riemann的where函数，自动处理设备上下文
+    mask = where(other_tensor > input_tensor, 1.0,
+                 where(other_tensor < input_tensor, 0.0, 0.5))
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -8888,19 +8917,13 @@ def _minimum_grad_input(result_tensor: TN, i: int) -> TN:
     input_tensor = result_tensor.fromvars[i]  # 第一个输入
     other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
     
-    # 创建比较掩码
-    input_data = input_tensor.data
-    other_data = other_tensor.data
-    
     # 计算梯度掩码
     # input < other: 1.0
     # input == other: 0.5  
     # input > other: 0.0
-    # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
-    mask_dtype = input_tensor.dtype
-    arrlib = input_tensor._get_array_lib()
-    mask = arrlib.where(input_data < other_data, arrlib.array(1.0, dtype=mask_dtype), 
-                   arrlib.where(input_data > other_data, arrlib.array(0.0, dtype=mask_dtype), arrlib.array(0.5, dtype=mask_dtype)))
+    # 使用riemann的where函数，自动处理设备上下文
+    mask = where(input_tensor < other_tensor, 1.0, 
+                 where(input_tensor > other_tensor, 0.0, 0.5))
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -8928,19 +8951,13 @@ def _minimum_grad_other(result_tensor: TN, i: int) -> TN:
     other_tensor = result_tensor.fromvars[i]  # 第二个输入
     input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
     
-    # 创建比较掩码
-    other_data = other_tensor.data
-    input_data = input_tensor.data
-    
     # 计算梯度掩码
     # other < input: 1.0
     # other == input: 0.5
     # other > input: 0.0
-    # 使用输入张量的数据类型来创建掩码值，避免类型转换警告
-    mask_dtype = other_tensor.dtype
-    arrlib = other_tensor._get_array_lib()
-    mask = arrlib.where(other_data < input_data, arrlib.array(1.0, dtype=mask_dtype),
-                   arrlib.where(other_data > input_data, arrlib.array(0.0, dtype=mask_dtype), arrlib.array(0.5, dtype=mask_dtype)))
+    # 使用riemann的where函数，自动处理设备上下文
+    mask = where(other_tensor < input_tensor, 1.0,
+                 where(other_tensor > input_tensor, 0.0, 0.5))
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -9060,10 +9077,8 @@ def diagonal(
     # 创建对角线索引
     indices = [slice(None)] * input.ndim
     
-    arrlib = input._get_array_lib()
-
-    # 创建对角线位置的索引数组
-    idx = arrlib.arange(diagonal_len, dtype=int)
+    # 创建对角线位置的索引数组（使用numpy即可，索引值不依赖于设备）
+    idx = np.arange(diagonal_len, dtype=int)
     
     # 设置dim1和dim2维度的索引
     indices[dim1] = start1 + idx
@@ -9192,9 +9207,8 @@ def fill_diagonal(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int =
     # 创建对角线索引
     indices = [slice(None)] * input.ndim
     
-    # 创建对角线位置的索引数组
-    arrlib = input._get_array_lib()
-    idx = arrlib.arange(diagonal_len, dtype=int)
+    # 创建对角线位置的索引数组（使用numpy即可，索引值不依赖于设备）
+    idx = np.arange(diagonal_len, dtype=int)
     
     # 设置dim1和dim2维度的索引，与diagonal函数保持一致
     indices[dim1] = start1 + idx
@@ -9267,9 +9281,8 @@ def fill_diagonal_(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int 
     # 创建对角线索引
     indices = [slice(None)] * input.ndim
     
-    # 创建对角线位置的索引数组
-    arrlib = input._get_array_lib()
-    idx = arrlib.arange(diagonal_len, dtype=int)
+    # 创建对角线位置的索引数组（使用numpy即可，索引值不依赖于设备）
+    idx = np.arange(diagonal_len, dtype=int)
     
     # 设置dim1和dim2维度的索引，与diagonal函数保持一致
     indices[dim1] = start1 + idx
@@ -9358,7 +9371,8 @@ def nonzero(input: TN, *, as_tuple: bool = False) -> TN | tuple[TN, ...]:
             result_data = arrlib.stack(indices, axis=1)
         else:
             # 如果没有非零元素，返回空的二维数组
-            result_data = arrlib.empty((0, input.ndim), dtype=np.int64)
+            with device_context(input):
+                result_data = arrlib.empty((0, input.ndim), dtype=np.int64)
         result = tensor(result_data,device=input.device)  # type: ignore
     
     return result
