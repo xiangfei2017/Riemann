@@ -19,6 +19,7 @@ Riemann is a neural network programming framework similar to PyTorch. It support
 - Activation functions (ReLU, Sigmoid, Softmax, etc.)
 - Loss functions (MSE, CrossEntropy, etc.)
 - Convolution and pooling layers (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, etc.)
+- KAN network (KANLinear, KAN)
 - Transformer (MultiheadAttention, TransformerEncoder, TransformerDecoder, Transformer, etc.)
 - Optimizers (SGD, Adam, Adagrad, LBFGS, etc.)
 - Network module containers (Sequential, ModuleList, ModuleDict, etc.)

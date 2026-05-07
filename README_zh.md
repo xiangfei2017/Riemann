@@ -19,6 +19,7 @@ Riemann是一个类似PyTorch的神经网络编程框架，支持张量计算中
 - 激活函数（ReLU, Sigmoid, Softmax等）
 - 损失函数（MSE, CrossEntropy等）
 - 卷积池化层（Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d等）
+- KAN网络（KANLinear, KAN）
 - Transformer(MultiheadAttention, TransformerEncoder, TransformerDecoder, Transformer等)
 - 优化器（SGD, Adam, Adagrad, LBFGS等）
 - 网络模块容器（Sequential, ModuleList, ModuleDict等）

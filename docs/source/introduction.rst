@@ -55,6 +55,7 @@ Neural Network Modules
 - Loss functions (MSE, CrossEntropy, BCE, L1Loss, NLLLoss, etc.)
 - Convolution and pooling (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, AdaptivePool, etc.)
 - Transformer (MultiheadAttention, TransformerEncoder, TransformerDecoder, Transformer, etc.)
+- KAN Networks (KAN, KANLinear etc.)
 - Optimizers (SGD, Adam, Adagrad, AdamW, RMSprop, LBFGS, etc.)
 - Learning rate schedulers (StepLR, ExponentialLR, CosineAnnealingLR, etc.)
 - Network module containers (Sequential, ModuleList, ModuleDict, etc.)
@@ -194,6 +195,7 @@ Riemann-Specific Features
 
 Riemann provides some features that PyTorch does not have:
 
+- **KAN Network Support**: Kolmogorov-Arnold Networks (KAN) implementation, including KAN, KANLinear modules
 - **Custom Gradient Decorator** (``@track_grad``): Quickly add automatic differentiation support to functions using decorators, without defining a complete Function class
 - **Advanced Computation Graph Building**: More flexible computation graph building and management mechanisms
 - **sumall function**: Add multiple tensors or non-tensors and return the total sum

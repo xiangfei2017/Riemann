@@ -3583,3 +3583,442 @@ Riemann 提供了完整的 Transformer 模型，包含编码器和解码器。
    
    - Transformer 对初始化敏感，使用 Xavier/Glorot 初始化
    - Riemann 的 Transformer 组件已包含适当的初始化
+
+KAN网络
+-------
+
+Kolmogorov-Arnold网络（KAN）是一种新型神经网络架构，使用可学习的B样条激活函数替代传统的固定激活函数。KAN基于Kolmogorov-Arnold表示定理，该定理证明任何多元连续函数都可以表示为单变量连续函数的组合。
+
+KAN网络原理
+~~~~~~~~~~~~
+
+**核心思想**
+
+传统MLP使用固定的非线性激活函数（如ReLU、Sigmoid）：
+
+.. math::
+
+    \text{MLP: } x \mapsto \sum_i w_i \cdot \sigma(\text{激活函数}(x))
+
+KAN使用可学习的单变量函数替代固定激活：
+
+.. math::
+
+    \text{KAN: } x \mapsto \sum_i \phi_i(x_i) \cdot w_i
+
+其中 :math:`\phi_i` 是可学习的B样条函数。
+
+**双路径计算**
+
+KANLinear层包含两条计算路径：
+
+1. **基函数路径**：使用固定激活函数（如SiLU）提供基础非线性
+2. **样条路径**：使用可学习的B样条函数提供灵活的非线性变换
+
+.. code-block:: text
+
+      输入 x
+        │
+        ├──────→ [基函数路径] ────→ SiLU(x) @ base_weight   ──────┐
+        │         　　　　　                                      ├──→ 相加 ──→ 输出
+        └──────→ [样条路径　] ────→ B-splines(x) @ spline_weight ─┘
+
+**B样条基函数**
+
+B样条（B-spline）是分段多项式函数，具有局部支撑性和平滑性。KAN使用de Boor递归公式计算B样条基函数。
+
+**阶数与多项式次数的区别**
+
+B样条的"阶数"（order）与多项式的"次数"（degree）是不同的概念：
+
+- **阶数（k）**：B样条的递归阶数，决定基函数的复杂程度
+- **次数（degree）**：实际多项式的最高幂次，等于 ``阶数 - 1``
+
+例如，3阶B样条对应2次（二次）多项式，具有连续的一阶导数。
+
+**de Boor递归算法**
+
+de Boor算法是计算B样条基函数的标准方法，通过递归定义：
+
+零阶基函数（指示函数）：
+
+.. math::
+
+    B_{i,0}(x) = \begin{cases} 
+    1 & \text{if } t_i \leq x < t_{i+1} \\
+    0 & \text{otherwise}
+    \end{cases}
+
+k阶基函数（递归定义）：
+
+.. math::
+
+    B_{i,k}(x) = \frac{x - t_i}{t_{i+k} - t_i} B_{i,k-1}(x) + \frac{t_{i+k+1} - x}{t_{i+k+1} - t_{i+1}} B_{i+1,k-1}(x)
+
+其中 :math:`t_i` 是网格节点（knots）。
+
+**算法特性**：
+
+1. **局部支撑性**：每个基函数只在有限区间非零，修改一个控制点只影响局部区域
+2. **单位分解性**：所有基函数在任意点的和为1，保证数值稳定性
+3. **连续性**：k阶B样条具有 :math:`C^{k-2}` 连续性（k-2阶连续导数）
+
+**B样条网格的可解释性**
+
+B样条网格具有天然的可解释性优势：
+
+1. **可视化理解**：
+   
+   每个基函数的形状直观可见，可以绘制出基函数曲线，观察其对输出的贡献
+
+2. **局部控制**：
+   
+   每个网格区间对应一个局部基函数，权重的物理意义明确：控制该区间内的函数形状
+
+3. **平滑性保证**：
+   
+   由于B样条的连续性，学习到的函数天然平滑，不会出现神经网络常见的锯齿状输出
+
+4. **符号表达**：
+   
+   B样条可以转换为分段多项式表达式，便于提取显式的数学公式
+
+**自适应网格**
+
+KAN支持自适应网格更新，根据输入数据分布动态调整网格点位置，使网络更好地拟合数据分布。
+
+**为什么需要自适应网格**
+
+固定网格在数据分布不均匀时存在问题：
+
+1. **数据稀疏区域**：网格点过于密集，浪费计算资源
+2. **数据密集区域**：网格点过于稀疏，拟合精度不足
+3. **边界效应**：固定网格可能无法覆盖数据的实际范围
+
+自适应网格通过动态调整，使网格点集中在数据密集区域，提高拟合效率。
+
+**自适应网格算法**
+
+Riemann的KAN实现采用以下自适应策略：
+
+**步骤1：计算当前样条输出**
+
+.. code-block:: python
+
+    # 计算当前B样条基函数
+    splines = self.b_splines(x)  # (batch, in_features, coeff)
+    
+    # 计算未聚合的样条输出
+    unreduced_spline_output = splines @ orig_coeff
+
+**步骤2：构建自适应网格**
+
+基于输入数据的实际分布计算自适应网格点：
+
+.. math::
+
+    \text{grid}_{\text{adaptive}} = \text{sorted_data}\left[\text{linspace}(0, N-1, \text{grid_size}+1)\right]
+
+其中 ``sorted_data`` 是按值排序后的输入数据。
+
+**步骤3：构建均匀网格**
+
+计算覆盖数据范围的均匀网格：
+
+.. math::
+
+    \text{grid}_{\text{uniform}} = \text{linspace}(\min(x)-\epsilon, \max(x)+\epsilon, \text{grid_size}+1)
+
+**步骤4：混合网格**
+
+结合自适应网格和均匀网格，使用插值系数 ``grid_eps`` 控制混合比例：
+
+.. math::
+
+    \text{grid} = \text{grid_eps} \cdot \text{grid}_{\text{uniform}} + (1 - \text{grid_eps}) \cdot \text{grid}_{\text{adaptive}}
+
+**步骤5：扩展边界**
+
+在网格两端扩展额外的节点以支持边界计算：
+
+.. code-block:: python
+
+    # 在网格前后添加额外的节点
+    grid = concatenate([
+        grid[:1] - step * arange(spline_order, 0, -1),
+        grid,
+        grid[-1:] + step * arange(1, spline_order + 1)
+    ])
+
+**步骤6：更新样条系数**
+
+使用最小二乘法将旧网格上的样条函数映射到新网格：
+
+.. code-block:: python
+
+    # 使用curve2coeff将曲线点转换为新网格的B样条系数
+    self.spline_weight.data = self.curve2coeff(x, unreduced_spline_output).data
+
+**算法优势**：
+
+1. **数据驱动**：网格自动适应数据分布，无需人工调整
+2. **平滑过渡**：混合策略避免网格突变导致的训练不稳定
+3. **计算高效**：只在必要时更新（如每20个epoch），避免频繁计算开销
+
+KAN网络适用场景
+~~~~~~~~~~~~~~~~
+
+KAN网络特别适合以下场景：
+
+**1. 可解释性要求高的任务**
+
+- 科学计算和物理建模
+- 需要理解特征重要性的任务
+- 可解释AI（XAI）应用
+
+**2. 函数拟合和符号回归**
+
+- 发现数据背后的数学公式
+- 物理定律发现
+- 方程拟合
+
+**3. 小样本学习**
+
+- 参数效率更高
+- 在数据量有限时表现更好
+- 避免过拟合
+
+**4. 需要平滑输出的任务**
+
+- B样条提供平滑的函数近似
+- 适合需要连续导数的应用
+- 物理模拟和控制系统
+
+**5. 与传统MLP的比较**
+
++--------------+-------------------+-------------------+
+| 特性         | MLP               | KAN               |
++==============+===================+===================+
+| 激活函数     | 固定              | 可学习（B样条）   |
++--------------+-------------------+-------------------+
+| 可解释性     | 较低              | 较高              |
++--------------+-------------------+-------------------+
+| 参数效率     | 一般              | 较高              |
++--------------+-------------------+-------------------+
+| 训练速度     | 快                | 较慢              |
++--------------+-------------------+-------------------+
+| 适用场景     | 通用              | 科学计算、解释性  |
++--------------+-------------------+-------------------+
+
+Riemann的KAN模块
+~~~~~~~~~~~~~~~~~
+
+Riemann在 ``riemann.nn.kan`` 模块中提供了完整的KAN实现：
+
+**主要组件**：
+
+- ``KANLinear``：KAN线性层，核心构建块
+- ``KAN``：多层KAN网络容器
+
+**特性**：
+
+- 高效的矩阵乘法实现
+- 支持自适应网格更新
+- 提供L1正则化和熵正则化
+- 与Riemann自动微分完全兼容
+
+KANLinear模块
+~~~~~~~~~~~~~~
+
+**结构说明**
+
+KANLinear是KAN网络的基本构建块，包含以下参数：
+
+**参数**：
+
+- ``in_features``：输入特征维度
+- ``out_features``：输出特征维度
+- ``grid_size``：网格大小，控制B样条的分段数（默认5）
+- ``spline_order``：B样条阶数，控制平滑度（默认3）
+- ``scale_noise``：噪声缩放系数，用于初始化（默认0.1）
+- ``scale_base``：基函数权重缩放系数（默认1.0）
+- ``scale_spline``：样条权重缩放系数（默认1.0）
+- ``enable_standalone_scale_spline``：是否启用独立的样条缩放（默认True）
+- ``base_activation``：基函数激活函数（默认SiLU）
+- ``grid_eps``：网格更新时的插值系数（默认0.02）
+- ``grid_range``：网格值范围（默认[-1, 1]）
+
+**内部参数**：
+
+- ``base_weight``：基函数路径权重，形状 ``(out_features, in_features)``
+- ``spline_weight``：样条路径权重，形状 ``(out_features, in_features, grid_size + spline_order)``
+- ``spline_scaler``：样条缩放因子，形状 ``(out_features, in_features)`` ，可选
+- ``grid``：B样条网格点，形状 ``(in_features, grid_size + 2*spline_order + 1)``
+
+**使用方法**
+
+基本使用示例：
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann.nn import KANLinear
+
+    # 创建KAN线性层
+    layer = KANLinear(
+        in_features=10,
+        out_features=5,
+        grid_size=5,
+        spline_order=3
+    )
+
+    # 输入数据
+    x = rm.randn(4, 10)  # (batch_size, in_features)
+
+    # 前向传播
+    output = layer(x)
+    print(f"输出形状: {output.shape}")  # (4, 5)
+
+带自适应网格更新的训练：
+
+.. code-block:: python
+
+    # 训练过程中更新网格
+    for epoch in range(num_epochs):
+        for batch in dataloader:
+            x, y = batch
+            
+            # 每几个epoch更新一次网格
+            if epoch % 20 == 0:
+                layer.update_grid(x)
+            
+            output = layer(x)
+            loss = criterion(output, y)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+使用正则化：
+
+.. code-block:: python
+
+    # 计算正则化损失
+    reg_loss = layer.regularization_loss(
+        regularize_activation=1.0,
+        regularize_entropy=1.0
+    )
+    
+    # 总损失 = 任务损失 + 正则化损失
+    total_loss = task_loss + 0.01 * reg_loss
+
+KAN容器模块
+~~~~~~~~~~~~
+
+**结构说明**
+
+KAN是多层KAN网络的容器，自动堆叠多个KANLinear层。
+
+**参数**：
+
+- ``layers_hidden``：隐藏层维度列表，如 ``[28*28, 64, 10]``
+- ``grid_size``：网格大小（默认5）
+- ``spline_order``：B样条阶数（默认3）
+- ``scale_noise``：噪声缩放系数（默认0.1）
+- ``scale_base``：基函数权重缩放系数（默认1.0）
+- ``scale_spline``：样条权重缩放系数（默认1.0）
+- ``base_activation``：基函数激活函数（默认SiLU）
+- ``grid_eps``：网格更新插值系数（默认0.02）
+- ``grid_range``：网格值范围（默认[-1, 1]）
+
+**使用方法**
+
+创建多层KAN网络：
+
+.. code-block:: python
+
+    from riemann.nn import KAN
+
+    # 创建多层KAN网络
+    model = KAN(
+        layers_hidden=[784, 64, 32, 10],
+        grid_size=5,
+        spline_order=3
+    )
+
+    # 输入数据
+    x = rm.randn(4, 784)
+
+    # 前向传播
+    output = model(x)
+    print(f"输出形状: {output.shape}")  # (4, 10)
+
+训练时更新网格：
+
+.. code-block:: python
+
+    # 前向传播时更新网格
+    output = model(x, update_grid=True)
+
+完整训练示例：
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann.nn import KAN
+    from riemann.optim import Adam
+
+    # 创建模型
+    model = KAN([784, 64, 10], grid_size=5, spline_order=3)
+    optimizer = Adam(model.parameters(), lr=0.001)
+    criterion = rm.nn.CrossEntropyLoss()
+
+    # 训练循环
+    for epoch in range(100):
+        for batch_idx, (data, target) in enumerate(train_loader):
+            # 展平图像
+            data = data.view(data.size(0), -1)
+            
+            # 每20个epoch更新网格
+            update_grid = (epoch % 20 == 0 and batch_idx == 0)
+            
+            # 前向传播
+            output = model(data, update_grid=update_grid)
+            
+            # 计算损失
+            loss = criterion(output, target)
+            
+            # 添加正则化
+            reg_loss = model.regularization_loss()
+            total_loss = loss + 0.01 * reg_loss
+            
+            # 反向传播
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+
+KAN设计建议
+~~~~~~~~~~~~
+
+1. **网格大小选择**：
+   
+   - 小网格（3-5）：适合简单函数，参数少
+   - 大网格（10-20）：适合复杂函数，但参数多
+   - 建议从5开始，根据任务调整
+
+2. **样条阶数选择**：
+   
+   - 1阶：线性样条，不连续导数
+   - 3阶：三次样条，推荐默认值
+   - 5阶：更高平滑度，但计算量大
+
+3. **网格更新策略**：
+   
+   - 训练初期频繁更新（每10-20 epoch）
+   - 训练后期减少更新频率
+   - 避免每个batch都更新（计算开销大）
+
+4. **正则化使用**：
+   
+   - L1正则化促进稀疏性
+   - 熵正则化促进选择性
+   - 正则化系数建议0.001-0.01

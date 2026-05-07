@@ -3527,4 +3527,423 @@ Transformer Design Guidelines
    
    - Use learning rate warmup to stabilize early training
    - Label smoothing can improve generalization
+
+KAN Networks
+------------
+
+Kolmogorov-Arnold Networks (KAN) are a novel neural network architecture that uses learnable B-spline activation functions instead of traditional fixed activation functions. KAN is based on the Kolmogorov-Arnold representation theorem, which proves that any multivariate continuous function can be represented as a composition of univariate continuous functions.
+
+KAN Network Principles
+~~~~~~~~~~~~~~~~~~~~~~
+
+**Core Idea**
+
+Traditional MLPs use fixed nonlinear activation functions (e.g., ReLU, Sigmoid):
+
+.. math::
+
+    \text{MLP: } x \mapsto \sum_i w_i \cdot \sigma(\text{activation}(x))
+
+KAN uses learnable univariate functions to replace fixed activations:
+
+.. math::
+
+    \text{KAN: } x \mapsto \sum_i \phi_i(x_i) \cdot w_i
+
+where :math:`\phi_i` are learnable B-spline functions.
+
+**Dual-Path Computation**
+
+KANLinear layer contains two computation paths:
+
+1. **Base Function Path**: Uses fixed activation functions (e.g., SiLU) to provide basic nonlinearity
+2. **Spline Path**: Uses learnable B-spline functions to provide flexible nonlinear transformations
+
+.. code-block:: text
+
+    Input x
+        │
+        ├──→ [Base Path] ──→ SiLU(x) @ base_weight ────────┐
+        │                                                  ├──→ Add ──→ Output
+        └──→ [Spline Path] ─→ B-splines(x) @ spline_weight ┘
+
+**B-Spline Basis Functions**
+
+B-splines are piecewise polynomial functions with local support and smoothness. KAN uses the de Boor recursive formula to compute B-spline basis functions.
+
+**Order vs. Degree**
+
+B-spline "order" (k) is different from polynomial "degree":
+
+- **Order (k)**: The recursive order of B-spline, determines complexity
+- **Degree**: The highest power of the actual polynomial, equals ``order - 1``
+
+For example, 3rd-order B-spline corresponds to 2nd-degree (quadratic) polynomial with continuous first derivative.
+
+**de Boor Recursive Algorithm**
+
+de Boor algorithm is the standard method for computing B-spline basis functions:
+
+**0-order basis function** (indicator function):
+
+.. math::
+
+    B_{i,0}(x) = \begin{cases} 
+    1 & \text{if } t_i \leq x < t_{i+1} \\
+    0 & \text{otherwise}
+    \end{cases}
+
+**k-order basis function** (recursive definition):
+
+.. math::
+
+    B_{i,k}(x) = \frac{x - t_i}{t_{i+k} - t_i} B_{i,k-1}(x) + \frac{t_{i+k+1} - x}{t_{i+k+1} - t_{i+1}} B_{i+1,k-1}(x)
+
+where :math:`t_i` are the knot points.
+
+**Algorithm Properties**:
+
+1. **Local Support**: Each basis function is non-zero only in a limited interval
+2. **Partition of Unity**: Sum of all basis functions equals 1 at any point
+3. **Continuity**: k-order B-spline has :math:`C^{k-2}` continuity
+
+**Interpretability of B-Spline Grid**
+
+B-spline grids have natural interpretability advantages:
+
+1. **Visual Understanding**: Each basis function's shape is visible and can be plotted
+2. **Local Control**: Each grid interval corresponds to a local basis function
+3. **Smoothness Guarantee**: Learned functions are naturally smooth
+4. **Symbolic Expression**: B-splines can be converted to piecewise polynomial expressions
+
+**Adaptive Grid**
+
+KAN supports adaptive grid updates, dynamically adjusting grid point positions based on input data distribution to better fit the data.
+
+**Why Adaptive Grid is Needed**
+
+Fixed grids have problems with non-uniform data distributions:
+
+1. **Sparse Data Regions**: Grid points too dense, wasting computation
+2. **Dense Data Regions**: Grid points too sparse, insufficient fitting accuracy
+3. **Boundary Effects**: Fixed grids may not cover actual data range
+
+**Adaptive Grid Algorithm**
+
+Riemann's KAN implementation uses the following adaptive strategy:
+
+**Step 1: Compute Current Spline Output**
+
+.. code-block:: python
+
+    splines = self.b_splines(x)
+    unreduced_spline_output = splines @ orig_coeff
+
+**Step 2: Build Adaptive Grid**
+
+Based on actual data distribution:
+
+.. math::
+
+    \text{grid}_{\text{adaptive}} = \text{sorted_data}\left[\text{linspace}(0, N-1, \text{grid_size}+1)\right]
+
+**Step 3: Build Uniform Grid**
+
+Covering data range with uniform spacing:
+
+.. math::
+
+    \text{grid}_{\text{uniform}} = \text{linspace}(\min(x)-\epsilon, \max(x)+\epsilon, \text{grid_size}+1)
+
+**Step 4: Mix Grids**
+
+Combining adaptive and uniform grids using ``grid_eps``:
+
+.. math::
+
+    \text{grid} = \text{grid_eps} \cdot \text{grid}_{\text{uniform}} + (1 - \text{grid_eps}) \cdot \text{grid}_{\text{adaptive}}
+
+**Step 5: Extend Boundaries**
+
+Adding extra nodes at both ends:
+
+.. code-block:: python
+
+    grid = concatenate([
+        grid[:1] - step * arange(spline_order, 0, -1),
+        grid,
+        grid[-1:] + step * arange(1, spline_order + 1)
+    ])
+
+**Step 6: Update Spline Coefficients**
+
+Using least squares to map old grid to new grid:
+
+.. code-block:: python
+
+    self.spline_weight.data = self.curve2coeff(x, unreduced_spline_output).data
+
+**Algorithm Advantages**:
+
+1. **Data-Driven**: Grid automatically adapts to data distribution
+2. **Smooth Transition**: Mixing strategy avoids training instability
+3. **Computationally Efficient**: Only updates when necessary (e.g., every 20 epochs)
+
+KAN Network Application Scenarios
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+KAN networks are particularly suitable for the following scenarios:
+
+**1. Tasks Requiring High Interpretability**
+
+- Scientific computing and physical modeling
+- Tasks requiring understanding of feature importance
+- Explainable AI (XAI) applications
+
+**2. Function Fitting and Symbolic Regression**
+
+- Discovering mathematical formulas behind data
+- Physical law discovery
+- Equation fitting
+
+**3. Few-Shot Learning**
+
+- Higher parameter efficiency
+- Better performance with limited data
+- Avoids overfitting
+
+**4. Tasks Requiring Smooth Outputs**
+
+- B-splines provide smooth function approximation
+- Suitable for applications requiring continuous derivatives
+- Physical simulation and control systems
+
+**5. Comparison with Traditional MLPs**
+
++----------------------+----------------+------------------------+
+| Feature              | MLP            | KAN                    |
++======================+================+========================+
+| Activation           | Fixed          | Learnable (B-spline)   |
++----------------------+----------------+------------------------+
+| Interpretability     | Low            | High                   |
++----------------------+----------------+------------------------+
+| Parameter Efficiency | Average        | High                   |
++----------------------+----------------+------------------------+
+| Training Speed       | Fast           | Slower                 |
++----------------------+----------------+------------------------+
+| Use Cases            | General        | Scientific, XAI        |
++----------------------+----------------+------------------------+
+
+Riemann's KAN Module
+~~~~~~~~~~~~~~~~~~~~
+
+Riemann provides a complete KAN implementation in the ``riemann.nn.kan`` module:
+
+**Main Components**:
+
+- ``KANLinear``: KAN linear layer, the core building block
+- ``KAN``: Multi-layer KAN network container
+
+**Features**:
+
+- Efficient matrix multiplication implementation
+- Support for adaptive grid updates
+- L1 regularization and entropy regularization
+- Full compatibility with Riemann autograd
+
+KANLinear Module
+~~~~~~~~~~~~~~~~
+
+**Structure Description**
+
+KANLinear is the basic building block of KAN networks, containing the following parameters:
+
+**Parameters**:
+
+- ``in_features``: Input feature dimension
+- ``out_features``: Output feature dimension
+- ``grid_size``: Grid size, controls the number of B-spline segments (default: 5)
+- ``spline_order``: B-spline order, controls smoothness (default: 3)
+- ``scale_noise``: Noise scaling coefficient for initialization (default: 0.1)
+- ``scale_base``: Base function weight scaling coefficient (default: 1.0)
+- ``scale_spline``: Spline weight scaling coefficient (default: 1.0)
+- ``enable_standalone_scale_spline``: Whether to enable independent spline scaling (default: True)
+- ``base_activation``: Base function activation function (default: SiLU)
+- ``grid_eps``: Interpolation coefficient for grid updates (default: 0.02)
+- ``grid_range``: Grid value range (default: [-1, 1])
+
+**Internal Parameters**:
+
+- ``base_weight``: Base function path weights, shape ``(out_features, in_features)``
+- ``spline_weight``: Spline path weights, shape ``(out_features, in_features, grid_size + spline_order)``
+- ``spline_scaler``: Spline scaling factor, shape ``(out_features, in_features)`` (optional)
+- ``grid``: B-spline grid points, shape ``(in_features, grid_size + 2*spline_order + 1)``
+
+**Usage Examples**
+
+Basic usage example:
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann.nn import KANLinear
+
+    # Create KAN linear layer
+    layer = KANLinear(
+        in_features=10,
+        out_features=5,
+        grid_size=5,
+        spline_order=3
+    )
+
+    # Input data
+    x = rm.randn(4, 10)  # (batch_size, in_features)
+
+    # Forward pass
+    output = layer(x)
+    print(f"Output shape: {output.shape}")  # (4, 5)
+
+Training with adaptive grid updates:
+
+.. code-block:: python
+
+    # Update grid during training
+    for epoch in range(num_epochs):
+        for batch in dataloader:
+            x, y = batch
+            
+            # Update grid every few epochs
+            if epoch % 20 == 0:
+                layer.update_grid(x)
+            
+            output = layer(x)
+            loss = criterion(output, y)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+Using regularization:
+
+.. code-block:: python
+
+    # Compute regularization loss
+    reg_loss = layer.regularization_loss(
+        regularize_activation=1.0,
+        regularize_entropy=1.0
+    )
+    
+    # Total loss = task loss + regularization loss
+    total_loss = task_loss + 0.01 * reg_loss
+
+KAN Container Module
+~~~~~~~~~~~~~~~~~~~~
+
+**Structure Description**
+
+KAN is a container for multi-layer KAN networks, automatically stacking multiple KANLinear layers.
+
+**Parameters**:
+
+- ``layers_hidden``: List of hidden layer dimensions, e.g., ``[28*28, 64, 10]``
+- ``grid_size``: Grid size (default: 5)
+- ``spline_order``: B-spline order (default: 3)
+- ``scale_noise``: Noise scaling coefficient (default: 0.1)
+- ``scale_base``: Base function weight scaling coefficient (default: 1.0)
+- ``scale_spline``: Spline weight scaling coefficient (default: 1.0)
+- ``base_activation``: Base function activation function (default: SiLU)
+- ``grid_eps``: Grid update interpolation coefficient (default: 0.02)
+- ``grid_range``: Grid value range (default: [-1, 1])
+
+**Usage Examples**
+
+Create multi-layer KAN network:
+
+.. code-block:: python
+
+    from riemann.nn import KAN
+
+    # Create multi-layer KAN network
+    model = KAN(
+        layers_hidden=[784, 64, 32, 10],
+        grid_size=5,
+        spline_order=3
+    )
+
+    # Input data
+    x = rm.randn(4, 784)
+
+    # Forward pass
+    output = model(x)
+    print(f"Output shape: {output.shape}")  # (4, 10)
+
+Update grid during training:
+
+.. code-block:: python
+
+    # Update grid during forward pass
+    output = model(x, update_grid=True)
+
+Complete training example:
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann.nn import KAN
+    from riemann.optim import Adam
+
+    # Create model
+    model = KAN([784, 64, 10], grid_size=5, spline_order=3)
+    optimizer = Adam(model.parameters(), lr=0.001)
+    criterion = rm.nn.CrossEntropyLoss()
+
+    # Training loop
+    for epoch in range(100):
+        for batch_idx, (data, target) in enumerate(train_loader):
+            # Flatten images
+            data = data.view(data.size(0), -1)
+            
+            # Update grid every 20 epochs
+            update_grid = (epoch % 20 == 0 and batch_idx == 0)
+            
+            # Forward pass
+            output = model(data, update_grid=update_grid)
+            
+            # Compute loss
+            loss = criterion(output, target)
+            
+            # Add regularization
+            reg_loss = model.regularization_loss()
+            total_loss = loss + 0.01 * reg_loss
+            
+            # Backward pass
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+
+KAN Design Guidelines
+~~~~~~~~~~~~~~~~~~~~~
+
+1. **Grid Size Selection**:
+   
+   - Small grid (3-5): Suitable for simple functions, fewer parameters
+   - Large grid (10-20): Suitable for complex functions, but more parameters
+   - Recommend starting with 5 and adjusting based on task
+
+2. **Spline Order Selection**:
+   
+   - 1st order: Linear splines, discontinuous derivatives
+   - 3rd order: Cubic splines, recommended default
+   - 5th order: Higher smoothness, but more computation
+
+3. **Grid Update Strategy**:
+   
+   - Update frequently in early training (every 10-20 epochs)
+   - Reduce update frequency in later training
+   - Avoid updating every batch (computational overhead)
+
+4. **Regularization Usage**:
+   
+   - L1 regularization promotes sparsity
+   - Entropy regularization promotes selectivity
+   - Regularization coefficient recommended 0.001-0.01
    - Gradient clipping prevents gradient explosion
