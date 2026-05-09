@@ -179,7 +179,10 @@ def sigmoid(x: TN) -> TN:
                    arrlib.where(x_data < -20, 0.0, 
                            1. / (1. + arrlib.exp(-x_data))))
     
-    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
+    ret = tensor(data, 
+        device=x.device, 
+        requires_grad = is_grad_enabled() and x.requires_grad
+    )
     
     if ret.requires_grad:
         ret.fromvars = (x,)
@@ -236,11 +239,30 @@ def softmax(x:TN, dim:int)->TN:
     # 确保dim是整数类型
     if not isinstance(dim, int):
         raise ValueError(f"dim必须是整数类型，当前类型: {type(dim)}")
-    # 当dim是整数时，max函数应返回带有values属性的对象
-    max_result = max(x, dim=dim, keepdim=True)
-    x_max = x - max_result.values
-    ex = exp(x_max)
-    return ex / sum(ex, dim=dim, keepdim=True)
+    
+    arrlib = x._get_array_lib()
+    max_result = x.data.max(axis=dim, keepdims=True)
+    x_max = x.data - max_result
+    ex = arrlib.exp(x_max)
+    ret_data = ex / ex.sum(axis=dim, keepdims=True)
+
+    requires_grad = is_grad_enabled() and x.requires_grad
+    ret = tensor(ret_data, device=x.device, requires_grad=requires_grad)
+    
+    if ret.requires_grad:
+        ret.fromvars = (x,)
+        ret.parms = (dim,)
+        ret.gradfuncs = (_softmax_backward,)
+
+    return ret
+
+def _softmax_backward(result_tensor: TN, i: int) -> TN:
+    """梯度计算：y * (g - sum(y*g)"""
+    y = result_tensor
+    g = y.grad_value
+    dim = y.parms[i]
+    d = (y*g).sum(dim=dim, keepdim=True)
+    return y * (g - d)
 
 # 修改log_softmax函数，添加显式类型检查
 def log_softmax(x: TN, dim: int = -1) -> TN:
@@ -252,15 +274,7 @@ def log_softmax(x: TN, dim: int = -1) -> TN:
     if not isinstance(dim, int):
         raise ValueError(f"dim必须是整数类型，当前类型: {type(dim)}")
     
-    # 当dim是整数时，max函数应返回带有values属性的对象
-    _max = max(x, dim=dim, keepdim=True).values
-    x_max = x - _max
-
-    # 计算指数并求和
-    exp_x = exp(x_max)
-    sum_exp_x = sum(exp_x, dim=dim, keepdim=True)
-    # 应用log-sum-exp公式
-    return x_max - log(sum_exp_x)
+    return log(softmax(x,dim))
 
 def relu(x: TN) -> TN:
     """前向传播：max(0, x)"""
@@ -271,7 +285,11 @@ def relu(x: TN) -> TN:
     # 对于输入为负值，直接返回0.0以避免数值不稳定性
     arrlib = x._get_array_lib()
     data = arrlib.maximum(0, x.data)
-    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
+    ret = tensor(
+        data, 
+        device=x.device, 
+        requires_grad = is_grad_enabled() and x.requires_grad
+    )
     
     # 注册梯度函数
     if ret.requires_grad:
@@ -290,7 +308,11 @@ def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
     # 对于输入为负值，返回alpha倍的输入值
     arrlib = x._get_array_lib()
     data = arrlib.where(x.data > 0, x.data, alpha * x.data)
-    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
+    ret = tensor(
+        data, 
+        device=x.device, 
+        requires_grad = is_grad_enabled() and x.requires_grad
+    )
     
     if ret.requires_grad:
         ret.fromvars = (x,)
@@ -313,7 +335,11 @@ def prelu(x: TN, alpha: TN) -> TN:
     # 前向计算：alpha为可训练参数，用于控制负值的缩放
     arrlib = x._get_array_lib()
     data = arrlib.where(x.data > 0, x.data, alpha.data * x.data)
-    ret = tensor(data, device=x.device, requires_grad=(x.requires_grad or alpha.requires_grad))
+    ret = tensor(
+        data, 
+        device=x.device, 
+        requires_grad = is_grad_enabled() and x.requires_grad
+    )
     
     if ret.requires_grad:
         ret.fromvars = (x, alpha)
@@ -349,7 +375,11 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
 
     # 前向计算
     data = arrlib.where(x.data > 0, x.data, alpha * x.data)
-    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
+    ret = tensor(
+        data, 
+        device=x.device, 
+        requires_grad = is_grad_enabled() and x.requires_grad
+    )
     
     if x.requires_grad:
         ret.fromvars = (x,)
@@ -376,7 +406,11 @@ def gelu(x: TN) -> TN:
     c = arrlib.sqrt(2.0 / arrlib.pi, dtype=x.dtype)
     x_data = x.data
     data = 0.5 * x_data * (1.0 + arrlib.tanh(c * (x_data + 0.044715 * x_data**3.0)))
-    ret = tensor(data, device=x.device, requires_grad=x.requires_grad)
+    ret = tensor(
+        data, 
+        device=x.device, 
+        requires_grad = is_grad_enabled() and x.requires_grad
+    )
     
     if ret.requires_grad:
         ret.fromvars = (x,)
@@ -396,7 +430,7 @@ def _gelu_backward(result_tensor: TN, i: int) -> TN:
 
 def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
     """
-    带阈值切换的稳定softplus实现[12,13](@ref)
+    带阈值切换的稳定softplus实现
     特性：
     1. beta参数控制曲线陡峭度
     2. 输入超过阈值时切换为线性计算
