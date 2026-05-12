@@ -53,7 +53,6 @@ that applies the respective activation function from the functional module.
 """
 from .module import *
 from .functional import *
-from ..tensordef import tanh
 
 class ReLU(Module):
     """修正线性单元激活模块 (Rectified Linear Unit)
@@ -474,6 +473,92 @@ class Softplus(Module):
     def forward(self, x: TN) -> TN:
         return softplus(x, self.beta, self.threshold)  # 调用带参数的实现
 
+class ELU(Module):
+    """指数线性单元激活模块 (Exponential Linear Unit)
+    
+    应用ELU函数逐元素到输入张量，是ReLU的改进版本。
+    负值区域使用指数函数，输出均值更接近零，有助于加速收敛。
+    
+    数学公式::
+    
+        ELU(x) = { x,                     if x > 0
+                 { alpha * (exp(x) - 1),  if x <= 0
+    
+    Args:
+        alpha (float, optional): ELU公式中的alpha值，控制负值区域的饱和程度。
+            默认值: 1.0
+        inplace (bool, optional): 是否就地执行操作。默认值: False
+    
+    Shape:
+        - Input: 任意形状的张量 (*)
+        - Output: 与输入相同形状的张量 (*)
+    
+    Examples::
+    
+        >>> m = ELU()
+        >>> input = rm.randn(2, 3)
+        >>> output = m(input)
+    
+    Note:
+        ELU函数的特点：
+        - 输出均值接近零，有助于加速收敛
+        - 负值区域平滑，缓解梯度消失问题
+        - alpha参数控制负值区域的饱和程度
+        - 相比ReLU，计算成本稍高（需要指数运算）
+        - 适用于需要零中心化输出的场景
+        - 论文: Fast and Accurate Deep Network Learning by Exponential Linear Units (ELUs)
+    """
+    def __init__(self, alpha=1.0, inplace=False):
+        super().__init__()
+        self.alpha = alpha
+        self.inplace = inplace
+    
+    def forward(self, x: TN) -> TN:
+        return elu(x, self.alpha)
+
+
+class CELU(Module):
+    """连续可微指数线性单元激活模块 (Continuously Differentiable Exponential Linear Unit)
+    
+    应用CELU函数逐元素到输入张量，是ELU的连续可微版本。
+    在x=0处连续可微，而ELU在x=0处的导数有跳跃。
+    
+    数学公式::
+    
+        CELU(x) = max(0, x) + min(0, alpha * (exp(x / alpha) - 1))
+                = { x,                               if x > 0
+                  { alpha * (exp(x / alpha) - 1),    if x <= 0
+    
+    Args:
+        alpha (float, optional): CELU公式中的alpha值。默认值: 1.0
+        inplace (bool, optional): 是否就地执行操作。默认值: False
+    
+    Shape:
+        - Input: 任意形状的张量 (*)
+        - Output: 与输入相同形状的张量 (*)
+    
+    Examples::
+    
+        >>> m = CELU()
+        >>> input = rm.randn(2, 3)
+        >>> output = m(input)
+    
+    Note:
+        CELU函数的特点：
+        - 在x=0处连续可微，优化更稳定
+        - 与ELU类似，但负值区域的指数项除以alpha
+        - 适用于需要平滑梯度的场景
+        - 论文: Continuously Differentiable Exponential Linear Units
+    """
+    def __init__(self, alpha=1.0, inplace=False):
+        super().__init__()
+        self.alpha = alpha
+        self.inplace = inplace
+    
+    def forward(self, x: TN) -> TN:
+        return celu(x, self.alpha)
+
+
 class Tanh(Module):
     """双曲正切激活模块 (Hyperbolic Tangent Activation Function)
     
@@ -517,6 +602,52 @@ class Tanh(Module):
     """
     def forward(self, x: TN) -> TN:
         return tanh(x)  # 直接调用全局tanh函数
+
+
+class SELU(Module):
+    """自归一化指数线性单元激活模块 (Scaled Exponential Linear Unit)
+    
+    应用SELU函数逐元素到输入张量，具有自归一化特性，
+    在网络深度增加时仍能保持输出的均值和方差稳定。
+    
+    数学公式::
+    
+        SELU(x) = scale * (max(0, x) + min(0, alpha * (exp(x) - 1)))
+                = { scale * x,                     if x > 0
+                  { scale * alpha * (exp(x) - 1),  if x <= 0
+    
+    其中:
+        - alpha = 1.6732632423543772848170429916717
+        - scale = 1.0507009873554804934193349852946
+    
+    Args:
+        inplace (bool, optional): 是否就地执行操作。默认值: False
+    
+    Shape:
+        - Input: 任意形状的张量 (*)
+        - Output: 与输入相同形状的张量 (*)
+    
+    Examples::
+    
+        >>> m = SELU()
+        >>> input = rm.randn(2, 3)
+        >>> output = m(input)
+    
+    Note:
+        SELU函数的特点：
+        - 具有自归一化属性，保持输出的均值接近0，方差接近1
+        - 适用于深层网络，减少了对Batch Normalization的依赖
+        - 在正数区间是线性的，在负数区间是指数函数
+        - 参数alpha和scale来自论文 Self-Normalizing Neural Networks
+        - 使用kaiming_normal初始化时应设置 nonlinearity='linear'
+        - 需要配合特定的初始化方法才能达到自归一化效果
+    """
+    def __init__(self, inplace=False):
+        super().__init__()
+        self.inplace = inplace
+    
+    def forward(self, x: TN) -> TN:
+        return selu(x)
 
 
 class SiLU(Module):

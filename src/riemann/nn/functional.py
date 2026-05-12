@@ -85,7 +85,6 @@ All functions in this module are designed to work with the Riemann Tensor (TN) t
 support automatic differentiation through properly implemented backward functions.
 """
 
-from typing import Optional
 from ..tensordef import *
 
 def linear(input: TN, weight: TN, bias: TN | None = None) -> TN:
@@ -165,16 +164,33 @@ def linear(input: TN, weight: TN, bias: TN | None = None) -> TN:
 
 
 def sigmoid(x: TN) -> TN:
-    """前向传播：1.0 / (1.0 + exp(-x))"""
+    """
+    Sigmoid 激活函数
+    
+    数学公式:
+        sigmoid(x) = 1 / (1 + exp(-x))
+    
+    数值稳定性优化:
+        - 当 x > 20 时，直接返回 1.0 以避免 exp 溢出
+        - 当 x < -20 时，直接返回 0.0 以避免 exp 下溢
+    
+    参数:
+        x (TN): 输入张量，形状任意
+        
+    返回:
+        TN: Sigmoid 激活后的张量，输出范围 (0, 1)
+        
+    示例:
+        >>> x = tensor([-1.0, 0.0, 1.0])
+        >>> sigmoid(x)
+        tensor([0.2689, 0.5000, 0.7311])
+    """
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
     x_data = x.data
-    # 对每个元素单独处理，提高数值稳定性
-    # 对于较大的正值，直接返回1.0以避免exp溢出
-    # 对于较小的负值，直接返回0.0以避免exp溢出
-    # 对于中间值，使用标准公式
     arrlib = x._get_array_lib()
+    # 数值稳定性处理：对极端值使用硬截断
     data = arrlib.where(x_data > 20, 1.0, 
                    arrlib.where(x_data < -20, 0.0, 
                            1. / (1. + arrlib.exp(-x_data))))
@@ -232,7 +248,26 @@ def silu(input: TN) -> TN:
 
 # softmax函数定义
 def softmax(x:TN, dim:int)->TN:
-    """计算输入张量的softmax函数"""
+    """
+    Softmax 激活函数
+    
+    数学公式:
+        softmax(x_i) = exp(x_i) / sum(exp(x_j))
+    
+    使用数值稳定的实现：先减去最大值再计算指数。
+    
+    参数:
+        x (TN): 输入张量
+        dim (int): 计算 softmax 的维度
+        
+    返回:
+        TN: Softmax 激活后的张量，沿指定 dim 维度的元素和为 1
+        
+    示例:
+        >>> x = tensor([[1.0, 2.0, 3.0]])
+        >>> softmax(x, dim=1)
+        tensor([[0.0900, 0.2447, 0.6652]])
+    """
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
@@ -266,7 +301,27 @@ def _softmax_backward(result_tensor: TN, i: int) -> TN:
 
 # 修改log_softmax函数，添加显式类型检查
 def log_softmax(x: TN, dim: int = -1) -> TN:
-    """数值稳定的log(softmax)实现，使用log-sum-exp技巧"""
+    """
+    Log Softmax 激活函数
+    
+    数学公式:
+        log_softmax(x_i) = log(exp(x_i) / sum(exp(x_j)))
+                         = x_i - log(sum(exp(x_j)))
+    
+    数值稳定实现，比先计算 softmax 再取 log 更稳定。
+    
+    参数:
+        x (TN): 输入张量
+        dim (int): 计算 log_softmax 的维度，默认为 -1（最后一维）
+        
+    返回:
+        TN: Log Softmax 激活后的张量
+        
+    示例:
+        >>> x = tensor([[1.0, 2.0, 3.0]])
+        >>> log_softmax(x, dim=1)
+        tensor([[-2.4076, -1.4076, -0.4076]])
+    """
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
@@ -277,12 +332,28 @@ def log_softmax(x: TN, dim: int = -1) -> TN:
     return log(softmax(x,dim))
 
 def relu(x: TN) -> TN:
-    """前向传播：max(0, x)"""
+    """
+    ReLU (Rectified Linear Unit) 激活函数
+    
+    数学公式:
+        ReLU(x) = max(0, x)
+        
+        即: 当 x > 0 时，输出 x；当 x <= 0 时，输出 0
+    
+    参数:
+        x (TN): 输入张量，形状任意
+        
+    返回:
+        TN: ReLU 激活后的张量，所有负值被置为 0
+        
+    示例:
+        >>> x = tensor([-1.0, 0.0, 1.0, 2.0])
+        >>> relu(x)
+        tensor([0., 0., 1., 2.])
+    """
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
     
-    # 前向计算：使用np.maximum实现条件选择
-    # 对于输入为负值，直接返回0.0以避免数值不稳定性
     arrlib = x._get_array_lib()
     data = arrlib.maximum(0, x.data)
     ret = tensor(
@@ -304,8 +375,25 @@ def _relu_backward(result_tensor: TN, i: int) -> TN:
     return result_tensor.grad_value * mask
 
 def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
-    # 前向计算：使用np.where实现条件选择
-    # 对于输入为负值，返回alpha倍的输入值
+    """
+    Leaky ReLU 激活函数
+    
+    数学公式:
+        LeakyReLU(x) = x           (当 x > 0 时)
+        LeakyReLU(x) = alpha * x   (当 x <= 0 时)
+    
+    参数:
+        x (TN): 输入张量，形状任意
+        alpha (float): 负值部分的斜率，默认为 0.01
+        
+    返回:
+        TN: Leaky ReLU 激活后的张量
+        
+    示例:
+        >>> x = tensor([-1.0, 0.0, 1.0])
+        >>> leaky_relu(x, alpha=0.1)
+        tensor([-0.1,  0.0,  1.0])
+    """
     arrlib = x._get_array_lib()
     data = arrlib.where(x.data > 0, x.data, alpha * x.data)
     ret = tensor(
@@ -394,14 +482,282 @@ def _rrelu_grad_x(result_tensor: TN, i: int) -> TN:
     grad = result_tensor.grad_value * (mask + (1.0 - mask) * alpha)
     return grad
 
+def elu(x: TN, alpha: float = 1.0) -> TN:
+    """
+    ELU (Exponential Linear Unit) 激活函数
+    
+    数学公式:
+        当 x > 0 时:  ELU(x) = x
+        当 x <= 0 时: ELU(x) = alpha * (exp(x) - 1)
+    
+    论文: Fast and Accurate Deep Network Learning by Exponential Linear Units (ELUs)
+    
+    参数:
+        x (TN): 输入张量
+        alpha (float): ELU公式中的alpha值，控制负值区域的饱和程度。默认值: 1.0
+        
+    返回:
+        TN: ELU激活后的张量
+        
+    示例:
+        >>> x = tensor([-1.0, 0.0, 1.0])
+        >>> elu(x)
+        tensor([-0.6321,  0.0000,  1.0000])
+        >>> elu(x, alpha=0.5)
+        tensor([-0.3161,  0.0000,  1.0000])
+    """
+    if not isinstance(x, TN): 
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
+    
+    arrlib = x._get_array_lib()
+    x_data = x.data
+    
+    # 计算 ELU: x (if x > 0) else alpha * (exp(x) - 1)
+    positive_part = x_data
+    negative_part = alpha * (arrlib.exp(x_data) - 1.0)
+    data = arrlib.where(x_data > 0, positive_part, negative_part)
+    
+    ret = tensor(
+        data,
+        device=x.device,
+        requires_grad=is_grad_enabled() and x.requires_grad
+    )
+    
+    if ret.requires_grad:
+        ret.fromvars = (x,)
+        ret.parms = (alpha,)
+        ret.gradfuncs = (_elu_backward,)
+    
+    return ret
+
+def _elu_backward(result_tensor: TN, i: int) -> TN:
+    """ELU 梯度计算函数"""
+    x = result_tensor.fromvars[0]
+    alpha = result_tensor.parms[0]
+    
+    x_data = x.data
+    arrlib = x._get_array_lib()
+    
+    # 梯度: 1 (if x > 0) else alpha * exp(x)
+    positive_grad = 1.0
+    negative_grad = alpha * arrlib.exp(x_data)
+    grad = arrlib.where(x_data > 0, positive_grad, negative_grad)
+    
+    return result_tensor.grad_value * grad
+
+def celu(x: TN, alpha: float = 1.0) -> TN:
+    """
+    CELU (Continuously Differentiable Exponential Linear Unit) 激活函数
+    
+    数学公式:
+        CELU(x) = max(0, x) + min(0, alpha * (exp(x / alpha) - 1))
+        
+    等价于:
+        当 x > 0 时:  CELU(x) = x
+        当 x <= 0 时: CELU(x) = alpha * (exp(x / alpha) - 1)
+    
+    论文: Continuously Differentiable Exponential Linear Units
+    
+    与ELU的区别: CELU在x=0处连续可微，而ELU在x=0处的导数有跳跃。
+    
+    参数:
+        x (TN): 输入张量
+        alpha (float): CELU公式中的alpha值。默认值: 1.0
+        
+    返回:
+        TN: CELU激活后的张量
+        
+    示例:
+        >>> x = tensor([-1.0, 0.0, 1.0])
+        >>> celu(x)
+        tensor([-0.6321,  0.0000,  1.0000])
+        >>> celu(x, alpha=2.0)
+        tensor([-0.8647,  0.0000,  1.0000])
+    """
+    if not isinstance(x, TN): 
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
+    
+    arrlib = x._get_array_lib()
+    x_data = x.data
+    
+    # 计算 CELU: x (if x > 0) else alpha * (exp(x / alpha) - 1)
+    positive_part = x_data
+    negative_part = alpha * (arrlib.exp(x_data / alpha) - 1.0)
+    data = arrlib.where(x_data > 0, positive_part, negative_part)
+    
+    ret = tensor(
+        data,
+        device=x.device,
+        requires_grad=is_grad_enabled() and x.requires_grad
+    )
+    
+    if ret.requires_grad:
+        ret.fromvars = (x,)
+        ret.parms = (alpha,)
+        ret.gradfuncs = (_celu_backward,)
+    
+    return ret
+
+def _celu_backward(result_tensor: TN, i: int) -> TN:
+    """CELU 梯度计算函数"""
+    x = result_tensor.fromvars[0]
+    alpha = result_tensor.parms[0]
+    
+    x_data = x.data
+    arrlib = x._get_array_lib()
+    
+    # 梯度: 1 (if x > 0) else exp(x / alpha)
+    positive_grad = 1.0
+    negative_grad = arrlib.exp(x_data / alpha)
+    grad = arrlib.where(x_data > 0, positive_grad, negative_grad)
+    
+    return result_tensor.grad_value * grad
+
+def tanh(input: TN) -> TN:
+    """
+    Tanh (双曲正切) 激活函数
+    
+    数学公式:
+        tanh(x) = (exp(x) - exp(-x)) / (exp(x) + exp(-x))
+                = sinh(x) / cosh(x)
+                = 2 * sigmoid(2x) - 1
+    
+    输出范围在 (-1, 1) 之间，具有零中心化特性。
+    
+    参数:
+        input (TN): 输入张量
+        
+    返回:
+        TN: Tanh激活后的张量
+        
+    示例:
+        >>> x = tensor([-1.0, 0.0, 1.0])
+        >>> tanh(x)
+        tensor([-0.7616,  0.0000,  0.7616])
+    """
+    if not isinstance(input, TN): 
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    arrlib = input._get_array_lib()
+    
+    # 计算 tanh
+    data = arrlib.tanh(input.data)
+    
+    ret = tensor(
+        data,
+        device=input.device,
+        requires_grad=is_grad_enabled() and input.requires_grad
+    )
+    
+    if ret.requires_grad:
+        ret.fromvars = (input,)
+        ret.gradfuncs = (_tanh_backward,)
+    
+    return ret
+
+def _tanh_backward(result_tensor: TN, i: int) -> TN:
+    """Tanh 梯度计算函数
+    
+    导数公式: tanh'(x) = 1 - tanh(x)^2
+    """
+    # tanh'(x) = 1 - tanh(x)^2
+    tanh_x = result_tensor.data
+    grad = 1.0 - tanh_x * tanh_x
+    
+    return result_tensor.grad_value * grad
+
+def selu(x: TN) -> TN:
+    """
+    SELU (Scaled Exponential Linear Unit) 激活函数
+    
+    数学公式:
+        当 x > 0 时:  SELU(x) = scale * x
+        当 x <= 0 时: SELU(x) = scale * alpha * (exp(x) - 1)
+    
+    其中 scale = 1.0507009873554804934193349852946,
+          alpha = 1.6732632423543772848170429916717
+    
+    SELU 具有自归一化属性，在网络深度增加时仍能保持输出的均值和方差稳定。
+    
+    参数:
+        x (TN): 输入张量，形状任意
+        
+    返回:
+        TN: SELU 激活后的张量
+        
+    示例:
+        >>> x = tensor([-1.0, 0.0, 1.0])
+        >>> selu(x)
+        tensor([-1.1113,  0.0000,  1.0507])
+    """
+    if not isinstance(x, TN): 
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
+    
+    # SELU 参数 (来自论文: Self-Normalizing Neural Networks)
+    alpha = 1.6732632423543772848170429916717
+    scale = 1.0507009873554804934193349852946
+    
+    arrlib = x._get_array_lib()
+    x_data = x.data
+    
+    # 计算 SELU: scale * x (if x > 0) else scale * alpha * (exp(x) - 1)
+    positive_part = scale * x_data
+    negative_part = scale * alpha * (arrlib.exp(x_data) - 1.0)
+    data = arrlib.where(x_data > 0, positive_part, negative_part)
+    
+    ret = tensor(
+        data,
+        device=x.device,
+        requires_grad=is_grad_enabled() and x.requires_grad
+    )
+    
+    if ret.requires_grad:
+        ret.fromvars = (x,)
+        ret.parms = (alpha, scale)
+        ret.gradfuncs = (_selu_backward,)
+    
+    return ret
+
+def _selu_backward(result_tensor: TN, i: int) -> TN:
+    """SELU 梯度计算函数"""
+    x = result_tensor.fromvars[0]
+    alpha = result_tensor.parms[0]
+    scale = result_tensor.parms[1]
+    
+    x_data = x.data
+    arrlib = x._get_array_lib()
+    
+    # 梯度: scale (if x > 0) else scale * alpha * exp(x)
+    positive_grad = scale
+    negative_grad = scale * alpha * arrlib.exp(x_data)
+    grad = arrlib.where(x_data > 0, positive_grad, negative_grad)
+    
+    return result_tensor.grad_value * grad
+
 # 修改gelu函数实现，使用PyTorch兼容的精确版本
 def gelu(x: TN) -> TN:
-    """高斯误差线性单元，使用与PyTorch完全一致的实现"""
+    """
+    GELU (Gaussian Error Linear Unit) 激活函数
+    
+    数学公式:
+        GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    
+    基于 Hendrycks & Gimpel 2016 的精确实现，与 PyTorch 完全一致。
+    
+    参数:
+        x (TN): 输入张量，形状任意
+        
+    返回:
+        TN: GELU 激活后的张量
+        
+    示例:
+        >>> x = tensor([-1.0, 0.0, 1.0])
+        >>> gelu(x)
+        tensor([-0.1587, 0.0000, 0.8413])
+    """
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
-    # 使用PyTorch使用的GELU公式（Hendrycks & Gimpel 2016）
-    # 精确的GELU公式: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
     arrlib = x._get_array_lib()
     c = arrlib.sqrt(2.0 / arrlib.pi, dtype=x.dtype)
     x_data = x.data
@@ -453,6 +809,30 @@ def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
 # 在non-reduction模式下保留所有样本位置，只是将被忽略样本的损失值设为0
 def nll_loss(input: TN, target: TN, weight: TN | None = None,
              ignore_index: int = -100, reduction: str = 'mean') -> TN:
+    """
+    负对数似然损失 (Negative Log Likelihood Loss)
+    
+    数学公式:
+        loss = -sum(input[target])
+    
+    通常与 log_softmax 配合使用，input 应为 log 概率。
+    
+    参数:
+        input (TN): 输入张量，形状为 (N, C) 或 (N, C, ...)，应为 log 概率
+        target (TN): 目标类别索引，形状为 (N,) 或 (N, ...)
+        weight (TN, optional): 各类别的权重，形状为 (C,)
+        ignore_index (int): 忽略的类别索引，默认为 -100
+        reduction (str): 损失聚合方式，可选 'none' | 'sum' | 'mean'，默认为 'mean'
+        
+    返回:
+        TN: 负对数似然损失值
+        
+    示例:
+        >>> input = tensor([[-1.0, -2.0, -0.5]])  # log probabilities
+        >>> target = tensor([2])
+        >>> nll_loss(input, target)
+        tensor(0.5)
+    """
     if not isinstance(input, TN):
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
 
@@ -584,8 +964,26 @@ def _get_reduction(size_average, reduce):
 # 新增损失函数实现
 def mse_loss(input: TN, target: TN, size_average=None, reduce=None, reduction: str = 'mean') -> TN:
     """
-    计算均方误差损失
-    接口与torch.nn.functional.mse_loss一致
+    均方误差损失 (Mean Squared Error Loss)
+    
+    数学公式:
+        MSE = (1/n) * sum((input - target)^2)
+    
+    参数:
+        input (TN): 预测值张量，形状任意
+        target (TN): 目标值张量，形状与 input 相同
+        size_average (bool, optional): 已弃用，请使用 reduction
+        reduce (bool, optional): 已弃用，请使用 reduction
+        reduction (str): 损失聚合方式，可选 'none' | 'sum' | 'mean'，默认为 'mean'
+        
+    返回:
+        TN: 均方误差损失值
+        
+    示例:
+        >>> input = tensor([1.0, 2.0, 3.0])
+        >>> target = tensor([1.5, 2.5, 3.5])
+        >>> mse_loss(input, target)
+        tensor(0.25)
     """
     if not isinstance(input, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
@@ -613,8 +1011,26 @@ def mse_loss(input: TN, target: TN, size_average=None, reduce=None, reduction: s
 
 def l1_loss(input: TN, target: TN, size_average=None, reduce=None, reduction: str = 'mean') -> TN:
     """
-    计算L1损失（绝对误差）
-    接口与torch.nn.functional.l1_loss一致
+    L1 损失 (Mean Absolute Error Loss)
+    
+    数学公式:
+        L1 = (1/n) * sum(|input - target|)
+    
+    参数:
+        input (TN): 预测值张量，形状任意
+        target (TN): 目标值张量，形状与 input 相同
+        size_average (bool, optional): 已弃用，请使用 reduction
+        reduce (bool, optional): 已弃用，请使用 reduction
+        reduction (str): 损失聚合方式，可选 'none' | 'sum' | 'mean'，默认为 'mean'
+        
+    返回:
+        TN: L1 损失值
+        
+    示例:
+        >>> input = tensor([1.0, 2.0, 3.0])
+        >>> target = tensor([1.5, 2.5, 3.5])
+        >>> l1_loss(input, target)
+        tensor(0.5)
     """
     if not isinstance(input, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
@@ -642,8 +1058,34 @@ def l1_loss(input: TN, target: TN, size_average=None, reduce=None, reduction: st
 # 修改smooth_l1_loss函数，使用正确的方式创建beta常量张量
 def smooth_l1_loss(input: TN, target: TN, size_average=None, reduce=None, reduction: str = 'mean', beta: float = 1.0) -> TN:
     """
-    计算平滑L1损失
-    接口与torch.nn.functional.smooth_l1_loss一致
+    平滑 L1 损失 (Smooth L1 Loss / Huber Loss)
+    
+    数学公式:
+        当 |input - target| < beta 时:
+            loss = 0.5 * (input - target)^2 / beta
+        当 |input - target| >= beta 时:
+            loss = |input - target| - 0.5 * beta
+    
+    特点:
+        - 对小误差使用平方损失，对大误差使用线性损失
+        - 比 L1 损失更平滑，比 MSE 对异常值更鲁棒
+    
+    参数:
+        input (TN): 预测值张量，形状任意
+        target (TN): 目标值张量，形状与 input 相同
+        size_average (bool, optional): 已弃用，请使用 reduction
+        reduce (bool, optional): 已弃用，请使用 reduction
+        reduction (str): 损失聚合方式，可选 'none' | 'sum' | 'mean'，默认为 'mean'
+        beta (float): 平滑阈值，默认为 1.0
+        
+    返回:
+        TN: 平滑 L1 损失值
+        
+    示例:
+        >>> input = tensor([1.0, 2.0, 3.0])
+        >>> target = tensor([1.5, 2.5, 10.0])
+        >>> smooth_l1_loss(input, target, beta=1.0)
+        tensor(2.125)
     """
     if not isinstance(input, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
@@ -679,8 +1121,31 @@ def cross_entropy(input: TN, target: TN, weight: TN | None = None,
                  reduce=None, reduction: str = 'mean',
                  label_smoothing: float = 0.0) -> TN:
     """
-    计算交叉熵损失
-    接口与torch.nn.functional.cross_entropy一致
+    交叉熵损失 (Cross Entropy Loss)
+    
+    数学公式:
+        loss = -sum(log(softmax(input)[target]))
+    
+    结合 log_softmax 和 nll_loss，用于多分类问题。
+    
+    参数:
+        input (TN): 预测 logits 张量，形状为 (N, C) 或 (N, C, ...)
+        target (TN): 目标类别索引，形状为 (N,) 或 (N, ...)
+        weight (TN, optional): 各类别的权重，形状为 (C,)
+        size_average (bool, optional): 已弃用，请使用 reduction
+        ignore_index (int): 忽略的类别索引，默认为 -100
+        reduce (bool, optional): 已弃用，请使用 reduction
+        reduction (str): 损失聚合方式，可选 'none' | 'sum' | 'mean'，默认为 'mean'
+        label_smoothing (float): 标签平滑系数，范围 [0.0, 1.0]，默认为 0.0
+        
+    返回:
+        TN: 交叉熵损失值
+        
+    示例:
+        >>> input = tensor([[1.0, 2.0, 3.0]])  # logits
+        >>> target = tensor([2])  # 类别索引
+        >>> cross_entropy(input, target)
+        tensor(0.4076)
     """
     if not isinstance(input, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
