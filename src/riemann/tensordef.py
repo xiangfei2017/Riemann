@@ -3667,7 +3667,7 @@ class TN:
         # 及时精度转换虽然可能会导致梯度张量被复制到一个新类型，但由于保证了梯度一直是低级度，
         # 计算性能反而会提升
         if grad_value.dtype != self.dtype:
-            warnings.warn(f'self.dtype={self.dtype}, received grad_value.dtype={grad_value.dtype}')
+            # warnings.warn(f'self.dtype={self.dtype}, received grad_value.dtype={grad_value.dtype}')
             grad_value = grad_value.type(self.dtype)
         
         if self.grad_value is None:
@@ -7995,31 +7995,48 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
     if x is None or y is None:
         raise RuntimeError('one of x,y is None while the other is Non None')
     
-    if not isinstance(x,TN):
-        # 如果y是张量，使用y的数据类型创建x张量，避免类型提升
-        dt = y.dtype if isinstance(y, TN) else None
-        x = tensor(x, device=cond.device, dtype=dt)
-
-    if not isinstance(y,TN):
-        # 如果x是张量，使用x的数据类型创建y张量，避免类型提升
-        dt = x.dtype if isinstance(x, TN) else None
-        y = tensor(y, device=cond.device, dtype=dt)
+    if isinstance(x,TN):
+        x_data = x.data
+        x_requires_grad = x.requires_grad
+        if cond.device != x.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                           f"but found devices: cond={cond.device}, x={x.device}")
+    else:
+        x_dt = y.dtype if isinstance(y, TN) else infer_data_type(x)
+        x_data = arrlib.array(x, dtype=x_dt)
+        x_requires_grad = False
+    
+    if isinstance(y,TN):
+        y_data = y.data
+        y_requires_grad = y.requires_grad
+        if cond.device != y.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                           f"but found devices: cond={cond.device}, x={y.device}")
+    else:
+        y_dt = x.dtype if isinstance(x, TN) else infer_data_type(y)
+        y_data = arrlib.array(y, dtype=y_dt)
+        y_requires_grad = False
 
     # 条件选择，cond不参与梯度计算
     # 直接使用arrlib.where处理类型转换，遵循NumPy的类型提升规则
-    data = arrlib.where(cond.data, x.data, y.data)
+    data = arrlib.where(cond.data, x_data, y_data)
     # 使用计算结果的数据类型，避免强制类型转换
-    ret = tensor(data, device = cond.device, requires_grad = (is_grad_enabled() and (x.requires_grad or y.requires_grad)))
+    ret = tensor(
+        data,
+        device = cond.device, 
+        requires_grad = (is_grad_enabled() and (x_requires_grad or y_requires_grad))
+    )
     
     if ret.requires_grad:
-        ret.fromvars = (x, y)
-        # 缓存条件掩码，避免在梯度计算中重复转换
-        cond_mask = cond.data
-        # 计算反向掩码，元素级操作自动在正确设备上执行
-        neg_cond_mask = 1.0 - cond_mask
-        ret.parms = (cond_mask, neg_cond_mask)
-        # 使用外部定义的梯度函数，避免每次调用where都创建新的闭包
-        ret.gradfuncs = (_where_backward, _where_backward)
+        if x_requires_grad:
+            ret.fromvars = (x, )
+            ret.parms = (cond,)
+            ret.gradfuncs = (_where_backward, )
+        
+        if y_requires_grad:
+            ret.fromvars = ret.fromvars + (y, )
+            ret.parms = ret.parms + (1.0 - cond,)
+            ret.gradfuncs = ret.gradfuncs + (_where_backward, )
     
     return ret
 
