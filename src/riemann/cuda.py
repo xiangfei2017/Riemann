@@ -62,7 +62,7 @@ try:
         CUPY_AVAILABLE = False
         cp = None
 except ImportError:
-    print("Warning: Cannot import cupy, riemann will only work on CPU")
+    # print("Warning: Cannot import cupy, riemann will only work on CPU")
     CUPY_AVAILABLE = False
     cp = None
 
@@ -126,6 +126,9 @@ class Device:
                 other = Device(other)
         return self.type == other.type and self.index == other.index
     
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
     def __str__(self):
         if self.type == 'cuda':
             return f'cuda:{self.index}'
