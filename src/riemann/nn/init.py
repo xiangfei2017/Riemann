@@ -193,13 +193,13 @@ def calculate_gain(
     ================= ====================================================
     nonlinearity      gain
     ================= ====================================================
-    Linear / Identity :math:`1`
-    Conv{1,2,3}D      :math:`1`
-    Sigmoid           :math:`1`
-    Tanh              :math:`\frac{5}{3}`
-    ReLU              :math:`\sqrt{2}`
-    Leaky Relu        :math:`\sqrt{\frac{2}{1 + \text{negative\_slope}^2}}`
-    SELU              :math:`\frac{3}{4}`
+    Linear / Identity 1
+    Conv{1,2,3}D      1
+    Sigmoid           1
+    Tanh              5/3
+    ReLU              sqrt(2)
+    Leaky Relu        sqrt(2 / (1 + negative_slope^2))
+    SELU              3/4
     ================= ====================================================
 
     Args:
@@ -248,7 +248,7 @@ def calculate_gain(
 def uniform_(tensor: TN, a: float = 0.0, b: float = 1.0) -> TN:
     r"""用均匀分布的值填充输入张量 (Uniform Initialization)
 
-    从均匀分布 :math:`\mathcal{U}(a, b)` 中采样值填充张量。
+    从均匀分布 U(a, b) 中采样值填充张量。
 
     Args:
         tensor: n维张量
@@ -268,7 +268,7 @@ def uniform_(tensor: TN, a: float = 0.0, b: float = 1.0) -> TN:
 def normal_(tensor: TN, mean: float = 0.0, std: float = 1.0) -> TN:
     r"""用正态分布的值填充输入张量 (Normal Initialization)
 
-    从正态分布 :math:`\mathcal{N}(\text{mean}, \text{std}^2)` 中采样值填充张量。
+    从正态分布 N(mean, std^2) 中采样值填充张量。
 
     Args:
         tensor: n维张量
@@ -290,8 +290,8 @@ def trunc_normal_(
 ) -> TN:
     r"""用截断正态分布的值填充输入张量 (Truncated Normal Initialization)
 
-    从截断正态分布 :math:`\mathcal{N}(\text{mean}, \text{std}^2)` 中采样值填充张量，
-    超出 :math:`[a, b]` 范围的值会被重新采样直到落在范围内。
+    从截断正态分布 N(mean, std^2) 中采样值填充张量，
+    超出 [a, b] 范围的值会被重新采样直到落在范围内。
 
     Args:
         tensor: n维张量
@@ -488,10 +488,9 @@ def xavier_uniform_(tensor: TN, gain: float = 1.0) -> TN:
     r"""使用Xavier均匀分布填充输入张量 (Xavier Uniform Initialization)
 
     方法描述于 `Understanding the difficulty of training deep feedforward neural networks`
-    - Glorot, X. & Bengio, Y. (2010)。结果张量的值从 :math:`\mathcal{U}(-a, a)` 采样，其中
+    - Glorot, X. & Bengio, Y. (2010)。结果张量的值从 U(-a, a) 采样，其中
 
-    .. math::
-        a = \text{gain} \times \sqrt{\frac{6}{\text{fan\_in} + \text{fan\_out}}}
+        a = gain * sqrt(6 / (fan_in + fan_out))
 
     也称为Glorot初始化。
 
@@ -517,10 +516,9 @@ def xavier_normal_(tensor: TN, gain: float = 1.0) -> TN:
     r"""使用Xavier正态分布填充输入张量 (Xavier Normal Initialization)
 
     方法描述于 `Understanding the difficulty of training deep feedforward neural networks`
-    - Glorot, X. & Bengio, Y. (2010)。结果张量的值从 :math:`\mathcal{N}(0, \text{std}^2)` 采样，其中
+    - Glorot, X. & Bengio, Y. (2010)。结果张量的值从 N(0, std^2) 采样，其中
 
-    .. math::
-        \text{std} = \text{gain} \times \sqrt{\frac{2}{\text{fan\_in} + \text{fan\_out}}}
+        std = gain * sqrt(2 / (fan_in + fan_out))
 
     也称为Glorot初始化。
 
@@ -551,10 +549,9 @@ def kaiming_uniform_(
 
     方法描述于 `Delving deep into rectifiers: Surpassing human-level performance on 
     ImageNet classification` - He, K. et al. (2015)。结果张量的值从 
-    :math:`\mathcal{U}(-\text{bound}, \text{bound})` 采样，其中
+    U(-bound, bound) 采样，其中
 
-    .. math::
-        \text{bound} = \text{gain} \times \sqrt{\frac{3}{\text{fan\_mode}}}
+        bound = gain * sqrt(3 / fan_mode)
 
     也称为He初始化。
 
@@ -593,10 +590,9 @@ def kaiming_normal_(
 
     方法描述于 `Delving deep into rectifiers: Surpassing human-level performance on 
     ImageNet classification` - He, K. et al. (2015)。结果张量的值从 
-    :math:`\mathcal{N}(0, \text{std}^2)` 采样，其中
+    N(0, std^2) 采样，其中
 
-    .. math::
-        \text{std} = \frac{\text{gain}}{\sqrt{\text{fan\_mode}}}
+        std = gain / sqrt(fan_mode)
 
     也称为He初始化。
 
@@ -632,7 +628,7 @@ def orthogonal_(tensor: TN, gain: float = 1.0) -> TN:
     对于多于2维的张量，尾部维度会被展平。
 
     Args:
-        tensor: n维张量，其中 :math:`n \geq 2`
+        tensor: n维张量，其中 n >= 2
         gain: 可选的缩放因子
 
     Returns:
@@ -686,7 +682,7 @@ def orthogonal_(tensor: TN, gain: float = 1.0) -> TN:
 def sparse_(tensor: TN, sparsity: float, std: float = 0.01) -> TN:
     r"""将2D输入张量填充为稀疏矩阵 (Sparse Initialization)
 
-    非零元素将从正态分布 :math:`\mathcal{N}(0, 0.01)` 中抽取，
+    非零元素将从正态分布 N(0, 0.01) 中抽取，
     如 `Deep learning via Hessian-free optimization` - Martens, J. (2010) 所述。
 
     Args:
