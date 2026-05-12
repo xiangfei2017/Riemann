@@ -1064,6 +1064,18 @@ ParameterDict
      - 解决 ReLU 的死亡神经元问题
      - ``negative_slope``: 负区域斜率，默认 0.01
      - 计算成本略高于 ReLU
+   * - ``RReLU``
+     - 随机泄露 ReLU，训练时随机斜率
+     - 提供正则化效果
+     - ``lower``: 斜率下界，默认 1/8
+       ``upper``: 斜率上界，默认 1/3
+     - 训练时随机，评估时固定
+   * - ``PReLU``
+     - 参数化 ReLU，斜率可学习
+     - 需要自适应负区域斜率的场景
+     - ``num_parameters``: 参数数量
+       ``init``: 初始值，默认 0.25
+     - 增加少量参数，表达能力更强
    * - ``Sigmoid``
      - S 型激活函数，输出 (0, 1)
      - 二分类任务的输出层
@@ -1073,17 +1085,48 @@ ParameterDict
      - 双曲正切函数，输出 (-1, 1)
      - RNN 等序列模型
      - 无参数
-     - 仍有梯度消失问题，但比 Sigmoid 轻
+     - 零中心化，比 Sigmoid 收敛更快
    * - ``Softmax``
      - 归一化指数函数，输出概率分布
      - 多分类任务的输出层
      - ``dim``: 计算维度，默认 -1
      - 通常与交叉熵损失配合使用
+   * - ``LogSoftmax``
+     - Softmax 的对数
+     - 多分类任务，配合 NLLLoss 使用
+     - ``dim``: 计算维度，默认 -1
+     - 数值稳定性更好
    * - ``GELU``
      - 高斯误差线性单元
      - Transformer 模型的默认选择
      - 无参数
      - 计算成本较高
+   * - ``ELU``
+     - 指数线性单元
+     - 需要零中心化输出的场景
+     - ``alpha``: 负区域饱和参数，默认 1.0
+     - 输出均值接近零
+   * - ``CELU``
+     - 连续可微指数线性单元
+     - 需要平滑梯度的场景
+     - ``alpha``: 公式参数，默认 1.0
+     - 在 x=0 处连续可微
+   * - ``SELU``
+     - 自归一化指数线性单元
+     - 深层网络，自归一化场景
+     - 无参数
+     - 配合特定初始化可达到自归一化
+   * - ``SiLU``
+     - Sigmoid 线性单元 (Swish)
+     - 现代深度网络
+     - 无参数
+     - 平滑非单调，表现优异
+   * - ``Softplus``
+     - Softplus 函数，ReLU 的平滑近似
+     - 需要平滑激活的场景
+     - ``beta``: 平滑参数，默认 1.0
+       ``threshold``: 阈值，默认 20
+     - 处处可导，无硬阈值
 
 损失函数
 ========
@@ -1112,6 +1155,12 @@ ParameterDict
      - 对异常值不敏感的回归任务
      - ``reduction``: 聚合方式，默认 'mean'
      - 在原点处梯度不连续
+   * - ``SmoothL1Loss``
+     - 平滑 L1 损失（Huber 损失）
+     - 对异常值鲁棒的回归任务
+     - ``beta``: 阈值，默认 1.0
+       ``reduction``: 聚合方式，默认 'mean'
+     - 结合 L1 和 L2 优点
    * - ``CrossEntropyLoss``
      - 交叉熵损失，结合 log_softmax 和 nll_loss
      - 多分类任务
@@ -1119,17 +1168,215 @@ ParameterDict
        ``ignore_index``: 忽略的目标值
        ``reduction``: 聚合方式，默认 'mean'
      - 输入为原始 logits，不需要 softmax
+   * - ``NLLLoss``
+     - 负对数似然损失
+     - 多分类任务，配合 LogSoftmax 使用
+     - ``weight``: 类别权重
+       ``ignore_index``: 忽略的目标值
+       ``reduction``: 聚合方式，默认 'mean'
+     - 输入应为 log 概率
    * - ``BCEWithLogitsLoss``
      - 带 logits 的二元交叉熵损失
      - 二分类任务
      - ``weight``: 样本权重
        ``pos_weight``: 正类权重
+       ``reduction``: 聚合方式，默认 'mean'
      - 输入为原始 logits，不需要 sigmoid
    * - ``HuberLoss``
      - Huber 损失，对异常值鲁棒
      - 对异常值敏感的回归任务
      - ``delta``: 阈值，默认 1.0
      - 计算成本适中
+
+初始化模块
+==========
+
+Riemann 的初始化模块（``riemann.nn.init``）提供了一系列用于初始化神经网络参数的实用函数，与 PyTorch 的 ``nn.init`` 模块保持接口一致。合理的参数初始化对于神经网络的训练至关重要，可以帮助模型更快地收敛并达到更好的性能。
+
+**主要功能**：
+
+- **基础初始化**：均匀分布、正态分布、常数、零值、单位矩阵等
+- **高级初始化**：Xavier (Glorot) 初始化、Kaiming (He) 初始化、正交初始化等
+- **增益计算**：根据激活函数计算推荐的增益值
+
+**使用方式**：
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import nn
+    
+    # 创建一个张量
+    w = rm.empty(3, 5)
+    
+    # 使用 Xavier 均匀初始化
+    nn.init.xavier_uniform_(w)
+    
+    # 使用 Kaiming 正态初始化（适用于 ReLU）
+    nn.init.kaiming_normal_(w, mode='fan_in', nonlinearity='relu')
+
+初始化函数列表
+--------------
+
+.. list-table:: Riemann 支持的初始化函数
+   :widths: 18 25 30 27
+   :header-rows: 1
+
+   * - 函数名
+     - 描述
+     - 使用场景
+     - 参数
+   * - ``uniform_``
+     - 均匀分布初始化
+     - 一般权重初始化
+     - ``a``: 下界，默认 0.0
+       ``b``: 上界，默认 1.0
+   * - ``normal_``
+     - 正态分布初始化
+     - 一般权重初始化
+     - ``mean``: 均值，默认 0.0
+       ``std``: 标准差，默认 1.0
+   * - ``trunc_normal_``
+     - 截断正态分布初始化
+     - 需要限制值范围的初始化
+     - ``mean``: 均值，默认 0.0
+       ``std``: 标准差，默认 1.0
+       ``a``: 下界，默认 -2.0
+       ``b``: 上界，默认 2.0
+   * - ``constant_``
+     - 常数初始化
+     - 偏置项初始化
+     - ``val``: 填充值
+   * - ``ones_``
+     - 全1初始化
+     - 特定层初始化
+     - 无参数
+   * - ``zeros_``
+     - 全0初始化
+     - 偏置项初始化为0
+     - 无参数
+   * - ``eye_``
+     - 单位矩阵初始化
+     - 线性层保留输入特征
+     - 无参数（仅支持2D张量）
+   * - ``dirac_``
+     - Dirac delta初始化
+     - 卷积层保留输入通道
+     - ``groups``: 组数，默认 1
+   * - ``xavier_uniform_``
+     - Xavier均匀初始化
+     - 对称激活函数（Sigmoid/Tanh）
+     - ``gain``: 增益因子，默认 1.0
+   * - ``xavier_normal_``
+     - Xavier正态初始化
+     - 对称激活函数
+     - ``gain``: 增益因子，默认 1.0
+   * - ``kaiming_uniform_``
+     - Kaiming均匀初始化
+     - ReLU及其变体
+     - ``a``: 负斜率，默认 0
+       ``mode``: 'fan_in' 或 'fan_out'
+       ``nonlinearity``: 激活函数名
+   * - ``kaiming_normal_``
+     - Kaiming正态初始化
+     - ReLU及其变体
+     - 同 ``kaiming_uniform_``
+   * - ``orthogonal_``
+     - 正交初始化
+     - RNN等序列模型
+     - ``gain``: 增益因子，默认 1.0
+   * - ``sparse_``
+     - 稀疏初始化
+     - 需要稀疏权重的场景
+     - ``sparsity``: 稀疏比例
+       ``std``: 标准差，默认 0.01
+   * - ``calculate_gain``
+     - 计算增益值
+     - 自定义初始化时计算缩放因子
+     - ``nonlinearity``: 激活函数名
+       ``param``: 可选参数
+
+增益值参考表
+------------
+
+``calculate_gain`` 函数根据激活函数返回推荐的增益值：
+
+.. list-table:: 各激活函数对应的增益值
+   :widths: 30 30 40
+   :header-rows: 1
+
+   * - 激活函数
+     - 增益值
+     - 说明
+   * - Linear / Identity
+     - 1
+     - 线性变换
+   * - Conv{1,2,3}D
+     - 1
+     - 卷积层
+   * - Sigmoid
+     - 1
+     - S型激活
+   * - Tanh
+     - 5/3
+     - 双曲正切
+   * - ReLU
+     - sqrt(2)
+     - 修正线性单元
+   * - Leaky ReLU
+     - sqrt(2/(1+negative_slope^2))
+     - 带泄露ReLU
+   * - SELU
+     - 3/4
+     - 自归一化ELU
+
+使用示例
+--------
+
+**示例1：线性层 Xavier 初始化**
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import nn
+    
+    # 创建线性层
+    linear = nn.Linear(784, 256)
+    
+    # Xavier 均匀初始化（适用于 Tanh/Sigmoid）
+    nn.init.xavier_uniform_(linear.weight)
+    nn.init.zeros_(linear.bias)
+
+**示例2：卷积层 Kaiming 初始化**
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import nn
+    
+    # 创建卷积层
+    conv = nn.Conv2d(3, 64, kernel_size=3)
+    
+    # Kaiming 正态初始化（适用于 ReLU）
+    nn.init.kaiming_normal_(conv.weight, mode='fan_out', nonlinearity='relu')
+    nn.init.zeros_(conv.bias)
+
+**示例3：自定义初始化**
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import nn
+    import math
+    
+    # 创建张量
+    w = rm.empty(256, 128)
+    
+    # 计算增益值
+    gain = nn.init.calculate_gain('leaky_relu', 0.2)
+    
+    # 使用计算的增益进行 Xavier 初始化
+    nn.init.xavier_uniform_(w, gain=gain)
 
 基础网络层
 ==========
@@ -3585,12 +3832,12 @@ Riemann 提供了完整的 Transformer 模型，包含编码器和解码器。
    - Riemann 的 Transformer 组件已包含适当的初始化
 
 KAN网络
--------
+========
 
 Kolmogorov-Arnold网络（KAN）是一种新型神经网络架构，使用可学习的B样条激活函数替代传统的固定激活函数。KAN基于Kolmogorov-Arnold表示定理，该定理证明任何多元连续函数都可以表示为单变量连续函数的组合。
 
 KAN网络原理
-~~~~~~~~~~~~
+------------
 
 **核心思想**
 
@@ -3766,7 +4013,7 @@ Riemann的KAN实现采用以下自适应策略：
 3. **计算高效**：只在必要时更新（如每20个epoch），避免频繁计算开销
 
 KAN网络适用场景
-~~~~~~~~~~~~~~~~
+----------------
 
 KAN网络特别适合以下场景：
 
@@ -3811,7 +4058,7 @@ KAN网络特别适合以下场景：
 +--------------+-------------------+-------------------+
 
 Riemann的KAN模块
-~~~~~~~~~~~~~~~~~
+-----------------
 
 Riemann在 ``riemann.nn.kan`` 模块中提供了完整的KAN实现：
 
@@ -3828,7 +4075,7 @@ Riemann在 ``riemann.nn.kan`` 模块中提供了完整的KAN实现：
 - 与Riemann自动微分完全兼容
 
 KANLinear模块
-~~~~~~~~~~~~~~
+-------------
 
 **结构说明**
 
@@ -3912,7 +4159,7 @@ KANLinear是KAN网络的基本构建块，包含以下参数：
     total_loss = task_loss + 0.01 * reg_loss
 
 KAN容器模块
-~~~~~~~~~~~~
+-----------
 
 **结构说明**
 
@@ -3997,7 +4244,7 @@ KAN是多层KAN网络的容器，自动堆叠多个KANLinear层。
             optimizer.step()
 
 KAN设计建议
-~~~~~~~~~~~~
+-----------
 
 1. **网格大小选择**：
    

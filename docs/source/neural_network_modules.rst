@@ -1040,6 +1040,18 @@ Activation Function List
      - Solving ReLU's dying neuron problem
      - ``negative_slope``: Slope in negative region, default 0.01
      - Slightly higher computational cost than ReLU
+   * - ``RReLU``
+     - Randomized Leaky ReLU, random slope during training
+     - Provides regularization effect
+     - ``lower``: Lower bound of slope, default 1/8
+       ``upper``: Upper bound of slope, default 1/3
+     - Random during training, fixed during evaluation
+   * - ``PReLU``
+     - Parametric ReLU, learnable slope
+     - Scenarios requiring adaptive negative slope
+     - ``num_parameters``: Number of parameters
+       ``init``: Initial value, default 0.25
+     - Adds few parameters, stronger expressiveness
    * - ``Sigmoid``
      - S-shaped activation function, outputs (0, 1)
      - Output layer in binary classification tasks
@@ -1049,17 +1061,48 @@ Activation Function List
      - Hyperbolic tangent function, outputs (-1, 1)
      - RNN and other sequence models
      - No parameters
-     - Still has gradient vanishing problem, but less severe than Sigmoid
+     - Zero-centered, converges faster than Sigmoid
    * - ``Softmax``
      - Normalized exponential function, outputs probability distribution
      - Output layer in multi-class classification tasks
      - ``dim``: Calculation dimension, default -1
      - Usually used with cross-entropy loss
+   * - ``LogSoftmax``
+     - Logarithm of Softmax
+     - Multi-class tasks, used with NLLLoss
+     - ``dim``: Calculation dimension, default -1
+     - Better numerical stability
    * - ``GELU``
      - Gaussian Error Linear Unit
      - Default choice in Transformer models
      - No parameters
      - Higher computational cost
+   * - ``ELU``
+     - Exponential Linear Unit
+     - Scenarios requiring zero-centered output
+     - ``alpha``: Negative saturation parameter, default 1.0
+     - Output mean close to zero
+   * - ``CELU``
+     - Continuously Differentiable Exponential Linear Unit
+     - Scenarios requiring smooth gradients
+     - ``alpha``: Formula parameter, default 1.0
+     - Continuously differentiable at x=0
+   * - ``SELU``
+     - Scaled Exponential Linear Unit
+     - Deep networks, self-normalizing scenarios
+     - No parameters
+     - Self-normalization with proper initialization
+   * - ``SiLU``
+     - Sigmoid Linear Unit (Swish)
+     - Modern deep networks
+     - No parameters
+     - Smooth non-monotonic, excellent performance
+   * - ``Softplus``
+     - Softplus function, smooth approximation of ReLU
+     - Scenarios requiring smooth activation
+     - ``beta``: Smoothness parameter, default 1.0
+       ``threshold``: Threshold, default 20
+     - Differentiable everywhere, no hard threshold
 
 Loss Functions
 ==============
@@ -1088,6 +1131,12 @@ Loss Function List
      - Regression tasks insensitive to outliers
      - ``reduction``: Aggregation method, default 'mean'
      - Gradient discontinuous at origin
+   * - ``SmoothL1Loss``
+     - Smooth L1 loss (Huber loss)
+     - Regression tasks robust to outliers
+     - ``beta``: Threshold, default 1.0
+       ``reduction``: Aggregation method, default 'mean'
+     - Combines advantages of L1 and L2
    * - ``CrossEntropyLoss``
      - Cross entropy loss, combining log_softmax and nll_loss
      - Multi-class classification tasks
@@ -1095,17 +1144,215 @@ Loss Function List
        ``ignore_index``: Ignored target value
        ``reduction``: Aggregation method, default 'mean'
      - Input is raw logits, no need for softmax
+   * - ``NLLLoss``
+     - Negative Log Likelihood loss
+     - Multi-class tasks, used with LogSoftmax
+     - ``weight``: Class weights
+       ``ignore_index``: Ignored target value
+       ``reduction``: Aggregation method, default 'mean'
+     - Input should be log probabilities
    * - ``BCEWithLogitsLoss``
      - Binary cross entropy loss with logits
      - Binary classification tasks
      - ``weight``: Sample weights
        ``pos_weight``: Positive class weight
+       ``reduction``: Aggregation method, default 'mean'
      - Input is raw logits, no need for sigmoid
    * - ``HuberLoss``
      - Huber loss, robust to outliers
      - Regression tasks sensitive to outliers
      - ``delta``: Threshold, default 1.0
      - Moderate computational cost
+
+Initialization Module
+=====================
+
+Riemann's initialization module (``riemann.nn.init``) provides a series of utility functions for initializing neural network parameters, maintaining interface consistency with PyTorch's ``nn.init`` module. Proper parameter initialization is crucial for neural network training, helping models converge faster and achieve better performance.
+
+**Main Features**:
+
+- **Basic Initialization**: Uniform distribution, normal distribution, constant, zeros, identity matrix, etc.
+- **Advanced Initialization**: Xavier (Glorot) initialization, Kaiming (He) initialization, orthogonal initialization, etc.
+- **Gain Calculation**: Calculate recommended gain values based on activation functions
+
+**Usage**:
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import nn
+    
+    # Create a tensor
+    w = rm.empty(3, 5)
+    
+    # Use Xavier uniform initialization
+    nn.init.xavier_uniform_(w)
+    
+    # Use Kaiming normal initialization (for ReLU)
+    nn.init.kaiming_normal_(w, mode='fan_in', nonlinearity='relu')
+
+Initialization Functions List
+-----------------------------
+
+.. list-table:: Initialization Functions Supported by Riemann
+   :widths: 18 25 30 27
+   :header-rows: 1
+
+   * - Function Name
+     - Description
+     - Usage Scenarios
+     - Parameters
+   * - ``uniform_``
+     - Uniform distribution initialization
+     - General weight initialization
+     - ``a``: Lower bound, default 0.0
+       ``b``: Upper bound, default 1.0
+   * - ``normal_``
+     - Normal distribution initialization
+     - General weight initialization
+     - ``mean``: Mean, default 0.0
+       ``std``: Standard deviation, default 1.0
+   * - ``trunc_normal_``
+     - Truncated normal distribution initialization
+     - Initialization with value range constraints
+     - ``mean``: Mean, default 0.0
+       ``std``: Standard deviation, default 1.0
+       ``a``: Lower bound, default -2.0
+       ``b``: Upper bound, default 2.0
+   * - ``constant_``
+     - Constant initialization
+     - Bias initialization
+     - ``val``: Fill value
+   * - ``ones_``
+     - All-ones initialization
+     - Specific layer initialization
+     - No parameters
+   * - ``zeros_``
+     - All-zeros initialization
+     - Initialize bias to zero
+     - No parameters
+   * - ``eye_``
+     - Identity matrix initialization
+     - Preserve input features in linear layers
+     - No parameters (2D tensors only)
+   * - ``dirac_``
+     - Dirac delta initialization
+     - Preserve input channels in convolutional layers
+     - ``groups``: Number of groups, default 1
+   * - ``xavier_uniform_``
+     - Xavier uniform initialization
+     - Symmetric activation functions (Sigmoid/Tanh)
+     - ``gain``: Gain factor, default 1.0
+   * - ``xavier_normal_``
+     - Xavier normal initialization
+     - Symmetric activation functions
+     - ``gain``: Gain factor, default 1.0
+   * - ``kaiming_uniform_``
+     - Kaiming uniform initialization
+     - ReLU and its variants
+     - ``a``: Negative slope, default 0
+       ``mode``: 'fan_in' or 'fan_out'
+       ``nonlinearity``: Activation function name
+   * - ``kaiming_normal_``
+     - Kaiming normal initialization
+     - ReLU and its variants
+     - Same as ``kaiming_uniform_``
+   * - ``orthogonal_``
+     - Orthogonal initialization
+     - RNN and sequence models
+     - ``gain``: Gain factor, default 1.0
+   * - ``sparse_``
+     - Sparse initialization
+     - Scenarios requiring sparse weights
+     - ``sparsity``: Sparsity ratio
+       ``std``: Standard deviation, default 0.01
+   * - ``calculate_gain``
+     - Calculate gain value
+     - Compute scaling factor for custom initialization
+     - ``nonlinearity``: Activation function name
+       ``param``: Optional parameter
+
+Gain Value Reference Table
+--------------------------
+
+The ``calculate_gain`` function returns recommended gain values based on activation functions:
+
+.. list-table:: Gain Values for Different Activation Functions
+   :widths: 30 30 40
+   :header-rows: 1
+
+   * - Activation Function
+     - Gain Value
+     - Description
+   * - Linear / Identity
+     - 1
+     - Linear transformation
+   * - Conv{1,2,3}D
+     - 1
+     - Convolutional layers
+   * - Sigmoid
+     - 1
+     - S-shaped activation
+   * - Tanh
+     - 5/3
+     - Hyperbolic tangent
+   * - ReLU
+     - sqrt(2)
+     - Rectified Linear Unit
+   * - Leaky ReLU
+     - sqrt(2/(1+negative_slope^2))
+     - Leaky ReLU
+   * - SELU
+     - 3/4
+     - Self-Normalizing ELU
+
+Usage Examples
+--------------
+
+**Example 1: Xavier Initialization for Linear Layer**
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import nn
+    
+    # Create linear layer
+    linear = nn.Linear(784, 256)
+    
+    # Xavier uniform initialization (for Tanh/Sigmoid)
+    nn.init.xavier_uniform_(linear.weight)
+    nn.init.zeros_(linear.bias)
+
+**Example 2: Kaiming Initialization for Convolutional Layer**
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import nn
+    
+    # Create convolutional layer
+    conv = nn.Conv2d(3, 64, kernel_size=3)
+    
+    # Kaiming normal initialization (for ReLU)
+    nn.init.kaiming_normal_(conv.weight, mode='fan_out', nonlinearity='relu')
+    nn.init.zeros_(conv.bias)
+
+**Example 3: Custom Initialization**
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import nn
+    import math
+    
+    # Create tensor
+    w = rm.empty(256, 128)
+    
+    # Calculate gain value
+    gain = nn.init.calculate_gain('leaky_relu', 0.2)
+    
+    # Use calculated gain for Xavier initialization
+    nn.init.xavier_uniform_(w, gain=gain)
 
 Basic Network Layers
 ====================
@@ -3529,12 +3776,12 @@ Transformer Design Guidelines
    - Label smoothing can improve generalization
 
 KAN Networks
-------------
+============
 
 Kolmogorov-Arnold Networks (KAN) are a novel neural network architecture that uses learnable B-spline activation functions instead of traditional fixed activation functions. KAN is based on the Kolmogorov-Arnold representation theorem, which proves that any multivariate continuous function can be represented as a composition of univariate continuous functions.
 
 KAN Network Principles
-~~~~~~~~~~~~~~~~~~~~~~
+----------------------
 
 **Core Idea**
 
@@ -3690,7 +3937,7 @@ Using least squares to map old grid to new grid:
 3. **Computationally Efficient**: Only updates when necessary (e.g., every 20 epochs)
 
 KAN Network Application Scenarios
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+----------------------------------
 
 KAN networks are particularly suitable for the following scenarios:
 
@@ -3735,7 +3982,7 @@ KAN networks are particularly suitable for the following scenarios:
 +----------------------+----------------+------------------------+
 
 Riemann's KAN Module
-~~~~~~~~~~~~~~~~~~~~
+--------------------
 
 Riemann provides a complete KAN implementation in the ``riemann.nn.kan`` module:
 
@@ -3752,7 +3999,7 @@ Riemann provides a complete KAN implementation in the ``riemann.nn.kan`` module:
 - Full compatibility with Riemann autograd
 
 KANLinear Module
-~~~~~~~~~~~~~~~~
+----------------
 
 **Structure Description**
 
@@ -3836,7 +4083,7 @@ Using regularization:
     total_loss = task_loss + 0.01 * reg_loss
 
 KAN Container Module
-~~~~~~~~~~~~~~~~~~~~
+--------------------
 
 **Structure Description**
 
@@ -3921,7 +4168,7 @@ Complete training example:
             optimizer.step()
 
 KAN Design Guidelines
-~~~~~~~~~~~~~~~~~~~~~
+---------------------
 
 1. **Grid Size Selection**:
    
