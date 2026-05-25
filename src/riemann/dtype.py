@@ -200,13 +200,17 @@ def infer_dtype_in_binoper(non_tensor_value,tensor_dtype):
     推断二元操作符运算中非TN量的数据类型
     '''
 
-    if is_float(tensor_dtype) and \
+    if np.issubdtype(tensor_dtype, np.floating) and \
        isinstance(non_tensor_value,(int,float,bool)):
         return tensor_dtype
     
-    if is_complex(tensor_dtype):
+    if np.issubdtype(tensor_dtype, np.complexfloating):
         return tensor_dtype
     
+    if np.issubdtype(tensor_dtype, np.integer) and \
+       isinstance(non_tensor_value,(int,bool)):
+        return tensor_dtype
+
     dt = infer_data_type(non_tensor_value)
     return dt
 
