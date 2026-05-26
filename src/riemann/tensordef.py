@@ -2194,31 +2194,35 @@ class TN:
         # 获取self的设备
         dev = self.device
 
-        #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
-        if dev != right_tensor.device:
-            raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
-        
+        if isinstance(right_obj,TN):
+            if dev != right_obj.device:
+                raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
+            right_data = right_obj.data
+            right_requires_grad = right_obj.requires_grad
+        else:
+            right_data = right_obj
+            right_requires_grad = False
+
         #requires_grad属性在运算时传递到结果tensor
-        requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
-        ret = tensor(self.data - right_tensor.data, device=dev, requires_grad=requires_grad)
+        requires_grad = (is_grad_enabled() and (self.requires_grad or right_requires_grad))
+        ret = tensor(self.data - right_data, device=dev, requires_grad=requires_grad)
         
         if requires_grad:
-            ret.fromvars=(self,right_tensor) 
-            ret.gradfuncs=(_sub_grad_left,_sub_grad_right)
-            
+            if self.requires_grad and right_requires_grad:
+                ret.fromvars=(self,right_obj) 
+                ret.gradfuncs=(_sub_grad_left,_sub_grad_right)
+            elif self.requires_grad:
+                ret.fromvars=(self,) 
+                ret.gradfuncs=(_sub_grad_left,)
+            else:
+                ret.fromvars= (right_obj,)
+                ret.gradfuncs= (_sub_grad_right,)
+        
         return ret
     
     # '-'运算，右值为self，左值为TN，numpy数组，list，tuple，整数或浮点数
     def __rsub__(self,left_obj):
-        if not isinstance(left_obj,TN):
-            #如左值是非TN对象，转化为TN对象
-            left_tensor=tensor(
-                left_obj,
-                dtype=infer_dtype_in_binoper(left_obj,self.dtype),
-                device=self.device
-            ) 
-        return left_tensor.__sub__(self) #归一到左值'-'函数
+        return self.__sub__(left_obj).__neg__()
     
     # '*'运算，左值为self，右值为TN，numpy数组，list，tuple，整数或浮点数
     def __mul__(self,right_obj):
@@ -2346,32 +2350,32 @@ class TN:
         return self
         
     def __neg__(self):
-        # 对于无符号整数类型，需要先将数据转换为有符号类型再取负
-        # 否则在numpy中直接对uint8取负会先发生溢出，再转换类型
-        data = self.data
         dtype = self.dtype
         
-        if np.issubdtype(dtype, np.unsignedinteger):
-            # 为不同的无符号类型选择对应的有符号类型
+        if np.issubdtype(dtype, np.bool_):
+            data = ~self.data
+        elif np.issubdtype(dtype, np.unsignedinteger):
             if dtype == np.uint8:
-                target_dtype = np.int16  # 使用int16避免溢出
+                target_dtype = np.int16
             elif dtype == np.uint16:
                 target_dtype = np.int32
             elif dtype == np.uint32:
                 target_dtype = np.int64
             elif dtype == np.uint64:
-                target_dtype = np.int64  # Python的int可以处理更大的范围
-            
-            # 先将数据转换为有符号类型，再执行取负操作
-            data = data.astype(target_dtype)
-            dtype = target_dtype
+                target_dtype = np.int64
+            data = -self.data.astype(target_dtype)
+        else:
+            data = -self.data
         
-        # 现在取负操作会得到正确的负值
-        ret = tensor(-data, dtype=dtype, device=self.device,
-                    requires_grad = (is_grad_enabled() and self.requires_grad))
+        ret = tensor(
+            data, 
+            device=self.device,
+            requires_grad = (is_grad_enabled() and self.requires_grad)
+        )
+        
         if  ret.requires_grad:
             ret.fromvars=(self,)
-            fn = lambda result,i: -result.grad_value
+            fn = lambda result,i: result.grad_value.__neg__()
             ret.gradfuncs=(fn,)
         return ret
     
