@@ -1420,7 +1420,7 @@ def _svd_backward_u(result_tensor: TN, i: int) -> TN:
     denominator = denominator + eye(r, dtype=A.dtype, device=A.device)
     safe_denominator = where(denominator.abs() < epsilon, 
                             where(denominator >= 0, epsilon, -epsilon), 
-                            denominator)
+                            denominator).type(A.dtype)
     
     # F矩阵计算：F = G^T @ U
     F = G.mH @ U
@@ -1487,7 +1487,7 @@ def _svd_backward_vh(result_tensor: TN, i: int) -> TN:
     denominator = denominator + eye(r, dtype=A.dtype, device=A.device)
     safe_denominator = where(denominator.abs() < epsilon, 
                             where(denominator >= 0, epsilon, -epsilon), 
-                            denominator)
+                            denominator).type(A.dtype)
     
     # 计算反对称部分 - 修正复数矩阵的梯度计算
     V = Vh.mH  # 形状 (n, r)
@@ -1761,7 +1761,7 @@ def _eig_backward_V(result_tensor: TN, i: int) -> TN:
     # 4. 变换回原空间
     grad_A = U @ M @ V.mH
     
-    return grad_A
+    return grad_A.type(A.dtype)
 
 def lstsq(A, B, *, rcond=None, out=None):
     """
@@ -2048,7 +2048,7 @@ def _eigh_backward_V(result_tensor: TN, i: int) -> TN:
     grad = V_inv_H @ F @ Vh    
     grad_A = (grad + grad.mH) / 2.0
 
-    return grad_A
+    return grad_A.type(A.dtype)
 
 def _plu(arrlib,a):
     """

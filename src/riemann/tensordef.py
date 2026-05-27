@@ -2229,19 +2229,32 @@ class TN:
         # 获取self的设备
         dev = self.device
 
-        #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
-        if dev != right_tensor.device:
-            raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
-        
+        if isinstance(right_obj,TN):
+            if dev != right_obj.device:
+                raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
+            right_data = right_obj.data
+            right_requires_grad = right_obj.requires_grad
+        else:
+            right_data = right_obj
+            right_requires_grad = False
+
         #requires_grad属性在运算时传递到结果tensor
-        requires_grad = (is_grad_enabled() and (self.requires_grad or right_tensor.requires_grad))
-        ret = tensor(self.data * right_tensor.data, device=dev, requires_grad=requires_grad)
+        requires_grad = (is_grad_enabled() and (self.requires_grad or right_requires_grad))
+        ret = tensor(self.data * right_data, device=dev, requires_grad=requires_grad)
         
         if requires_grad:
-            ret.fromvars=(self,right_tensor) 
-            ret.gradfuncs=(_mul_grad_left,_mul_grad_right)      
-
+            if self.requires_grad and right_requires_grad:
+                ret.fromvars=(self,right_obj) 
+                ret.gradfuncs=(_mul_grad_left,_mul_grad_right)
+            elif self.requires_grad:
+                ret.fromvars=(self,) 
+                ret.parms = (right_obj,)
+                ret.gradfuncs=(_mul_grad_left,)
+            else:
+                ret.fromvars= (right_obj,)
+                ret.parms = (self,)
+                ret.gradfuncs= (_mul_grad_right,)
+        
         return ret
     
     # '*'运算，右值为self，左值为TN，numpy数组，list，tuple，整数或浮点数
@@ -7237,11 +7250,14 @@ def _sub_grad_right(result_tensor:TN, i:int)->TN:
 
 def _mul_grad_left(result_tensor:TN, i:int)->TN:
     left_tensor = result_tensor.fromvars[i]
-    right_tensor = result_tensor.fromvars[i+1]
+    if result_tensor.parms:
+        right_tensor = result_tensor.parms[i]
+    else:
+        right_tensor = result_tensor.fromvars[i+1]  
     left_var_shape = left_tensor.shape
     result_shape = result_tensor.shape
 
-    left_grad = result_tensor.grad_value * right_tensor.conj()
+    left_grad = result_tensor.grad_value * conj(right_tensor)
 
     # shape一样时，直接返回left_grad，否则对left_grad进行sum缩减
     if left_var_shape == result_shape:
@@ -7255,8 +7271,11 @@ def _mul_grad_left(result_tensor:TN, i:int)->TN:
     return grad
 
 def _mul_grad_right(result_tensor:TN, i:int)->TN:
-    left_tensor = result_tensor.fromvars[i-1]
     right_tensor = result_tensor.fromvars[i]
+    if result_tensor.parms:
+        left_tensor = result_tensor.parms[i]
+    else:
+        left_tensor = result_tensor.fromvars[i-1]
     right_var_shape = right_tensor.shape
     result_shape = result_tensor.shape
 
@@ -7982,6 +8001,47 @@ def sign(x:TN)->TN:
     arrlib = x._get_array_lib()
     return tensor(arrlib.sign(x.data),device=x.device)
 
+def conj(x):
+    """计算输入的共轭。
+    
+    对于复数 z = a + bi，其共轭为 z* = a - bi。
+    对于实数，共轭是其本身。
+    
+    参数:
+        x: 输入，可以是TN张量、numpy/cupy数组、python数值（包括复数）
+        
+    返回:
+        TN张量、数组或python数值: 输入的共轭
+        
+    示例:
+        >>> # TN张量
+        >>> a = tensor([1+2j, 3-4j])
+        >>> conj(a)  # 返回TN张量[1-2j, 3+4j]
+        
+        >>> # numpy数组
+        >>> import numpy as np
+        >>> b = np.array([1+2j, 3-4j])
+        >>> conj(b)  # 返回numpy数组[1-2j, 3+4j]
+        
+        >>> # python复数
+        >>> conj(1+2j)  # 返回(1-2j)
+        
+        >>> # python实数
+        >>> conj(5.0)  # 返回5.0
+    """
+    if isinstance(x, TN) or isinstance(x, np.ndarray) or (cp and isinstance(x, cp.ndarray)):
+        # 处理TN张量、numpy数组、cupy数组
+        return x.conj()
+    elif isinstance(x, complex):
+        # 处理python内置复数
+        return x.conjugate()
+    elif isinstance(x, (int, float, bool)):
+        # 处理python实数（int, float）
+        return x
+    else:
+        # 处理其他类型
+        raise TypeError(f"conj does not support type: {type(x)}")   
+
 def _where_backward(r, i):
     """where函数的梯度计算函数（外部定义以避免重复创建闭包）"""
     grad = r.grad_value * r.parms[i]
@@ -8007,6 +8067,98 @@ def where(cond: TN, x: None, y: None) -> tuple[TN, ...]:
 def where(cond: TN, x: TN | int | float, y: TN | int | float) -> TN:
     ...
 
+# def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | None = None) -> TN | tuple[TN, ...]:
+    
+#     if not isinstance(cond,TN):
+#         raise ValueError('cond must be a tensor')
+    
+#     arrlib = cond._get_array_lib()
+
+#     if x is None and y is None:
+#         # 在对应设备上计算非零索引，避免跨设备数据传输
+#         with device_context(cond):
+#             tup = arrlib.where(cond.data)
+#         lst = []
+#         for idx_arr in tup:
+#             lst.append(tensor(idx_arr,device=cond.device))
+#         return tuple(lst)
+
+#     if x is None or y is None:
+#         raise RuntimeError('one of x,y is None while the other is Non None')
+    
+#     # 处理类型提升和梯度追踪，与PyTorch行为保持一致
+#     x_is_tensor = isinstance(x, TN)
+#     y_is_tensor = isinstance(y, TN)
+    
+#     # 设备检查
+#     if x_is_tensor and cond.device != x.device:
+#         raise ValueError(f"Expected all tensors to be on the same device, "
+#                        f"but found devices: cond={cond.device}, x={x.device}")
+#     if y_is_tensor and cond.device != y.device:
+#         raise ValueError(f"Expected all tensors to be on the same device, "
+#                        f"but found devices: cond={cond.device}, y={y.device}")
+    
+#     # 确定目标类型
+#     if x_is_tensor and y_is_tensor:
+#         # 两个都是张量：使用NumPy类型提升
+#         x_data = x.data
+#         y_data = y.data
+#     elif x_is_tensor:
+#         # x是张量，y是标量：需要考虑类型提升
+#         x_data = x.data
+#         y_data = arrlib.array(y, dtype=infer_dtype_in_binoper(y,x))
+#     elif y_is_tensor:
+#         # y是张量，x是标量：需要考虑类型提升
+#         y_data = y.data
+#         x_data = arrlib.array(x, dtype=infer_dtype_in_binoper(x,y))
+#     else:
+#         # 两个都是标量：先独立推断类型，再交叉分析
+#         x_dtype = infer_data_type(x)
+#         y_dtype = infer_data_type(y)
+        
+#         # 交叉分析决定目标类型（与PyTorch一致）
+#         # 优先级：complex > float > int > bool
+#         if np.issubdtype(x_dtype, np.complexfloating) or np.issubdtype(y_dtype, np.complexfloating):
+#             # 任意一个是复数
+#             target_dtype = np.complex128
+#         elif np.issubdtype(x_dtype, np.floating) or np.issubdtype(y_dtype, np.floating):
+#             # 任意一个是浮点（PyTorch使用float32）
+#             target_dtype = np.float32
+#         elif np.issubdtype(x_dtype, np.integer) or np.issubdtype(y_dtype, np.integer):
+#             # 任意一个是整数
+#             target_dtype = np.int64
+#         else:
+#             # 都是布尔
+#             target_dtype = np.bool_
+        
+#         x_data = arrlib.array(x, dtype=target_dtype)
+#         y_data = arrlib.array(y, dtype=target_dtype)
+    
+#     x_requires_grad = x.requires_grad if x_is_tensor else False
+#     y_requires_grad = y.requires_grad if y_is_tensor else False
+
+#     # 条件选择，cond不参与梯度计算
+#     data = arrlib.where(cond.data, x_data, y_data)
+#     # 使用计算结果的数据类型，避免强制类型转换
+#     ret = tensor(
+#         data,
+#         device = cond.device, 
+#         requires_grad = (is_grad_enabled() and (x_requires_grad or y_requires_grad))
+#     )
+    
+#     if ret.requires_grad:
+#         if x_requires_grad:
+#             ret.fromvars = (x, )
+#             ret.parms = (cond,)
+#             ret.gradfuncs = (_where_backward, )
+        
+#         if y_requires_grad:
+#             ret.fromvars = ret.fromvars + (y, )
+#             ret.parms = ret.parms + (1.0 - cond,)
+#             ret.gradfuncs = ret.gradfuncs + (_where_backward, )
+    
+#     return ret
+
 def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | None = None) -> TN | tuple[TN, ...]:
     
     if not isinstance(cond,TN):
@@ -8031,52 +8183,26 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
     y_is_tensor = isinstance(y, TN)
     
     # 设备检查
-    if x_is_tensor and cond.device != x.device:
-        raise ValueError(f"Expected all tensors to be on the same device, "
-                       f"but found devices: cond={cond.device}, x={x.device}")
-    if y_is_tensor and cond.device != y.device:
-        raise ValueError(f"Expected all tensors to be on the same device, "
-                       f"but found devices: cond={cond.device}, y={y.device}")
-    
-    # 确定目标类型
-    if x_is_tensor and y_is_tensor:
-        # 两个都是张量：使用NumPy类型提升
+    if x_is_tensor:
+        if cond.device != x.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                           f"but found devices: cond={cond.device}, x={x.device}")
+        x_requires_grad = x.requires_grad
         x_data = x.data
-        y_data = y.data
-    elif x_is_tensor:
-        # x是张量，y是标量：需要考虑类型提升
-        x_data = x.data
-        y_data = arrlib.array(y, dtype=infer_dtype_in_binoper(y,x))
-    elif y_is_tensor:
-        # y是张量，x是标量：需要考虑类型提升
-        y_data = y.data
-        x_data = arrlib.array(x, dtype=infer_dtype_in_binoper(x,y))
     else:
-        # 两个都是标量：先独立推断类型，再交叉分析
-        x_dtype = infer_data_type(x)
-        y_dtype = infer_data_type(y)
+        x_requires_grad = False
+        x_data = x
         
-        # 交叉分析决定目标类型（与PyTorch一致）
-        # 优先级：complex > float > int > bool
-        if np.issubdtype(x_dtype, np.complexfloating) or np.issubdtype(y_dtype, np.complexfloating):
-            # 任意一个是复数
-            target_dtype = np.complex128
-        elif np.issubdtype(x_dtype, np.floating) or np.issubdtype(y_dtype, np.floating):
-            # 任意一个是浮点（PyTorch使用float32）
-            target_dtype = np.float32
-        elif np.issubdtype(x_dtype, np.integer) or np.issubdtype(y_dtype, np.integer):
-            # 任意一个是整数
-            target_dtype = np.int64
-        else:
-            # 都是布尔
-            target_dtype = np.bool_
+    if y_is_tensor:
+        if cond.device != y.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                           f"but found devices: cond={cond.device}, y={y.device}")
+        y_requires_grad = y.requires_grad
+        y_data = y.data
+    else:
+        y_requires_grad = False
+        y_data = y
         
-        x_data = arrlib.array(x, dtype=target_dtype)
-        y_data = arrlib.array(y, dtype=target_dtype)
-    
-    x_requires_grad = x.requires_grad if x_is_tensor else False
-    y_requires_grad = y.requires_grad if y_is_tensor else False
-
     # 条件选择，cond不参与梯度计算
     data = arrlib.where(cond.data, x_data, y_data)
     # 使用计算结果的数据类型，避免强制类型转换
@@ -8884,8 +9010,11 @@ def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
     # input == other: 0.5  # 与PyTorch一致
     # input < other: 0.0
     # 使用riemann的where函数，自动处理设备上下文
-    mask = where(input_tensor > other_tensor, 1.0, 
-                 where(input_tensor < other_tensor, 0.0, 0.5))
+    mask = where(
+        input_tensor > other_tensor, 
+        1.0, 
+        where(input_tensor < other_tensor, 0.0, 0.5)
+    ).type(input_tensor.dtype)
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -8920,8 +9049,11 @@ def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
     # other == input: 0.5  # 与PyTorch一致
     # other < input: 0.0
     # 使用riemann的where函数，自动处理设备上下文
-    mask = where(other_tensor > input_tensor, 1.0,
-                 where(other_tensor < input_tensor, 0.0, 0.5))
+    mask = where(
+        other_tensor > input_tensor, 
+        1.0,
+        where(other_tensor < input_tensor, 0.0, 0.5)
+    ).type(other_tensor.dtype)
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -8998,8 +9130,11 @@ def _minimum_grad_input(result_tensor: TN, i: int) -> TN:
     # input == other: 0.5  
     # input > other: 0.0
     # 使用riemann的where函数，自动处理设备上下文
-    mask = where(input_tensor < other_tensor, 1.0, 
-                 where(input_tensor > other_tensor, 0.0, 0.5))
+    mask = where(
+        input_tensor < other_tensor, 
+        1.0, 
+        where(input_tensor > other_tensor, 0.0, 0.5)
+    ).type(input_tensor.dtype)
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
@@ -9032,8 +9167,11 @@ def _minimum_grad_other(result_tensor: TN, i: int) -> TN:
     # other == input: 0.5
     # other > input: 0.0
     # 使用riemann的where函数，自动处理设备上下文
-    mask = where(other_tensor < input_tensor, 1.0,
-                 where(other_tensor > input_tensor, 0.0, 0.5))
+    mask = where(
+        other_tensor < input_tensor, 
+        1.0,
+        where(other_tensor > input_tensor, 0.0, 0.5)
+    ).type(other_tensor.dtype)
     
     # 应用梯度掩码
     grad = result_tensor.grad_value * mask
