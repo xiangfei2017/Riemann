@@ -3431,7 +3431,8 @@ def dropout(input: TN, p: float = 0.5, training: bool = True, inplace: bool = Fa
     
     # 训练模式下应用dropout
     # 生成dropout掩码，保留概率为(1-p)
-    scale = 1.0 / (1.0 - p)
+    # 将scale转换为输入张量的数据类型，避免类型提升
+    scale = input.dtype.type(1.0 / (1.0 - p))
     # 使用rand生成[0,1)之间均匀分布的随机数，保留小于(1-p)的元素
     mask = (rand(*input.shape, dtype=input.dtype, device=input.device) < (1 - p)) * scale
     
