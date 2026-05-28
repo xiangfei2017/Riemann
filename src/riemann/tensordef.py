@@ -7626,11 +7626,8 @@ def _pow_grad_right(result_tensor:TN, i:int)->TN:
     right_var_shape = right_tensor.shape
     result_shape = result_tensor.shape
 
-    if not isinstance(left_value, TN):
-        left_value = tensor(left_value, dtype=result_tensor.dtype, device=result_tensor.device)
+    right_grad = result_tensor.grad_value * log(left_value ** result_tensor).conj()
 
-    right_grad = result_tensor.grad_value * (result_tensor * log(left_value)).conj() 
-    
     # shape一样时，直接返回right_grad，否则对right_grad进行sum缩减
     if right_var_shape == result_shape:
         grad = right_grad
