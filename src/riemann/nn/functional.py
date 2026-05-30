@@ -1923,27 +1923,22 @@ def conv1d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, d
     # 处理分组卷积
     if groups > 1:
         # 优化：使用批量矩阵乘法替代Python循环
-        # 将输入reshape为 (N, groups, C_in_per_group*K, L_out)
-        unfolded_input = unfolded_input._reshape((N, groups, C_in_per_group * K, L_out))
+        # 将输入直接reshape为 (N*groups, C_in_per_group*K, L_out)
+        unfolded_reshaped = unfolded_input._reshape((N * groups, C_in_per_group * K, L_out))
         # 将权重reshape为 (groups, C_out//groups, C_in_per_group*K)
         weight_reshaped = weight._reshape((groups, C_out // groups, C_in_per_group * K))
-
-        # 优化策略：将N和groups维度合并，使用批量矩阵乘法
-        # unfolded_input: (N, groups, C_in_per_group*K, L_out) -> (N*groups, C_in_per_group*K, L_out)
-        unfolded_reshaped = unfolded_input._reshape((N * groups, C_in_per_group * K, L_out))
 
         # weight_reshaped: (groups, C_out//groups, C_in_per_group*K)
         # 需要扩展为 (N*groups, C_out//groups, C_in_per_group*K)
         # 先unsqueeze为 (1, groups, C_out//groups, C_in_per_group*K) 然后扩展到 N
         weight_expanded = weight_reshaped.unsqueeze(0).expand(N, -1, -1, -1)
-        weight_reshaped2 = weight_expanded._reshape((N * groups, C_out // groups, C_in_per_group * K))
+        weight_reshaped2 = weight_expanded._reshape((N * groups, C_out // groups, C_in_per_group * K)).contiguous()
 
         # 批量矩阵乘法: (N*groups, C_out//groups, C_in*K) @ (N*groups, C_in*K, L_out)
         # 结果: (N*groups, C_out//groups, L_out)
         output = weight_reshaped2 @ unfolded_reshaped
 
-        # reshape回 (N, groups, C_out//groups, L_out) 然后合并为 (N, C_out, L_out)
-        output = output._reshape((N, groups, C_out // groups, L_out))
+        # 直接reshape为 (N, C_out, L_out)
         output = output._reshape((N, C_out, L_out))
     else:
         # 将权重reshape为 (C_out, C_in*K)
@@ -2032,27 +2027,22 @@ def conv2d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, d
     # 处理分组卷积
     if groups > 1:
         # 优化：使用批量矩阵乘法替代Python循环
-        # 将输入reshape为 (N, groups, C_in_per_group*K_h*K_w, H_out*W_out)
-        unfolded_result = unfolded_input._reshape((N, groups, C_in_per_group * K_h * K_w, H_out * W_out))
+        # 将输入直接reshape为 (N*groups, C_in_per_group*K_h*K_w, H_out*W_out)
+        unfolded_reshaped = unfolded_input._reshape((N * groups, C_in_per_group * K_h * K_w, H_out * W_out))
         # 将权重reshape为 (groups, C_out//groups, C_in_per_group*K_h*K_w)
         weight_reshaped = weight._reshape((groups, C_out // groups, C_in_per_group * K_h * K_w))
 
-        # 优化策略：将N和groups维度合并，使用批量矩阵乘法
-        # unfolded_result: (N, groups, C_in_per_group*K_h*K_w, L) -> (N*groups, C_in_per_group*K_h*K_w, L)
-        unfolded_reshaped = unfolded_result._reshape((N * groups, C_in_per_group * K_h * K_w, H_out * W_out))
-
         # weight_reshaped: (groups, C_out//groups, C_in_per_group*K_h*K_w)
         # 需要扩展为 (N*groups, C_out//groups, C_in_per_group*K_h*K_w)
-        # 先reshape为 (1, groups, C_out//groups, C_in_per_group*K_h*K_w) 然后扩展到 N
+        # 先unsqueeze为 (1, groups, C_out//groups, C_in_per_group*K_h*K_w) 然后扩展到 N
         weight_expanded = weight_reshaped.unsqueeze(0).expand(N, -1, -1, -1)
-        weight_reshaped2 = weight_expanded._reshape((N * groups, C_out // groups, C_in_per_group * K_h * K_w))
+        weight_reshaped2 = weight_expanded._reshape((N * groups, C_out // groups, C_in_per_group * K_h * K_w)).contiguous()
 
         # 批量矩阵乘法: (N*groups, C_out//groups, C_in*K_h*K_w) @ (N*groups, C_in*K_h*K_w, L)
         # 结果: (N*groups, C_out//groups, L)
         output = weight_reshaped2 @ unfolded_reshaped
 
-        # reshape回 (N, groups, C_out//groups, L) 然后合并为 (N, C_out, L)
-        output = output._reshape((N, groups, C_out // groups, H_out * W_out))
+        # 直接reshape为 (N, C_out, L)
         output = output._reshape((N, C_out, H_out * W_out))
     else:
         # 将展开后输入reshape为形状 (N, C_in*K_h*K_w, H_out*W_out)
@@ -2146,27 +2136,22 @@ def conv3d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, d
     # 处理分组卷积
     if groups > 1:
         # 优化：使用批量矩阵乘法替代Python循环
-        # 将输入reshape为 (N, groups, C_in_per_group*K_d*K_h*K_w, D_out*H_out*W_out)
-        unfolded_result = unfolded_input._reshape((N, groups, C_in_per_group * K_d * K_h * K_w, D_out * H_out * W_out))
+        # 将输入直接reshape为 (N*groups, C_in_per_group*K_d*K_h*K_w, D_out*H_out*W_out)
+        unfolded_reshaped = unfolded_input._reshape((N * groups, C_in_per_group * K_d * K_h * K_w, D_out * H_out * W_out))
         # 将权重reshape为 (groups, C_out//groups, C_in_per_group*K_d*K_h*K_w)
         weight_reshaped = weight._reshape((groups, C_out // groups, C_in_per_group * K_d * K_h * K_w))
-
-        # 优化策略：将N和groups维度合并，使用批量矩阵乘法
-        # unfolded_result: (N, groups, C_in_per_group*K_d*K_h*K_w, L) -> (N*groups, C_in_per_group*K_d*K_h*K_w, L)
-        unfolded_reshaped = unfolded_result._reshape((N * groups, C_in_per_group * K_d * K_h * K_w, D_out * H_out * W_out))
 
         # weight_reshaped: (groups, C_out//groups, C_in_per_group*K_d*K_h*K_w)
         # 需要扩展为 (N*groups, C_out//groups, C_in_per_group*K_d*K_h*K_w)
         # 先unsqueeze为 (1, groups, C_out//groups, C_in_per_group*K_d*K_h*K_w) 然后扩展到 N
         weight_expanded = weight_reshaped.unsqueeze(0).expand(N, -1, -1, -1)
-        weight_reshaped2 = weight_expanded._reshape((N * groups, C_out // groups, C_in_per_group * K_d * K_h * K_w))
+        weight_reshaped2 = weight_expanded._reshape((N * groups, C_out // groups, C_in_per_group * K_d * K_h * K_w)).contiguous()
 
         # 批量矩阵乘法: (N*groups, C_out//groups, C_in*K_d*K_h*K_w) @ (N*groups, C_in*K_d*K_h*K_w, L)
         # 结果: (N*groups, C_out//groups, L)
         output = weight_reshaped2 @ unfolded_reshaped
 
-        # reshape回 (N, groups, C_out//groups, L) 然后合并为 (N, C_out, L)
-        output = output._reshape((N, groups, C_out // groups, D_out * H_out * W_out))
+        # 直接reshape为 (N, C_out, L)
         output = output._reshape((N, C_out, D_out * H_out * W_out))
     else:
         # 将展开后输入reshape为形状 (N, C_in*K_d*K_h*K_w, D_out*H_out*W_out)
