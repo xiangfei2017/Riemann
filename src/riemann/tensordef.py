@@ -7762,31 +7762,39 @@ def pow(input, exponent)->TN|float:
 def exp2(x:TN)->TN:
     return 2.0 ** x
 
-def _log_derivative(x:TN)->tuple[TN]:
-    return (1. / x.conj(),)
+def _log_grad(result_tensor:TN, i:int)->TN:
+    x = result_tensor.fromvars[i]
+    return result_tensor.grad_value * (1. / x.conj())
 
-@track_grad(_log_derivative)
 def log(x:TN)->TN:
     """
     计算张量的自然对数。
-    
+
     返回一个新张量，其中每个元素是输入张量对应元素的自然对数(ln(x))。
-    
+
     Args:
         x (TN): 输入张量，元素必须为正数
-        
+
     Returns:
         TN: 包含输入张量自然对数的新张量
-        
+
     Examples:
         >>> a = tensor([1, e, e^2])  # e是自然常数
         >>> log(a)  # 返回[0, 1, 2]
-        
+
         >>> b = tensor([[1.0, 2.718], [7.389, 20.086]])
         >>> log(b)  # 返回[[0.0, 1.0], [2.0, 3.0]]
     """
     arrlib = x._get_array_lib()
-    return tensor(arrlib.log(x.data), device=x.device)
+    result_data = arrlib.log(x.data)
+    requires_grad = is_grad_enabled() and x.requires_grad
+    ret = tensor(result_data, device=x.device, requires_grad=requires_grad)
+
+    if requires_grad:
+        ret.fromvars = (x,)
+        ret.gradfuncs = (_log_grad,)
+
+    return ret
 
 def log1p(x: TN) -> TN:    
     """
@@ -7838,31 +7846,38 @@ def log10(x:TN)->TN:
     """
     return log(x) / log(10.0)
     
-def _exp_derivative(x:TN)->tuple[TN]:
-    return (exp(x).conj(),)
+def _exp_grad(result_tensor:TN, i:int)->TN:
+    return result_tensor.grad_value * result_tensor.conj()
 
-@track_grad(_exp_derivative)
 def exp(x:TN)->TN:
     """
     计算张量的指数函数。
-    
+
     返回一个新张量，其中每个元素是输入张量对应元素的自然指数(e^x)。
-    
+
     Args:
         x (TN): 输入张量
-        
+
     Returns:
         TN: 包含输入张量指数函数值的新张量
-        
+
     Examples:
         >>> a = tensor([0, 1, 2])
         >>> exp(a)  # 返回[e^0, e^1, e^2] ≈ [1, 2.718, 7.389]
-        
+
         >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
         >>> exp(b)  # 返回[[1.0, 2.718], [7.389, 20.086]]
     """
     arrlib = x._get_array_lib()
-    return tensor(arrlib.exp(x.data),device=x.device)
+    result_data = arrlib.exp(x.data)
+    requires_grad = is_grad_enabled() and x.requires_grad
+    ret = tensor(result_data, device=x.device, requires_grad=requires_grad)
+
+    if requires_grad:
+        ret.fromvars = (x,)
+        ret.gradfuncs = (_exp_grad,)
+
+    return ret
 
 def _sin_derivative(x:TN)->tuple[TN]:
     return (cos(x).conj(),)
