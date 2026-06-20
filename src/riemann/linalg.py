@@ -124,16 +124,21 @@ def matmul(A, B, *, out=None):
 def cross(input, other, *, dim=-1, out=None):
     """计算两个3D向量的叉积
     
-    计算两个3D向量的叉积，支持批量向量和广播。与PyTorch的torch.linalg.cross()行为一致。
+    使用底层数组库的 cross 函数计算前向传播，
+    手动维护计算图以支持梯度跟踪。
     
     叉积公式：
         result[i] = input[j] * other[k] - input[k] * other[j]
         其中 (i, j, k) 是 (0, 1, 2) 的循环排列
     
+    梯度公式（利用叉积的恒等式）：
+        grad_input  = other × grad_output
+        grad_other = grad_output × input
+    
     参数:
-        input: 第一个输入张量，最后一个维度必须是3
+        input: 第一个输入张量，指定维度长度必须是3
         type input: TN
-        other: 第二个输入张量，最后一个维度必须是3
+        other: 第二个输入张量，指定维度长度必须是3
         type other: TN
         dim: 计算叉积的维度，默认为-1（最后一个维度）
         type dim: int
@@ -141,7 +146,7 @@ def cross(input, other, *, dim=-1, out=None):
         type out: TN, optional
         
     返回:
-        叉积结果，形状与输入张量相同
+        叉积结果，形状与广播后的输入张量相同
         rtype: TN
         
     异常:
@@ -156,6 +161,14 @@ def cross(input, other, *, dim=-1, out=None):
         >>> a_batch = tensor([[1, 2, 3], [4, 5, 6]])
         >>> b_batch = tensor([[7, 8, 9], [10, 11, 12]])
         >>> cross(a_batch, b_batch)  # 返回 [[-6, 12, -6], [-6, 12, -6]]
+        
+        >>> # 梯度计算
+        >>> a = tensor([1.0, 2.0, 3.0], requires_grad=True)
+        >>> b = tensor([4.0, 5.0, 6.0], requires_grad=True)
+        >>> c = cross(a, b)
+        >>> c.sum().backward()
+        >>> # a.grad = b × grad_c = [4,5,6] × [1,1,1] = [-1, 2, -1]
+        >>> # b.grad = grad_c × a = [1,1,1] × [1,2,3] = [1, -2, 1]
     """
     # 输入验证
     if not isinstance(input, TN):
@@ -190,47 +203,43 @@ def cross(input, other, *, dim=-1, out=None):
     if dim < 0:
         dim = input.ndim + dim
     
-    # 提取三个分量
-    # 使用索引操作提取指定维度的三个分量
-    # 对于维度 dim，我们需要提取 dim=0,1,2 的分量
+    # 使用底层数组库计算叉积
+    arrlib = input._get_array_lib()
+    result_data = arrlib.cross(input.data, other.data, axis=dim)
     
-    # 创建索引元组
-    def get_component(t, comp_idx):
-        """提取指定维度的某个分量"""
-        # 构建索引元组，在指定维度上使用 comp_idx
-        indices = [slice(None)] * t.ndim
-        indices[dim] = comp_idx
-        return t[tuple(indices)]
+    requires_grad = is_grad_enabled() and (input.requires_grad or other.requires_grad)
+    ret = tensor(result_data, device=input.device, requires_grad=requires_grad)
     
-    # 提取三个分量
-    input_0 = get_component(input, 0)
-    input_1 = get_component(input, 1)
-    input_2 = get_component(input, 2)
-    
-    other_0 = get_component(other, 0)
-    other_1 = get_component(other, 1)
-    other_2 = get_component(other, 2)
-    
-    # 计算叉积: (a1*b2 - a2*b1, a2*b0 - a0*b2, a0*b1 - a1*b0)
-    result_0 = input_1 * other_2 - input_2 * other_1
-    result_1 = input_2 * other_0 - input_0 * other_2
-    result_2 = input_0 * other_1 - input_1 * other_0
-    
-    # 将结果合并到指定维度
-    # 使用 stack 在指定维度上堆叠三个分量
-    result = stack([result_0, result_1, result_2], dim=dim)
+    if requires_grad:
+        ret.fromvars = (input, other)
+        ret.gradfuncs = (_cross_grad_left, _cross_grad_right)
+        ret.parms = (dim, dim)
     
     # 处理out参数
     if out is not None:
         if not isinstance(out, TN):
             raise TypeError("out must be TN type")
-        if out.shape != result.shape:
-            raise ValueError(f"out has wrong shape: expected {result.shape}, got {out.shape}")
-        
-        # 将计算结果复制到out中
-        return out.copy_(result)
+        if out.shape != ret.shape:
+            raise ValueError(f"out has wrong shape: expected {ret.shape}, got {out.shape}")
+        return out.copy_(ret)
     
-    return result
+    return ret
+
+
+def _cross_grad_left(result_tensor, i):
+    """grad_a = b × grad_c"""
+    dim = result_tensor.parms[i]
+    b = result_tensor.fromvars[i + 1]
+    grad = result_tensor.grad_value
+    return cross(b, grad, dim=dim)
+
+
+def _cross_grad_right(result_tensor, i):
+    """grad_b = grad_c × a"""
+    dim = result_tensor.parms[i]
+    a = result_tensor.fromvars[i - 1]
+    grad = result_tensor.grad_value
+    return cross(grad, a, dim=dim)
 
 def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtype=None):
     """计算张量的向量范数、矩阵范数或多轴范数
