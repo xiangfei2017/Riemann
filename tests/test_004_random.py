@@ -663,6 +663,457 @@ class TestRandomFunctions(unittest.TestCase):
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
 
+    def test_topk(self):
+        """测试topk函数 - 沿指定维度返回k个最大/最小元素"""
+        rng = np.random.RandomState(123)
+        x1d = rng.randn(7)
+        x2d = rng.randn(4, 6)
+        x3d = rng.randn(2, 3, 5)
+        # (tag, input, dim_list)
+        topk_inputs = [
+            ('1d', x1d, [-1]),
+            ('2d', x2d, [0, -1]),
+            ('3d', x3d, [0, -1]),
+        ]
+
+        for tag, xnp, dim_list in topk_inputs:
+            ndim = xnp.ndim
+            for dim in dim_list:
+                norm_dim = dim % ndim
+                dim_len = xnp.shape[dim]
+                ks = sorted({1, min(3, dim_len), dim_len})
+                for k in ks:
+                    for largest in (True, False):
+                        for device in device_list:
+                            device_name = get_device_name(device)
+                            case_name = f"topk({tag}, dim={dim}, k={k}, largest={largest}) - 设备:{device_name}"
+                            start_time = time.time()
+                            try:
+                                x = rm.tensor(xnp, device=device)
+                                vals, idx = rm.topk(x, k, dim=dim, largest=largest)
+                                vals_np = vals.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(vals.data)
+                                idx_np = idx.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(idx.data)
+                                # 设备匹配
+                                device_passed = check_device_match(vals, device) and check_device_match(idx, device)
+                                self.assertTrue(device_passed, f"{case_name} 设备不匹配")
+                                # 索引 dtype 为 int64
+                                self.assertEqual(idx.data.dtype, np.dtype('int64'),
+                                                 f"{case_name} 索引 dtype: {idx.data.dtype}")
+                                # 计算期望值
+                                sorted_x = np.sort(xnp, axis=dim)
+                                if largest:
+                                    sl = [slice(None)] * ndim
+                                    sl[norm_dim] = slice(dim_len - k, dim_len)
+                                    rev = [slice(None, None, -1) if d == norm_dim else slice(None)
+                                           for d in range(ndim)]
+                                    expected_vals = sorted_x[tuple(sl)][tuple(rev)]
+                                else:
+                                    sl = [slice(None)] * ndim
+                                    sl[dim] = slice(0, k)
+                                    expected_vals = sorted_x[tuple(sl)]
+                                # 数值匹配
+                                self.assertTrue(np.allclose(vals_np, expected_vals),
+                                                f"{case_name} 数值不匹配")
+                                # 索引确实指向输入中的对应值
+                                gathered = np.take_along_axis(xnp, idx_np, axis=dim)
+                                self.assertTrue(np.allclose(gathered, vals_np),
+                                                f"{case_name} 索引与数值不一致")
+                                # 与 PyTorch 对比（若可用）
+                                if TORCH_AVAILABLE:
+                                    tv, ti = torch.topk(torch.tensor(xnp), k, dim=dim, largest=largest)
+                                    self.assertTrue(np.allclose(vals_np, tv.numpy()),
+                                                    f"{case_name} 与PyTorch数值不一致")
+                                    self.assertTrue(np.array_equal(idx_np, ti.numpy()),
+                                                    f"{case_name} 与PyTorch索引不一致")
+                                passed = True
+                                time_taken = time.time() - start_time
+                                if IS_RUNNING_AS_SCRIPT:
+                                    stats.add_result(case_name, passed)
+                                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                            except Exception as e:
+                                time_taken = time.time() - start_time
+                                if IS_RUNNING_AS_SCRIPT:
+                                    stats.add_result(case_name, False, [str(e)])
+                                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                                raise
+
+        # k=0 空结果子用例
+        for device in device_list:
+            device_name = get_device_name(device)
+            case_name = f"topk(k=0) - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                x = rm.tensor(x1d, device=device)
+                v0, i0 = rm.topk(x, 0)
+                self.assertEqual(v0.shape, (0,))
+                self.assertEqual(i0.shape, (0,))
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
+        # sorted=False 成员集合子用例
+        for device in device_list:
+            device_name = get_device_name(device)
+            case_name = f"topk(sorted=False) - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                x = rm.tensor(x2d, device=device)
+                v_us, i_us = rm.topk(x, 3, sorted=False)
+                v_np = v_us.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(v_us.data)
+                expected = np.sort(x2d, axis=-1)[:, -3:]
+                self.assertTrue(np.allclose(np.sort(v_np, axis=-1), expected),
+                                f"{case_name} sorted=False 成员集合不正确")
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
+        # 错误检查子用例
+        error_cases = [
+            ("k too large raises", lambda: rm.topk(rm.tensor(x1d), 100), RuntimeError),
+            ("scalar raises", lambda: rm.topk(rm.tensor(3.0), 1), RuntimeError),
+            ("bad dim raises", lambda: rm.topk(rm.tensor(x1d), 1, dim=5), IndexError),
+        ]
+        for sub_name, fn, exc_type in error_cases:
+            case_name = f"topk({sub_name})"
+            start_time = time.time()
+            try:
+                with self.assertRaises(exc_type):
+                    fn()
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
+        # 反向传播子用例
+        for device in device_list:
+            device_name = get_device_name(device)
+            # 1D 梯度
+            case_name = f"topk 1d grad - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                xg = rm.tensor(x1d, requires_grad=True, device=device)
+                vg, ig = rm.topk(xg, 3)
+                vg.sum().backward()
+                expected_grad = np.zeros(7)
+                expected_grad[np.argsort(x1d)[-3:]] = 1.0
+                grad_np = xg.grad.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(xg.grad.data)
+                self.assertTrue(np.allclose(grad_np, expected_grad), f"{case_name} 梯度不匹配")
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+            # 2D dim=0 largest=False 梯度
+            case_name = f"topk 2d dim=0 grad - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                xg2 = rm.tensor(x2d, requires_grad=True, device=device)
+                vg2, ig2 = rm.topk(xg2, 2, dim=0, largest=False)
+                vg2.sum().backward()
+                eg = np.zeros_like(x2d)
+                cols = np.argpartition(x2d, kth=1, axis=0)[:2]
+                np.put_along_axis(eg, cols, 1.0, axis=0)
+                grad_np = xg2.grad.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(xg2.grad.data)
+                self.assertTrue(np.allclose(grad_np, eg), f"{case_name} 梯度不匹配")
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+            # 与 PyTorch 梯度对比
+            if TORCH_AVAILABLE:
+                case_name = f"topk torch grad match - 设备:{device_name}"
+                start_time = time.time()
+                try:
+                    xt = torch.tensor(x2d, requires_grad=True)
+                    xr = rm.tensor(x2d, requires_grad=True, device=device)
+                    torch.topk(xt, 3, dim=-1).values.sum().backward()
+                    rm.topk(xr, 3, dim=-1)[0].sum().backward()
+                    xr_grad = xr.grad.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(xr.grad.data)
+                    self.assertTrue(np.allclose(xt.grad.numpy(), xr_grad), f"{case_name} 梯度不匹配")
+                    passed = True
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+        # TN.topk 方法形式子用例
+        for device in device_list:
+            device_name = get_device_name(device)
+            case_name = f"TN.topk method - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                vm, im = rm.tensor(x1d, device=device).topk(2)
+                self.assertEqual(vm.shape, (2,))
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
+    def test_multinomial(self):
+        """测试multinomial函数 - 按多项分布权重抽样"""
+        rng = np.random.RandomState(123)
+        w1 = np.array([0.0, 10.0, 3.0, 0.0, 7.0])
+        w2 = np.abs(rng.randn(5, 8))
+
+        for device in device_list:
+            device_name = get_device_name(device)
+            # 1-D 有放回：形状/dtype/支撑集/频率比
+            case_name = f"multinomial 1d replacement=True - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                t = rm.tensor(w1, device=device)
+                s = rm.multinomial(t, 5000, replacement=True)
+                s_np = s.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(s.data)
+                self.assertEqual(s.shape, (5000,))
+                self.assertEqual(s.data.dtype, np.dtype('int64'))
+                self.assertTrue(set(np.unique(s_np)).issubset({1, 2, 4}))
+                freq = np.bincount(s_np, minlength=5)[[2, 4]] / 5000
+                ratio = freq[0] / freq[1]
+                self.assertTrue(abs(ratio - (3.0 / 7.0)) < 0.08, f"频率比 {ratio} 偏离 3/7")
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+            # 1-D 无放回：唯一且数量正确
+            case_name = f"multinomial 1d without replacement - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                t = rm.tensor(w1, device=device)
+                s2 = rm.multinomial(t, 3, replacement=False)
+                s2_np = s2.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(s2.data)
+                self.assertEqual(len(np.unique(s2_np)), 3)
+                self.assertTrue(set(s2_np).issubset({1, 2, 4}))
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+            # 2-D 有放回：形状与取值范围
+            case_name = f"multinomial 2d replacement=True - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                t2 = rm.tensor(w2, device=device)
+                s3 = rm.multinomial(t2, 4, replacement=True)
+                s3_np = s3.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(s3.data)
+                self.assertEqual(s3_np.shape, (5, 4))
+                self.assertTrue(s3_np.min() >= 0 and s3_np.max() <= 7)
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+            # 2-D 无放回：每行唯一
+            case_name = f"multinomial 2d without replacement - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                t2 = rm.tensor(w2, device=device)
+                s4 = rm.multinomial(t2, 8, replacement=False)
+                s4_np = s4.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(s4.data)
+                self.assertTrue(all(len(np.unique(row)) == 8 for row in s4_np))
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+            # 整型权重
+            case_name = f"multinomial int weights - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                si = rm.multinomial(rm.tensor([1, 0, 1, 0, 0], device=device), 100, replacement=True)
+                si_np = si.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(si.data)
+                self.assertTrue(set(np.unique(si_np)).issubset({0, 2}))
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+            # 全零行 -> 均匀
+            case_name = f"multinomial all-zero uniform - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                sz = rm.multinomial(rm.tensor([0.0, 0.0, 0.0, 0.0], device=device), 200, replacement=True)
+                sz_np = sz.data if device in (None, 'cpu') else rm.cuda.cp.asnumpy(sz.data)
+                self.assertEqual(len(np.unique(sz_np)), 4)
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+            # num_samples=0 边界
+            case_name = f"multinomial num_samples=0 - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                s0 = rm.multinomial(rm.tensor([1.0, 2.0, 3.0], device=device), 0, replacement=True)
+                self.assertEqual(s0.shape, (0,))
+                self.assertEqual(s0.data.dtype, np.dtype('int64'))
+                s0f = rm.multinomial(rm.tensor([1.0, 2.0, 3.0], device=device), 0, replacement=False)
+                self.assertEqual(s0f.shape, (0,))
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
+        # 错误检查子用例
+        error_cases = [
+            ("negative raises", lambda: rm.multinomial(rm.tensor([1.0, -1.0]), 2), RuntimeError),
+            ("3d raises", lambda: rm.multinomial(rm.tensor(np.zeros((2, 2, 2))), 1), RuntimeError),
+            ("too many without replacement raises",
+             lambda: rm.multinomial(rm.tensor([1.0, 2.0, 3.0]), 5, replacement=False), RuntimeError),
+        ]
+        for sub_name, fn, exc_type in error_cases:
+            case_name = f"multinomial({sub_name})"
+            start_time = time.time()
+            try:
+                with self.assertRaises(exc_type):
+                    fn()
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
+        # TN.multinomial 方法形式子用例
+        for device in device_list:
+            device_name = get_device_name(device)
+            case_name = f"TN.multinomial method - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                sm = rm.tensor(w1, device=device).multinomial(2, replacement=True)
+                self.assertEqual(sm.shape, (2,))
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
+        # out 参数子用例
+        for device in device_list:
+            device_name = get_device_name(device)
+            case_name = f"multinomial out - 设备:{device_name}"
+            start_time = time.time()
+            try:
+                out_t = rm.zeros(3, dtype=rm.int64, device=device)
+                ret = rm.multinomial(rm.tensor([1.0, 1.0, 1.0], device=device),
+                                     3, replacement=True, out=out_t)
+                self.assertIs(ret, out_t)
+                self.assertEqual(out_t.shape, (3,))
+                passed = True
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time_taken:.4f}秒)")
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
 if __name__ == '__main__':
     # 设置为独立脚本运行模式
     IS_RUNNING_AS_SCRIPT = True

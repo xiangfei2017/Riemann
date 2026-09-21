@@ -3538,6 +3538,12 @@ class TN:
     def sort(self,dim:int=-1,descending:bool=False):  # type: ignore
         return sort(self,dim=dim,descending=descending)
 
+    def topk(self, k:int, dim:int=-1, largest:bool=True, sorted:bool=True):  # type: ignore
+        return topk(self, k, dim=dim, largest=largest, sorted=sorted)
+
+    def multinomial(self, num_samples:int, replacement:bool=False, *, generator=None):  # type: ignore
+        return multinomial(self, num_samples, replacement, generator=generator)
+
     def maximum(self, other):
         return maximum(self,other)
     
@@ -11420,4 +11426,308 @@ def kron(input: TN, other: TN, *, out: TN | None = None) -> TN:
         out.data = result.data
         return out
     
+    return result
+
+
+def _topk_backward(result_tensor: TN, i: int) -> TN:
+    """
+    topk操作的反向传播函数。
+    将输出位置上的梯度按照topk索引散射回输入张量的对应位置，
+    未被选中的输入位置梯度为0。
+    """
+    # 获取原始输入张量
+    input_tensor = result_tensor.fromvars[i]
+    # 获取topk选择时使用的索引和维度
+    topk_indices, topk_dim = result_tensor.parms[i]
+    # 获取梯度值
+    grad_value = result_tensor.grad_value
+
+    # 创建与输入形状相同的零张量
+    grad = zeros_like(input_tensor)
+
+    # 将梯度按照topk索引放置到正确的位置
+    if topk_indices.ndim == 1:
+        # 1D情况
+        grad[topk_indices] = grad_value
+    else:
+        # 多维情况，根据topk维度创建正确的坐标网格
+        arrlib = input_tensor._get_array_lib()
+        coords = list(arrlib.ogrid[tuple(slice(0, size) for size in topk_indices.shape)])
+        # 用topk的索引替换该维度的坐标
+        coords[topk_dim] = topk_indices.data
+        # 使用这些坐标将梯度值分配回原始位置
+        grad[tuple(coords)] = grad_value
+
+    return grad
+
+
+def topk(input: TN, k: int, dim: int = -1, largest: bool = True, sorted: bool = True, *, out = None) -> tuple[TN, TN]:
+    """
+    沿指定维度返回输入张量中k个最大（或最小）元素的值和索引。
+
+    接口与PyTorch的torch.topk()兼容，基于numpy/cupy的argpartition实现：
+    先通过argpartition以O(n)复杂度将前k个元素划分到一起，
+    当sorted=True时再对这k个候选项做argsort，保证返回值有序。
+
+    参数:
+        input (TN): 输入张量，至少为1维，不支持复数类型
+        k (int): 返回元素的个数，必须满足 0 <= k <= input.size(dim)
+        dim (int): 查找的维度，默认为最后一维
+        largest (bool): True返回最大的k个元素，False返回最小的k个元素，默认为True
+        sorted (bool): True保证返回元素按值有序（最大模式降序、最小模式升序），
+                       False时仅保证选出的是top-k元素、顺序不做保证，默认为True
+        out: 可选的输出元组 (values, indices)，使用out时不支持自动微分
+
+    返回:
+        tuple[TN, TN]: (values, indices)，values为top-k元素的值（支持梯度），
+                       indices为对应的int64索引（不支持梯度）
+
+    异常:
+        IndexError: dim超出维度范围
+        RuntimeError: k超出范围、输入为复数、out与requires_grad冲突等
+
+    示例:
+        >>> x = rm.tensor([3., 1., 4., 1., 5.])
+        >>> values, indices = rm.topk(x, 2)
+        >>> values
+        tensor([5., 4.])
+        >>> indices
+        tensor([4, 2])
+    """
+    # 输入类型检查
+    if not isinstance(input, TN):
+        raise TypeError("topk: input must be a tensor")
+    if input.is_complex():
+        raise RuntimeError("topk() does not support complex input")
+    # k必须是整数（排除bool）
+    if isinstance(k, bool) or not isinstance(k, (int, np.integer)):
+        raise TypeError("topk: k must be an integer")
+    k = int(k)
+    # torch要求输入至少1维
+    if input.ndim == 0:
+        raise RuntimeError("topk: input must have at least 1 dimension")
+
+    # 确保dim在有效范围内
+    if dim < -input.ndim or dim >= input.ndim:
+        raise IndexError(f"Dimension out of range (expected to be in range of "
+                         f"[-{input.ndim}, {input.ndim - 1}], got {dim})")
+    # 标准化维度索引
+    if dim < 0:
+        dim += input.ndim
+
+    dim_size = input.shape[dim]
+    if k < 0 or k > dim_size:
+        raise RuntimeError(f"selected index k out of range, k should be in [0, {dim_size}] but got {k}")
+
+    # out参数和梯度需求冲突检查
+    if out is not None and input.requires_grad:
+        raise RuntimeError("topk(): functions with out=... arguments don't support automatic "
+                           "differentiation, but one of the arguments requires grad.")
+
+    arrlib = input._get_array_lib()
+    data = input.data
+
+    with device_context(input):
+        if k == 0:
+            # k=0时返回指定维度长度为0的空结果
+            result_shape = data.shape[:dim] + (0,) + data.shape[dim+1:]
+            values_arr = arrlib.empty(result_shape, dtype=data.dtype)
+            indices_arr = arrlib.empty(result_shape, dtype=arrlib.int64)
+        else:
+            # 第一步：利用argpartition以O(n)复杂度将top-k候选划分到一起
+            if largest:
+                # 升序划分后，最大的k个位于维度末尾
+                part_indices = arrlib.argpartition(data, kth=dim_size - k, axis=dim)
+                candidate_pos = slice(dim_size - k, dim_size)
+            else:
+                # 升序划分后，最小的k个位于维度开头
+                part_indices = arrlib.argpartition(data, kth=k - 1, axis=dim)
+                candidate_pos = slice(0, k)
+
+            # 沿dim取出前k个候选索引
+            take_slice = [slice(None)] * data.ndim
+            take_slice[dim] = candidate_pos
+            candidate_indices = part_indices[tuple(take_slice)]
+
+            # 用候选索引从原数据中聚集出候选值
+            coords = list(arrlib.ogrid[tuple(slice(0, size) for size in data.shape)])
+            coords[dim] = candidate_indices
+            values_arr = data[tuple(coords)]
+
+            # 第二步：sorted=True时对k个候选项排序，保证输出有序
+            # 统一升序argsort，largest模式沿dim反转切片得到降序，
+            # 避免对values_arr取负号以兼容无符号整型，且省去临时数组
+            if sorted:
+                order = arrlib.argsort(values_arr, axis=dim)
+                if largest:
+                    rev = [slice(None, None, -1) if d == dim else slice(None)
+                           for d in range(values_arr.ndim)]
+                    order = order[tuple(rev)]
+                order_coords = list(arrlib.ogrid[tuple(slice(0, size) for size in values_arr.shape)])
+                order_coords[dim] = order
+                indices_arr = candidate_indices[tuple(order_coords)]
+                values_arr = values_arr[tuple(order_coords)]
+            else:
+                indices_arr = candidate_indices
+
+    # 创建结果张量：values支持梯度，indices为整型索引不支持梯度
+    values_tensor = tensor(values_arr, device=input.device,
+                           requires_grad=(is_grad_enabled() and input.requires_grad))
+    indices_tensor = tensor(indices_arr, device=input.device, requires_grad=False)
+
+    if values_tensor.requires_grad:
+        values_tensor.fromvars = (input,)
+        values_tensor.parms = ((indices_tensor, dim),)
+        values_tensor.gradfuncs = (_topk_backward,)
+
+    # 处理out参数
+    if out is not None:
+        if not isinstance(out, tuple) or len(out) != 2:
+            raise TypeError("out must be a tuple of two tensors")
+
+        values_out, indices_out = out
+        if not isinstance(values_out, TN) or not isinstance(indices_out, TN):
+            raise TypeError("out tensors must be of type TN")
+        if values_out.shape != values_tensor.shape:
+            raise RuntimeError(f"out values tensor shape ({values_out.shape}) is incompatible "
+                               f"with result shape ({values_tensor.shape})")
+        if indices_out.shape != indices_tensor.shape:
+            raise RuntimeError(f"out indices tensor shape ({indices_out.shape}) is incompatible "
+                               f"with result shape ({indices_tensor.shape})")
+
+        arrlib.copyto(values_out.data, values_tensor.data)
+        arrlib.copyto(indices_out.data, indices_tensor.data)
+        return (values_out, indices_out)
+
+    return (values_tensor, indices_tensor)
+
+
+def multinomial(input: TN, num_samples: int, replacement: bool = False, *, generator=None, out: TN|None = None) -> TN:
+    """
+    按照输入张量给出的多项分布权重进行抽样，返回类别的索引。
+
+    接口与PyTorch的torch.multinomial()兼容，基于numpy/cupy的random.choice实现：
+    - 输入为1-D张量时，返回形状为(num_samples,)的索引张量
+    - 输入为2-D张量（m行）时，对每一行独立抽样，返回形状为(m, num_samples)的索引张量
+
+    输入行不需要求和为1，元素值被当作相对权重自动归一化；
+    权重必须非负且有限，当某一行权重全为0时按均匀分布抽样（与PyTorch一致）。
+    replacement=False时，num_samples不能超过类别数。
+
+    参数:
+        input (TN): 1-D或2-D的权重张量，可以是浮点或整型（整型会转为浮点权重）
+        num_samples (int): 抽样次数
+        replacement (bool): True为有放回抽样，False为无放回抽样，默认为False
+        generator: 为与PyTorch签名兼容而保留，当前忽略，使用numpy/cupy全局随机流
+                   （可通过np.random.seed/cp.random.seed控制）
+        out (TN, optional): 可选的输出张量，形状必须与结果一致
+
+    返回:
+        TN: int64类型的类别索引张量，与输入位于同一设备（CPU/GPU），不支持梯度
+
+    异常:
+        RuntimeError: 输入维度不是1或2、权重为负或非有限、无放回抽样数超过类别数等
+
+    示例:
+        >>> weights = rm.tensor([0., 10., 3., 0.])
+        >>> rm.multinomial(weights, 2, replacement=True)
+        tensor([1, 2])
+    """
+    # 输入类型与维度检查
+    if not isinstance(input, TN):
+        raise TypeError("multinomial: input must be a tensor")
+    if input.ndim not in (1, 2):
+        raise RuntimeError("multinomial only supports 1-D or 2-D input tensors")
+
+    # num_samples必须是非负整数（排除bool）
+    if isinstance(num_samples, bool) or not isinstance(num_samples, (int, np.integer)):
+        raise TypeError("multinomial: num_samples must be an integer")
+    num_samples = int(num_samples)
+    if num_samples < 0:
+        raise RuntimeError("multinomial: num_samples must be non-negative")
+
+    n_categories = input.shape[-1]
+    if not replacement and num_samples > n_categories:
+        raise RuntimeError(
+            f"cannot sample n_sample={num_samples} > input.size(-1)={n_categories} "
+            f"samples when replacement=False")
+
+    arrlib = input._get_array_lib()
+
+    # choice要求概率为浮点类型，整型权重先转换
+    weights = input.data
+    if weights.dtype.kind != 'f':
+        weights = weights.astype(float64)
+
+    # 与PyTorch一致：权重必须非负且有限
+    if bool(arrlib.any(weights < 0)):
+        raise RuntimeError("prob_dist must be non-negative")
+    if bool(arrlib.any(~arrlib.isfinite(weights))):
+        raise RuntimeError("prob_dist must be finite")
+
+    def _normalize(row):
+        # 将一行权重归一化为概率；整行为0时退化为均匀分布（与PyTorch行为一致）
+        total = row.sum()
+        n = row.shape[0]
+        if total <= 0:
+            return arrlib.full((n,), 1.0 / n, dtype=row.dtype)
+        return row / total
+
+    def _sample(probs):
+        """按概率 probs 抽样，返回 int64 索引数组。
+
+        - 有放回(replacement=True)：直接用 numpy/cupy 的 random.choice
+        - 无放回(replacement=False)：numpy 用 random.choice；
+          cupy 的 choice 不支持 replace=False+p 组合，改用 Gumbel-max trick
+          (对每类生成 Gumbel 噪声，取 log(p)+Gumbel 分数最大的 k 个)，
+          数学上等价于按概率无放回抽样。
+        """
+        # num_samples=0 时统一跳过 choice 调用，避免无意义的 probs 校验
+        if num_samples == 0:
+            return arrlib.empty(0, dtype=arrlib.int64)
+        if replacement:
+            out = arrlib.random.choice(
+                n_categories, size=num_samples, replace=True, p=probs)
+        else:
+            if arrlib is np:
+                out = np.random.choice(
+                    n_categories, size=num_samples, replace=False, p=probs)
+            else:
+                # Gumbel-max trick：cupy 不支持 choice(replace=False, p=...)
+                u = arrlib.random.uniform(1e-30, 1.0, size=n_categories)
+                gumbel = -arrlib.log(-arrlib.log(u))
+                # 避免 log(0)：probs=0 处用 log(1)=0 占位，再置为 -inf 使其不被选中
+                safe_p = arrlib.where(probs > 0, probs, 1.0)
+                log_p = arrlib.where(probs > 0, arrlib.log(safe_p), -arrlib.inf)
+                scores = log_p + gumbel
+                # 升序后反转切片得到降序，避免创建 -scores 临时浮点数组
+                order = arrlib.argsort(scores)[::-1]
+                out = order[:num_samples]
+        return out.astype(arrlib.int64)
+
+    with device_context(input):
+        if input.ndim == 1:
+            probs = _normalize(weights)
+            samples_arr = _sample(probs)
+        else:
+            # 2-D输入：逐行独立抽样（choice仅支持1-D概率向量）
+            m = input.shape[0]
+            samples_arr = arrlib.empty((m, num_samples), dtype=arrlib.int64)
+            for row_idx in range(m):
+                probs = _normalize(weights[row_idx])
+                samples_arr[row_idx] = _sample(probs)
+
+    # 索引结果为int64、无梯度，设备与输入保持一致
+    result = tensor(samples_arr, device=input.device, requires_grad=False)
+
+    # 处理out参数
+    if out is not None:
+        if not isinstance(out, TN):
+            raise TypeError("out must be a tensor of type TN")
+        if out.shape != result.shape:
+            raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible "
+                               f"with result shape ({result.shape})")
+        arrlib.copyto(out.data, result.data)
+        return out
+
     return result
