@@ -52,7 +52,7 @@ processing capabilities.
 """
 
 import numpy as np
-from ..autograd import *
+from ..tensordef import *
 import multiprocessing
 from queue import Empty
 import atexit,sys
@@ -207,7 +207,7 @@ def default_collate(batch):
         # 尝试堆叠 NumPy 数组。如果数组形状不一致，np.stack 会抛出异常。
         try:
             stacked = np.stack(batch, axis=0)
-            return tensor(stacked)  # 修改点2：NumPy 数组也转为 TN 张量
+            return as_tensor(stacked)  # 修改点2：NumPy 数组也转为 TN 张量
         except ValueError:
             # 如果堆叠失败（例如变长序列），fallback 到列表或自定义处理
             # 在实际应用中，你可能需要更复杂的逻辑，如填充（padding）

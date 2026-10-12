@@ -225,7 +225,7 @@ class PReLU(Module):
     def __init__(self, num_parameters=1, init=0.25):
         super().__init__()
         # 初始化可训练参数
-        self.alpha = tensor(np.full((num_parameters,), init), requires_grad=True)
+        self.alpha = as_tensor(np.full((num_parameters,), init), requires_grad=True)
     
     def forward(self, x: TN) -> TN:
         # 调用函数式prelu实现并传递参数

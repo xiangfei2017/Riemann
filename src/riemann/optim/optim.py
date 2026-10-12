@@ -1407,7 +1407,7 @@ class LBFGS(Optimizer):
         # 如果最佳损失是有限的，则直接返回，避免重复计算
         if arrlib_isfinite(best_loss):
             # closure()总是返回TN张量，直接返回
-            return tensor(best_loss)
+            return as_tensor(best_loss)
         else:
             # 只有在最佳损失无效时才重新计算
             loss = closure()

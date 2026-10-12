@@ -3216,7 +3216,7 @@ class Module:
                     if sub_value is not None:
                         if isinstance(sub_value, Parameter):
                             # 深拷贝参数
-                            new_data = tensor(sub_value.data.copy())
+                            new_data = as_tensor(sub_value.data.copy())
                             new_param = Parameter(new_data)
                             new_param.requires_grad = sub_value.requires_grad
                             new_dict[sub_key] = new_param
@@ -3283,7 +3283,7 @@ class Module:
                     if sub_value is not None:
                         if isinstance(sub_value, Parameter):
                             # 深拷贝参数
-                            new_data = tensor(sub_value.data.copy())
+                            new_data = as_tensor(sub_value.data.copy())
                             new_param = Parameter(new_data)
                             new_param.requires_grad = sub_value.requires_grad
                             new_dict[sub_key] = new_param

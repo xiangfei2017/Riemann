@@ -78,6 +78,7 @@ from typing import Callable, Any
 from enum import Enum
 import numpy as np
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+from ..tensordef import as_tensor
 
 # 处理PIL库版本兼容性问题
 try:
@@ -225,7 +226,7 @@ class PILToTensor(Transform):
             # 彩色图像，HWC -> CHW
             np_img = np_img.transpose(2, 0, 1)
         
-        return tensor(np_img)
+        return as_tensor(np_img)
     
     def __repr__(self) -> str:
         return self.__class__.__name__ + '()'
@@ -255,26 +256,26 @@ class ToTensor(Transform):
             # NumPy数组处理
             if pic.ndim == 2:
                 # 灰度图像
-                img = tensor(pic, dtype=get_default_dtype()).unsqueeze(0)
+                img = as_tensor(pic, dtype=get_default_dtype()).unsqueeze(0)
             elif pic.ndim == 3:
                 # 彩色图像，HWC -> CHW
-                img = tensor(pic.transpose(2, 0, 1), dtype=get_default_dtype())
+                img = as_tensor(pic.transpose(2, 0, 1), dtype=get_default_dtype())
             else:
                 raise ValueError(f'Unsupported array shape: {pic.shape}')
         elif isinstance(pic, Image.Image):
             # PIL图像处理
             if pic.mode == 'I':
                 # 32位整数图像
-                img = tensor(np.array(pic, np.int32, copy=False), dtype=get_default_dtype())
+                img = as_tensor(np.array(pic, np.int32, copy=False), dtype=get_default_dtype())
             elif pic.mode == 'I;16':
                 # 16位整数图像
-                img = tensor(np.array(pic, np.int16, copy=False), dtype=get_default_dtype())
+                img = as_tensor(np.array(pic, np.int16, copy=False), dtype=get_default_dtype())
             elif pic.mode == 'F':
                 # 32位浮点图像
-                img = tensor(np.array(pic, np.float32, copy=False), dtype=get_default_dtype())
+                img = as_tensor(np.array(pic, np.float32, copy=False), dtype=get_default_dtype())
             else:
                 # 标准图像模式
-                img = tensor(pic, dtype=get_default_dtype())
+                img = as_tensor(pic, dtype=get_default_dtype())
             
             # 如果是PIL图像，确保数据在[0, 255]范围内并缩放到[0, 1]
             if pic.mode in ['L', 'P', 'I', 'I;16']:
@@ -369,12 +370,12 @@ class ConvertImageDtype(Transform):
             
         Returns:
             TN: 转换数据类型后的张量
-        """
+        """ 
         if not isinstance(tensor_obj, TN):
             raise TypeError(f'Input should be a TN tensor, got {type(tensor_obj)}')
         
-        return tensor(tensor_obj.data.astype(self.dtype))
-    
+        return as_tensor(tensor_obj, dtype=self.dtype)
+
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(dtype={self.dtype})'
 
@@ -426,7 +427,7 @@ class Normalize(Transform):
             result = []
             for i, (m, s) in enumerate(zip(self.mean, self.std)):
                 result.append((tensor_obj.data[i] - m) / s)
-            return tensor(np.stack(result, axis=0))
+            return as_tensor(np.stack(result, axis=0))
     
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(mean={self.mean}, std={self.std})'
@@ -759,7 +760,7 @@ class Grayscale(Transform):
                 # RGB转灰度
                 r, g, b = img.data[0], img.data[1], img.data[2]
                 gray = 0.299 * r + 0.587 * g + 0.114 * b
-                gray_tensor = tensor(gray, dtype=img.dtype, requires_grad=img.requires_grad)
+                gray_tensor = as_tensor(gray, dtype=img.dtype, requires_grad=img.requires_grad)
                 
                 if self.num_output_channels == 3:
                     return gray_tensor.expand(3, -1, -1)
@@ -1800,11 +1801,11 @@ class SanitizeBoundingBox(Transform):
         valid_mask = valid_mask & (x1 >= 0) & (y1 >= 0)  # 确保坐标非负
         
         # 过滤边界框
-        valid_boxes = tensor(boxes.data[valid_mask])
+        valid_boxes = as_tensor(boxes.data[valid_mask])
         
         # 过滤标签
         if labels is not None:
-            valid_labels = tensor(labels.data[valid_mask])
+            valid_labels = as_tensor(labels.data[valid_mask])
         else:
             valid_labels = None
         

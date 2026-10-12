@@ -61,7 +61,7 @@ import io
 import sys
 import struct
 from typing import Any
-from .tensordef import TN, tensor
+from .tensordef import as_tensor
 from .nn.module import Parameter
 from .cuda import Device, cp
 
@@ -341,7 +341,7 @@ def _tensor_constructor(data, shape, dtype_str, device_str, requires_grad):
     dtype = np.dtype(dtype_str)
     
     # 创建张量
-    return tensor(data, dtype=dtype, device=device, requires_grad=requires_grad)
+    return as_tensor(data, dtype=dtype, device=device, requires_grad=requires_grad)
 
 
 def _parameter_constructor(*args):
@@ -382,7 +382,7 @@ def _parameter_constructor(*args):
         dtype = np.dtype(dtype_str)
         
         # 创建张量
-        tensor_obj = tensor(data, dtype=dtype, device=device, requires_grad=requires_grad)
+        tensor_obj = as_tensor(data, dtype=dtype, device=device, requires_grad=requires_grad)
         
         # 创建参数
         return Parameter(tensor_obj, requires_grad)
@@ -739,7 +739,7 @@ def _load_from_zip(zip_file, map_location, pickle_module, **pickle_load_args):
                         device = f'cuda:{device_idx}'
                     
                     # 创建Riemann张量，指定设备参数
-                    return tensor(storage, device=device, requires_grad=False)
+                    return as_tensor(storage, device=device, requires_grad=False)
                 
                 return rebuild_tensor
             

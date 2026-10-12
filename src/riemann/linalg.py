@@ -208,7 +208,7 @@ def cross(input, other, *, dim=-1, out=None):
     result_data = arrlib.cross(input.data, other.data, axis=dim)
     
     requires_grad = is_grad_enabled() and (input.requires_grad or other.requires_grad)
-    ret = tensor(result_data, device=input.device, requires_grad=requires_grad)
+    ret = as_tensor(result_data, device=input.device, requires_grad=requires_grad)
     
     if requires_grad:
         ret.fromvars = (input, other)
@@ -1189,7 +1189,7 @@ def det(A:TN):
     # 计算行列式
     detvalue = arrlib.linalg.det(A.data)
     
-    ret = tensor(detvalue, device=dev, requires_grad=(is_grad_enabled() and A.requires_grad))
+    ret = as_tensor(detvalue, device=dev, requires_grad=(is_grad_enabled() and A.requires_grad))
     
     if ret.requires_grad:
         ret.fromvars = (A,)
@@ -1249,7 +1249,7 @@ def inv(A:TN):
     except arrlib.linalg.LinAlgError as e:
         raise RuntimeError(f"linalg.inv: Matrix is not invertible: {str(e)}")
     
-    ret = tensor(invarr, device=dev, requires_grad=(is_grad_enabled() and A.requires_grad))
+    ret = as_tensor(invarr, device=dev, requires_grad=(is_grad_enabled() and A.requires_grad))
         
     if ret.requires_grad:
         ret.fromvars = (A,)
@@ -1349,9 +1349,9 @@ def svd(A, full_matrices=True, driver=None, out=None):
     
     # 创建结果张量
     requires_grad = is_grad_enabled() and A.requires_grad
-    U = tensor(U_data, device=dev, requires_grad=requires_grad)
-    S = tensor(S_data, device=dev, requires_grad=requires_grad)
-    Vh = tensor(Vh_data, device=dev, requires_grad=requires_grad)
+    U = as_tensor(U_data, device=dev, requires_grad=requires_grad)
+    S = as_tensor(S_data, device=dev, requires_grad=requires_grad)
+    Vh = as_tensor(Vh_data, device=dev, requires_grad=requires_grad)
     
     # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
     if requires_grad:
@@ -1687,8 +1687,8 @@ def eig(A, *, out=None):
     # 创建结果张量
     requires_grad = is_grad_enabled() and A.requires_grad
     # data_type = get_default_complex()
-    w = tensor(w_data, device=dev, requires_grad = requires_grad)
-    V = tensor(V_data, device=dev, requires_grad = requires_grad)
+    w = as_tensor(w_data, device=dev, requires_grad = requires_grad)
+    V = as_tensor(V_data, device=dev, requires_grad = requires_grad)
         
     # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
     if requires_grad:
@@ -1973,8 +1973,8 @@ def eigh(A, *, UPLO='L', out=None):
     
     # 创建结果张量
     requires_grad = is_grad_enabled() and A.requires_grad
-    w = tensor(w_data, device=dev, requires_grad = requires_grad)
-    V = tensor(V_data, device=dev, requires_grad=requires_grad)
+    w = as_tensor(w_data, device=dev, requires_grad = requires_grad)
+    V = as_tensor(V_data, device=dev, requires_grad=requires_grad)
     
     # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
     if requires_grad:
@@ -2360,9 +2360,9 @@ def _squared_mat_lu(A, *, pivot=True):
     requires_grad = is_grad_enabled() and A.requires_grad
     # 当pivot=False时，P_data为None，此时P也设为None
     # P = tensor(P_data, device=dev) if P_data is not None else tensor([], device=dev)
-    P = tensor(P_data, device=dev)
-    L = tensor(L_data, device=dev, requires_grad=requires_grad)
-    U = tensor(U_data, device=dev, requires_grad=requires_grad)
+    P = as_tensor(P_data, device=dev)
+    L = as_tensor(L_data, device=dev, requires_grad=requires_grad)
+    U = as_tensor(U_data, device=dev, requires_grad=requires_grad)
     
     # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
     if requires_grad:
@@ -2728,11 +2728,11 @@ def qr(A, mode='reduced', *, out=None):
     requires_grad = is_grad_enabled() and A.requires_grad and mode != 'r'
     
     if mode == 'r':
-        Q = tensor(Q_data, device=dev, requires_grad=False)  # mode='r'的Q始终不需要梯度
-        R = tensor(R_data, device=dev, requires_grad=False)  # mode='r'的R始终不需要梯度
+        Q = as_tensor(Q_data, device=dev, requires_grad=False)  # mode='r'的Q始终不需要梯度
+        R = as_tensor(R_data, device=dev, requires_grad=False)  # mode='r'的R始终不需要梯度
     else:
-        Q = tensor(Q_data, device=dev, requires_grad=requires_grad)
-        R = tensor(R_data, device=dev, requires_grad=requires_grad)
+        Q = as_tensor(Q_data, device=dev, requires_grad=requires_grad)
+        R = as_tensor(R_data, device=dev, requires_grad=requires_grad)
     
     # 如果需要梯度，设置fromvars和gradfuncs（mode='r'除外）
     if requires_grad and mode != 'r':
@@ -2946,7 +2946,7 @@ def cholesky(input: TN, upper: bool = False, *, out: TN = None) -> TN:
     
     # 创建结果张量
     requires_grad = is_grad_enabled() and input.requires_grad
-    result = tensor(L_data, device=dev, requires_grad=requires_grad)
+    result = as_tensor(L_data, device=dev, requires_grad=requires_grad)
     
     # 如果需要梯度，设置fromvars和gradfuncs
     if requires_grad:
