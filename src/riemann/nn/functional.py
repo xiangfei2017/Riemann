@@ -292,7 +292,7 @@ def softmax(x:TN, dim:int)->TN:
     return ret
 
 def _softmax_backward(result_tensor: TN, i: int) -> TN:
-    """梯度计算：y * (g - sum(y*g)"""
+    """梯度计算：y * (g - sum(y*g))"""
     y = result_tensor
     g = y.grad_value
     dim = y.parms[i]
@@ -530,13 +530,10 @@ def _elu_backward(result_tensor: TN, i: int) -> TN:
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[0]
     
-    x_data = x.data
-    arrlib = x._get_array_lib()
-    
     # 梯度: 1 (if x > 0) else alpha * exp(x)
     positive_grad = 1.0
-    negative_grad = alpha * arrlib.exp(x_data)
-    grad = arrlib.where(x_data > 0, positive_grad, negative_grad)
+    negative_grad = alpha * exp(x)
+    grad = where(x > 0, positive_grad, negative_grad)
     
     return result_tensor.grad_value * grad
 
@@ -597,13 +594,10 @@ def _celu_backward(result_tensor: TN, i: int) -> TN:
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[0]
     
-    x_data = x.data
-    arrlib = x._get_array_lib()
-    
     # 梯度: 1 (if x > 0) else exp(x / alpha)
     positive_grad = 1.0
-    negative_grad = arrlib.exp(x_data / alpha)
-    grad = arrlib.where(x_data > 0, positive_grad, negative_grad)
+    negative_grad = exp(x / alpha)
+    grad = where(x_data > 0, positive_grad, negative_grad)
     
     return result_tensor.grad_value * grad
 
@@ -654,7 +648,7 @@ def _tanh_backward(result_tensor: TN, i: int) -> TN:
     导数公式: tanh'(x) = 1 - tanh(x)^2
     """
     # tanh'(x) = 1 - tanh(x)^2
-    tanh_x = result_tensor.data
+    tanh_x = result_tensor
     grad = 1.0 - tanh_x * tanh_x
     
     return result_tensor.grad_value * grad
@@ -716,13 +710,10 @@ def _selu_backward(result_tensor: TN, i: int) -> TN:
     alpha = result_tensor.parms[0]
     scale = result_tensor.parms[1]
     
-    x_data = x.data
-    arrlib = x._get_array_lib()
-    
     # 梯度: scale (if x > 0) else scale * alpha * exp(x)
     positive_grad = scale
-    negative_grad = scale * alpha * arrlib.exp(x_data)
-    grad = arrlib.where(x_data > 0, positive_grad, negative_grad)
+    negative_grad = scale * alpha * exp(x)
+    grad = where(x > 0, positive_grad, negative_grad)
     
     return result_tensor.grad_value * grad
 
@@ -767,12 +758,10 @@ def gelu(x: TN) -> TN:
 def _gelu_backward(result_tensor: TN, i: int) -> TN:
     """GELU导数计算，使用与PyTorch兼容的实现"""
     x = result_tensor.fromvars[0]
-    x_data = x.data
-    arrlib = x._get_array_lib()
-
-    c = arrlib.sqrt(2. / arrlib.pi, dtype=x_data.dtype)
-    tanh_term = arrlib.tanh(c * (x_data + 0.044715 * x_data**3))
-    grad = 0.5 * (1. + tanh_term) + 0.5 * x_data * (1. - tanh_term**2.) * c * (1. + 0.134145*x_data**2.)
+    
+    c = sqrt(2. / pi)
+    tanh_term = tanh(c * (x + 0.044715 * x**3.))
+    grad = 0.5 * (1. + tanh_term) + 0.5 * x * (1. - tanh_term**2.) * c * (1. + 0.134145*(x**2.))
     return result_tensor.grad_value * grad
 
 def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
