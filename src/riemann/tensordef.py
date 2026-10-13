@@ -62,6 +62,7 @@ Example usage:
 
 from __future__ import annotations
 from itertools import accumulate
+from collections import namedtuple
 import builtins
 import inspect
 import warnings
@@ -5126,17 +5127,17 @@ def _wrap_tensor_from_numpy(arr: np.ndarray|cp.ndarray|np.generic|cp.generic, re
 
     if isinstance(arr,np.ndarray):
         data = arr
-    elif cp and isinstance(arr,cp.ndarray):
-        data = arr
     elif isinstance(arr,np.generic):
         # 标量转换为数组
         data = np.array(arr)
+    elif cp and isinstance(arr,cp.ndarray):
+        data = arr    
     elif cp and isinstance(arr,cp.generic):
         # 标量转换为数组
         data = cp.array(arr)
     else:
         raise TypeError("arr need to be numpy or cupy array or scalar")
-        
+    
     ret = TN()
     ret.data = data
     ret.requires_grad = requires_grad
@@ -7260,7 +7261,7 @@ def square(x:TN)->TN:
     """
     return x ** 2.0
 
-def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
+def _create_maxmin_mask(arr, dim:int|tuple|None=None, *, indices=None, maxmin_val=None):
     """创建最大值/最小值掩码数组，支持梯度分配到极值位置
 
     该函数用于在自动微分过程中，为max/min函数的反向传播创建掩码数组。
@@ -7269,8 +7270,11 @@ def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
 
     参数:
         arr (numpy.ndarray): 输入的numpy数组
-        argmaxmin (function): 最大值/最小值索引函数(numpy.argmax或numpy.argmin)
         dim (int|tuple|None, 可选): 计算最大值/最小值的轴，默认为None（全局计算）
+        indices (numpy.ndarray, 关键字参数): 前向计算时已保存的argmax/argmin索引，
+            dim为int或tuple时必须提供
+        maxmin_val (numpy.ndarray, 关键字参数): 前向计算时已保存的极值，
+            dim为None时必须提供
 
     返回:
         numpy.ndarray: 掩码数组，形状与输入数组相同，在极值位置为1.0，其他位置为0.0
@@ -7280,59 +7284,39 @@ def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
 
     示例:
         >>> arr = np.array([[1., 6., 3.], [4., 6., 5.]])
-        >>> _create_maxmin_mask(arr, np.argmax)
+        >>> _create_maxmin_mask(arr, maxmin_val=6.0)
         array([[0. , 0.5, 0. ],
                [0. , 0.5, 0. ]])
-        
-        >>> _create_maxmin_mask(arr, np.argmax, dim=1)
+
+        >>> _create_maxmin_mask(arr, dim=1, indices=np.array([1, 1]))
         array([[0., 1., 0.],
                [0., 1., 0.]])
     """
     arrlib = np if isinstance(arr,np.ndarray) else cp
-    # 初始化全0掩码
-    mask_arr = arrlib.zeros_like(arr, dtype=arr.dtype)
-    
+
     if dim is None:
-        # 全局最大值/最小值 - 保持平均分配行为
-        maxmin_val = arrlib.max(arr) if argmaxmin == arrlib.argmax else np.min(arr)
-        # 创建掩码，标记所有等于最大值/最小值的位置
+        # 全局极值 - 使用前向保存的极值，梯度平均分配到所有相同极值位置
         equal_mask = (arr == maxmin_val)
-        # 归一化掩码，确保总和为1
-        if equal_mask.sum() > 0:
-            mask_arr[equal_mask] = 1.0 / equal_mask.sum()
-    elif isinstance(dim, int):
-        # 单轴最大值/最小值 - 只选择第一个最大值位置
-        indices = argmaxmin(arr, axis=dim)
-        # 为了使用put_along_axis，需要扩展维度
-        indices_expanded = arrlib.expand_dims(indices, axis=dim)
-        
-        # 使用numpy和cupy都支持的向量化操作替代put_along_axis
-        # 创建一个与mask_arr形状相同的索引数组，其中dim轴的索引来自indices_expanded
-        shape = mask_arr.shape
-        
-        # 创建一个包含所有轴索引的元组
-        grid = arrlib.indices(shape)
-        
-        # 将dim轴的索引替换为indices_expanded
-        grid[dim] = indices_expanded
-        
-        # 使用高级索引设置值为1.0
-        mask_arr[tuple(grid)] = 1.0
-    elif isinstance(dim, tuple):
-        # 多轴最大值/最小值 - 只选择第一个最大值位置
-        # 将指定轴移动到前面
-        transposed = arrlib.moveaxis(arr, dim, range(len(dim)))
-        # 合并轴并展平
-        merged_shape = (-1,) + transposed.shape[len(dim):]
-        flattened = transposed.reshape(merged_shape)
-        # 沿合并后的轴取argmax或argmin
-        maxmin_indices = argmaxmin(flattened, axis=0)
-        # 分解索引为原轴坐标
+        mask_arr = arrlib.zeros_like(arr, dtype=arr.dtype)
+        mask_sum = equal_mask.sum()
+        if mask_sum > 0:
+            mask_arr[equal_mask] = 1.0 / mask_sum
+        return mask_arr
+
+    if isinstance(dim, int):
+        # 单轴极值 - 使用前向保存的索引和广播比较创建掩码
+        idx_shape = [s if d != dim else 1 for d, s in enumerate(arr.shape)]
+        indices_reshaped = indices.reshape(idx_shape)
+        arange_shape = [1] * arr.ndim
+        arange_shape[dim] = arr.shape[dim]
+        dim_range = arrlib.arange(arr.shape[dim]).reshape(arange_shape)
+        return (dim_range == indices_reshaped).astype(arr.dtype)
+
+    if isinstance(dim, tuple):
+        # 多轴极值 - 使用前向保存的索引（合并后的flat索引）
         original_dims = [arr.shape[ax] for ax in dim]
-        multi_indices = arrlib.unravel_index(maxmin_indices, original_dims)
-        # 生成其他轴索引
-        other_indices = list(arrlib.ogrid[tuple(slice(s) for s in maxmin_indices.shape)])
-        # 组合所有索引并转置回原轴顺序
+        multi_indices = arrlib.unravel_index(indices, original_dims)
+        other_indices = list(arrlib.ogrid[tuple(slice(s) for s in indices.shape)])
         full_indices = []
         idx_iter = iter(multi_indices)
         for i in range(arr.ndim):
@@ -7340,123 +7324,136 @@ def _create_maxmin_mask(arr, argmaxmin, dim:int|tuple|None=None):
                 full_indices.append(next(idx_iter))
             else:
                 full_indices.append(other_indices.pop(0))
-        # 设置对应位置为1.0
+        mask_arr = arrlib.zeros_like(arr, dtype=arr.dtype)
         mask_arr[tuple(full_indices)] = 1.0
-    else:
-        raise ValueError("`axis` must be None, int, or tuple")
-    
-    return mask_arr
+        return mask_arr
+
+    raise ValueError("`axis` must be None, int, or tuple")
 
 
-# 为max和min函数创建专门的返回类型类
-class MaxMinReturnType:
-    def __init__(self, values, indices, name):
-        self.values = values
-        self.indices = indices
-        self._name = name  # 存储操作名称用于调试
-    
-    def __iter__(self):
-        # 支持解包操作
-        return iter([self.values, self.indices])
-    
-    def __repr__(self):
-        return f"{self._name}(values={self.values}, \nindices={self.indices})"
+# 返回类型与torch.return_types.max/min一致
+ReturnType_max = namedtuple('max', ['values', 'indices'])
+ReturnType_min = namedtuple('min', ['values', 'indices'])
 
 # 修改现有的_max_backward函数保持不变
 def _max_backward(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]    
-    dim, keepdim = result_tensor.parms[i]
-    
+    x = result_tensor.fromvars[i]
+    dim, keepdim, indices, maxmin_val = result_tensor.parms[i]
+
     arrlib = x._get_array_lib()
     with device_context(x):
-        max_pos_one_like_x = _create_maxmin_mask(x.data, arrlib.argmax, dim)
-    # max_pos_one_tensor = _wrap_tensor_from_numpy(max_pos_one_like_x)
-    
+        # 使用前向保存的索引/极值，避免重复计算
+        max_pos_one_like_x = _create_maxmin_mask(x.data, dim, indices=indices, maxmin_val=maxmin_val)
+
     # 如果sum计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
     if keepdim == False:
         new_result_grad = result_tensor.grad_value.unsqueeze(dim)
     else:
         new_result_grad = result_tensor.grad_value
-    
+
     grad = new_result_grad * max_pos_one_like_x
     return grad
 
 # 修改现有的_min_backward函数保持不变
 def _min_backward(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]    
-    dim, keepdim = result_tensor.parms[i]
-    
+    x = result_tensor.fromvars[i]
+    dim, keepdim, indices, maxmin_val = result_tensor.parms[i]
+
     arrlib = x._get_array_lib()
     with device_context(x):
-        min_pos_one_like_x = _create_maxmin_mask(x.data, arrlib.argmin, dim)
-    # min_pos_one_tensor = _wrap_tensor_from_numpy(min_pos_one_like_x)
-    
+        # 使用前向保存的索引/极值，避免重复计算
+        min_pos_one_like_x = _create_maxmin_mask(x.data, dim, indices=indices, maxmin_val=maxmin_val)
+
     # 如果sum计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
     if keepdim == False:
         new_result_grad = result_tensor.grad_value.unsqueeze(dim)
     else:
         new_result_grad = result_tensor.grad_value
-    
+
     grad = new_result_grad * min_pos_one_like_x
     return grad
 
-def max(x:TN, dim:int|None=None, keepdim:bool=False, *, out=None):
+def max(x:TN, dim:int|tuple|None=None, keepdim:bool=False, *, out=None):
     if x.is_complex():
         raise RuntimeError("max() does not support complex input")
-    
+
     arrlib = x._get_array_lib()
-    dev = x.device
     # 计算最大值 - 利用numpy原生的axis=None行为
     values_arr = arrlib.max(x.data, axis=dim, keepdims=keepdim)
-    values_tensor = _wrap_tensor_from_numpy(values_arr, requires_grad=(is_grad_enabled() and x.requires_grad))
-    
+    needs_grad = is_grad_enabled() and x.requires_grad
+    values_tensor = _wrap_tensor_from_numpy(values_arr, requires_grad=needs_grad)
+
+    # 计算索引/极值 - 前向返回值和反向梯度共用，避免反向重复计算
+    indices_arr = None
+    maxmin_val = None
+    if dim is None:
+        # dim为None时保存极值，反向传播直接复用
+        maxmin_val = values_arr
+    elif isinstance(dim, int):
+        indices_arr = arrlib.argmax(x.data, axis=dim)
+    elif isinstance(dim, tuple):
+        # 多轴argmax: 展平后计算，保存flat索引供反向传播复用
+        transposed = arrlib.moveaxis(x.data, dim, range(len(dim)))
+        merged_shape = (-1,) + transposed.shape[len(dim):]
+        flattened = transposed.reshape(merged_shape)
+        indices_arr = arrlib.argmax(flattened, axis=0)
+
     # 为values_tensor设置梯度信息
-    if values_tensor.requires_grad:
+    if needs_grad:
         values_tensor.fromvars = (x,)
-        values_tensor.parms = ((dim, keepdim),)
+        # 保存索引和极值到parms，反向传播时直接复用
+        values_tensor.parms = ((dim, keepdim, indices_arr, maxmin_val),)
         values_tensor.gradfuncs = (_max_backward,)
-    
+
     # 根据dim是否为None决定返回类型
     if dim is None:
-        # 当dim为None时，直接返回值张量
         return values_tensor
     else:
-        # 当dim不为None时，计算索引并返回包含values和indices的对象
-        indices_arr = arrlib.argmax(x.data, axis=dim)
-        if keepdim:
+        if keepdim and isinstance(dim, int):
             indices_arr = arrlib.expand_dims(indices_arr, axis=dim)
         indices_tensor = _wrap_tensor_from_numpy(indices_arr)
-        
-        return MaxMinReturnType(values_tensor, indices_tensor, "max")
+        return ReturnType_max(values_tensor, indices_tensor)
 
-def min(x:TN, dim:int|None=None, keepdim:bool=False, *, out=None):
+def min(x:TN, dim:int|tuple|None=None, keepdim:bool=False, *, out=None):
     if x.is_complex():
         raise RuntimeError("min() does not support complex input")
 
     arrlib = x._get_array_lib()
-    dev = x.device
     # 计算最小值 - 利用numpy原生的axis=None行为
     values_arr = arrlib.min(x.data, axis=dim, keepdims=keepdim)
-    values_tensor = _wrap_tensor_from_numpy(values_arr, requires_grad=(is_grad_enabled() and x.requires_grad))
-    
+    needs_grad = is_grad_enabled() and x.requires_grad
+    values_tensor = _wrap_tensor_from_numpy(values_arr, requires_grad=needs_grad)
+
+    # 计算索引/极值 - 前向返回值和反向梯度共用，避免反向重复计算
+    indices_arr = None
+    maxmin_val = None
+    if dim is None:
+        # dim为None时保存极值，反向传播直接复用
+        maxmin_val = values_arr
+    elif isinstance(dim, int):
+        indices_arr = arrlib.argmin(x.data, axis=dim)
+    elif isinstance(dim, tuple):
+        # 多轴argmin: 展平后计算，保存flat索引供反向传播复用
+        transposed = arrlib.moveaxis(x.data, dim, range(len(dim)))
+        merged_shape = (-1,) + transposed.shape[len(dim):]
+        flattened = transposed.reshape(merged_shape)
+        indices_arr = arrlib.argmin(flattened, axis=0)
+
     # 为values_tensor设置梯度信息
-    if values_tensor.requires_grad:
+    if needs_grad:
         values_tensor.fromvars = (x,)
-        values_tensor.parms = ((dim, keepdim),)
+        # 保存索引和极值到parms，反向传播时直接复用
+        values_tensor.parms = ((dim, keepdim, indices_arr, maxmin_val),)
         values_tensor.gradfuncs = (_min_backward,)
-    
+
     # 根据dim是否为None决定返回类型
     if dim is None:
-        # 当dim为None时，直接返回值张量
         return values_tensor
     else:
-        # 当dim不为None时，计算索引并返回包含values和indices的对象
-        indices_arr = arrlib.argmin(x.data, axis=dim)
-        if keepdim:
+        if keepdim and isinstance(dim, int):
             indices_arr = arrlib.expand_dims(indices_arr, axis=dim)
         indices_tensor = _wrap_tensor_from_numpy(indices_arr)
-        
-        return MaxMinReturnType(values_tensor, indices_tensor, "min")
+        return ReturnType_min(values_tensor, indices_tensor)
 
 def _var_backward(result_tensor:TN, i:int)->TN:
     dim,unbiased,keepdim = result_tensor.parms[i]     

@@ -30,7 +30,7 @@
 
 # riemann/__init__.py
 
-__version__ = "0.6.5"        # 包版本
+__version__ = "0.6.7"        # 包版本
 
 # 定义当使用 `from riemann import *` 时要导出的内容
 # __all__ = [] 
