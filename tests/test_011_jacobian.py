@@ -1024,6 +1024,212 @@ class TestJacobianFunctions(unittest.TestCase):
                 
                 self._run_test_case(case_name, test_func)
 
+    def test_strict_false_with_unused_input(self):
+        """测试场景15: strict=False时部分输入未使用，验证梯度偏移正确"""
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            case_name = f"strict=False未使用输入 - {device}"
+
+            def test_func():
+                # f(x, y) = x^2，y 未被使用
+                def func(x, y):
+                    return x ** 2.
+
+                rm_x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True, device=device)
+                rm_y = rm.tensor([4.0, 5.0], requires_grad=True, device=device)
+
+                # strict=False 时不应抛异常
+                rm_result = rm_jacobian(func, (rm_x, rm_y), strict=False)
+
+                # rm_result 应为 tuple: (jac_x(3,3), jac_y(2,3))
+                # jac_y 应为全零（y 未使用）
+                jac_x = rm_result[0]
+                jac_y = rm_result[1]
+
+                # jac_x = 2*diag(x) = diag(2, 4, 6)
+                expected_jac_x = np.diag([2.0, 4.0, 6.0])
+                x_correct = np.allclose(jac_x.data, expected_jac_x)
+
+                # jac_y 应为全零
+                y_correct = np.allclose(jac_y.data, 0.0)
+
+                passed = x_correct and y_correct
+
+                if TORCH_AVAILABLE:
+                    try:
+                        torch_x = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
+                        torch_y = torch.tensor([4.0, 5.0], requires_grad=True)
+                        torch_result = torch_jacobian(func, (torch_x, torch_y))
+                        passed = passed and compare_values(rm_result, torch_result)
+                    except Exception:
+                        pass
+
+                return passed
+
+            self._run_test_case(case_name, test_func)
+
+    def test_2d_input_jacobian(self):
+        """测试场景16: 2D矩阵输入的雅可比计算"""
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            case_name = f"2D矩阵输入 - {device}"
+
+            def test_func():
+                # f(x) = x.sum()，x 为 2x3 矩阵
+                def func(x):
+                    return x.sum()
+
+                rm_x = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], requires_grad=True, device=device)
+
+                rm_result = rm_jacobian(func, rm_x)
+
+                # Riemann 将输入维度展平：雅可比形状 = output_shape + (input_numel,)
+                # 标量输出 → shape = (6,)，所有元素为 1（sum 的导数）
+                expected = np.ones(6)
+                shape_correct = rm_result.shape == (6,)
+                value_correct = np.allclose(rm_result.data, expected)
+
+                # 注意：PyTorch 对 2D 输入返回 (2,3) 形状，Riemann 返回 (6,)，不直接比较
+                passed = shape_correct and value_correct
+
+                return passed
+
+            self._run_test_case(case_name, test_func)
+
+    def test_create_graph_non_scalar_output(self):
+        """测试场景17: create_graph=True且输出为非标量张量"""
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            case_name = f"create_graph=True非标量输出 - {device}"
+
+            def test_func():
+                # f(x) = x^2，x 为向量
+                def func(x):
+                    return x ** 2.
+
+                rm_x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True, device=device)
+
+                rm_result = rm_jacobian(func, rm_x, create_graph=True)
+
+                # 雅可比 = 2*diag(x) = diag(2, 4, 6)
+                expected = np.diag([2.0, 4.0, 6.0])
+                passed = np.allclose(rm_result.data, expected)
+
+                # 验证 requires_grad
+                has_grad = rm_result.requires_grad
+
+                if TORCH_AVAILABLE:
+                    try:
+                        torch_x = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
+                        torch_result = torch_jacobian(func, torch_x, create_graph=True)
+                        passed = passed and compare_values(rm_result, torch_result)
+                    except Exception:
+                        pass
+
+                return passed and has_grad
+
+            self._run_test_case(case_name, test_func)
+
+    def test_create_graph_multi_input(self):
+        """测试场景18: create_graph=True且多输入"""
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            case_name = f"create_graph=True多输入 - {device}"
+
+            def test_func():
+                # f(x, y) = (x^2 + y^3).sum()，标量输出
+                def func(x, y):
+                    return (x ** 2. + y ** 3.).sum()
+
+                rm_x = rm.tensor([1.0, 2.0], requires_grad=True, device=device)
+                rm_y = rm.tensor([3.0, 4.0], requires_grad=True, device=device)
+
+                rm_result = rm_jacobian(func, (rm_x, rm_y), create_graph=True)
+
+                # rm_result = (jac_x, jac_y)
+                # jac_x = 2*x = [2, 4], jac_y = 3*y^2 = [27, 48]
+                jac_x = rm_result[0]
+                jac_y = rm_result[1]
+
+                x_correct = np.allclose(jac_x.data, [2.0, 4.0])
+                y_correct = np.allclose(jac_y.data, [27.0, 48.0])
+                has_grad = jac_x.requires_grad and jac_y.requires_grad
+
+                passed = x_correct and y_correct and has_grad
+
+                if TORCH_AVAILABLE:
+                    try:
+                        torch_x = torch.tensor([1.0, 2.0], requires_grad=True)
+                        torch_y = torch.tensor([3.0, 4.0], requires_grad=True)
+                        torch_result = torch_jacobian(func, (torch_x, torch_y), create_graph=True)
+                        passed = passed and compare_values(rm_result, torch_result)
+                    except Exception:
+                        pass
+
+                return passed
+
+            self._run_test_case(case_name, test_func)
+
+    def test_multi_output_different_shapes(self):
+        """测试场景19: 多输出且形状不同"""
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            case_name = f"多输出不同形状 - {device}"
+
+            def test_func():
+                # f(x) = (x^2, x.sum())，输出形状分别为 (3,) 和 ()
+                def func(x):
+                    return (x ** 2., x.sum())
+
+                rm_x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True, device=device)
+
+                rm_result = rm_jacobian(func, rm_x)
+
+                # rm_result = (jac_0, jac_1)
+                # jac_0 shape = (3, 3), jac_1 shape = (3,)
+                jac_0 = rm_result[0]
+                jac_1 = rm_result[1]
+
+                # jac_0 = 2*diag(x) = diag(2, 4, 6)
+                expected_0 = np.diag([2.0, 4.0, 6.0])
+                # jac_1 = [1, 1, 1]
+                expected_1 = np.ones(3)
+
+                shape_0_correct = jac_0.shape == (3, 3)
+                shape_1_correct = jac_1.shape == (3,)
+                value_0_correct = np.allclose(jac_0.data, expected_0)
+                value_1_correct = np.allclose(jac_1.data, expected_1)
+
+                passed = shape_0_correct and shape_1_correct and value_0_correct and value_1_correct
+
+                if TORCH_AVAILABLE:
+                    try:
+                        torch_x = torch.tensor([1.0, 2.0, 3.0], requires_grad=True)
+                        torch_result = torch_jacobian(func, torch_x)
+                        passed = passed and compare_values(rm_result, torch_result)
+                    except Exception:
+                        pass
+
+                return passed
+
+            self._run_test_case(case_name, test_func)
+
+
 # 如果作为独立脚本运行
 if __name__ == '__main__':
     # 设置为独立脚本运行模式

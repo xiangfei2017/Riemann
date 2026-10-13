@@ -839,6 +839,119 @@ class TestJvpVjpFunctions(unittest.TestCase):
                 
                 self._run_test_case(case_name, test_func, error_message=f"标量输出时VJP的可选v参数测试失败: {case_name}")
 
+    def test_scalar_input_output(self):
+        """测试场景6: 标量输入标量输出的JVP/VJP"""
+        test_cases = [{"name": "标量输入标量输出 JVP/VJP"}]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+
+                def test_func():
+                    # f(x) = x^3，标量输入标量输出
+                    def f(x):
+                        return x ** 3
+
+                    rm_x = rm.tensor(2.0, requires_grad=True, device=device)
+                    rm_v = rm.tensor(1.0, device=device)
+
+                    # JVP: J@v = 3x^2 * v = 3*4*1 = 12
+                    rm_out, rm_jvp_result = jvp(f, rm_x, rm_v)
+                    jvp_correct = np.allclose(rm_jvp_result.data, 12.0)
+
+                    # VJP: v^T@J = v * 3x^2 = 1 * 12 = 12
+                    rm_out2, rm_vjp_result = vjp(f, rm_x, rm_v)
+                    vjp_correct = np.allclose(rm_vjp_result.data, 12.0)
+
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(2.0, requires_grad=True, device=device)
+                        torch_v = torch.tensor(1.0, device=device)
+                        _, torch_jvp_result = torch_jvp(f, torch_x, torch_v)
+                        _, torch_vjp_result = torch_vjp(f, torch_x, torch_v)
+                        jvp_correct = jvp_correct and compare_values(rm_jvp_result, torch_jvp_result)
+                        vjp_correct = vjp_correct and compare_values(rm_vjp_result, torch_vjp_result)
+
+                    return jvp_correct and vjp_correct
+
+                self._run_test_case(case_name, test_func)
+
+    def test_create_graph_multi_input(self):
+        """测试场景7: create_graph=True且多输入"""
+        test_cases = [{"name": "create_graph=True多输入 JVP/VJP"}]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+
+                def test_func():
+                    # f(x, y) = (x^2 + y^3).sum()
+                    def f(x, y):
+                        return (x ** 2 + y ** 3).sum()
+
+                    rm_x = rm.tensor([1.0, 2.0], requires_grad=True, device=device)
+                    rm_y = rm.tensor([3.0, 4.0], requires_grad=True, device=device)
+                    rm_vx = rm.tensor([1.0, 1.0], device=device)
+                    rm_vy = rm.tensor([1.0, 1.0], device=device)
+
+                    # JVP with create_graph=True
+                    rm_out, rm_jvp_result = jvp(f, (rm_x, rm_y), (rm_vx, rm_vy), create_graph=True)
+                    has_grad = rm_jvp_result.requires_grad
+
+                    # JVP = grad·v = (2+4) + (27+48) = 81（标量输出）
+                    jvp_correct = np.allclose(rm_jvp_result.data, 81.0)
+
+                    return has_grad and jvp_correct
+
+                self._run_test_case(case_name, test_func)
+
+    def test_strict_false_unused_input(self):
+        """测试场景8: strict=False时部分输入未使用"""
+        test_cases = [{"name": "strict=False未使用输入 JVP/VJP"}]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+
+                def test_func():
+                    # f(x, y) = (x^2).sum()，y 未使用
+                    def f(x, y):
+                        return (x ** 2).sum()
+
+                    rm_x = rm.tensor([1.0, 2.0], requires_grad=True, device=device)
+                    rm_y = rm.tensor([3.0, 4.0], requires_grad=True, device=device)
+                    rm_vx = rm.tensor([1.0, 1.0], device=device)
+                    rm_vy = rm.tensor([1.0, 1.0], device=device)
+
+                    # JVP strict=False 不应抛异常
+                    rm_out, rm_jvp_result = jvp(f, (rm_x, rm_y), (rm_vx, rm_vy), strict=False)
+
+                    # JVP = grad·v = (2+4) + 0 = 6（标量输出）
+                    jvp_correct = np.allclose(rm_jvp_result.data, 6.0)
+
+                    # VJP strict=False，标量输出 v 为标量
+                    rm_v_out = rm.tensor(1.0, device=device)
+                    rm_out2, rm_vjp_result = vjp(f, (rm_x, rm_y), rm_v_out, strict=False)
+
+                    # grad_x = 2*x = [2, 4], grad_y = [0, 0]
+                    vjp_x = np.allclose(rm_vjp_result[0].data, [2.0, 4.0])
+                    vjp_y = np.allclose(rm_vjp_result[1].data, [0.0, 0.0])
+
+                    return jvp_correct and vjp_x and vjp_y
+
+                self._run_test_case(case_name, test_func)
+
 # 主函数
 if __name__ == "__main__":
     IS_RUNNING_AS_SCRIPT = True

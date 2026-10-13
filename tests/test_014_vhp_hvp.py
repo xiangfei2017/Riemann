@@ -666,6 +666,213 @@ class TestVhpHvpFunctions(unittest.TestCase):
                     print(f"测试用例: strict参数测试 - {device} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                 raise
 
+    def test_scalar_input(self):
+        """测试场景6: 标量输入的VHP/HVP"""
+        test_cases = [{"name": "标量输入 VHP/HVP"}]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # f(x) = x^4，标量输入标量输出
+                    def f(x):
+                        return x ** 4.
+
+                    rm_x = rm.tensor(2.0, requires_grad=True, device=device)
+                    rm_v = rm.tensor(1.0, device=device)
+
+                    # HVP: H@v = d²f/dx² * v = 12x² * 1 = 48
+                    _, rm_hvp_result = hvp(f, rm_x, rm_v)
+                    hvp_correct = np.allclose(rm_hvp_result.data, 48.0)
+
+                    # VHP: v^T@H = v * 12x² = 48
+                    _, rm_vhp_result = vhp(f, rm_x, rm_v)
+                    vhp_correct = np.allclose(rm_vhp_result.data, 48.0)
+
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(2.0, requires_grad=True, device=device)
+                        torch_v = torch.tensor(1.0, device=device)
+                        _, torch_hvp_result = torch.autograd.functional.hvp(f, torch_x, torch_v)
+                        hvp_correct = hvp_correct and compare_values(rm_hvp_result, torch_hvp_result)
+
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, hvp_correct and vhp_correct)
+                        status = "通过" if hvp_correct and vhp_correct else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if hvp_correct and vhp_correct else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+
+                    self.assertTrue(hvp_correct and vhp_correct,
+                                   f"VHP/HVP标量输入测试失败: {case_name}")
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+    def test_2d_input(self):
+        """测试场景7: 2D矩阵输入的VHP/HVP"""
+        test_cases = [{"name": "2D矩阵输入 VHP/HVP"}]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # f(x) = (x^2).sum()，x 为 2x3 矩阵
+                    def f(x):
+                        return (x ** 2.).sum()
+
+                    x_data = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    np_v = np.ones((2, 3), dtype=np.float32)
+                    rm_v = rm.tensor(np_v, device=device)
+
+                    # HVP: H@v = 2*v (Hessian = 2*I)
+                    _, rm_hvp_result = hvp(f, rm_x, rm_v)
+                    hvp_correct = np.allclose(rm_hvp_result.data, 2.0 * np_v)
+
+                    # VHP: v^T@H = 2*v
+                    _, rm_vhp_result = vhp(f, rm_x, rm_v)
+                    vhp_correct = np.allclose(rm_vhp_result.data, 2.0 * np_v)
+
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+                        torch_v = torch.tensor(np_v, device=device)
+                        _, torch_hvp_result = torch.autograd.functional.hvp(f, torch_x, torch_v)
+                        hvp_correct = hvp_correct and compare_values(rm_hvp_result, torch_hvp_result)
+
+                    passed = hvp_correct and vhp_correct
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+
+                    self.assertTrue(passed, f"VHP/HVP 2D输入测试失败: {case_name}")
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+    def test_create_graph_multi_input(self):
+        """测试场景8: create_graph=True且多输入"""
+        test_cases = [{"name": "create_graph=True多输入 VHP/HVP"}]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # f(x, y) = (x^2 + y^3).sum()
+                    def f(x, y):
+                        return (x ** 2. + y ** 3.).sum()
+
+                    rm_x = rm.tensor([1.0, 2.0], requires_grad=True, device=device)
+                    rm_y = rm.tensor([3.0, 4.0], requires_grad=True, device=device)
+                    rm_vx = rm.tensor([1.0, 1.0], device=device)
+                    rm_vy = rm.tensor([1.0, 1.0], device=device)
+
+                    # HVP with create_graph=True
+                    # 多输入时 hvp 返回 tuple: (hvp_x, hvp_y)
+                    _, rm_hvp_result = hvp(f, (rm_x, rm_y), (rm_vx, rm_vy), create_graph=True)
+                    has_grad = all(h.requires_grad for h in rm_hvp_result)
+
+                    # HVP: H@v = (2*vx, 6y*vy) = [2, 2], [18, 24]
+                    hvp_x = np.allclose(rm_hvp_result[0].data, [2.0, 2.0])
+                    hvp_y = np.allclose(rm_hvp_result[1].data, [18.0, 24.0])
+
+                    passed = has_grad and hvp_x and hvp_y
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+
+                    self.assertTrue(passed, f"VHP/HVP create_graph多输入测试失败: {case_name}")
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
+    def test_strict_false_unused_input(self):
+        """测试场景9: strict=False时部分输入未使用"""
+        test_cases = [{"name": "strict=False未使用输入 VHP/HVP"}]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # f(x, y) = (x^2).sum()，y 未使用
+                    def f(x, y):
+                        return (x ** 2.).sum()
+
+                    rm_x = rm.tensor([1.0, 2.0], requires_grad=True, device=device)
+                    rm_y = rm.tensor([3.0, 4.0], requires_grad=True, device=device)
+                    rm_vx = rm.tensor([1.0, 1.0], device=device)
+                    rm_vy = rm.tensor([1.0, 1.0], device=device)
+
+                    # HVP/VHP strict=False 不应抛异常
+                    _, rm_hvp_result = hvp(f, (rm_x, rm_y), (rm_vx, rm_vy), strict=False)
+                    _, rm_vhp_result = vhp(f, (rm_x, rm_y), (rm_vx, rm_vy), strict=False)
+
+                    # HVP: H@v = (2*vx, 0 for unused y)
+                    hvp_x = np.allclose(rm_hvp_result[0].data, [2.0, 2.0])
+                    # y 未使用，strict=False 时 HVP_y 必须为零张量而非 None（与 torch 的 _fill_in_zeros 语义一致）
+                    hvp_y = (rm_hvp_result[1] is not None
+                             and np.allclose(rm_hvp_result[1].data, [0.0, 0.0])
+                             and not rm_hvp_result[1].requires_grad)
+
+                    # VHP: v@H = (2*vx, 0 for unused y)
+                    vhp_x = np.allclose(rm_vhp_result[0].data, [2.0, 2.0])
+                    vhp_y = (rm_vhp_result[1] is not None
+                             and np.allclose(rm_vhp_result[1].data, [0.0, 0.0])
+                             and not rm_vhp_result[1].requires_grad)
+
+                    # create_graph=True 时未使用输入的 HVP 仍为零张量且 requires_grad=False（对齐 torch）
+                    _, rm_hvp_cg = hvp(f, (rm_x, rm_y), (rm_vx, rm_vy), strict=False, create_graph=True)
+                    hvp_cg_x = np.allclose(rm_hvp_cg[0].data, [2.0, 2.0])
+                    hvp_cg_y = (rm_hvp_cg[1] is not None
+                                and np.allclose(rm_hvp_cg[1].data, [0.0, 0.0])
+                                and not rm_hvp_cg[1].requires_grad)
+
+                    passed = hvp_x and hvp_y and vhp_x and vhp_y and hvp_cg_x and hvp_cg_y
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, passed)
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+
+                    self.assertTrue(passed, f"VHP/HVP strict=False未使用输入测试失败: {case_name}")
+                except Exception as e:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case_name, False, [str(e)])
+                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                    raise
+
 if __name__ == '__main__':
     # 设置为独立脚本运行模式
     IS_RUNNING_AS_SCRIPT = True

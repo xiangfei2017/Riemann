@@ -673,6 +673,238 @@ class TestHessianFunctions(unittest.TestCase):
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
 
+    def test_multi_input_tensor_scalar_output(self):
+        """测试场景8: 多张量输入(非标量)，返回标量张量"""
+        test_cases = [
+            {"name": "多张量输入(非标量)，返回标量张量"}
+        ]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+
+                def test_func():
+                    # f(x, y) = (x^2).sum() + (y^3).sum() + (x * y).sum()
+                    def func(x, y):
+                        return (x ** 2.).sum() + (y ** 3.).sum() + (x * y).sum()
+
+                    x_data = [1.0, 2.0]
+                    y_data = [3.0, 4.0]
+
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    rm_y = rm.tensor(y_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+                        torch_y = torch.tensor(y_data, requires_grad=True, device=device)
+
+                    rm_hess = rm_hessian(func, (rm_x, rm_y))
+                    if TORCH_AVAILABLE:
+                        torch_hess = torch_hessian(func, (torch_x, torch_y))
+                    else:
+                        torch_hess = None
+
+                    return compare_values(rm_hess, torch_hess)
+
+                self._run_test_case(case_name, test_func)
+
+    def test_2d_input_hessian(self):
+        """测试场景9: 2D矩阵输入的Hessian计算"""
+        test_cases = [
+            {"name": "2D矩阵输入的Hessian"}
+        ]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+
+                def test_func():
+                    # f(x) = (x^2).sum()，x 为 2x3 矩阵
+                    def func(x):
+                        return (x ** 2.).sum()
+
+                    x_data = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+
+                    rm_hess = rm_hessian(func, rm_x)
+                    if TORCH_AVAILABLE:
+                        torch_hess = torch_hessian(func, torch_x)
+                    else:
+                        torch_hess = None
+
+                    return compare_values(rm_hess, torch_hess)
+
+                self._run_test_case(case_name, test_func)
+
+    def test_create_graph_tensor_input(self):
+        """测试场景10: create_graph=True且张量输入(非标量)"""
+        test_cases = [
+            {"name": "create_graph=True张量输入"}
+        ]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+
+                def test_func():
+                    # f(x) = (x^2).sum()
+                    def func(x):
+                        return (x ** 2.).sum()
+
+                    x_data = [1.0, 2.0, 3.0]
+
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+
+                    rm_hess = rm_hessian(func, rm_x, create_graph=True)
+
+                    # 验证 requires_grad 和数值正确性
+                    has_grad = rm_hess.requires_grad
+
+                    # Hessian = 2*I (对角线为2)
+                    expected = 2.0 * np.eye(3)
+                    value_correct = np.allclose(rm_hess.data, expected)
+
+                    return has_grad and value_correct
+
+                self._run_test_case(case_name, test_func)
+
+    def test_create_graph_multi_input(self):
+        """测试场景11: create_graph=True且多输入"""
+        test_cases = [
+            {"name": "create_graph=True多输入"}
+        ]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+
+                def test_func():
+                    # f(x, y) = (x^2 * y).sum() + (y^3).sum()
+                    def func(x, y):
+                        return (x ** 2. * y).sum() + (y ** 3.).sum()
+
+                    x_data = [1.0, 2.0]
+                    y_data = [3.0, 4.0]
+
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    rm_y = rm.tensor(y_data, requires_grad=True, device=device)
+
+                    rm_hess = rm_hessian(func, (rm_x, rm_y), create_graph=True)
+
+                    # 验证 requires_grad
+                    # rm_hess 是嵌套 tuple: ((hxx, hxy), (hyx, hyy))
+                    has_grad = all(
+                        h.requires_grad for h_pair in rm_hess for h in h_pair
+                    )
+
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+                        torch_y = torch.tensor(y_data, requires_grad=True, device=device)
+                        torch_hess = torch_hessian(func, (torch_x, torch_y))
+                        values_match = compare_values(rm_hess, torch_hess)
+                    else:
+                        values_match = True
+
+                    return has_grad and values_match
+
+                self._run_test_case(case_name, test_func)
+
+    def test_strict_false_unused_input(self):
+        """测试场景12: strict=False时部分输入未使用"""
+        test_cases = [
+            {"name": "strict=False未使用输入"}
+        ]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+
+                def test_func():
+                    # f(x, y) = (x^2).sum()，y 未使用
+                    def func(x, y):
+                        return (x ** 2.).sum()
+
+                    x_data = [1.0, 2.0]
+                    y_data = [3.0, 4.0]
+
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    rm_y = rm.tensor(y_data, requires_grad=True, device=device)
+
+                    # strict=False 时不应抛异常
+                    rm_hess = rm_hessian(func, (rm_x, rm_y), strict=False)
+
+                    # rm_hess = ((hxx, hxy), (hyx, hyy))
+                    # hxx = 2*I, hxy = 0, hyx = 0, hyy = 0
+                    hxx = rm_hess[0][0]
+                    hxy = rm_hess[0][1]
+                    hyx = rm_hess[1][0]
+                    hyy = rm_hess[1][1]
+
+                    x_correct = np.allclose(hxx.data, 2.0 * np.eye(2))
+                    y_zero = np.allclose(hyy.data, 0.0)
+                    xy_zero = np.allclose(hxy.data, 0.0) and np.allclose(hyx.data, 0.0)
+
+                    return x_correct and y_zero and xy_zero
+
+                self._run_test_case(case_name, test_func)
+
+    def test_larger_input_vector(self):
+        """测试场景13: 较大输入向量(3元素)的Hessian"""
+        test_cases = [
+            {"name": "较大输入向量(3元素)的Hessian"}
+        ]
+
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            for case in test_cases:
+                case_name = f"{case['name']} - {device}"
+
+                def test_func():
+                    # f(x) = x[0]^2 + x[1]^3 + x[0]*x[1]*x[2] + x[2]^2
+                    def func(x):
+                        return x[0] ** 2. + x[1] ** 3. + x[0] * x[1] * x[2] + x[2] ** 2.
+
+                    x_data = [1.0, 2.0, 3.0]
+
+                    rm_x = rm.tensor(x_data, requires_grad=True, device=device)
+                    if TORCH_AVAILABLE:
+                        torch_x = torch.tensor(x_data, requires_grad=True, device=device)
+
+                    rm_hess = rm_hessian(func, rm_x)
+                    if TORCH_AVAILABLE:
+                        torch_hess = torch_hessian(func, torch_x)
+                    else:
+                        torch_hess = None
+
+                    return compare_values(rm_hess, torch_hess)
+
+                self._run_test_case(case_name, test_func)
+
 # 如果作为独立脚本运行
 if __name__ == '__main__':
     # 设置为独立脚本运行模式
