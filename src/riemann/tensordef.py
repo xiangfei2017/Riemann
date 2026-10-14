@@ -2742,7 +2742,7 @@ class TN:
     
     def clamp_(self, min: float | TN | None=None, max: float | TN | None=None):
         """
-        将张量的每个元素限制在指定的范围内，原地操作。
+        将张量的每个元素限制在 [min, max] 范围内（原地操作）。
         
         参数:
             min: 最小值，可以是标量或张量。如果为None，则不限制最小值
@@ -2751,23 +2751,77 @@ class TN:
         返回:
             self: 裁剪后的张量
             
+        边界相等时的处理（对齐 PyTorch 的 clamp_）:
+            - 标量边界：开区间严格比较。元素恰等于 min/max 时同样改写为边界值，其自身梯度为 0
+            - 张量边界：闭区间
+              * 元素仅等于一侧边界（x==lo<hi 或 lo<x==hi）：梯度对半分给该元素与该边界张量（各 0.5）
+              * 元素同时等于上下界（x==lo==hi）：梯度全部归该元素自身（dx=1）
+              * lo>hi（区间无效）：结果全部取 hi，梯度全部归 hi
+            - min>max（均为标量时）：不报错，所有元素的结果值都等于 max（即先被抬到 min、再统一压到上界 max）
+
         注意:
             - 这是原地操作，会直接修改张量数据
-            - 如果张量是需要梯度的叶子节点，会抛出运行时错误
-            - 支持对min和max参数的梯度跟踪
+            - 若本张量是需要梯度的叶子节点，会抛出运行时错误
+            - min 与 max 必须同为标量或同为张量
         """
-        # 检查是否是需要梯度的叶子节点
+        # 若本张量是需要梯度的叶子节点，原地改写会破坏计算图，直接报错（与 PyTorch 一致）
         if is_grad_enabled() and self.requires_grad and self.is_leaf:
             raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
-        
-        # 执行原地裁剪操作，使用setat_实现
-        if min is not None:
-            mask = self < min
-            self.setat_(mask, min)
-        if max is not None:
-            mask = self > max
-            self.setat_(mask, max)
-        
+
+        # 标量与张量边界不可混用（与 PyTorch 的重载约束一致）
+        min_is_tn = isinstance(min, TN)
+        max_is_tn = isinstance(max, TN)
+        if (min_is_tn and max is not None and not max_is_tn) or \
+           (max_is_tn and min is not None and not min_is_tn):
+            raise TypeError("clamp_(): min and max must be both scalars or both tensors")
+        if not min_is_tn and not max_is_tn:
+            # 标量边界：开区间严格比较 —— x<=min 或 x>=max 的元素改写为边界值；
+            # 元素恰等于边界时也按越界处理（值取边界、自身梯度为 0）。
+            # 标量可直接广播，无需掩码聚集；min>max（均为标量）不报错，
+            # 所有元素的结果值都等于 max（与 torch/numpy 一致）
+            if min is not None:
+                self.setat_(self <= min, min)
+            if max is not None:
+                self.setat_(self >= max, max)
+            return self
+
+        # 张量边界：缺失一侧以 ±inf 作哨兵填充，比较时该侧条件恒为假，等价于不设限
+        lo = min if min_is_tn else -float('inf')
+        hi = max if max_is_tn else float('inf')
+
+        # 原地操作不得改变形状：边界广播后的形状必须与原形状一致（与 PyTorch 一致）
+        out_shape = np.broadcast_shapes(self.shape, np.shape(lo), np.shape(hi))
+        if out_shape != self.shape:
+            raise RuntimeError(f"output with shape {self.shape} doesn't match the broadcast shape {out_shape}")
+
+        def gather(bound, mask):
+            # setat_/addat_ 的掩码右值尺寸须等于被选中元素个数：先把边界广播到 self 形状，再按掩码聚集
+            b = bound._expand(self.shape) if bound.shape != self.shape else bound
+            return b[mask]
+
+        # 相等掩码须在改写数据前、基于原始数据算出（下面的 setat_ 会改动数据）；
+        # (lo < hi) 用于排除无效区间 lo>hi，并让三重相等 x==lo==hi 不落入对半分
+        t_lo = (self == lo) & (lo < hi)
+        t_hi = (self == hi) & (lo < hi)
+
+        # 数据裁剪：先抬下限、再压上限。above 必须在下限改写之后计算，
+        # 这样 lo>hi 时被抬到 lo 的元素也能一并压到 hi，其梯度一并转给 hi
+        below = self < lo
+        self.setat_(below, gather(lo, below) if min_is_tn else lo)
+        above = self > hi
+        self.setat_(above, gather(hi, above) if max_is_tn else hi)
+
+        # 单边相等（x==lo<hi 或 lo<x==hi）处需把梯度对半分给元素与边界张量：
+        # addat_ 使数据变为 2*bound，再 mulat_(0.5) 既还原数据、又把 self 梯度缩为一半
+        #（mulat_ 是缩放而非置零），恰好得到 dx=0.5、dbound=0.5；
+        # 双重/三重相等被上面的 (lo<hi) 排除，保持 dx=1
+        if min_is_tn:
+            self.addat_(t_lo, gather(lo, t_lo))
+            self.mulat_(t_lo, 0.5)
+        if max_is_tn:
+            self.addat_(t_hi, gather(hi, t_hi))
+            self.mulat_(t_hi, 0.5)
+
         # 返回自身以支持链式调用
         return self
 
@@ -8564,73 +8618,82 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
 
 def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, out: TN | None = None) -> TN:
     """
-    将张量的元素限制在指定的范围内
+    将张量的元素限制在 [min, max] 范围内（非原地）
     
     参数:
         x: 输入张量
         min: 下限值，可以是标量或张量
         max: 上限值，可以是标量或张量
-        out: 输出张量（可选）
+        out: 输出张量（可选）；指定后结果写入 out，且不支持自动微分
     
     返回:
         限制在指定范围内的张量
+
+    边界相等时的处理（对齐 PyTorch 的 clamp）:
+        - 标量边界：开区间严格比较。元素恰等于 min/max 时不改写，其自身梯度为 0
+        - 张量边界：闭区间
+          * 元素仅等于一侧边界（x==lo<hi 或 lo<x==hi）：梯度对半分给该元素与该边界张量（各 0.5）
+          * 元素同时等于上下界（x==lo==hi）：梯度全部归该元素（dx=1）
+          * lo>hi（区间无效）：结果全部取 hi，梯度全部归 hi
+        - min>max（均为标量时）：不报错，所有元素的结果值都等于 max（即先被抬到 min、再统一压到上界 max）
+        - min 与 max 必须同为标量或同为张量；两者均为 None 时报 ValueError
     """
-    # 处理参数缺省逻辑
+    # 参数缺省检查：min 与 max 不能同时为 None
     if min is None and max is None:
         raise ValueError("clamp(): min or max must be specified")
     
-    # 检查out参数和梯度需求的冲突
+    # out 与自动微分互斥（须在构建计算图前拦截，与 PyTorch 一致）
     if out is not None and (x.requires_grad or 
                            (isinstance(min, TN) and min.requires_grad) or 
                            (isinstance(max, TN) and max.requires_grad)):
         raise RuntimeError("clamp(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
     
-    # 如果提供了out参数，执行原地操作
+    # 标量与张量边界不可混用（与 PyTorch 的重载约束一致）
+    min_is_tn = isinstance(min, TN)
+    max_is_tn = isinstance(max, TN)
+    if (min_is_tn and max is not None and not max_is_tn) or \
+       (max_is_tn and min is not None and not min_is_tn):
+        raise TypeError("clamp(): min and max must be both scalars or both tensors")
+
+    if not min_is_tn and not max_is_tn:
+        # 标量边界：开区间严格比较 —— 仅 x<min 或 x>max 的元素改写为边界值；
+        # 元素恰等于边界时不改写、其自身梯度为 0（与 PyTorch 一致）。
+        # min>max（均为标量）不报错，所有元素的结果值都等于 max（与 torch/numpy 一致）
+        y = x
+        if min is not None:
+            y = where(x <= min, min, y)
+        if max is not None:
+            y = where(y >= max, max, y)
+    else:
+        # 张量边界：缺失一侧以 ±inf 作哨兵填充，比较时该侧条件恒为假，等价于不设限
+        lo = min if min_is_tn else -float('inf')
+        hi = max if max_is_tn else float('inf')
+
+        # 值：先 max(x,lo) 再 min(hi)；lo>hi 时结果全部落到 hi（与 PyTorch 一致）
+        m = where(x < lo, lo, x)
+        y = where(m > hi, hi, m)
+        # 闭区间下元素可能落在边界上，需按 PyTorch 规则分配梯度：
+        # 单边相等（x==lo<hi 或 lo<x==hi）时元素与边界张量各得 0.5 —— 取值用 0.5*(x+bound)，
+        # 因 x==bound 数值上恰好等于 bound，而梯度精确为 dx=0.5、dbound=0.5；
+        # 三重相等 x==lo==hi 被 (lo<hi) 排除，保持 dx=1；
+        # 仅对真实张量边界施加对半分：None 侧为 ±inf 哨兵，若 x 恰为 ±inf 不应参与
+        if min_is_tn:
+            t_lo = (x == lo) & (lo < hi)
+            y = where(t_lo, 0.5 * (x + lo), y)
+        if max_is_tn:
+            t_hi = (x == hi) & (lo < hi)
+            y = where(t_hi, 0.5 * (x + hi), y)
+
+    # 若指定 out，直接把结果数据写入其中并返回（out 场景不支持自动微分）
     if out is not None:
-        # 确保out是TN类型
         if not isinstance(out, TN):
             raise TypeError(f"out must be a TN type, not {type(out)}")
-        
-        # 检查out张量的形状是否与x兼容
-        if out.shape != x.shape:
-            raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible with input tensor shape ({x.shape})")
-        
-        # 转换为标量值
-        scalar_min = min.item() if isinstance(min, TN) else min
-        scalar_max = max.item() if isinstance(max, TN) else max
-        
-        # 处理参数边界
-        if scalar_min is not None and scalar_max is not None:
-            if scalar_min > scalar_max:
-                raise ValueError("clamp(): min must be less than or equal to max")
-        
-        # 使用现有的实现
-        arrlib = x._get_array_lib()
-        # 使用Python的inf，可与NumPy/CuPy数组直接运算
-        np_min = scalar_min if scalar_min is not None else -float('inf')
-        np_max = scalar_max if scalar_max is not None else float('inf')
-        arrlib.clip(x.data, np_min, np_max, out=out.data)
+        if out.shape != y.shape:
+            raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible with result shape ({y.shape})")
+        out.data = y.data
         return out
-    
-    # 处理参数边界（当min和max都是标量时）
-    if not isinstance(min, TN) and not isinstance(max, TN):
-        if min is not None and max is not None:
-            if min > max:
-                raise ValueError("clamp(): min must be less than or equal to max")
-    
-    # 使用where实现
-    if min is not None and max is not None:
-        # 同时限制上下限
-        return where(x < min, min, where(x > max, max, x))
-    elif min is not None:
-        # 只限制下限
-        return where(x < min, min, x)
-    elif max is not None:
-        # 只限制上限
-        return where(x > max, max, x)
-    else:
-        # 无限制，返回原张量
-        return x
+
+    return y
 
 def _split_with_indices(input: TN, indices_or_sections, dim: int) -> tuple[TN, ...]:
     """
