@@ -1213,7 +1213,7 @@ class TN:
         return merge_indices(self, base_index, current_index)
     
     def _adjust_right_val(self, target_data, val):
-        # 快速路径：如果val已经是TN且设备、类型匹配，直接使用
+        # 若 val 已是 TN，则校验设备一致性、按需转换 dtype 后直接复用，避免重复创建
         if isinstance(val, TN):
             right_val = val
             # 检查设备一致性
@@ -1226,18 +1226,22 @@ class TN:
             right_val = as_tensor(val, dtype=self.dtype, device=self.device)
         
         # 将右值形状、维度转化为和索引值相匹配的形式
+        # 注：target_data 可能是numpy数组（切片/花式索引），也可能是numpy标量（整数索引选中单个元素），
+        # 二者都提供 size/shape/ndim，故下列判定对两种情形通用
         target_size = target_data.size
         right_size = right_val.data.size  # 直接访问底层数组的size，避免方法调用开销
         
         if right_size > target_size:
+            # 唯一例外：向空张量（size=0）赋值仅含1个元素的右值（标量、形状(1,)/(1,1)等）是合法的
             if target_size == 0 and right_size == 1:
-                pass   # 允许向空张量赋值0D标量
+                # 归一为0维：numpy对空选择的赋值只接受0维/1维右值，否则会因右值维数报TypeError
+                right_val = right_val._reshape(())
             else:
                 raise ValueError(f"Right value size {right_size} exceeds target size {target_size}")
         elif right_size == target_size:
             right_val = right_val._reshape(target_data.shape)
         elif right_val.ndim <= target_data.ndim:
-            # _expand 内部会检查形状相等，无需重复检查
+            # _expand 内部不做形状检查，形状不兼容时由 broadcast_to 报错，故无需在此重复校验
             right_val = right_val._expand(target_data.shape)
         else:
             # 维度数过多，先squeeze所有大小为1的维度，再expand
@@ -1269,11 +1273,11 @@ class TN:
         target_data = self.data[index_val]
         right_val= self._adjust_right_val(target_data,val)
 
-        # 因为以下原因：
-        # 1、target与self是共享内存的，
-        # 2、向右值传播梯度时可能需要左值
-        # 3、对self原地操作后，self index位置的数据已被修改，相当于左值消失
-        # 所以，原地操作数据前，须备份target的独立且无依赖副本，用于梯度跟踪时使用
+        # target 的来源有两种：
+        # 1、基本切片返回视图，与self共享内存
+        # 2、整数/花式索引返回副本或numpy标量，本就不共享，但形状/维度信息仍需保留
+        # 无论哪种，都须在改动self前备份一份独立且无依赖的副本：
+        # 因为向右值传播梯度时需要用到左值，而原地操作后self对应位置的数据已被覆盖，左值已消失
         target_copy = _wrap_tensor_from_numpy(target_data.copy())
         oper_func(self.data, index_val, right_val.data)
 
