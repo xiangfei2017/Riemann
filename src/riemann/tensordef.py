@@ -1276,10 +1276,12 @@ class TN:
         # target 的来源有两种：
         # 1、基本切片返回视图，与self共享内存
         # 2、整数/花式索引返回副本或numpy标量，本就不共享，但形状/维度信息仍需保留
-        # 无论哪种，都须在改动self前备份一份独立且无依赖的副本：
+        # 对于共享内存的视图，必须在改动self前备份一份独立且无依赖的副本：
         # 因为向右值传播梯度时需要用到左值，而原地操作后self对应位置的数据已被覆盖，左值已消失
-        target_copy = _wrap_tensor_from_numpy(target_data.copy())
-        oper_func(self.data, index_val, right_val.data)
+        if target_data.base is not None:
+            target_data = target_data.copy()  # 复制共享内存的视图，确保独立性
+        target_copy = _wrap_tensor_from_numpy(target_data)
+        oper_func(self.data, index_val, right_val.data)  # 执行原地操作
 
         self.requires_grad = (is_grad_enabled() and (self.requires_grad or right_val.requires_grad))
         
@@ -10654,17 +10656,16 @@ def _try_merge_special_base_index(base_index, current_index):
     return None
 
 
-def _preprocess_base_index(base_index, tensor):
+def _preprocess_base_index(base_index, base_shape):
     """预处理基础索引：标准化为元组、展开 Ellipsis、计算 view_dims"""
     # 标准化为元组格式
     base_tuple = _normalize_index_to_tuple(base_index)
     
     # 计算基础张量的维度数
-    base_ndim = len(tensor._base.shape) if (hasattr(tensor, '_base') and tensor._base is not None) else len(tensor.shape)
+    base_ndim = len(base_shape)
     
     # 展开 Ellipsis（不填充长度，因为 base_index 可能只索引部分维度）
-    if any(idx is Ellipsis for idx in base_tuple):
-        base_tuple = _expand_ellipsis(base_tuple, base_ndim)
+    base_tuple = _expand_ellipsis(base_tuple, base_ndim)
     
     # 计算 view_dims（非整数索引的位置）
     view_dims = [i for i, idx in enumerate(base_tuple) if not isinstance(idx, int)]
@@ -10674,14 +10675,12 @@ def _preprocess_base_index(base_index, tensor):
 
 def _preprocess_current_index(current_index, view_dims):
     """预处理当前索引：标准化为元组、展开 Ellipsis、填充长度"""
-    # 标准化为元组格式（简化版）
-    result = current_index if isinstance(current_index, tuple) else (current_index,)
+    result = _normalize_index_to_tuple(current_index)
     
     ndim = len(view_dims)
     
     # 展开 Ellipsis
-    if any(idx is Ellipsis for idx in result):
-        result = _expand_ellipsis(result, ndim)
+    result = _expand_ellipsis(result, ndim)
     
     # 填充长度以匹配 view_dims
     if len(result) < ndim:
@@ -10723,7 +10722,8 @@ def _normalize_index(index, dim_size: int):
     
     elif isinstance(index, (list, np.ndarray)) or _is_cupy_array(index):
         # 处理列表、NumPy 数组或 CuPy 数组索引
-        if _is_cupy_array(index):
+        is_cupy = _is_cupy_array(index)
+        if is_cupy:
             # CuPy 数组：保持 CuPy 类型，使用 cupy 的函数
             indices = index
             lib = cp
@@ -10887,9 +10887,7 @@ def _merge_descriptors(base_desc: _IndexDescriptor, current_desc: _IndexDescript
         # 根据 table 的类型选择库
         lib = _get_array_lib(table)
 
-        # 使用 .size 属性获取数组长度，适用于 NumPy 和 CuPy
-        table_size = table.size if hasattr(table, 'size') else len(table)
-        actual_stop = builtins.min(stop, table_size)
+        actual_stop = builtins.min(stop, table.size)
         indices = lib.arange(start, actual_stop, step)
         
         mapped = table[indices]
@@ -10934,8 +10932,7 @@ def _merge_descriptors(base_desc: _IndexDescriptor, current_desc: _IndexDescript
             # table1 是 NumPy，table2 是 CuPy：将 table1 转换为 CuPy
             table1 = cp.asarray(table1)
 
-        # 使用 .size 属性获取数组长度，适用于 NumPy 和 CuPy
-        table1_size = table1.size if hasattr(table1, 'size') else len(table1)
+        table1_size = table1.size
         valid_mask = (table2 >= 0) & (table2 < table1_size)
         valid_indices = table2[valid_mask]
         mapped = table1[valid_indices]
@@ -11043,16 +11040,16 @@ def merge_indices(self, base_index, current_index):
     if result is not None:
         return result
     
+    # 提前获取基础张量形状，后续多个阶段复用
+    base_shape = self._base.shape if (hasattr(self, '_base') and self._base is not None) else self.shape
+    
     # 第二阶段：预处理 base_index    
-    base_index, view_dims = _preprocess_base_index(base_index, self)
+    base_index, view_dims = _preprocess_base_index(base_index, base_shape)
     
     # 第三阶段：预处理 current_index    
     current_index = _preprocess_current_index(current_index, view_dims)
     
     # 第四阶段：逐个维度合并索引
-    # 获取基础张量的形状（只需计算一次）
-    base_shape = self._base.shape if (hasattr(self, '_base') and self._base is not None) else self.shape
-    
     result = list(base_index)  # 复制 base_index，用于存储合并结果
     
     for i, view_dim in enumerate(view_dims):
@@ -11080,8 +11077,7 @@ def merge_indices(self, base_index, current_index):
             p = base_desc.params
             view_size = (p['stop'] - p['start'] + p['step'] - 1) // p['step']
         else:
-            indices = base_desc.params['indices']
-            view_size = indices.size if hasattr(indices, 'size') else len(indices)
+            view_size = base_desc.params['indices'].size
         
         # 标准化当前索引、合并、转回原始格式
         current_desc = _normalize_index(curr_idx, view_size)
