@@ -7209,6 +7209,8 @@ def _mean_backward(result_tensor:TN, i:int)->TN:
     else:
         raise TypeError(dim)
 
+    n = x.dtype.type(n)       # 确保n与x的dtype一致，避免计算时导致数据类型提升
+
     # 均值的梯度传播到输入张量，需要缩放1/n，同时考虑keepdim参数，要恢复维度
     # 最后要expand到输入的形状，才得到输入的梯度
     if keepdim:
@@ -7539,8 +7541,8 @@ def _var_backward(result_tensor:TN, i:int)->TN:
     # 计算(x - mean(x))的梯度因子
     x_mean = mean(x, dim=dim, keepdim=True)  # 始终使用keepdim=True以保持广播正确
     diff = x - x_mean
-    factor = tensor(2.0 / denom,dtype = x.dtype, device=x.device)
-    
+    factor = x.dtype.type(2.0 / denom)       # 确保因子与输入张量的dtype一致，避免计算时导致数据类型提升
+
     # 如果keepdim为False，需要扩展梯度维度以匹配diff的维度
     # unsqueeze支持int、tuple和None，dim=None时直接返回原张量
     if not keepdim:
