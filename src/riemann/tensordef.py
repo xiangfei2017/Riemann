@@ -62,7 +62,7 @@ Example usage:
 
 from __future__ import annotations
 from itertools import accumulate
-from collections import namedtuple
+from collections import Counter, defaultdict, namedtuple
 import builtins
 import inspect
 import warnings
@@ -11089,6 +11089,48 @@ def merge_indices(self, base_index, current_index):
     return tuple(result)
 
 
+# 启用optimize路径（tensordot/BLAS加速）的最小操作数元素数阈值：
+# 低于该值时einsum_path计算开销（约30us）超过BLAS收益
+_EINSUM_OPTIMIZE_MIN_ELEMS = 4096
+
+
+def _einsum_use_optimize(input_eqs: list[str], output_eq: str, operand_data: list) -> bool:
+    """
+    判断einsum前向是否启用optimize路径。
+
+    optimize使numpy/cupy经由tensordot调用BLAS，对矩阵乘/批量矩阵乘/多操作数
+    缩并类运算（GEMM型）有数倍收益。以下情况保持naive路径（实测更快或开销不匹配）：
+    - 单操作数（对角线/转置等无跨操作数缩并可优化）
+    - 张量规模低于阈值（einsum_path计算开销约30us超过收益）
+    - 点积/矩阵向量乘等仅1-D参与缩并的运算（tensordot的转置拷贝比naive慢数倍）
+
+    另：numpy的c_einsum路径不支持省略号维度被求和的方程（如'...i->i'会直接
+    抛出ValueError），此类方程必须走optimize路径，与张量规模无关。
+    """
+    # 省略号维度被求和（如'...i->i'）：c_einsum不支持，必须走optimize路径
+    if any('.' in eq for eq in input_eqs) and '.' not in output_eq:
+        return True
+    if len(input_eqs) < 2:
+        return False
+    if builtins.max(d.size for d in operand_data) < _EINSUM_OPTIMIZE_MIN_ELEMS:
+        return False
+
+    # 统计各索引在所有输入方程中的出现次数：
+    # 出现多次且不在输出中的索引即为被求和的缩并索引，只有存在此类索引才有BLAS收益
+    char_counts = Counter()
+    for eq in input_eqs:
+        char_counts.update(eq.replace('.', ''))
+    output_chars = set(output_eq.replace('.', ''))
+    contracted = {c for c, n in char_counts.items() if n > 1} - output_chars
+    if not contracted:
+        return False
+
+    if len(input_eqs) == 2:
+        # 双操作数时要求双方都保留非缩并维度（排除点积与矩阵向量乘）
+        return all(set(eq.replace('.', '')) - contracted for eq in input_eqs)
+    return True
+
+
 def _parse_einsum_equation(equation: str, num_operands: int) -> tuple[str, list[str], str]:
     """
     解析einsum方程字符串。
@@ -11116,10 +11158,9 @@ def _parse_einsum_equation(equation: str, num_operands: int) -> tuple[str, list[
         # 移除省略号后再统计，避免 '.' 被当作普通字符
         input_eq_no_ellipsis = input_eq.replace('...', '')
         all_indices = input_eq_no_ellipsis.replace(',', '')
-        from collections import Counter
         counts = Counter(all_indices)
         has_ellipsis = '...' in input_eq
-        non_ellipsis_output = ''.join(sorted([c for c in counts if counts[c] == 1]))
+        non_ellipsis_output = ''.join(sorted(c for c in counts if counts[c] == 1))
         if has_ellipsis:
             output_eq = '...' + non_ellipsis_output
         else:
@@ -11146,65 +11187,88 @@ def _has_duplicate_indices(target_eq: str) -> bool:
 def _restore_diagonal_tensor(grad_tensor: TN, target_shape: tuple, target_eq: str) -> TN:
     """
     将梯度张量还原为具有重复索引的对角线形式。
-    使用单位矩阵乘法强制对角线约束，支持高阶梯度计算。
-    
+
+    背景：当目标操作数含重复索引（如 'ii'、'iijj'）时，前向只取了对角元素，
+    故反向梯度只应落在对应位置的对角线上、其余位置为0。但
+    _expand_grad_dimensions 只把梯度广播到了完整形状，非对角位置被重复填了值，
+    必须在此处重新施加对角线约束，将其清零。
+
+    约束方式：对每一对重复位置 (pos1, pos2) 做一次「与单位矩阵逐元素相乘」。
+    构造方程 'ij,<result_eq>-><result_eq>'（i、j 为两个临时新字符，分别放到
+    pos1、pos2 上），由于两个输入的所有索引都保留在输出中、不发生缩并，该方程
+    等价于广播乘法：
+        result[pos1, pos2] *= I[pos1, pos2]
+    而 I 是单位矩阵，于是 pos1 != pos2 处被置0、pos1 == pos2 处保留原值，从而
+    施加对角线约束。该实现完全由已有张量算子组合而成，故可自然支持高阶梯度。
+
+    grad_tensor 为 _expand_grad_dimensions 展开后的结果，维度布局与 target_eq 的真实布局一致
+    （省略号维按其在 target_eq 中的位置展开成对应数量的维度），重复索引的首个出现位置持有
+    数据，其余重复位置为可广播的哑维度。
+
     参数:
-        grad_tensor: 梯度张量
+        grad_tensor: 展开后的梯度张量
         target_shape: 目标形状
         target_eq: 目标索引字符串（包含重复索引）
-        
+
     返回:
-        还原后的梯度张量
+        还原后的梯度张量（仅重复索引的对角线位置非0）
     """
     if not _has_duplicate_indices(target_eq):
         return grad_tensor
-    
-    # 对于对角线情况（包括2D和批量情况）
-    # 检查最后两个字符是否相同（如...ii表示对角线）
+
     target_eq_clean = target_eq.replace('.', '')
-    if len(target_eq_clean) == 2 and target_eq_clean[-1] == target_eq_clean[-2]:
-        # 仅2个索引且相同的情况（如 ii-> 或 ii->i）
-        if grad_tensor.ndim == 0:
-            # 标量梯度 -> 对角线矩阵（迹的反向）
-            return batch_diag(grad_tensor * ones(target_shape[-1], device=grad_tensor.device, dtype=grad_tensor.dtype))
-        else:
-            # 向量或矩阵梯度 -> 对角线矩阵或批量对角线矩阵
-            return batch_diag(grad_tensor)
-    
-    # 一般情况：使用单位矩阵乘法强制对角线约束
-    # 找出重复索引及其位置
-    from collections import defaultdict
+
+    # 省略号维数量与「省略号之前的显式索引个数」，用于把索引在 target_eq 中的位置映射到
+    # 展开后张量的真实维度下标（省略号维按其在目标中的真实位置占据一段连续维度）
+    n_ellipsis = grad_tensor.ndim - len(target_eq_clean)
+    n_before = len(target_eq.split('...')[0]) if '...' in target_eq else len(target_eq_clean)
+
+    def real_dim(pos):
+        """target_eq_clean 中第 pos 个索引在展开后张量中对应的真实维度下标"""
+        return pos + (n_ellipsis if pos >= n_before else 0)
+
+    # 快速路径：恰好2个索引且相同，且重复位置正好是最后两维（如 ii、...ii），
+    # 直接广播乘单位矩阵即可（与一般路径等价，省去构造方程的额外 einsum）
+    if (len(target_eq_clean) == 2 and target_eq_clean[0] == target_eq_clean[1] and
+            real_dim(0) == grad_tensor.ndim - 2):
+        n = grad_tensor.shape[-1]
+        return grad_tensor * eye(n, device=grad_tensor.device, dtype=grad_tensor.dtype)
+
+    # 一般路径：按字符分组，找出所有重复索引及其在 target_eq 中的位置
     index_positions = defaultdict(list)
     for pos, c in enumerate(target_eq_clean):
-        index_positions[c].append(pos)
-    
+        index_positions[c].append(real_dim(pos))
+
     result = grad_tensor
-    
+
     for char, positions in index_positions.items():
         if len(positions) > 1:
-            # 该索引出现多次，需要强制对角线约束
+            # 该索引出现多次，需要强制其各出现位置满足对角线约束
             dim_size = target_shape[positions[0]]
             I = eye(dim_size, device=result.device, dtype=result.dtype)
-            
-            # 对每对相邻重复位置，用单位矩阵乘法强制对角线
+
+            # 位置多于2个时，逐对（相邻两位置）施加一次约束即可覆盖全部组合
             for p in range(len(positions) - 1):
                 pos1 = positions[p]
                 pos2 = positions[p + 1]
-                
+
+                # 为 result 的每个维度分配一个临时字符（'a','b',...），再把 pos1、pos2
+                # 两处的字符替换为两个全新的、只出现在单位矩阵方程中的字符。这样两个输入
+                # 的所有索引都会保留到输出，不触发缩并，等价于沿该两维做广播逐元素相乘
                 n_dims = result.ndim
                 result_chars = [chr(ord('a') + d) for d in range(n_dims)]
                 i_char = chr(ord('a') + n_dims)
                 j_char = chr(ord('a') + n_dims + 1)
-                
+
                 identity_eq = i_char + j_char
                 result_eq = result_chars.copy()
                 result_eq[pos1] = i_char
                 result_eq[pos2] = j_char
                 result_eq_str = ''.join(result_eq)
-                
+
                 equation = f'{identity_eq},{result_eq_str}->{result_eq_str}'
                 result = einsum(equation, I, result)
-    
+
     return result
 
 
@@ -11290,40 +11354,60 @@ def einsum(equation: str, *operands: TN) -> TN:
     # 检查是否需要梯度
     requires_grad = is_grad_enabled() and any(op.requires_grad for op in operands)
     
-    # 前向计算：使用numpy/cupy的einsum
+    # 前向计算：使用numpy/cupy的einsum，GEMM型大规模缩并启用optimize走BLAS
     operand_data = [op.data for op in operands]
-    result_data = arrlib.einsum(equation, *operand_data)
+    result_data = arrlib.einsum(equation, *operand_data,
+                                optimize=_einsum_use_optimize(input_eqs, output_eq, operand_data))
     
     result = as_tensor(result_data, device=device, requires_grad=requires_grad)
     
     if requires_grad:
         result.fromvars = operands
         # 预计算每个输入的梯度信息，避免反向传播时重复计算
-        grad_infos = _precompute_grad_info(equation, input_eqs, output_eq, operands)
+        grad_infos = _precompute_grad_info(input_eqs, output_eq, operands)
+        # parms 保存反向所需信息：完整方程、输入/输出索引、每个输入的预计算梯度信息
         result.parms = (equation, input_eqs, output_eq, grad_infos)
-        # 所有输入共享同一个外置梯度函数，使用i参数区分
-        result.gradfuncs = tuple(_einsum_backward for _ in range(len(operands)))
+        # 所有输入共享同一个外置梯度函数，反向时用 i 参数区分当前求导的输入
+        result.gradfuncs = (_einsum_backward,) * len(operands)
     
     return result
 
-def _precompute_grad_info(equation: str, input_eqs: list[str], output_eq: str, 
+def _precompute_grad_info(input_eqs: list[str], output_eq: str,
                           operands: list[TN]) -> list[dict]:
     """
-    预计算每个输入的梯度信息，优化反向传播性能。
-    
-    返回每个输入的梯度信息字典，包含：
-    - grad_type: 梯度类型 ('simple', 'trace', 'diag_extract', 'complex')
-    - grad_equation: 预计算的梯度方程（简单情况）
-    - needs_expand: 是否需要维度扩展
-    - has_duplicates: 是否有重复索引
+    为每个输入预计算反向传播所需的梯度信息，避免反向时重复推导。
+
+    反向梯度统一遵循「用梯度方程再算一次 einsum」的思路：
+        grad_target = einsum(grad_value, 其他操作数 -> target_eq)
+    但不同形态的方程能构造出的合法梯度方程不同，故在此预先分类，反向时直接路由。
+    grad_type 共四类：
+
+    - 'simple'：目标无重复索引，且其所有索引都能从「输出 + 其他操作数」中找到来源。
+      此时目标索引在梯度输入中全部出现，可直接拼出合法梯度方程，反向只需一次 einsum。
+    - 'trace'：单操作数、恰好2个索引且重复、输出少2维（如 'ii->'），即取迹，
+      反向等价于把标量梯度铺到对角线上。
+    - 'diag_extract'：单操作数、恰好2个索引且重复、输出少1维（如 'ii->i'），
+      即提取对角线，反向同样只需构造对角矩阵。
+    - 'complex'：目标含重复索引，或存在无法从其他来源获得的索引。此时先做一次
+      「偏梯度」einsum 得到目标的可用子集，再扩展维度、恢复对角线约束。
+
+    参数:
+        input_eqs: 每个操作数的索引字符串
+        output_eq: 输出索引字符串（隐式输出已由 _parse_einsum_equation 解析为显式形式）
+        operands: 操作数列表
+
+    返回:
+        每个输入对应一个 info 字典，含 grad_type 及该类所需的辅助字段
     """
     grad_infos = []
     
     for i, target_eq in enumerate(input_eqs):
         info = {'target_eq': target_eq}
         
-        # 其他操作数的索引
+        # 反向梯度方程的输入来源：除本目标外的其他操作数索引（它们提供未被求和的原始数据）
         other_indices = [eq for j, eq in enumerate(input_eqs) if j != i]
+        # 可获得的索引集合 = 输出索引 ∪ 其他操作数索引；不在此集合中的索引，说明前向
+        # 只在目标自身内对其求和、无其他来源，需要走 'complex' 分支特殊处理
         available_indices = set(output_eq) | set(''.join(other_indices))
         available_indices.discard('.')
         
@@ -11331,21 +11415,29 @@ def _precompute_grad_info(equation: str, input_eqs: list[str], output_eq: str,
         has_duplicates = _has_duplicate_indices(target_eq)
         has_ellipsis = '...' in target_eq
         
-        # 分类处理
+        # 分类所需的几个结构判据
         is_single_operand = len(input_eqs) == 1
+        # 末尾两维索引相同（如 ii、bii、...ii）
         is_last_two_dup = (len(target_eq_clean) >= 2 and 
                           target_eq_clean[-1] == target_eq_clean[-2])
         
-        # 检查是否有缺失索引（target_eq中有索引不在available_indices中）
+        # 目标中存在既不在输出、也不在其他操作数中的索引（前向已把它们各自独立求和）
         has_missing = any(c not in available_indices for c in target_eq_clean)
         
-        # 判断是否为迹或对角线提取：必须是恰好2个索引重复（如 ii-> 或 ii->i）
-        # 而不是多索引重复（如 iijj->ij）
+        # 目标的省略号维度能否从梯度输入中找到来源：若目标含'...'，而输出与其他操作数
+        # 都不含'...'，说明这些批量维已在前向被独立求和，梯度需广播回目标形状，
+        # 无法用 simple 的单次 einsum 表达，改由 'complex' 分支（含维度扩展）处理
+        has_unavailable_ellipsis = ('...' in target_eq and
+                                    not ('...' in output_eq or
+                                         any('.' in eq for eq in other_indices)))
+        
+        # 迹 / 对角线提取：只适用于「单操作数 + 恰好2个索引重复」的情况（如 ii->、ii->i）；
+        # 多索引重复（如 iijj->ij）形态更复杂，统一交给 'complex' 处理
         is_trace_like = (is_single_operand and is_last_two_dup and has_duplicates and
                         len(target_eq_clean) == 2)
         
         if is_trace_like:
-            # 迹或对角线提取（仅适用于2索引情况如 ii）
+            # 依据输出比目标少的维数区分「迹」和「对角线提取」
             output_eq_clean = output_eq.replace('.', '')
             if len(output_eq_clean) == len(target_eq_clean) - 2:
                 info['grad_type'] = 'trace'
@@ -11356,17 +11448,17 @@ def _precompute_grad_info(equation: str, input_eqs: list[str], output_eq: str,
                 info['has_duplicates'] = has_duplicates
                 info['has_ellipsis'] = has_ellipsis
                 info['available_indices'] = available_indices
-        elif not has_duplicates and not has_missing:
-            # 简单情况：无重复索引且无缺失索引，可以直接构造梯度方程
+        elif not has_duplicates and not has_missing and not has_unavailable_ellipsis:
+            # 简单情况：无重复索引、无缺失索引、且省略号维有来源，可直接构造梯度方程
             info['grad_type'] = 'simple'
-            # 预计算梯度方程
-            grad_input_eqs = []
-            if output_eq:
-                grad_input_eqs.append(output_eq)
+            # 梯度方程 = 'output_eq,其他操作数索引 -> target_eq'。
+            # grad_value 的方程固定用 output_eq：空输出（'->'）时为空串 ''，numpy/cupy
+            # 支持空下标表示 0-d 标量操作数，从而保证 grad_value 始终参与计算不被丢弃
+            grad_input_eqs = [output_eq]
             grad_input_eqs.extend(other_indices)
             info['grad_equation'] = ','.join(grad_input_eqs) + '->' + target_eq
         else:
-            # 复杂情况：有重复索引或缺失索引
+            # 复杂情况：含重复索引或缺失索引，需偏梯度 + 维度扩展 + 对角线恢复
             info['grad_type'] = 'complex'
             info['has_duplicates'] = has_duplicates
             info['has_ellipsis'] = has_ellipsis
@@ -11378,10 +11470,12 @@ def _precompute_grad_info(equation: str, input_eqs: list[str], output_eq: str,
 
 def _einsum_backward(result_tensor: TN, i: int) -> TN:
     """
-    einsum的反向传播函数（外置版本）。
-    
-    使用预计算的梯度信息快速路由到对应处理函数。
-    参数i表示当前输入的索引位置。
+    einsum 的反向传播函数（外置版本）。
+
+    所有操作数共享这同一个梯度函数，通过参数 i（当前输入在操作数列表中的位置）
+    区分本次要计算的是哪个输入的梯度。前向已将反向所需信息存入 parms：
+        parms = (equation, input_eqs, output_eq, grad_infos)
+    本函数按 grad_infos[i] 的 grad_type 路由到对应的处理函数。
     """
     grad_value = result_tensor.grad_value
     input_eqs = result_tensor.parms[1]
@@ -11398,23 +11492,26 @@ def _einsum_backward(result_tensor: TN, i: int) -> TN:
     # 快速路由到对应处理函数
     if grad_type == 'simple':
         # 简单情况：直接使用预计算的梯度方程
-        return _compute_simple_einsum_grad(
+        grad = _compute_simple_einsum_grad(
             grad_value, output_eq, all_operands, i, info['grad_equation']
         )
     elif grad_type == 'trace':
         # 迹操作
-        return _compute_trace_grad(grad_value, target_operand)
+        grad = _compute_trace_grad(grad_value, target_operand, target_eq)
     elif grad_type == 'diag_extract':
         # 对角线提取
-        return _compute_diag_extract_grad(grad_value, target_operand)
+        grad = _compute_diag_extract_grad(grad_value, target_operand, target_eq)
     else:
         # 复杂情况
         other_indices = [eq for j, eq in enumerate(input_eqs) if j != i]
         other_operands = [op for j, op in enumerate(all_operands) if j != i]
-        return _compute_complex_einsum_grad(
+        grad = _compute_complex_einsum_grad(
             grad_value, output_eq, other_indices, other_operands, 
             target_eq, target_operand, info
         )
+
+    # 目标省略号批量维可能小于输出（前向发生广播），需按 torch 语义对广播维求和还原形状
+    return _unbroadcast_grad(grad, target_operand.shape)
 
 
 def _compute_simple_einsum_grad(
@@ -11423,44 +11520,111 @@ def _compute_simple_einsum_grad(
 ) -> TN:
     """
     计算简单einsum操作的梯度（无重复索引）。
-    
+
     直接使用预计算的梯度方程，性能最优。
+    grad_value的方程为output_eq（空输出时为''），确保非单位梯度正确参与计算。
     """
-    # 构造梯度输入：output（如果有）+ 其他操作数
-    grad_inputs = []
-    if output_eq:
-        grad_inputs.append(grad_value)
-    
+    grad_inputs = [grad_value]
+
     for j, op in enumerate(all_operands):
         if j != i:
             grad_inputs.append(op.conj() if op.is_complex() else op)
-    
+
     return einsum(grad_equation, *grad_inputs)
 
 
-def _compute_trace_grad(grad_value: TN, target_operand: TN) -> TN:
+def _ellipsis_after_indices(target_eq: str, rank: int) -> bool:
     """
-    计算迹操作（ii->）的梯度。
-    
-    梯度是一个对角矩阵，对角线元素为grad_value的对应值。
+    判断目标的省略号是否位于全部显式索引之后（如 'ii...'、'ij...k'）。
+
+    用于区分布局：省略号在索引之前/中间时，重复索引对占据最前两维的反面——省略号在被
+    重复的索引对之后时，该索引对才真正落在目标的最前两维上。
     """
-    if grad_value.ndim == 0:
-        # 纯标量（2D迹ii->）
-        v = grad_value * ones(target_operand.shape[-1], device=grad_value.device, dtype=grad_value.dtype)
+    return '...' in target_eq and rank > len(target_eq.replace('.', '')) and \
+        len(target_eq.split('...')[0]) == len(target_eq.replace('.', ''))
+
+
+def _compute_trace_grad(grad_value: TN, target_operand: TN, target_eq: str) -> TN:
+    """
+    计算迹操作（ii->、bii->b、...ii->...、...ii->、ii...->、ii...->...）的梯度。
+
+    迹在前向只对重复索引对应的两维取对角元素求和，反向即构造一个对角张量：对角元素为
+    grad_value 的对应值、非对角为0。注意 grad_value 可能缺少目标的部分前导维度
+    （如 ...ii-> 的输出是标量、bii->b 只含批量维），需先广播到目标的批量形状。
+
+    重复索引对默认位于目标最后两维；但当省略号位于该索引对之后（如 ii...）时，该对实际
+    落在目标最前两维，此时 grad_value 对应的是尾部的省略号批量维，需按前两维施加对角约束。
+    """
+    target_shape = target_operand.shape
+    rank = len(target_shape)
+
+    if _ellipsis_after_indices(target_eq, rank):
+        # 重复对在最前两维：先把 grad_value（尾部省略号维，或标量）补前导维后广播到目标形状，
+        # 再沿最前两维乘单位矩阵，把非对角位置清零
+        n = target_shape[0]
+        v = grad_value.reshape((1,) * (rank - grad_value.ndim) + grad_value.shape)
+        v = v.expand(_broadcast_expand_shape(v.shape, target_shape))
+        eye_shape = (n, n) + (1,) * (rank - 2)
+        return v * eye(n, device=v.device, dtype=v.dtype).reshape(eye_shape)
+
+    batch_shape = target_operand.shape[:-1]
+    if not batch_shape:
+        # 纯2D迹（ii->）：梯度为0维标量，直接构造 (n, n) 的对角矩阵
+        n = target_operand.shape[-1]
+        v = grad_value * ones(n, device=grad_value.device, dtype=grad_value.dtype)
         return batch_diag(v)
-    else:
-        # 有批次维度（批量迹...ii->...或bii->b）
-        grad_expanded = grad_value.unsqueeze(-1).expand(target_operand.shape[:-1])
-        return batch_diag(grad_expanded)
+    # 其余情况：在梯度末尾补一维（对角维）后广播到批量形状，再构造对角矩阵。
+    # 这样无论 grad_value 是标量（...ii->）还是缺批量维均可正确对齐
+    return batch_diag(grad_value.unsqueeze(-1).expand(batch_shape))
 
 
-def _compute_diag_extract_grad(grad_value: TN, target_operand: TN) -> TN:
+def _compute_diag_extract_grad(grad_value: TN, target_operand: TN, target_eq: str) -> TN:
     """
-    计算对角线提取操作（ii->i）的梯度。
-    
-    梯度是一个对角矩阵。
+    计算对角线提取操作（ii->i、...ii->i、ii...->i）的梯度。
+
+    梯度是一个对角张量；输出缺少目标的省略号维度时（如 ...ii->i）需先扩展批量维度。
+    省略号位于索引对之后时（ii...），对角约束施加在目标最前两维、grad_value 对应首维。
     """
+    target_shape = target_operand.shape
+    rank = len(target_shape)
+
+    if _ellipsis_after_indices(target_eq, rank):
+        n = target_shape[0]
+        v = grad_value.reshape((n,) + (1,) * (rank - 1))
+        v = v.expand(_broadcast_expand_shape(v.shape, target_shape))
+        eye_shape = (n, n) + (1,) * (rank - 2)
+        return v * eye(n, device=v.device, dtype=v.dtype).reshape(eye_shape)
+
+    if grad_value.ndim < target_operand.ndim - 1:
+        grad_value = grad_value.expand(target_operand.shape[:-1])
     return batch_diag(grad_value)
+
+
+def _unbroadcast_grad(grad_tensor: TN, target_shape: tuple) -> TN:
+    """
+    将按广播形状算出的梯度还原为目标操作数的原始形状。
+
+    目标操作数的省略号批量维可能与输出/其他操作数不一致（如 ...i,...i->... 中某操作数
+    批量维为1，或 ...aaa,...b->ba 中该维被广播放大），梯度便按广播后的形状算出。按 torch
+    语义需先消除广播差异：
+      - 目标秩小于梯度秩：多出的前导维由其他操作数/输出广播而来，逐个求和消去；
+      - 某个维度目标为 1 而梯度大于 1：对该维 keepdim 求和（前向共享同一份数据，
+        梯度按广播份数累加）；
+      - 某个维度目标大于 1 而梯度为 1：梯度与广播份数无关，直接广播到目标尺寸。
+
+    形状本就一致时原样返回，故对迹/对角线等已对齐的路径无副作用。
+    """
+    grad = grad_tensor
+    while grad.ndim > len(target_shape):
+        grad = grad.sum(dim=0)
+    axes = tuple(ax for ax, (gs, ts) in enumerate(zip(grad.shape, target_shape))
+                 if ts == 1 and gs != 1)
+    if axes:
+        grad = grad.sum(dim=axes, keepdim=True)
+    if grad.shape != target_shape:
+        # 目标维大于梯度维（前向该维被广播放大），梯度可视为常数沿该维复制
+        grad = grad.expand(target_shape)
+    return grad
 
 
 def _compute_complex_einsum_grad(
@@ -11469,15 +11633,29 @@ def _compute_complex_einsum_grad(
     info: dict
 ) -> TN:
     """
-    计算复杂einsum操作的梯度（有重复索引或缺失索引）。
-    
-    需要维度扩展和对角线恢复。
+    计算复杂 einsum 操作的梯度（目标含重复索引，或存在无法从其他来源获得的索引）。
+
+    分三步：
+    1. 偏梯度：把所有可用索引（输出 + 其他操作数）按梯度方程缩并，得到一个只含目标
+       可用子集维度的张量（对应前向中未被独立求和的那些维度）；
+    2. 扩展维度：把偏梯度 reshape/expand 回目标的完整形状（缺失维、重复维先补1再广播）；
+    3. 恢复对角线：对重复索引施加对角线约束，保证非对角位置梯度为0。
     """
     available_indices = info['available_indices']
-    has_ellipsis = info['has_ellipsis']
+    # 偏梯度中的省略号维度对应「目标自身的批量维度」，能否保留取决于该批量维在反向
+    # 中是否有来源，分两种情况：
+    # 1. 输出含'...'：grad_value 自带批量维度（如 ...ii,i->...）
+    # 2. 其他操作数含'...'：目标的批量维与对方的批量维配对收缩，不能丢弃
+    #    （如 ...aaa,...b->ba 中 dx0[q,...] = sum_b g[b,...] * w[q,b]，q 依赖必须保留）
+    # 反之，若输出不含'...'且其他操作数也不含'...'，说明目标的批量维已在前向被独立
+    # 求和、梯度对其为常数，此时不能加'...'前缀（否则 numpy 会拒绝无来源的输出省略号，
+    # 例如 ...cdc->）
+    has_ellipsis = ('...' in target_eq
+                    and ('...' in output_eq or any('.' in oi for oi in other_indices)))
     target_eq_clean = target_eq.replace('.', '')
     
-    # 构造target_eq的"可用版本"（只保留出现在梯度输入中的索引，去重）
+    # 构造目标的"可用索引串"：按 target_eq 的出现顺序，保留能在梯度输入中找到来源的
+    # 索引，并去重（重复索引只保留一次，供后续扩展阶段复用同一维度）
     seen = set()
     available_target_chars = []
     for c in target_eq_clean:
@@ -11491,72 +11669,138 @@ def _compute_complex_einsum_grad(
     else:
         available_target_with_ellipsis = available_target
     
-    # 构造梯度输入
-    grad_input_eqs = []
-    grad_inputs = []
-    
-    if output_eq:
-        grad_input_eqs.append(output_eq)
-        grad_inputs.append(grad_value)
-    
+    # 组装偏梯度的 einsum 输入：grad_value（方程恒为 output_eq，空输出时用 '' 占位，
+    # 确保 grad_value 不参与缩并也不被丢弃）+ 各其他操作数（复数则取共轭）
+    grad_input_eqs = [output_eq]
+    grad_inputs = [grad_value]
+
     for idx, op in zip(other_indices, other_operands):
         grad_inputs.append(op.conj() if op.is_complex() else op)
         grad_input_eqs.append(idx)
-    
-    # 计算偏梯度
-    if available_target_with_ellipsis and grad_input_eqs:
+
+    # 计算偏梯度，输出方程只保留目标的可用索引（可带 '...' 前缀）。
+    # 快捷分支：目标没有任何可用索引、且只有 grad_value 一个输入时，方程退化为 '->'，
+    # 偏梯度就是 grad_value 本身（标量），无需再走一次 einsum
+    if not available_target_with_ellipsis and len(grad_input_eqs) == 1:
+        partial_grad = grad_value
+    else:
         grad_equation = ','.join(grad_input_eqs) + '->' + available_target_with_ellipsis
         partial_grad = einsum(grad_equation, *grad_inputs)
-    else:
-        partial_grad = grad_value
     
-    # 扩展维度
+    # 偏梯度的维度顺序固定为 [省略号维][可用索引]，而目标的真实布局可能把省略号维放在中间
+    # （如 i...j 的真实布局是 [i][省略号][j]），故先按目标的真实顺序重排偏梯度
+    partial_grad = _reorder_partial_grad(
+        partial_grad, target_eq, available_target_chars, has_ellipsis)
+
+    # 偏梯度秩小于目标时，扩展到目标的完整形状
     target_shape = target_operand.shape
     if partial_grad.ndim < len(target_shape):
         partial_grad = _expand_grad_dimensions(
-            partial_grad, target_eq_clean, available_indices, 
-            has_ellipsis, available_target_chars, target_shape
+            partial_grad, target_eq, available_indices, has_ellipsis, target_shape
         )
-    
-    # 恢复重复索引的对角线结构
+
+    # 恢复重复索引的对角线结构（非对角位置清零）
     return _restore_diagonal_tensor(partial_grad, target_shape, target_eq)
 
 
-def _expand_grad_dimensions(
-    partial_grad: TN, target_eq_clean: str, available_indices: set,
-    has_ellipsis: bool, available_target_chars: list[str], target_shape: tuple
+def _reorder_partial_grad(
+    partial_grad: TN, target_eq: str, available_target_chars: list[str], has_ellipsis: bool
 ) -> TN:
-    """扩展梯度维度以匹配目标形状。"""
-    expand_shape = []
-    result_data_idx = 0
-    
-    if has_ellipsis:
-        # 计算省略号维度数量，确保不为负（使用__builtins__避免与riemann的max函数冲突）
-        n_ellipsis_dims = partial_grad.ndim - len(available_target_chars)
-        if n_ellipsis_dims < 0:
-            n_ellipsis_dims = 0
-        for d in range(n_ellipsis_dims):
-            if result_data_idx < partial_grad.ndim:
-                expand_shape.append(partial_grad.shape[result_data_idx])
-                result_data_idx += 1
-    
+    """
+    把偏梯度从「省略号维在最前」的标准顺序重排为目标的真实维度顺序。
+
+    偏梯度由方程 '<grad_eq>,<其他操作数> -> ...<可用索引>' 算出，省略号维恒定位于最前，
+    其后是可用索引（按 available_target_chars 顺序，即其在 target_eq 中首次出现的顺序）。
+    而目标的省略号可能出现在中间或末尾（如 i...j、ij...k、ii...），其真实布局把显式索引
+    排在省略号维之前或之间。若重排缺失，后续按真实顺序消耗维度时会张冠李戴。
+
+    重排后顺序为：[省略号之前的可用索引][省略号维][省略号之后的可用索引]；
+    省略号维数量为 0、或原本就在最前时无需重排。
+    """
+    if not has_ellipsis or not available_target_chars:
+        return partial_grad
+
+    target_eq_clean = target_eq.replace('.', '')
+    n_ellipsis = partial_grad.ndim - len(available_target_chars)
+    # 省略号之前的显式索引个数：即真实布局中省略号维左侧的索引数
+    n_before = len(target_eq.split('...')[0])
+    if n_ellipsis <= 0 or n_before == 0:
+        return partial_grad
+
+    first_pos = {c: target_eq_clean.index(c) for c in available_target_chars}
+    before = [n_ellipsis + k for k, c in enumerate(available_target_chars)
+              if first_pos[c] < n_before]
+    after = [n_ellipsis + k for k, c in enumerate(available_target_chars)
+             if first_pos[c] >= n_before]
+    perm = before + list(range(n_ellipsis)) + after
+    if perm == list(range(partial_grad.ndim)):
+        return partial_grad
+    return partial_grad.permute(perm)
+
+
+def _expand_grad_dimensions(
+    partial_grad: TN, target_eq: str, available_indices: set,
+    has_ellipsis: bool, target_shape: tuple
+) -> TN:
+    """
+    把偏梯度扩展（广播）到目标的完整形状。
+
+    偏梯度的轴顺序与「目标真实维度顺序中过滤出可消耗维度」的顺序一致，即
+    [省略号之前的可用索引][省略号维][省略号之后的可用索引]（由 _reorder_partial_grad 保证）。
+    本函数按同一顺序重建目标的完整秩形状 expand_shape：
+
+    - 省略号维：有来源（has_ellipsis）时依次取偏梯度对应轴的真实尺寸；无来源时说明这些
+      批量维前向已被独立求和、梯度对其为常数，占位 1 等待广播；
+    - 可用索引：仅其「首次出现」消耗偏梯度的一个轴，重复出现处填 1，留待
+      _restore_diagonal_tensor 施加对角线约束；
+    - 不可用索引（前向已被独立求和）：填 1，后续通过广播补齐。
+
+    省略号维按其在目标中的真实位置插入，故省略号位于中间/末尾（如 i...j、ij...k）时也能
+    与目标形状对齐；由于消耗轴的顺序与该顺序完全一致，reshape 不会打乱已有数据。
+    """
+    target_eq_clean = target_eq.replace('.', '')
+    # 目标中的省略号维数量：目标秩减去显式索引个数
+    n_ellipsis = len(target_shape) - len(target_eq_clean)
+    # 省略号之前的显式索引个数（无省略号时视为全部索引之后），即省略号维的插入位置
+    n_before = len(target_eq.split('...')[0]) if '...' in target_eq else len(target_eq_clean)
+
+    # 按目标真实布局逐个列出「槽位」：省略号前的索引、省略号维、省略号后的索引
+    slots = ([('char', p) for p in range(n_before)] +
+             [('ellipsis', k) for k in range(n_ellipsis)] +
+             [('char', p) for p in range(n_before, len(target_eq_clean))])
+
+    expand_shape = []      # 目标的完整秩形状（含省略号维）
+    result_data_idx = 0    # partial_grad 中下一个待消费的轴下标
     seen_available = set()
-    for c in target_eq_clean:
-        if c in available_indices:
-            if c not in seen_available:
-                if result_data_idx < partial_grad.ndim:
-                    expand_shape.append(partial_grad.shape[result_data_idx])
-                    result_data_idx += 1
-                else:
-                    expand_shape.append(1)
+
+    for kind, p in slots:
+        if kind == 'ellipsis':
+            consume = has_ellipsis
+        else:
+            c = target_eq_clean[p]
+            # 仅索引的首次出现消耗一个轴；重复出现处留待对角线约束处理
+            consume = c in available_indices and c not in seen_available
+            if consume:
                 seen_available.add(c)
-            else:
-                expand_shape.append(1)
+        if consume and result_data_idx < partial_grad.ndim:
+            expand_shape.append(partial_grad.shape[result_data_idx])
+            result_data_idx += 1
         else:
             expand_shape.append(1)
-    
+
     partial_grad = partial_grad.reshape(expand_shape)
-    return partial_grad.expand(target_shape)
+    return partial_grad.expand(_broadcast_expand_shape(expand_shape, target_shape))
+
+
+def _broadcast_expand_shape(shape: tuple, target_shape: tuple) -> tuple:
+    """
+    按广播语义对齐源形状与目标形状，用于 expand。
+
+    目标维为1而源维更大的维度（如省略号批量维被其他操作数广播放大）保留源尺寸，使 expand
+    合法；此类维度随后由 _unbroadcast_grad 求和还原为目标尺寸（前向共享同一份数据，梯度
+    应按广播份数累加）。其余维度取目标尺寸以正常广播。
+    """
+    return tuple(src if tgt == 1 else tgt for src, tgt in zip(shape, target_shape))
 
 
 def trace(input: TN) -> TN:

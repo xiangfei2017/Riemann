@@ -273,865 +273,58 @@ class TestEinsum(unittest.TestCase):
             stats.end_function()
             print(f"{Colors.OKBLUE}测试完成: {self.current_test_name}{Colors.ENDC}")
     
-    def test_matrix_multiply(self):
-        """测试矩阵乘法: ij,jk->ik"""
+    # ------------------------------------------------------------------
+    # 通用用例执行器：集中处理前向 / 反向的 PyTorch 对齐校验
+    # ------------------------------------------------------------------
+
+    def _run_cases(self, cases, fail_label):
+        """通用用例执行器：逐个设备执行前向 / 反向的 PyTorch 对齐校验。
+
+        每个用例为 dict，字段含义：
+          name           用例名（必填）
+          eq             einsum 方程（必填）
+          shapes         各操作数的形状列表（必填）
+          grad           反向模式：'random'（默认，注入非均匀上游梯度）、
+                         'ones'（全 1 梯度）或 None（跳过反向）
+          implicit       显式方程；提供时额外验证隐式与显式输出一致
+          complex        True 时按复数语义构造张量并注入复数上游梯度
+          dtype          操作数 dtype（如 np.float32），默认保持 float64
+          noncontiguous  True 时在 2 倍尺寸基张量上做 [::2] 切片构造非连续输入
+          check_dtype    需校验的输出 dtype（如 np.float32）
+
+        反向默认注入随机上游梯度（0 维输出时即为非单位梯度），以校验 grad_value
+        确实参与了梯度计算并落在正确位置。
+        """
         devices = ["cpu"]
         if CUDA_AVAILABLE:
             devices.append("cuda")
-        
+
         for device in devices:
-            case_name = f"矩阵乘法 ij,jk->ik - {device}"
-            start_time = time.time()
-            try:
-                # 创建测试数据
-                np_A = np.random.randn(3, 4)
-                np_B = np.random.randn(4, 5)
-                
-                # 根据设备创建张量
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:  # cuda
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                # 前向传播测试
-                C = rm.einsum('ij,jk->ik', A, B)
-                C_torch = None
-                if TORCH_AVAILABLE:
-                    C_torch = torch.einsum('ij,jk->ik', A_torch, B_torch)
-                
-                # 比较前向传播结果
-                forward_passed = compare_values(C, C_torch)
-                
-                # 检查设备一致性
-                device_passed = C.device == A.device
-                
-                # 反向传播测试
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    rm_loss = C.sum()
-                    torch_loss = C_torch.sum()
-                    rm_loss.backward()
-                    torch_loss.backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"矩阵乘法测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_batch_matrix_multiply(self):
-        """测试批量矩阵乘法: bij,bjk->bik"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"批量矩阵乘法 bij,bjk->bik - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(10, 3, 4)
-                np_B = np.random.randn(10, 4, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                C = rm.einsum('bij,bjk->bik', A, B)
-                C_torch = None
-                if TORCH_AVAILABLE:
-                    C_torch = torch.einsum('bij,bjk->bik', A_torch, B_torch)
-                
-                forward_passed = compare_values(C, C_torch)
-                device_passed = C.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    rm_loss = C.sum()
-                    torch_loss = C_torch.sum()
-                    rm_loss.backward()
-                    torch_loss.backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"批量矩阵乘法测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_trace(self):
-        """测试矩阵迹: ii->"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"矩阵迹 ii-> - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(5, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                trace = rm.einsum('ii->', A)
-                trace_torch = None
-                if TORCH_AVAILABLE:
-                    trace_torch = torch.einsum('ii->', A_torch)
-                
-                forward_passed = compare_values(trace, trace_torch)
-                device_passed = trace.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    trace.backward()
-                    trace_torch.backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"矩阵迹测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_diagonal(self):
-        """测试对角线提取: ii->i"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"对角线提取 ii->i - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(5, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                diag = rm.einsum('ii->i', A)
-                diag_torch = None
-                if TORCH_AVAILABLE:
-                    diag_torch = torch.einsum('ii->i', A_torch)
-                
-                forward_passed = compare_values(diag, diag_torch)
-                device_passed = diag.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    diag.sum().backward()
-                    diag_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"对角线提取测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_transpose(self):
-        """测试转置: ij->ji"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"转置 ij->ji - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                B = rm.einsum('ij->ji', A)
-                B_torch = None
-                if TORCH_AVAILABLE:
-                    B_torch = torch.einsum('ij->ji', A_torch)
-                
-                forward_passed = compare_values(B, B_torch)
-                device_passed = B.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    B.sum().backward()
-                    B_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"转置测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_outer_product(self):
-        """测试外积: i,j->ij"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"外积 i,j->ij - {device}"
-            start_time = time.time()
-            try:
-                np_a = np.random.randn(5)
-                np_b = np.random.randn(4)
-                
-                if device == "cpu":
-                    a = rm.tensor(np_a, requires_grad=True)
-                    b = rm.tensor(np_b, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        a_torch = torch.tensor(np_a, requires_grad=True)
-                        b_torch = torch.tensor(np_b, requires_grad=True)
-                    else:
-                        a_torch = b_torch = None
-                else:
-                    a = rm.tensor(np_a, requires_grad=True, device=device)
-                    b = rm.tensor(np_b, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        a_torch = torch.tensor(np_a, requires_grad=True, device=device)
-                        b_torch = torch.tensor(np_b, requires_grad=True, device=device)
-                    else:
-                        a_torch = b_torch = None
-                
-                C = rm.einsum('i,j->ij', a, b)
-                C_torch = None
-                if TORCH_AVAILABLE:
-                    C_torch = torch.einsum('i,j->ij', a_torch, b_torch)
-                
-                forward_passed = compare_values(C, C_torch)
-                device_passed = C.device == a.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    C.sum().backward()
-                    C_torch.sum().backward()
-                    backward_passed = compare_values(a.grad, a_torch.grad) and compare_values(b.grad, b_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"外积测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_dot_product(self):
-        """测试点积: i,i->"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"点积 i,i-> - {device}"
-            start_time = time.time()
-            try:
-                np_a = np.random.randn(5)
-                np_b = np.random.randn(5)
-                
-                if device == "cpu":
-                    a = rm.tensor(np_a, requires_grad=True)
-                    b = rm.tensor(np_b, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        a_torch = torch.tensor(np_a, requires_grad=True)
-                        b_torch = torch.tensor(np_b, requires_grad=True)
-                    else:
-                        a_torch = b_torch = None
-                else:
-                    a = rm.tensor(np_a, requires_grad=True, device=device)
-                    b = rm.tensor(np_b, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        a_torch = torch.tensor(np_a, requires_grad=True, device=device)
-                        b_torch = torch.tensor(np_b, requires_grad=True, device=device)
-                    else:
-                        a_torch = b_torch = None
-                
-                dot = rm.einsum('i,i->', a, b)
-                dot_torch = None
-                if TORCH_AVAILABLE:
-                    dot_torch = torch.einsum('i,i->', a_torch, b_torch)
-                
-                forward_passed = compare_values(dot, dot_torch)
-                device_passed = dot.device == a.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    dot.backward()
-                    dot_torch.backward()
-                    backward_passed = compare_values(a.grad, a_torch.grad) and compare_values(b.grad, b_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"点积测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_tensor_contraction(self):
-        """测试张量缩并: ijkl,jklm->ijm"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"张量缩并 ijkl,jklm->ijm - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4, 5, 6)
-                np_B = np.random.randn(4, 5, 6, 7)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                C = rm.einsum('ijkl,jklm->ijm', A, B)
-                C_torch = None
-                if TORCH_AVAILABLE:
-                    C_torch = torch.einsum('ijkl,jklm->ijm', A_torch, B_torch)
-                
-                forward_passed = compare_values(C, C_torch)
-                device_passed = C.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    C.sum().backward()
-                    C_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"张量缩并测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_single_operand_transpose(self):
-        """测试单操作数转置: ij->ji"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"单操作数转置 ij->ji - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                B = rm.einsum('ij->ji', A)
-                B_torch = None
-                if TORCH_AVAILABLE:
-                    B_torch = torch.einsum('ij->ji', A_torch)
-                
-                forward_passed = compare_values(B, B_torch)
-                device_passed = B.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    B.sum().backward()
-                    B_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"单操作数转置测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_implicit_output(self):
-        """测试隐式输出格式: ij,jk"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"隐式输出格式 ij,jk - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                np_B = np.random.randn(4, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                # 隐式输出
-                C = rm.einsum('ij,jk', A, B)
-                # 显式输出
-                C_explicit = rm.einsum('ij,jk->ik', A, B)
-                
-                C_torch = None
-                if TORCH_AVAILABLE:
-                    C_torch = torch.einsum('ij,jk', A_torch, B_torch)
-                
-                # 验证隐式和显式结果一致
-                implicit_explicit_match = np.allclose(C.data, C_explicit.data, atol=1e-6)
-                forward_passed = compare_values(C, C_torch) and implicit_explicit_match
-                device_passed = C.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    C.sum().backward()
-                    C_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"隐式输出测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_three_operands(self):
-        """测试三个操作数: ij,jk,kl->il"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"三个操作数 ij,jk,kl->il - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                np_B = np.random.randn(4, 5)
-                np_C = np.random.randn(5, 6)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    C = rm.tensor(np_C, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                        C_torch = torch.tensor(np_C, requires_grad=True)
-                    else:
-                        A_torch = B_torch = C_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    C = rm.tensor(np_C, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                        C_torch = torch.tensor(np_C, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = C_torch = None
-                
-                D = rm.einsum('ij,jk,kl->il', A, B, C)
-                D_torch = None
-                if TORCH_AVAILABLE:
-                    D_torch = torch.einsum('ij,jk,kl->il', A_torch, B_torch, C_torch)
-                
-                forward_passed = compare_values(D, D_torch)
-                device_passed = D.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    D.sum().backward()
-                    D_torch.sum().backward()
-                    backward_passed = (compare_values(A.grad, A_torch.grad) and 
-                                     compare_values(B.grad, B_torch.grad) and 
-                                     compare_values(C.grad, C_torch.grad))
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"三个操作数测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_batch_matrix_trace(self):
-        """测试批量矩阵迹: bii->b"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"批量矩阵迹 bii->b - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(10, 5, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                traces = rm.einsum('bii->b', A)
-                traces_torch = None
-                if TORCH_AVAILABLE:
-                    traces_torch = torch.einsum('bii->b', A_torch)
-                
-                forward_passed = compare_values(traces, traces_torch)
-                device_passed = traces.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    traces.sum().backward()
-                    traces_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"批量矩阵迹测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_complex_einsum(self):
-        """测试复数张量einsum"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        test_cases = [
-            {"name": "复数矩阵乘法", "eq": "ij,jk->ik", "shapes": [(3, 4), (4, 5)]},
-            {"name": "复数批量矩阵乘法", "eq": "bij,bjk->bik", "shapes": [(3, 4, 5), (3, 5, 6)]},
-            {"name": "复数迹", "eq": "ii->", "shapes": [(5, 5)]},
-            {"name": "复数对角线提取", "eq": "ii->i", "shapes": [(5, 5)]},
-            {"name": "复数转置", "eq": "ij->ji", "shapes": [(3, 4)]},
-            {"name": "复数点积", "eq": "i,i->", "shapes": [(5,), (5,)]},
-            {"name": "复数外积", "eq": "i,j->ij", "shapes": [(5,), (4,)]},
-        ]
-        
-        for device in devices:
-            for case in test_cases:
+            for case in cases:
                 case_name = f"{case['name']} - {device}"
                 start_time = time.time()
                 try:
-                    # 创建复数测试数据
-                    shapes = case['shapes']
-                    eq = case['eq']
-                    
-                    if len(shapes) == 1:
-                        np_A = np.random.randn(*shapes[0]) + 1j * np.random.randn(*shapes[0])
-                        
-                        if device == "cpu":
-                            A = rm.tensor(np_A, requires_grad=True)
-                            if TORCH_AVAILABLE:
-                                A_torch = torch.tensor(np_A, dtype=torch.complex64, requires_grad=True)
-                            else:
-                                A_torch = None
-                        else:
-                            A = rm.tensor(np_A, requires_grad=True, device=device)
-                            if TORCH_AVAILABLE:
-                                A_torch = torch.tensor(np_A, dtype=torch.complex64, requires_grad=True, device=device)
-                            else:
-                                A_torch = None
-                        
-                        result = rm.einsum(eq, A)
-                        result_torch = None
-                        if TORCH_AVAILABLE:
-                            result_torch = torch.einsum(eq, A_torch)
-                        
-                        forward_passed = compare_values(result, result_torch, atol=1e-5)
-                        device_passed = result.device == A.device
-                        
-                        backward_passed = True
-                        if TORCH_AVAILABLE:
-                            if result.ndim == 0:
-                                # 复数标量需要显式梯度，确保 dtype 匹配
-                                grad = rm.tensor(1+0j, dtype=result.dtype)
-                                result.backward(grad)
-                                result_torch.backward(torch.tensor(1+0j, dtype=torch.complex64))
-                            else:
-                                grad = rm.ones_like(result)
-                                result.backward(grad)
-                                result_torch.backward(torch.ones_like(result_torch, dtype=torch.complex64))
-                            backward_passed = compare_values(A.grad, A_torch.grad, atol=1e-5)
-                    
-                    elif len(shapes) == 2:
-                        np_A = np.random.randn(*shapes[0]) + 1j * np.random.randn(*shapes[0])
-                        np_B = np.random.randn(*shapes[1]) + 1j * np.random.randn(*shapes[1])
-                        
-                        if device == "cpu":
-                            A = rm.tensor(np_A, requires_grad=True)
-                            B = rm.tensor(np_B, requires_grad=True)
-                            if TORCH_AVAILABLE:
-                                A_torch = torch.tensor(np_A, dtype=torch.complex64, requires_grad=True)
-                                B_torch = torch.tensor(np_B, dtype=torch.complex64, requires_grad=True)
-                            else:
-                                A_torch = B_torch = None
-                        else:
-                            A = rm.tensor(np_A, requires_grad=True, device=device)
-                            B = rm.tensor(np_B, requires_grad=True, device=device)
-                            if TORCH_AVAILABLE:
-                                A_torch = torch.tensor(np_A, dtype=torch.complex64, requires_grad=True, device=device)
-                                B_torch = torch.tensor(np_B, dtype=torch.complex64, requires_grad=True, device=device)
-                            else:
-                                A_torch = B_torch = None
-                        
-                        result = rm.einsum(eq, A, B)
-                        result_torch = None
-                        if TORCH_AVAILABLE:
-                            result_torch = torch.einsum(eq, A_torch, B_torch)
-                        
-                        forward_passed = compare_values(result, result_torch, atol=1e-5)
-                        device_passed = result.device == A.device
-                        
-                        backward_passed = True
-                        if TORCH_AVAILABLE:
-                            if result.ndim == 0:
-                                # 复数标量需要显式梯度，确保 dtype 匹配
-                                grad = rm.tensor(1+0j, dtype=result.dtype)
-                                result.backward(grad)
-                                result_torch.backward(torch.tensor(1+0j, dtype=torch.complex64))
-                            else:
-                                grad = rm.ones_like(result)
-                                result.backward(grad)
-                                result_torch.backward(torch.ones_like(result_torch, dtype=torch.complex64))
-                            backward_passed = (compare_values(A.grad, A_torch.grad, atol=1e-5) and 
-                                             compare_values(B.grad, B_torch.grad, atol=1e-5))
-                    
+                    # 前向：比较数值，并校验隐式输出、输出 dtype 与设备一致性
+                    (forward_passed, device_passed, result, result_torch,
+                     ops, ops_torch) = self._forward_check(case, device)
+
+                    # 反向：与 PyTorch 逐操作数对齐梯度
+                    grad_mode = case.get('grad', 'random')
+                    backward_passed = True
+                    if grad_mode is not None:
+                        backward_passed = self._backward_check(
+                            case, grad_mode, device, result, result_torch, ops, ops_torch)
+
                     passed = forward_passed and backward_passed and device_passed
-                    
                     time_taken = time.time() - start_time
-                    
+
                     if IS_RUNNING_AS_SCRIPT:
                         stats.add_result(case_name, passed)
                         status = "通过" if passed else "失败"
                         print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    
-                    self.assertTrue(passed, f"复数einsum测试失败: {case_name}")
-                    
+
+                    self.assertTrue(passed, f"{fail_label}失败: {case_name}")
+
                 except Exception as e:
                     time_taken = time.time() - start_time
                     if IS_RUNNING_AS_SCRIPT:
@@ -1139,1798 +332,345 @@ class TestEinsum(unittest.TestCase):
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
 
-    def test_sum_reduction(self):
-        """测试求和归约: ij->, i->"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        test_cases = [
-            {"name": "矩阵求和 ij->", "eq": "ij->", "shape": (3, 4), "ndim": 1},
-            {"name": "向量求和 i->", "eq": "i->", "shape": (5,), "ndim": 1},
-            {"name": "3D张量求和 ijk->", "eq": "ijk->", "shape": (2, 3, 4), "ndim": 1},
-        ]
-        
-        for device in devices:
-            for case in test_cases:
-                case_name = f"{case['name']} - {device}"
-                start_time = time.time()
-                try:
-                    np_A = np.random.randn(*case['shape'])
-                    
-                    if device == "cpu":
-                        A = rm.tensor(np_A, requires_grad=True)
-                        if TORCH_AVAILABLE:
-                            A_torch = torch.tensor(np_A, requires_grad=True)
-                        else:
-                            A_torch = None
-                    else:
-                        A = rm.tensor(np_A, requires_grad=True, device=device)
-                        if TORCH_AVAILABLE:
-                            A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        else:
-                            A_torch = None
-                    
-                    result = rm.einsum(case['eq'], A)
-                    result_torch = None
-                    if TORCH_AVAILABLE:
-                        result_torch = torch.einsum(case['eq'], A_torch)
-                    
-                    forward_passed = compare_values(result, result_torch)
-                    device_passed = result.device == A.device
-                    
-                    backward_passed = True
-                    if TORCH_AVAILABLE:
-                        result.backward()
-                        result_torch.backward()
-                        backward_passed = compare_values(A.grad, A_torch.grad)
-                    
-                    passed = forward_passed and backward_passed and device_passed
-                    
-                    time_taken = time.time() - start_time
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, passed)
-                        status = "通过" if passed else "失败"
-                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    
-                    self.assertTrue(passed, f"求和归约测试失败: {case_name}")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
-    
-    def test_row_column_sum(self):
-        """测试行/列求和: ij->i, ij->j"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        test_cases = [
-            {"name": "行求和 ij->i", "eq": "ij->i", "shape": (3, 4), "ndim": 1},
-            {"name": "列求和 ij->j", "eq": "ij->j", "shape": (3, 4), "ndim": 1},
-            {"name": "3D张量轴求和 ijk->ij", "eq": "ijk->ij", "shape": (2, 3, 4), "ndim": 1},
-            {"name": "3D张量轴求和 ijk->ik", "eq": "ijk->ik", "shape": (2, 3, 4), "ndim": 1},
-        ]
-        
-        for device in devices:
-            for case in test_cases:
-                case_name = f"{case['name']} - {device}"
-                start_time = time.time()
-                try:
-                    np_A = np.random.randn(*case['shape'])
-                    
-                    if device == "cpu":
-                        A = rm.tensor(np_A, requires_grad=True)
-                        if TORCH_AVAILABLE:
-                            A_torch = torch.tensor(np_A, requires_grad=True)
-                        else:
-                            A_torch = None
-                    else:
-                        A = rm.tensor(np_A, requires_grad=True, device=device)
-                        if TORCH_AVAILABLE:
-                            A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        else:
-                            A_torch = None
-                    
-                    result = rm.einsum(case['eq'], A)
-                    result_torch = None
-                    if TORCH_AVAILABLE:
-                        result_torch = torch.einsum(case['eq'], A_torch)
-                    
-                    forward_passed = compare_values(result, result_torch)
-                    device_passed = result.device == A.device
-                    
-                    backward_passed = True
-                    if TORCH_AVAILABLE:
-                        result.sum().backward()
-                        result_torch.sum().backward()
-                        backward_passed = compare_values(A.grad, A_torch.grad)
-                    
-                    passed = forward_passed and backward_passed and device_passed
-                    
-                    time_taken = time.time() - start_time
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, passed)
-                        status = "通过" if passed else "失败"
-                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    
-                    self.assertTrue(passed, f"行/列求和测试失败: {case_name}")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
-    
-    def test_frobenius_inner_product(self):
-        """测试Frobenius内积: ij,ij->"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"Frobenius内积 ij,ij-> - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                np_B = np.random.randn(3, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('ij,ij->', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij,ij->', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.backward()
-                    result_torch.backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"Frobenius内积测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_hadamard_product(self):
-        """测试逐元素乘积: ij,ij->ij"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"逐元素乘积 ij,ij->ij - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                np_B = np.random.randn(3, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('ij,ij->ij', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij,ij->ij', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"逐元素乘积测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_kronecker_product(self):
-        """测试Kronecker类外积: ij,kl->ijkl"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"Kronecker外积 ij,kl->ijkl - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(2, 3)
-                np_B = np.random.randn(4, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('ij,kl->ijkl', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij,kl->ijkl', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"Kronecker外积测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_partial_contraction(self):
-        """测试部分缩并: ijk,ikl->ijl"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"部分缩并 ijk,ikl->ijl - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(2, 3, 4)
-                np_B = np.random.randn(2, 4, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('ijk,ikl->ijl', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ijk,ikl->ijl', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"部分缩并测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_batch_diagonal_extraction(self):
-        """测试批量对角线提取: bii->bi"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"批量对角线提取 bii->bi - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(10, 5, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                diag = rm.einsum('bii->bi', A)
-                diag_torch = None
-                if TORCH_AVAILABLE:
-                    diag_torch = torch.einsum('bii->bi', A_torch)
-                
-                forward_passed = compare_values(diag, diag_torch)
-                device_passed = diag.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    diag.sum().backward()
-                    diag_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"批量对角线提取测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_higher_dim_transpose(self):
-        """测试高维转置: ijk->kji, ijkl->klij"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        test_cases = [
-            {"name": "3D转置 ijk->kji", "eq": "ijk->kji", "shape": (2, 3, 4)},
-            {"name": "4D转置 ijkl->klij", "eq": "ijkl->klij", "shape": (2, 3, 4, 5)},
-            {"name": "3D转置 ijk->jki", "eq": "ijk->jki", "shape": (2, 3, 4)},
-        ]
-        
-        for device in devices:
-            for case in test_cases:
-                case_name = f"{case['name']} - {device}"
-                start_time = time.time()
-                try:
-                    np_A = np.random.randn(*case['shape'])
-                    
-                    if device == "cpu":
-                        A = rm.tensor(np_A, requires_grad=True)
-                        if TORCH_AVAILABLE:
-                            A_torch = torch.tensor(np_A, requires_grad=True)
-                        else:
-                            A_torch = None
-                    else:
-                        A = rm.tensor(np_A, requires_grad=True, device=device)
-                        if TORCH_AVAILABLE:
-                            A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        else:
-                            A_torch = None
-                    
-                    result = rm.einsum(case['eq'], A)
-                    result_torch = None
-                    if TORCH_AVAILABLE:
-                        result_torch = torch.einsum(case['eq'], A_torch)
-                    
-                    forward_passed = compare_values(result, result_torch)
-                    device_passed = result.device == A.device
-                    
-                    backward_passed = True
-                    if TORCH_AVAILABLE:
-                        result.sum().backward()
-                        result_torch.sum().backward()
-                        backward_passed = compare_values(A.grad, A_torch.grad)
-                    
-                    passed = forward_passed and backward_passed and device_passed
-                    
-                    time_taken = time.time() - start_time
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, passed)
-                        status = "通过" if passed else "失败"
-                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    
-                    self.assertTrue(passed, f"高维转置测试失败: {case_name}")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
-    
-    def test_identity_copy(self):
-        """测试恒等/复制操作: ij->ij"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"恒等复制 ij->ij - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                result = rm.einsum('ij->ij', A)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij->ij', A_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"恒等复制测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_duplicate_first_indices(self):
-        """测试前两个索引重复: iij->j, iij->ij"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        test_cases = [
-            {"name": "前两索引重复求和 iij->j", "eq": "iij->j", "shape": (3, 3, 4)},
-            {"name": "前两索引重复部分输出 iij->ij", "eq": "iij->ij", "shape": (3, 3, 4)},
-        ]
-        
-        for device in devices:
-            for case in test_cases:
-                case_name = f"{case['name']} - {device}"
-                start_time = time.time()
-                try:
-                    np_A = np.random.randn(*case['shape'])
-                    
-                    if device == "cpu":
-                        A = rm.tensor(np_A, requires_grad=True)
-                        if TORCH_AVAILABLE:
-                            A_torch = torch.tensor(np_A, requires_grad=True)
-                        else:
-                            A_torch = None
-                    else:
-                        A = rm.tensor(np_A, requires_grad=True, device=device)
-                        if TORCH_AVAILABLE:
-                            A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        else:
-                            A_torch = None
-                    
-                    result = rm.einsum(case['eq'], A)
-                    result_torch = None
-                    if TORCH_AVAILABLE:
-                        result_torch = torch.einsum(case['eq'], A_torch)
-                    
-                    forward_passed = compare_values(result, result_torch)
-                    device_passed = result.device == A.device
-                    
-                    backward_passed = True
-                    if TORCH_AVAILABLE:
-                        result.sum().backward()
-                        result_torch.sum().backward()
-                        backward_passed = compare_values(A.grad, A_torch.grad)
-                    
-                    passed = forward_passed and backward_passed and device_passed
-                    
-                    time_taken = time.time() - start_time
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, passed)
-                        status = "通过" if passed else "失败"
-                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    
-                    self.assertTrue(passed, f"前两索引重复测试失败: {case_name}")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
-    
-    def test_ellipsis_implicit_output(self):
-        """测试省略号隐式输出: ...ij,...jk"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"省略号隐式输出 ...ij,...jk - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(2, 3, 4)
-                np_B = np.random.randn(2, 4, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('...ij,...jk', A, B)
-                result_explicit = rm.einsum('...ij,...jk->...ik', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('...ij,...jk', A_torch, B_torch)
-                
-                implicit_explicit_match = np.allclose(result.data, result_explicit.data, atol=1e-6)
-                forward_passed = compare_values(result, result_torch) and implicit_explicit_match
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"省略号隐式输出测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_batch_outer_product(self):
-        """测试批量外积: bi,bj->bij"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"批量外积 bi,bj->bij - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(10, 3)
-                np_B = np.random.randn(10, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('bi,bj->bij', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('bi,bj->bij', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"批量外积测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-    
-    def test_self_contraction(self):
-        """测试自缩并: ij,ij->i"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"自缩并 ij,ij->i - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                np_B = np.random.randn(3, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('ij,ij->i', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij,ij->i', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"自缩并测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+    def _create_tensor_pair(self, np_ops, device, complex_):
+        """把同设备、带梯度的 numpy 数据列表分别转成 riemann / torch 张量"""
+        rm_kwargs = {"requires_grad": True}
+        if device != "cpu":
+            rm_kwargs["device"] = device
+        ops = [rm.tensor(a, **rm_kwargs) for a in np_ops]
+
+        ops_torch = None
+        if TORCH_AVAILABLE:
+            torch_kwargs = {"requires_grad": True}
+            if device != "cpu":
+                torch_kwargs["device"] = device
+            if complex_:
+                # PyTorch 复数张量统一使用 complex64
+                torch_kwargs["dtype"] = torch.complex64
+            ops_torch = [torch.tensor(a, **torch_kwargs) for a in np_ops]
+        return ops, ops_torch
+
+    def _build_case_operands(self, case, device):
+        """按用例配置生成 numpy 数据并构造 riemann / torch 操作数张量对"""
+        shapes = case['shapes']
+        if case.get('noncontiguous'):
+            # 扩大一倍尺寸后按 [::2] 切片，得到非连续视图
+            base_np = [np.random.randn(*(d * 2 for d in s)) for s in shapes]
+            base_ops, base_torch = self._create_tensor_pair(base_np, device, False)
+            step = tuple(slice(None, None, 2) for _ in shapes[0])
+            ops = [op[step] for op in base_ops]
+            ops_torch = [t[step] for t in base_torch] if base_torch is not None else None
+            return ops, ops_torch
+
+        # np.asarray 保证 0-d 标量场景也得到 ndarray（而非 numpy 标量），使 rm.tensor 保留 float64
+        if case.get('complex'):
+            np_ops = [np.asarray(np.random.randn(*s) + 1j * np.random.randn(*s)) for s in shapes]
+        else:
+            np_ops = [np.asarray(np.random.randn(*s)) for s in shapes]
+            if case.get('dtype') is not None:
+                np_ops = [a.astype(case['dtype']) for a in np_ops]
+        return self._create_tensor_pair(np_ops, device, case.get('complex', False))
+
+    def _forward_check(self, case, device):
+        """执行单个方程的前向对比，并校验隐式输出、输出 dtype 与设备一致性"""
+        ops, ops_torch = self._build_case_operands(case, device)
+        result = rm.einsum(case['eq'], *ops)
+        result_torch = torch.einsum(case['eq'], *ops_torch) if TORCH_AVAILABLE else None
+
+        passed = compare_values(result, result_torch)
+        # 隐式输出应与对应的显式输出完全一致
+        if case.get('implicit'):
+            explicit = rm.einsum(case['implicit'], *ops)
+            passed = passed and bool(np.allclose(result.data, explicit.data, atol=1e-6))
+        # 输出 dtype 校验
+        if case.get('check_dtype') is not None:
+            passed = passed and result.dtype == case['check_dtype']
+        return passed, result.device == ops[0].device, result, result_torch, ops, ops_torch
+
+    def _backward_check(self, case, grad_mode, device, result, result_torch, ops, ops_torch):
+        """注入上游梯度并逐操作数对齐 riemann / PyTorch 的梯度"""
+        if not TORCH_AVAILABLE:
+            return True
+        dev_kwargs = {} if device == "cpu" else {"device": device}
+        if case.get('complex'):
+            # 复数场景需显式传入复数上游梯度，标量输出取 1+0j
+            if result.ndim == 0:
+                r_grad = rm.tensor(1 + 0j, dtype=result.dtype)
+                t_grad = torch.tensor(1 + 0j, dtype=torch.complex64)
+            else:
+                r_grad = rm.ones_like(result)
+                t_grad = torch.ones_like(result_torch, dtype=torch.complex64)
+        elif grad_mode == 'ones':
+            r_grad = rm.ones_like(result)
+            t_grad = torch.ones_like(result_torch)
+        else:
+            # 随机非均匀上游梯度（0 维输出时即为非单位梯度）
+            w_np = np.asarray(np.random.randn(*result.shape))
+            if case.get('dtype') is not None:
+                w_np = w_np.astype(case['dtype'])
+            r_grad = rm.tensor(w_np, **dev_kwargs)
+            t_grad = torch.tensor(w_np, **dev_kwargs)
+        result.backward(r_grad)
+        result_torch.backward(t_grad)
+        return all(compare_values(op.grad, op_t.grad)
+                   for op, op_t in zip(ops, ops_torch))
+
+    def test_matrix_and_tensor_contraction(self):
+        """测试矩阵/张量缩并：一至四个操作数、批量链式、部分缩并、全缩并及标量参与"""
+        self._run_cases([
+            {"name": "矩阵乘法 ij,jk->ik", "eq": "ij,jk->ik", "shapes": [(3, 4), (4, 5)]},
+            {"name": "批量矩阵乘法 bij,bjk->bik", "eq": "bij,bjk->bik",
+             "shapes": [(10, 3, 4), (10, 4, 5)]},
+            {"name": "省略号广播批量维矩阵乘法 ...ij,...jk->...ik", "eq": "...ij,...jk->...ik",
+             "shapes": [(2, 1, 3, 4), (1, 5, 4, 6)]},
+            {"name": "三个操作数 ij,jk,kl->il", "eq": "ij,jk,kl->il",
+             "shapes": [(3, 4), (4, 5), (5, 6)]},
+            {"name": "四操作数链式 ij,jk,kl,lm->im", "eq": "ij,jk,kl,lm->im",
+             "shapes": [(3, 4), (4, 5), (5, 6), (6, 7)]},
+            {"name": "批量三操作数 ...ij,...jk,...kl->...il", "eq": "...ij,...jk,...kl->...il",
+             "shapes": [(2, 3, 3, 4), (2, 3, 4, 5), (2, 3, 5, 6)]},
+            {"name": "多操作数混合 ij,jk,ik->i", "eq": "ij,jk,ik->i",
+             "shapes": [(3, 4), (4, 5), (3, 5)]},
+            {"name": "三操作数全缩并空输出 ij,jk,ik->", "eq": "ij,jk,ik->",
+             "shapes": [(3, 4), (4, 5), (3, 5)]},
+            {"name": "张量缩并 ijkl,jklm->ijm", "eq": "ijkl,jklm->ijm",
+             "shapes": [(3, 4, 5, 6), (4, 5, 6, 7)]},
+            {"name": "部分缩并 ijk,ikl->ijl", "eq": "ijk,ikl->ijl",
+             "shapes": [(2, 3, 4), (2, 4, 5)]},
+            {"name": "3D张量乘法 ijk,jkl->il", "eq": "ijk,jkl->il",
+             "shapes": [(3, 4, 5), (4, 5, 6)]},
+            {"name": "双操作数全缩并 ij,ji->", "eq": "ij,ji->", "shapes": [(3, 4), (4, 3)]},
+            {"name": "标量乘矩阵 ,ij->ij", "eq": ",ij->ij", "shapes": [(), (3, 4)]},
+            {"name": "标量+矩阵+向量 ,i,ij->j", "eq": ",i,ij->j",
+             "shapes": [(), (4,), (4, 5)]},
+            {"name": "三标量连乘 ,,->", "eq": ",,->", "shapes": [(), (), ()]},
+        ], "矩阵与张量缩并测试")
+
+    def test_trace_and_diagonal(self):
+        """测试迹（全缩并）与对角线提取，含批量维与三重重复索引"""
+        self._run_cases([
+            {"name": "矩阵迹 ii->", "eq": "ii->", "shapes": [(5, 5)]},
+            {"name": "对角线提取 ii->i", "eq": "ii->i", "shapes": [(5, 5)]},
+            {"name": "批量矩阵迹 bii->b", "eq": "bii->b", "shapes": [(10, 5, 5)]},
+            {"name": "批量对角线提取 bii->bi", "eq": "bii->bi", "shapes": [(10, 5, 5)]},
+            {"name": "三重重复取对角 iii->i", "eq": "iii->i", "shapes": [(4, 4, 4)]},
+            {"name": "三重重复求和 iii->", "eq": "iii->", "shapes": [(4, 4, 4)]},
+            {"name": "单操作数多重复求和 iijj->", "eq": "iijj->", "shapes": [(3, 3, 4, 4)]},
+        ], "迹与对角线测试")
+
+    def test_transpose_and_identity(self):
+        """测试单操作数转置（含高维重排）与恒等复制"""
+        self._run_cases([
+            {"name": "转置 ij->ji", "eq": "ij->ji", "shapes": [(3, 4)]},
+            {"name": "3D转置 ijk->kji", "eq": "ijk->kji", "shapes": [(2, 3, 4)]},
+            {"name": "3D转置 ijk->jki", "eq": "ijk->jki", "shapes": [(2, 3, 4)]},
+            {"name": "3D置换 ijk->kij", "eq": "ijk->kij", "shapes": [(2, 3, 4)]},
+            {"name": "4D转置 ijkl->klij", "eq": "ijkl->klij", "shapes": [(2, 3, 4, 5)]},
+            {"name": "恒等复制 ij->ij", "eq": "ij->ij", "shapes": [(3, 4)]},
+        ], "转置与恒等测试")
+
+    def test_outer_and_elementwise(self):
+        """测试外积、点积、Frobenius 内积、自缩并、逐元素乘积与 Kronecker 外积"""
+        self._run_cases([
+            {"name": "外积 i,j->ij", "eq": "i,j->ij", "shapes": [(5,), (4,)]},
+            {"name": "批量外积 bi,bj->bij", "eq": "bi,bj->bij", "shapes": [(10, 3), (10, 4)]},
+            {"name": "点积 i,i->", "eq": "i,i->", "shapes": [(5,), (5,)]},
+            {"name": "标量点积 ,i,i->", "eq": ",i,i->", "shapes": [(), (5,), (5,)]},
+            {"name": "向量与标量逐元素 i,->i", "eq": "i,->i", "shapes": [(5,), ()]},
+            {"name": "Frobenius内积 ij,ij->", "eq": "ij,ij->", "shapes": [(3, 4), (3, 4)]},
+            {"name": "逐元素乘积 ij,ij->ij", "eq": "ij,ij->ij", "shapes": [(3, 4), (3, 4)]},
+            {"name": "省略号逐元素乘积 ...,...->...", "eq": "...,...->...",
+             "shapes": [(2, 3, 4), (2, 3, 4)]},
+            {"name": "自缩并 ij,ij->i", "eq": "ij,ij->i", "shapes": [(3, 4), (3, 4)]},
+            {"name": "Kronecker外积 ij,kl->ijkl", "eq": "ij,kl->ijkl",
+             "shapes": [(2, 3), (4, 5)]},
+        ], "外积与逐元素测试")
+
+    def test_reduction(self):
+        """测试求和归约：全归约、行/列归约、3D 轴归约与归约后置换"""
+        self._run_cases([
+            {"name": "矩阵求和 ij->", "eq": "ij->", "shapes": [(3, 4)]},
+            {"name": "向量求和 i->", "eq": "i->", "shapes": [(5,)]},
+            {"name": "3D张量求和 ijk->", "eq": "ijk->", "shapes": [(2, 3, 4)]},
+            {"name": "行求和 ij->i", "eq": "ij->i", "shapes": [(3, 4)]},
+            {"name": "列求和 ij->j", "eq": "ij->j", "shapes": [(3, 4)]},
+            {"name": "3D张量轴求和 ijk->ij", "eq": "ijk->ij", "shapes": [(2, 3, 4)]},
+            {"name": "3D张量轴求和 ijk->ik", "eq": "ijk->ik", "shapes": [(2, 3, 4)]},
+            {"name": "归约+置换 ijk->ji", "eq": "ijk->ji", "shapes": [(2, 3, 4)]},
+            {"name": "归约+置换 ijk->kj", "eq": "ijk->kj", "shapes": [(2, 3, 4)]},
+            {"name": "归约+置换 ijkl->li", "eq": "ijkl->li", "shapes": [(2, 3, 4, 5)]},
+        ], "求和归约测试")
+
+    def test_duplicate_indices(self):
+        """测试重复索引：前/后重复、多重复、非连续重复及与批量维的组合"""
+        self._run_cases([
+            {"name": "前两索引重复求和 iij->j", "eq": "iij->j", "shapes": [(3, 3, 4)]},
+            {"name": "前两索引重复部分输出 iij->ij", "eq": "iij->ij", "shapes": [(3, 3, 4)]},
+            {"name": "重复索引+置换 iij->ji", "eq": "iij->ji", "shapes": [(3, 3, 4)]},
+            {"name": "多索引重复 iijj->ij", "eq": "iijj->ij", "shapes": [(3, 3, 4, 4)]},
+            {"name": "非连续索引重复 ijji->", "eq": "ijji->", "shapes": [(3, 4, 4, 3)]},
+            {"name": "重复索引+共享索引 ii,i->i", "eq": "ii,i->i", "shapes": [(4, 4), (4,)]},
+            {"name": "批量重复索引+批量共享索引 bii,bi->b", "eq": "bii,bi->b",
+             "shapes": [(3, 4, 4), (3, 4)]},
+            {"name": "省略号+重复索引+共享索引 ...ii,i->...i", "eq": "...ii,i->...i",
+             "shapes": [(2, 4, 4), (4,)]},
+            {"name": "多操作数复杂求和归约 iij,ijk->k", "eq": "iij,ijk->k",
+             "shapes": [(3, 3, 4), (3, 4, 5)]},
+        ], "重复索引测试")
+
+    def test_implicit_output(self):
+        """测试隐式输出格式（前向应与对应显式输出的结果一致）"""
+        self._run_cases([
+            {"name": "隐式输出格式 ij,jk", "eq": "ij,jk", "shapes": [(3, 4), (4, 5)],
+             "implicit": "ij,jk->ik"},
+            {"name": "省略号隐式输出 ...ij,...jk", "eq": "...ij,...jk",
+             "shapes": [(2, 3, 4), (2, 4, 5)], "implicit": "...ij,...jk->...ik"},
+            {"name": "单操作数省略号隐式输出 ...ij", "eq": "...ij",
+             "shapes": [(2, 3, 4)], "implicit": "...ij->...ij"},
+            {"name": "单操作数省略号迹隐式输出 ...ii", "eq": "...ii",
+             "shapes": [(2, 3, 4, 4)], "implicit": "...ii->..."},
+            {"name": "三操作数隐式 ij,jk,kl", "eq": "ij,jk,kl",
+             "shapes": [(3, 4), (4, 5), (5, 6)], "implicit": "ij,jk,kl->il"},
+            {"name": "四操作数隐式 ij,jk,kl,lm", "eq": "ij,jk,kl,lm",
+             "shapes": [(3, 4), (4, 5), (5, 6), (6, 7)], "implicit": "ij,jk,kl,lm->im"},
+            {"name": "隐式全缩并 ij,ij", "eq": "ij,ij", "shapes": [(3, 4), (3, 4)],
+             "implicit": "ij,ij->"},
+            {"name": "二维迹隐式 ii", "eq": "ii", "shapes": [(4, 4)], "implicit": "ii->"},
+            {"name": "重复索引隐式 iij", "eq": "iij", "shapes": [(3, 3, 4)], "implicit": "iij->j"},
+            {"name": "标量隐式 ,ij", "eq": ",ij", "shapes": [(), (3, 4)], "implicit": ",ij->ij"},
+            {"name": "省略号点积隐式 ...i,...i", "eq": "...i,...i",
+             "shapes": [(2, 3, 4), (2, 3, 4)], "implicit": "...i,...i->..."},
+        ], "隐式输出测试")
 
     def test_ellipsis_operations(self):
-        """测试省略号（...）批量操作场景"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        test_cases = [
-            {"name": "批量外积", "eq": "...i,...j->...ij", "shapes": [(2, 3), (2, 4)], "ndim": 2},
-            {"name": "批量外积（3D批次）", "eq": "...i,...j->...ij", "shapes": [(2, 3, 4), (2, 3, 5)], "ndim": 2},
-            {"name": "批量矩阵乘法", "eq": "...ij,...jk->...ik", "shapes": [(2, 3, 4), (2, 4, 5)], "ndim": 2},
-            {"name": "批量矩阵乘法（3D批次）", "eq": "...ij,...jk->...ik", "shapes": [(2, 3, 4, 5), (2, 3, 5, 6)], "ndim": 2},
-            {"name": "批量转置", "eq": "...ij->...ji", "shapes": [(2, 3, 4)], "ndim": 1},
-            {"name": "批量迹", "eq": "...ii->...", "shapes": [(2, 3, 4, 4)], "ndim": 1},
-            {"name": "批量对角线提取", "eq": "...ii->...i", "shapes": [(2, 3, 4, 4)], "ndim": 1},
-            {"name": "批量点积", "eq": "...i,...i->...", "shapes": [(2, 3, 4), (2, 3, 4)], "ndim": 2},
-        ]
-        
-        for device in devices:
-            for case in test_cases:
-                case_name = f"{case['name']} - {device}"
-                start_time = time.time()
-                try:
-                    shapes = case['shapes']
-                    eq = case['eq']
-                    
-                    if len(shapes) == 1:
-                        # 单操作数场景
-                        np_A = np.random.randn(*shapes[0])
-                        
-                        if device == "cpu":
-                            A = rm.tensor(np_A, requires_grad=True)
-                            if TORCH_AVAILABLE:
-                                A_torch = torch.tensor(np_A, requires_grad=True)
-                            else:
-                                A_torch = None
-                        else:
-                            A = rm.tensor(np_A, requires_grad=True, device=device)
-                            if TORCH_AVAILABLE:
-                                A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                            else:
-                                A_torch = None
-                        
-                        result = rm.einsum(eq, A)
-                        result_torch = None
-                        if TORCH_AVAILABLE:
-                            result_torch = torch.einsum(eq, A_torch)
-                        
-                        forward_passed = compare_values(result, result_torch)
-                        device_passed = result.device == A.device
-                        
-                        backward_passed = True
-                        if TORCH_AVAILABLE:
-                            grad = rm.ones_like(result)
-                            result.backward(grad)
-                            result_torch.backward(torch.ones_like(result_torch))
-                            backward_passed = compare_values(A.grad, A_torch.grad)
-                    
-                    else:
-                        # 双操作数场景
-                        np_A = np.random.randn(*shapes[0])
-                        np_B = np.random.randn(*shapes[1])
-                        
-                        if device == "cpu":
-                            A = rm.tensor(np_A, requires_grad=True)
-                            B = rm.tensor(np_B, requires_grad=True)
-                            if TORCH_AVAILABLE:
-                                A_torch = torch.tensor(np_A, requires_grad=True)
-                                B_torch = torch.tensor(np_B, requires_grad=True)
-                            else:
-                                A_torch = B_torch = None
-                        else:
-                            A = rm.tensor(np_A, requires_grad=True, device=device)
-                            B = rm.tensor(np_B, requires_grad=True, device=device)
-                            if TORCH_AVAILABLE:
-                                A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                                B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                            else:
-                                A_torch = B_torch = None
-                        
-                        result = rm.einsum(eq, A, B)
-                        result_torch = None
-                        if TORCH_AVAILABLE:
-                            result_torch = torch.einsum(eq, A_torch, B_torch)
-                        
-                        forward_passed = compare_values(result, result_torch)
-                        device_passed = result.device == A.device
-                        
-                        backward_passed = True
-                        if TORCH_AVAILABLE:
-                            grad = rm.ones_like(result)
-                            result.backward(grad)
-                            result_torch.backward(torch.ones_like(result_torch))
-                            backward_passed = (compare_values(A.grad, A_torch.grad) and 
-                                             compare_values(B.grad, B_torch.grad))
-                    
-                    passed = forward_passed and backward_passed and device_passed
-                    
-                    time_taken = time.time() - start_time
-                    
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, passed)
-                        status = "通过" if passed else "失败"
-                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                    
-                    self.assertTrue(passed, f"省略号操作测试失败: {case_name}")
-                    
-                except Exception as e:
-                    time_taken = time.time() - start_time
-                    if IS_RUNNING_AS_SCRIPT:
-                        stats.add_result(case_name, False, [str(e)])
-                        print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                    raise
+        """测试省略号（...）批量操作场景，含仅省略号、批量维广播与省略号+显式索引混用"""
+        self._run_cases([
+            {"name": "批量外积", "eq": "...i,...j->...ij", "shapes": [(2, 3), (2, 4)]},
+            {"name": "批量外积（3D批次）", "eq": "...i,...j->...ij", "shapes": [(2, 3, 4), (2, 3, 5)]},
+            {"name": "批量矩阵乘法", "eq": "...ij,...jk->...ik", "shapes": [(2, 3, 4), (2, 4, 5)]},
+            {"name": "批量矩阵乘法（3D批次）", "eq": "...ij,...jk->...ik",
+             "shapes": [(2, 3, 4, 5), (2, 3, 5, 6)]},
+            {"name": "批量转置", "eq": "...ij->...ji", "shapes": [(2, 3, 4)]},
+            {"name": "批量迹", "eq": "...ii->...", "shapes": [(2, 3, 4, 4)]},
+            {"name": "批量对角线提取", "eq": "...ii->...i", "shapes": [(2, 3, 4, 4)]},
+            {"name": "批量点积", "eq": "...i,...i->...", "shapes": [(2, 3, 4), (2, 3, 4)]},
+            {"name": "省略号批量迹被求和 ...ii->i", "eq": "...ii->i", "shapes": [(2, 4, 4)]},
+            {"name": "裸省略号恒等 ...->...", "eq": "...->...", "shapes": [(2, 3, 4)]},
+            {"name": "裸省略号全求和 ...->", "eq": "...->", "shapes": [(2, 3, 4)]},
+            {"name": "省略号隐式 ...", "eq": "...", "shapes": [(2, 3, 4)], "implicit": "...->..."},
+            {"name": "省略号+向量 ...,i->...i", "eq": "...,i->...i",
+             "shapes": [(2, 3), (4,)]},
+            {"name": "省略号广播逐元素 ...,...->...", "eq": "...,...->...",
+             "shapes": [(2, 1, 4), (1, 3, 4)]},
+            {"name": "输出省略号位于索引之间 ij...->i...j", "eq": "ij...->i...j",
+             "shapes": [(2, 3, 4)]},
+            {"name": "输入中间省略号+输出省略号 i...j->...ij", "eq": "i...j->...ij",
+             "shapes": [(3, 2, 4, 5)]},
+            {"name": "双操作数中间省略号 i...j,...jk->i...k", "eq": "i...j,...jk->i...k",
+             "shapes": [(2, 3, 4), (3, 4, 5)]},
+        ], "省略号操作测试")
 
-    def test_single_operand_ellipsis_implicit(self):
-        """测试单操作数省略号隐式输出: ...ij"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"单操作数省略号隐式输出 ...ij - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(2, 3, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                # 隐式输出应该等价于显式输出 ...ij->...ij（复制）
-                result = rm.einsum('...ij', A)
-                result_explicit = rm.einsum('...ij->...ij', A)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('...ij', A_torch)
-                
-                implicit_explicit_match = np.allclose(result.data, result_explicit.data, atol=1e-6)
-                forward_passed = compare_values(result, result_torch) and implicit_explicit_match
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"单操作数省略号隐式输出测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+    def test_ellipsis_reduction_and_pairing(self):
+        """测试省略号维度被求和，以及与其它操作数省略号配对收缩的方程
 
-    def test_single_operand_ellipsis_trace_implicit(self):
-        """测试单操作数省略号迹隐式输出: ...ii（隐式输出为迹）"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"单操作数省略号迹隐式输出 ...ii - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(2, 3, 4, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                # 隐式输出 ...ii 应该等价于显式输出 ...ii->...（迹/求和）
-                result = rm.einsum('...ii', A)
-                result_explicit = rm.einsum('...ii->...', A)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('...ii', A_torch)
-                
-                implicit_explicit_match = np.allclose(result.data, result_explicit.data, atol=1e-6)
-                forward_passed = compare_values(result, result_torch) and implicit_explicit_match
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"单操作数省略号迹隐式输出测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+        numpy 的 c_einsum 路径不支持「输入含省略号而输出不含」的方程（会抛
+        ValueError），前向必须路由到 optimize 路径。此处覆盖单/双操作数的多种
+        省略号求和形态、省略号批量维广播，以及目标批量维由其他操作数省略号收缩
+        而来、或其在前向被独立求和（梯度对其为常数）两种相反情形。
+        """
+        self._run_cases([
+            {"name": "省略号求和 ...i->i", "eq": "...i->i", "shapes": [(2, 3, 4)]},
+            {"name": "省略号求和 ...ij->ij", "eq": "...ij->ij", "shapes": [(2, 3, 4)]},
+            {"name": "省略号全求和 ...i->", "eq": "...i->", "shapes": [(2, 3, 4)]},
+            {"name": "省略号求和并保留末维 ...ij->j", "eq": "...ij->j", "shapes": [(2, 3, 4)]},
+            {"name": "省略号迹+全求和 ...ii->", "eq": "...ii->", "shapes": [(2, 3, 4, 4)]},
+            {"name": "双操作数省略号全求和 ...i,...i->", "eq": "...i,...i->",
+             "shapes": [(2, 3, 4), (2, 3, 4)]},
+            {"name": "省略号广播点积 ...i,...i->...", "eq": "...i,...i->...",
+             "shapes": [(2, 3, 4), (1, 3, 4)]},
+            {"name": "目标批量维被独立求和 ...cdc->", "eq": "...cdc->", "shapes": [(2, 3, 3, 3)]},
+            {"name": "省略号配对收缩 ...aaa,...b->ba", "eq": "...aaa,...b->ba",
+             "shapes": [(2, 3, 3, 3), (2, 3)]},
+            {"name": "省略号配对收缩且批量维广播 ...aaa,...b->ba", "eq": "...aaa,...b->ba",
+             "shapes": [(1, 3, 3, 3), (2, 3)]},
+            {"name": "省略号配对收缩 ...ij,...ik->...jk", "eq": "...ij,...ik->...jk",
+             "shapes": [(2, 3, 4), (2, 3, 5)]},
+            {"name": "中间省略号被求和 i...j->ij", "eq": "i...j->ij", "shapes": [(3, 2, 4, 5)]},
+            {"name": "中间省略号被求和 ij...k->ijk", "eq": "ij...k->ijk", "shapes": [(2, 3, 4, 5)]},
+            {"name": "中间省略号被求和且转置 i...j->ji", "eq": "i...j->ji", "shapes": [(3, 4, 5)]},
+            {"name": "末尾省略号被求和 i...->i", "eq": "i...->i", "shapes": [(3, 2, 4)]},
+            {"name": "末尾省略号被求和 ij...->i", "eq": "ij...->i", "shapes": [(2, 3, 4)]},
+            {"name": "末尾省略号被求和 ij...->ij", "eq": "ij...->ij", "shapes": [(2, 3, 4)]},
+            {"name": "中间省略号+重复索引被求和 i...jj->i", "eq": "i...jj->i",
+             "shapes": [(2, 3, 4, 4)]},
+            {"name": "中间省略号+多操作数 i...j,...->i", "eq": "i...j,...->i",
+             "shapes": [(2, 3, 4), (3,)]},
+            {"name": "末尾省略号+迹 ii...->", "eq": "ii...->", "shapes": [(4, 4, 3, 2)]},
+            {"name": "末尾省略号+批量迹 ii...->...", "eq": "ii...->...", "shapes": [(4, 4, 3, 2)]},
+            {"name": "末尾省略号+对角提取 ii...->i", "eq": "ii...->i", "shapes": [(4, 4, 3, 2)]},
+        ], "省略号求和与配对测试")
 
-    def test_multi_operand_complex_sum_reduction(self):
-        """测试多操作数复杂情况下的求和归约: iij,ijk->k"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"多操作数复杂求和归约 iij,ijk->k - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 3, 4)
-                np_B = np.random.randn(3, 4, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('iij,ijk->k', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('iij,ijk->k', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"多操作数复杂求和归约测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+    def test_nonuniform_upstream_grad(self):
+        """测试非均匀/非单位上游梯度下的反向传播
 
-    def test_multiple_duplicate_indices(self):
-        """测试多索引重复: iijj->ij"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"多索引重复 iijj->ij - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 3, 4, 4)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                result = rm.einsum('iijj->ij', A)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('iijj->ij', A_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"多索引重复测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+        既有用例多用 backward()（隐式全1梯度）或 .sum()（传全1），可能掩盖
+        grad_value 被丢弃或与缩并结果错位的问题。此处为每个输出元素注入随机权重，
+        覆盖空输出全缩并、点积、迹、对角线提取等各反向路径。
+        """
+        self._run_cases([
+            {"name": "全缩并（空输出）ij,ji->", "eq": "ij,ji->", "shapes": [(3, 4), (4, 3)]},
+            {"name": "点积（空输出）i,i->", "eq": "i,i->", "shapes": [(5,), (5,)]},
+            {"name": "迹（空输出）ii->", "eq": "ii->", "shapes": [(4, 4)]},
+            {"name": "对角线提取 ii->i", "eq": "ii->i", "shapes": [(5, 5)]},
+            {"name": "矩阵乘法 ij,jk->ik", "eq": "ij,jk->ik", "shapes": [(3, 4), (4, 5)]},
+            {"name": "三操作数缩并 ij,jk,kl->il", "eq": "ij,jk,kl->il",
+             "shapes": [(3, 4), (4, 5), (5, 6)]},
+            {"name": "多索引重复 iijj->ij", "eq": "iijj->ij", "shapes": [(3, 3, 4, 4)]},
+            {"name": "批量矩阵乘法 bij,bjk->bik", "eq": "bij,bjk->bik",
+             "shapes": [(2, 3, 4), (2, 4, 5)]},
+        ], "非均匀上游梯度测试")
 
-    def test_full_contraction(self):
-        """测试双操作数全缩并: ij,ji->"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"双操作数全缩并 ij,ji-> - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                np_B = np.random.randn(4, 3)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('ij,ji->', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij,ji->', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.backward()
-                    result_torch.backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"双操作数全缩并测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+    def test_complex_einsum(self):
+        """测试复数张量einsum（含多操作数、归约、省略号与隐式输出）"""
+        self._run_cases([
+            {"name": "复数矩阵乘法", "eq": "ij,jk->ik", "shapes": [(3, 4), (4, 5)], "complex": True},
+            {"name": "复数批量矩阵乘法", "eq": "bij,bjk->bik", "shapes": [(3, 4, 5), (3, 5, 6)], "complex": True},
+            {"name": "复数三操作数缩并", "eq": "ij,jk,kl->il", "shapes": [(2, 3), (3, 4), (4, 5)], "complex": True},
+            {"name": "复数迹", "eq": "ii->", "shapes": [(5, 5)], "complex": True},
+            {"name": "复数对角线提取", "eq": "ii->i", "shapes": [(5, 5)], "complex": True},
+            {"name": "复数转置", "eq": "ij->ji", "shapes": [(3, 4)], "complex": True},
+            {"name": "复数点积", "eq": "i,i->", "shapes": [(5,), (5,)], "complex": True},
+            {"name": "复数外积", "eq": "i,j->ij", "shapes": [(5,), (4,)], "complex": True},
+            {"name": "复数求和归约 ij->", "eq": "ij->", "shapes": [(4, 4)], "complex": True},
+            {"name": "复数省略号迹 ...ii->...", "eq": "...ii->...", "shapes": [(2, 3, 4, 4)], "complex": True},
+            {"name": "复数隐式输出 ij,jk", "eq": "ij,jk", "shapes": [(2, 3), (3, 4)],
+             "implicit": "ij,jk->ik", "complex": True},
+        ], "复数einsum测试")
 
-    def test_3d_tensor_multiply(self):
-        """测试3D张量乘法: ijk,jkl->il"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"3D张量乘法 ijk,jkl->il - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4, 5)
-                np_B = np.random.randn(4, 5, 6)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('ijk,jkl->il', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ijk,jkl->il', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"3D张量乘法测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-
-    def test_noncontiguous_duplicate(self):
-        """测试非连续索引重复: ijji->"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"非连续索引重复 ijji-> - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4, 4, 3)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                    else:
-                        A_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                    else:
-                        A_torch = None
-                
-                result = rm.einsum('ijji->', A)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ijji->', A_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.backward()
-                    result_torch.backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"非连续索引重复测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-
-    def test_four_operands_chain(self):
-        """测试四操作数链式运算: ij,jk,kl,lm->im"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"四操作数链式 ij,jk,kl,lm->im - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                np_B = np.random.randn(4, 5)
-                np_C = np.random.randn(5, 6)
-                np_D = np.random.randn(6, 7)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    C = rm.tensor(np_C, requires_grad=True)
-                    D = rm.tensor(np_D, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                        C_torch = torch.tensor(np_C, requires_grad=True)
-                        D_torch = torch.tensor(np_D, requires_grad=True)
-                    else:
-                        A_torch = B_torch = C_torch = D_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    C = rm.tensor(np_C, requires_grad=True, device=device)
-                    D = rm.tensor(np_D, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                        C_torch = torch.tensor(np_C, requires_grad=True, device=device)
-                        D_torch = torch.tensor(np_D, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = C_torch = D_torch = None
-                
-                result = rm.einsum('ij,jk,kl,lm->im', A, B, C, D)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij,jk,kl,lm->im', A_torch, B_torch, C_torch, D_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = (compare_values(A.grad, A_torch.grad) and 
-                                      compare_values(B.grad, B_torch.grad) and
-                                      compare_values(C.grad, C_torch.grad) and
-                                      compare_values(D.grad, D_torch.grad))
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"四操作数链式测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-
-    def test_multi_operand_mixed(self):
-        """测试多操作数混合运算: ij,jk,ik->i"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"多操作数混合 ij,jk,ik->i - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4)
-                np_B = np.random.randn(4, 5)
-                np_C = np.random.randn(3, 5)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    C = rm.tensor(np_C, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                        C_torch = torch.tensor(np_C, requires_grad=True)
-                    else:
-                        A_torch = B_torch = C_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    C = rm.tensor(np_C, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                        C_torch = torch.tensor(np_C, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = C_torch = None
-                
-                result = rm.einsum('ij,jk,ik->i', A, B, C)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij,jk,ik->i', A_torch, B_torch, C_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = (compare_values(A.grad, A_torch.grad) and 
-                                      compare_values(B.grad, B_torch.grad) and
-                                      compare_values(C.grad, C_torch.grad))
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"多操作数混合测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-
-    def test_batch_three_operands(self):
-        """测试批量三操作数: ...ij,...jk,...kl->...il"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"批量三操作数 ...ij,...jk,...kl->...il - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(2, 3, 3, 4)
-                np_B = np.random.randn(2, 3, 4, 5)
-                np_C = np.random.randn(2, 3, 5, 6)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    C = rm.tensor(np_C, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                        C_torch = torch.tensor(np_C, requires_grad=True)
-                    else:
-                        A_torch = B_torch = C_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    C = rm.tensor(np_C, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                        C_torch = torch.tensor(np_C, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = C_torch = None
-                
-                result = rm.einsum('...ij,...jk,...kl->...il', A, B, C)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('...ij,...jk,...kl->...il', A_torch, B_torch, C_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = (compare_values(A.grad, A_torch.grad) and 
-                                      compare_values(B.grad, B_torch.grad) and
-                                      compare_values(C.grad, C_torch.grad))
-                
-                passed = forward_passed and backward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"批量三操作数测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
-
-    def test_float32_dtype(self):
-        """测试float32数据类型: ij,jk->ik"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"float32数据类型 ij,jk->ik - {device}"
-            start_time = time.time()
-            try:
-                np_A = np.random.randn(3, 4).astype(np.float32)
-                np_B = np.random.randn(4, 5).astype(np.float32)
-                
-                if device == "cpu":
-                    A = rm.tensor(np_A, requires_grad=True)
-                    B = rm.tensor(np_B, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        B_torch = torch.tensor(np_B, requires_grad=True)
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    B = rm.tensor(np_B, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('ij,jk->ik', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij,jk->ik', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                dtype_passed = result.dtype == np.float32
-                
-                backward_passed = True
-                if TORCH_AVAILABLE:
-                    result.sum().backward()
-                    result_torch.sum().backward()
-                    backward_passed = compare_values(A.grad, A_torch.grad) and compare_values(B.grad, B_torch.grad)
-                
-                passed = forward_passed and backward_passed and device_passed and dtype_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"float32数据类型测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+    def test_dtype_and_noncontiguous(self):
+        """测试 float32 数据类型与非连续输入（[::2] 切片得到的视图）"""
+        self._run_cases([
+            {"name": "float32数据类型 ij,jk->ik", "eq": "ij,jk->ik", "shapes": [(3, 4), (4, 5)],
+             "dtype": np.float32, "check_dtype": np.float32},
+            {"name": "float32求和归约 ij->i", "eq": "ij->i", "shapes": [(3, 4)],
+             "dtype": np.float32, "check_dtype": np.float32},
+            {"name": "float32批量矩阵乘法 bij,bjk->bik", "eq": "bij,bjk->bik",
+             "shapes": [(2, 3, 4), (2, 4, 5)], "dtype": np.float32, "check_dtype": np.float32},
+            {"name": "非标准步长", "eq": "ij,jk->ik", "shapes": [(3, 4), (4, 5)],
+             "noncontiguous": True, "grad": None},
+        ], "数据类型与非连续布局测试")
 
     def test_1d_vector_operations(self):
-        """测试1维张量各种操作"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"1维向量操作 - {device}"
-            start_time = time.time()
-            try:
-                np_a = np.random.randn(5)
-                np_b = np.random.randn(5)
-                np_A = np.random.randn(3, 5)
-                # 用于向量乘矩阵测试，需要向量长度匹配矩阵行数
-                np_a_row = np.random.randn(3)
-                
-                if device == "cpu":
-                    a = rm.tensor(np_a, requires_grad=True)
-                    b = rm.tensor(np_b, requires_grad=True)
-                    A = rm.tensor(np_A, requires_grad=True)
-                    a_row = rm.tensor(np_a_row, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        a_torch = torch.tensor(np_a, requires_grad=True)
-                        b_torch = torch.tensor(np_b, requires_grad=True)
-                        A_torch = torch.tensor(np_A, requires_grad=True)
-                        a_row_torch = torch.tensor(np_a_row, requires_grad=True)
-                    else:
-                        a_torch = b_torch = A_torch = a_row_torch = None
-                else:
-                    a = rm.tensor(np_a, requires_grad=True, device=device)
-                    b = rm.tensor(np_b, requires_grad=True, device=device)
-                    A = rm.tensor(np_A, requires_grad=True, device=device)
-                    a_row = rm.tensor(np_a_row, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        a_torch = torch.tensor(np_a, requires_grad=True, device=device)
-                        b_torch = torch.tensor(np_b, requires_grad=True, device=device)
-                        A_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        a_row_torch = torch.tensor(np_a_row, requires_grad=True, device=device)
-                    else:
-                        a_torch = b_torch = A_torch = a_row_torch = None
-                
-                # 测试多个1D操作
-                tests_passed = []
-                
-                # 1. 向量点积: i,i->
-                result1 = rm.einsum('i,i->', a, b)
-                result1_torch = torch.einsum('i,i->', a_torch, b_torch) if TORCH_AVAILABLE else None
-                tests_passed.append(compare_values(result1, result1_torch))
-                
-                # 2. 向量外积: i,j->ij
-                result2 = rm.einsum('i,j->ij', a, b)
-                result2_torch = torch.einsum('i,j->ij', a_torch, b_torch) if TORCH_AVAILABLE else None
-                tests_passed.append(compare_values(result2, result2_torch))
-                
-                # 3. 矩阵乘向量: ij,j->i
-                result3 = rm.einsum('ij,j->i', A, b)
-                result3_torch = torch.einsum('ij,j->i', A_torch, b_torch) if TORCH_AVAILABLE else None
-                tests_passed.append(compare_values(result3, result3_torch))
-                
-                # 4. 向量乘矩阵: i,ij->j (注意：i是行索引，向量长度需匹配矩阵行数)
-                result4 = rm.einsum('i,ij->j', a_row, A)
-                result4_torch = torch.einsum('i,ij->j', a_row_torch, A_torch) if TORCH_AVAILABLE else None
-                tests_passed.append(compare_values(result4, result4_torch))
-                
-                # 5. 批量矩阵乘向量: bij,j->bi
-                np_A_batch = np.random.randn(2, 3, 5)
-                np_b_batch = np.random.randn(2, 5)
-                if device == "cpu":
-                    A_batch = rm.tensor(np_A_batch, requires_grad=True)
-                    b_batch = rm.tensor(np_b_batch, requires_grad=True)
-                    if TORCH_AVAILABLE:
-                        A_batch_torch = torch.tensor(np_A_batch, requires_grad=True)
-                        b_batch_torch = torch.tensor(np_b_batch, requires_grad=True)
-                    else:
-                        A_batch_torch = b_batch_torch = None
-                else:
-                    A_batch = rm.tensor(np_A_batch, requires_grad=True, device=device)
-                    b_batch = rm.tensor(np_b_batch, requires_grad=True, device=device)
-                    if TORCH_AVAILABLE:
-                        A_batch_torch = torch.tensor(np_A_batch, requires_grad=True, device=device)
-                        b_batch_torch = torch.tensor(np_b_batch, requires_grad=True, device=device)
-                    else:
-                        A_batch_torch = b_batch_torch = None
-                
-                result5 = rm.einsum('bij,bj->bi', A_batch, b_batch)
-                result5_torch = torch.einsum('bij,bj->bi', A_batch_torch, b_batch_torch) if TORCH_AVAILABLE else None
-                tests_passed.append(compare_values(result5, result5_torch))
-                
-                forward_passed = all(tests_passed)
-                device_passed = result1.device == a.device
-                
-                passed = forward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"1维向量操作测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+        """测试1维向量与矩阵的混合运算（矩阵×向量、向量×矩阵、批量矩阵×向量）
 
-    def test_non_contiguous_stride(self):
-        """测试非标准步长张量"""
-        devices = ["cpu"]
-        if CUDA_AVAILABLE:
-            devices.append("cuda")
-        
-        for device in devices:
-            case_name = f"非标准步长 - {device}"
-            start_time = time.time()
-            try:
-                # 创建非连续张量（通过切片）
-                np_A = np.random.randn(6, 8)
-                np_B = np.random.randn(8, 10)
-                
-                if device == "cpu":
-                    # 创建基础张量，然后通过切片获取非连续视图
-                    A_base = rm.tensor(np_A, requires_grad=True)
-                    B_base = rm.tensor(np_B, requires_grad=True)
-                    # 切片会创建非连续张量
-                    A = A_base[::2, ::2]  # 形状 (3, 4)，非连续
-                    B = B_base[::2, ::2]  # 形状 (4, 5)，非连续
-                    
-                    if TORCH_AVAILABLE:
-                        A_base_torch = torch.tensor(np_A, requires_grad=True)
-                        B_base_torch = torch.tensor(np_B, requires_grad=True)
-                        A_torch = A_base_torch[::2, ::2]
-                        B_torch = B_base_torch[::2, ::2]
-                    else:
-                        A_torch = B_torch = None
-                else:
-                    A_base = rm.tensor(np_A, requires_grad=True, device=device)
-                    B_base = rm.tensor(np_B, requires_grad=True, device=device)
-                    A = A_base[::2, ::2]
-                    B = B_base[::2, ::2]
-                    
-                    if TORCH_AVAILABLE:
-                        A_base_torch = torch.tensor(np_A, requires_grad=True, device=device)
-                        B_base_torch = torch.tensor(np_B, requires_grad=True, device=device)
-                        A_torch = A_base_torch[::2, ::2]
-                        B_torch = B_base_torch[::2, ::2]
-                    else:
-                        A_torch = B_torch = None
-                
-                result = rm.einsum('ij,jk->ik', A, B)
-                result_torch = None
-                if TORCH_AVAILABLE:
-                    result_torch = torch.einsum('ij,jk->ik', A_torch, B_torch)
-                
-                forward_passed = compare_values(result, result_torch)
-                device_passed = result.device == A.device
-                
-                passed = forward_passed and device_passed
-                
-                time_taken = time.time() - start_time
-                
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, passed)
-                    status = "通过" if passed else "失败"
-                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
-                
-                self.assertTrue(passed, f"非标准步长测试失败: {case_name}")
-                
-            except Exception as e:
-                time_taken = time.time() - start_time
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case_name, False, [str(e)])
-                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
-                raise
+        这三类形态未被矩阵-矩阵缩并用例覆盖；此处只做前向比较。
+        """
+        self._run_cases([
+            {"name": "矩阵乘向量 ij,j->i", "eq": "ij,j->i", "shapes": [(3, 5), (5,)], "grad": None},
+            {"name": "向量乘矩阵 i,ij->j", "eq": "i,ij->j", "shapes": [(3,), (3, 5)], "grad": None},
+            {"name": "批量矩阵乘向量 bij,bj->bi", "eq": "bij,bj->bi",
+             "shapes": [(2, 3, 5), (2, 5)], "grad": None},
+        ], "1维向量操作测试")
 
 
 if __name__ == '__main__':
