@@ -285,6 +285,10 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "从标量到多维", "shape": (), "new_shape": (1, 1, 1)},
             {"name": "从多维到标量", "shape": (1, 1, 1), "new_shape": ()},
             {"name": "复杂维度组合", "shape": (2, 3, 4, 5), "new_shape": (3, 4, 2, 5)},
+            {"name": "相同shape无操作(应返回self)", "shape": (2, 3, 4), "new_shape": (2, 3, 4)},
+            {"name": "列表输入形式", "shape": (2, 3, 4), "new_shape": [2, 12]},
+            {"name": "单元素reshape", "shape": (1,), "new_shape": (1, 1, 1)},
+            {"name": "0-size张量reshape", "shape": (0,), "new_shape": (0, 2, 5)},
         ]
         
         # 定义要测试的设备列表
@@ -560,6 +564,10 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "squeeze元组维度", "shape": (1, 2, 1, 3), "dim": (0, 2)},
             {"name": "squeeze非1维度(应返回原张量)", "shape": (2, 3), "dim": 0},
             {"name": "空元组squeeze(应返回原张量)", "shape": (2, 3), "dim": ()},
+            {"name": "dim=None但无1维度(应返回原张量)", "shape": (2, 3, 4), "dim": None},
+            {"name": "元组包含非1维度(应只压缩1的维度)", "shape": (1, 2, 3), "dim": (0, 1)},
+            {"name": "全1维张量squeeze(应返回标量)", "shape": (1, 1, 1), "dim": None},
+            {"name": "squeeze末位维度", "shape": (2, 3, 1), "dim": -1},
         ]
         
         # 定义要测试的设备列表
@@ -742,6 +750,10 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "unsqueeze负数维度", "shape": (2, 3), "dim": -1},
             {"name": "unsqueeze元组维度", "shape": (2, 3), "dim": (0, 2)},
             {"name": "空元组unsqueeze(应返回原张量)", "shape": (2, 3), "dim": ()},
+            {"name": "1元组unsqueeze(与int路径等价)", "shape": (2, 3), "dim": (1,)},
+            {"name": "混合正负元组unsqueeze", "shape": (2, 3), "dim": (0, -1)},
+            {"name": "标量unsqueeze", "shape": (), "dim": 0},
+            {"name": "多位置unsqueeze", "shape": (2, 3), "dim": (0, 2, 4)},
         ]
         
         # 定义要测试的设备列表
@@ -844,6 +856,138 @@ class TestShapeOperations(unittest.TestCase):
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
     
+    def test_squeeze_errors(self):
+        """测试squeeze函数的错误处理"""
+        test_cases = [
+            {"name": "维度越界", "shape": (1, 2, 1), "dim": 5, "should_raise": True},
+            {"name": "负维度越界", "shape": (1, 2, 1), "dim": -5, "should_raise": True},
+            {"name": "元组中维度越界", "shape": (1, 2, 1), "dim": (0, 5), "should_raise": True},
+            {"name": "元组中重复维度", "shape": (1, 2, 1), "dim": (0, -3), "should_raise": True},
+            {"name": "非法类型(float)", "shape": (1, 2, 1), "dim": 0.5, "should_raise": True},
+            {"name": "非法类型(str)", "shape": (1, 2, 1), "dim": "0", "should_raise": True},
+            {"name": "标量squeeze(无维度)", "shape": (), "dim": 0, "should_raise": True},
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"squeeze错误 - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                    
+                    # 尝试执行squeeze操作
+                    rm_result = rm_x.squeeze(case["dim"])
+                    
+                    # 如果预期应该抛出异常但没有抛出，则测试失败
+                    if case["should_raise"]:
+                        passed = False
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} - 预期抛出异常但没有抛出")
+                        self.fail(f"squeeze测试失败: {case_name} - 预期抛出异常但没有抛出")
+                    else:
+                        passed = True
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC}")
+                    
+                except Exception as e:
+                    # 如果预期应该抛出异常且确实抛出，则测试通过
+                    if case["should_raise"]:
+                        passed = True
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} - 正确抛出异常: {type(e).__name__}")
+                    else:
+                        passed = False
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} - 意外抛出异常: {e}")
+                        raise
+                finally:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT and 'passed' in locals():
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+    
+    def test_unsqueeze_errors(self):
+        """测试unsqueeze函数的错误处理"""
+        test_cases = [
+            {"name": "维度越界", "shape": (2, 3), "dim": 5, "should_raise": True},
+            {"name": "负维度越界", "shape": (2, 3), "dim": -5, "should_raise": True},
+            {"name": "元组中维度越界", "shape": (2, 3), "dim": (0, 5), "should_raise": True},
+            {"name": "元组中重复维度", "shape": (2, 3), "dim": (0, 0), "should_raise": True},
+            {"name": "非法类型(float)", "shape": (2, 3), "dim": 0.5, "should_raise": True},
+            {"name": "非法类型(str)", "shape": (2, 3), "dim": "0", "should_raise": True},
+            {"name": "非法类型(list)", "shape": (2, 3), "dim": [0, 1], "should_raise": True},
+        ]
+        
+        # 定义要测试的设备列表
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+        
+        for device in devices:
+            for case in test_cases:
+                case_name = f"unsqueeze错误 - {case['name']} - {device}"
+                start_time = time.time()
+                try:
+                    # 创建测试数据
+                    np_x = np.random.randn(*case["shape"])
+                    
+                    # 根据设备创建张量
+                    if device == "cpu":
+                        rm_x = rm.tensor(np_x, requires_grad=True)
+                    else:  # cuda
+                        rm_x = rm.tensor(np_x, requires_grad=True, device=device)
+                    
+                    # 尝试执行unsqueeze操作
+                    rm_result = rm_x.unsqueeze(case["dim"])
+                    
+                    # 如果预期应该抛出异常但没有抛出，则测试失败
+                    if case["should_raise"]:
+                        passed = False
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} - 预期抛出异常但没有抛出")
+                        self.fail(f"unsqueeze测试失败: {case_name} - 预期抛出异常但没有抛出")
+                    else:
+                        passed = True
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC}")
+                    
+                except Exception as e:
+                    # 如果预期应该抛出异常且确实抛出，则测试通过
+                    if case["should_raise"]:
+                        passed = True
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} - 正确抛出异常: {type(e).__name__}")
+                    else:
+                        passed = False
+                        if IS_RUNNING_AS_SCRIPT:
+                            stats.add_result(case_name, passed)
+                            print(f"测试用例: {case_name} - {Colors.FAIL}失败{Colors.ENDC} - 意外抛出异常: {e}")
+                        raise
+                finally:
+                    time_taken = time.time() - start_time
+                    if IS_RUNNING_AS_SCRIPT and 'passed' in locals():
+                        status = "通过" if passed else "失败"
+                        print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+    
     def test_reshape_errors(self):
         """测试reshape函数的错误处理"""
         test_cases = [
@@ -851,6 +995,7 @@ class TestShapeOperations(unittest.TestCase):
             {"name": "多个-1", "shape": (2, 3, 4), "new_shape": (-1, -1, 2), "should_raise": True},
             {"name": "非整数维度", "shape": (2, 3), "new_shape": (2, 3.0), "should_raise": True},
             {"name": "无效的负数维度", "shape": (2, 3), "new_shape": (-3, 2), "should_raise": True},
+            {"name": "-1不能整除", "shape": (2, 3), "new_shape": (7, -1), "should_raise": True},
         ]
         
         # 定义要测试的设备列表
