@@ -34,9 +34,14 @@ try:
     warmup_input = torch.tensor([[0.0]], requires_grad=True)
     warmup_output = warmup_input.sum()
     warmup_output.backward()
-    
-    # 清理资源
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    # CUDA预热：提前完成一次cuBLAS GEMM及反向，建立primary context，
+    # 避免首个CUDA用例的反向传播触发cuBLAS "no current CUDA context"告警
+    if torch.cuda.is_available():
+        w = torch.randn(2, 2, device='cuda', requires_grad=True)
+        (w @ w).sum().backward()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
     
     print(f"PyTorch预热完成，耗时: {time.time() - warmup_start:.4f}秒")
     

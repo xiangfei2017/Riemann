@@ -11356,8 +11356,18 @@ def einsum(equation: str, *operands: TN) -> TN:
     
     # 前向计算：使用numpy/cupy的einsum，GEMM型大规模缩并启用optimize走BLAS
     operand_data = [op.data for op in operands]
-    result_data = arrlib.einsum(equation, *operand_data,
-                                optimize=_einsum_use_optimize(input_eqs, output_eq, operand_data))
+    optimize = _einsum_use_optimize(input_eqs, output_eq, operand_data)
+    if arrlib is not np and '...' in input_eq and '...' not in output_eq:
+        # cupy的einsum不支持省略号维度被求和的方程（输出不含'...'时直接抛ValueError，
+        # 且该校验与optimize无关），改写为输出保留省略号（如'...i->i'改为'...i->...i'），
+        # 再对前导省略号维求和，结果与numpy optimize路径及torch语义一致；
+        # 反向梯度方程复用本函数，此分支同样生效
+        tmp_data = arrlib.einsum(input_eq + '->...' + output_eq, *operand_data,
+                                 optimize=optimize)
+        n_batch = tmp_data.ndim - len(output_eq)
+        result_data = tmp_data.sum(axis=tuple(range(n_batch))) if n_batch > 0 else tmp_data
+    else:
+        result_data = arrlib.einsum(equation, *operand_data, optimize=optimize)
     
     result = as_tensor(result_data, device=device, requires_grad=requires_grad)
     
