@@ -273,7 +273,7 @@ def softmax(x:TN, dim:int)->TN:
 
     # 确保dim是整数类型
     if not isinstance(dim, int):
-        raise ValueError(f"dim必须是整数类型，当前类型: {type(dim)}")
+        raise ValueError(f"dim must be an integer, got type: {type(dim)}")
     
     arrlib = x._get_array_lib()
     max_result = x.data.max(axis=dim, keepdims=True)
@@ -299,37 +299,60 @@ def _softmax_backward(result_tensor: TN, i: int) -> TN:
     d = (y*g).sum(dim=dim, keepdim=True)
     return y * (g - d)
 
-# 修改log_softmax函数，添加显式类型检查
 def log_softmax(x: TN, dim: int = -1) -> TN:
     """
     Log Softmax 激活函数
-    
-    数学公式:
-        log_softmax(x_i) = log(exp(x_i) / sum(exp(x_j)))
-                         = x_i - log(sum(exp(x_j)))
-    
-    数值稳定实现，比先计算 softmax 再取 log 更稳定。
-    
+
+    数学公式（log-sum-exp 稳定形式）:
+        令 m = max(x)，则
+        log_softmax(x_i) = (x_i - m) - log(sum_j exp(x_j - m))
+
+    减去最大值后 exp 的参数不大于 0，不会上溢；分母中至少含
+    exp(0)=1，log 不会取到 0，避免了「先 softmax 再 log」在
+    小概率元素下溢为 0 后得到 -inf 的问题。
+
     参数:
         x (TN): 输入张量
         dim (int): 计算 log_softmax 的维度，默认为 -1（最后一维）
-        
+
     返回:
         TN: Log Softmax 激活后的张量
-        
+
     示例:
         >>> x = tensor([[1.0, 2.0, 3.0]])
         >>> log_softmax(x, dim=1)
         tensor([[-2.4076, -1.4076, -0.4076]])
     """
-    if not isinstance(x, TN): 
+    if not isinstance(x, TN):
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
     # 确保dim是整数类型
     if not isinstance(dim, int):
-        raise ValueError(f"dim必须是整数类型，当前类型: {type(dim)}")
-    
-    return log(softmax(x,dim))
+        raise ValueError(f"dim must be an integer, got type: {type(dim)}")
+
+    arrlib = x._get_array_lib()
+    x_max = x.data.max(axis=dim, keepdims=True)
+    shifted = x.data - x_max
+    # log-sum-exp：分母至少含 exp(0)=1，log 参数恒 >= 1
+    lse = arrlib.log(arrlib.exp(shifted).sum(axis=dim, keepdims=True))
+    ret_data = shifted - lse
+
+    requires_grad = is_grad_enabled() and x.requires_grad
+    ret = _wrap_tensor_from_numpy(ret_data, requires_grad=requires_grad)
+
+    if ret.requires_grad:
+        ret.fromvars = (x,)
+        ret.parms = (dim,)
+        ret.gradfuncs = (_log_softmax_backward,)
+
+    return ret
+
+def _log_softmax_backward(result_tensor: TN, i: int) -> TN:
+    """梯度：g - softmax(y) * sum(g)，其中 exp(y) 即 softmax 概率"""
+    y = result_tensor
+    g = y.grad_value
+    dim = y.parms[i]
+    return g - exp(y) * g.sum(dim=dim, keepdim=True)
 
 def relu(x: TN) -> TN:
     """
