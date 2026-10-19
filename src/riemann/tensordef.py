@@ -3419,14 +3419,18 @@ class TN:
         else:
             new_shape = size
         
-        # 转换为整数元组
-        new_shape = tuple(int(s) for s in new_shape)
+        # 列表先归一化为元组，否则下方与 self.shape（元组）比较恒为 False
+        if isinstance(new_shape, list):
+            new_shape = tuple(new_shape)
         
         original_shape = self.shape
         
-        # 快速路径：如果形状相同，直接返回自身
+        # 快速路径：如果形状相同，直接返回自身，前移到逐元素 int 转换之前
         if new_shape == original_shape:
             return self
+        
+        # 仅在未命中快速路径时才做逐元素 int 转换
+        new_shape = tuple(int(s) for s in new_shape)
         
         orig_ndim = len(original_shape)
         new_ndim = len(new_shape)
@@ -7811,19 +7815,21 @@ def _matmul_grad_left(result_tensor:TN, i:int)->TN:
         公式：dL/dA = sum(批次维度)(grad @ B^T)
              = sum(...)(grad[..., n] * B[..., k, n])
         实现：unsqueeze(-2) + @ + sum
-        性能选择：使用矩阵乘法 + 求和，避免 einsum 的解析开销
+        性能选择：使用矩阵乘法 + 求和，走 BLAS，实测比 einsum 快约 1.6~7.3 倍
     
     分支3 - 多维 @ 1D（矩阵乘列向量）：
         场景：A(..., M, K) @ B(K,) -> C(..., M)
         公式：dL/dA[..., m, k] = grad[..., m] * B[k]（外积）
         实现：einsum('...m,k->...mk', grad, B)
-        性能选择：使用 einsum 直接计算外积，比 unsqueeze + @ 快 6.85 倍
+        性能选择：使用 einsum 直接计算外积，无 GEMM 退化开销。实测产出元素数 ≳8192 时比
+            unsqueeze + 广播乘快 1.1~1.4 倍；≲4096 时 einsum 约 15µs 的固定解析开销占主导，
+            该区间 unsqueeze + 广播乘最多快 2.1 倍。交叉点约 8192 个产出元素
     
     分支4 - 多维 @ 多维（批量矩阵乘法）：
         场景：A(..., M, K) @ B(..., K, N) -> C(..., M, N)
         公式：dL/dA = grad @ B^T
         实现：标准矩阵乘法 @
-        性能选择：使用 @ 运算符，调用 BLAS 库，比 einsum 快 13-20 倍
+        性能选择：使用 @ 运算符，走 BLAS，实测比 einsum 快约 1.0~3.0 倍
     
     Args:
         result_tensor: 矩阵乘法结果张量 C
@@ -7851,20 +7857,19 @@ def _matmul_grad_left(result_tensor:TN, i:int)->TN:
         mat_grad = new_grad @ right_tensor.mT.conj()  # (..., 1, N) @ (..., N, K) -> (..., 1, K)
 
         sum_axes = tuple(range(right_ndim - 1))  # 批次维度 + 新增的1维度
-        if sum_axes:
-            return sum(mat_grad, dim=sum_axes, keepdim=False)
-        return mat_grad
+        return sum(mat_grad, dim=sum_axes, keepdim=False)
 
-    # 分支3：多维 @ 1D，einsum 计算外积（快 6.85 倍）
+    # 分支3：多维 @ 1D，einsum 计算外积（产出元素 ≳8192 时比 unsqueeze 方案快，交叉点约 8192）
     if left_ndim > 1 and right_ndim == 1:
         return einsum('...m,k->...mk', grad_value, right_tensor.conj())
 
-    # 分支4：多维 @ 多维，标准矩阵乘法（快 13-20 倍）
+    # 分支4：多维 @ 多维，标准矩阵乘法（走 BLAS，实测比 einsum 快约 1.0~3.0 倍）
     broadcast_axes = _get_broadcast_axis(result_tensor.data.shape[:-2], left_tensor.data.shape[:-2])
     mat_grad = grad_value @ right_tensor.mT.conj()
 
     if broadcast_axes:
-        return sum(mat_grad, dim=broadcast_axes, keepdim=False)
+        # 归约会消去被广播的 size-1 维度，需还原为 A 的形状
+        return sum(mat_grad, dim=broadcast_axes, keepdim=False)._reshape(left_tensor.shape)
     return mat_grad
 
 def _matmul_grad_right(result_tensor:TN, i:int)->TN:
@@ -7884,22 +7889,24 @@ def _matmul_grad_right(result_tensor:TN, i:int)->TN:
     分支2 - 1D @ 多维（行向量乘矩阵）：
         场景：A(K,) @ B(..., K, N) -> C(..., N)
         公式：dL/dB[..., k, n] = A[k] * grad[..., n]（外积）
-        实现：einsum('k,...n->kn', A, grad)
-        性能选择：使用 einsum 直接计算外积，支持批次维度，比 unsqueeze + @ 快 4.23 倍
+        实现：einsum('k,...n->...kn', A, grad)
+        性能选择：使用 einsum 直接计算外积，支持批次维度。实测产出元素数 ≳8192 时比
+            unsqueeze 方案快 1.1~1.5 倍；≲4096 时 einsum 约 15µs 的固定解析开销占主导，
+            该区间 unsqueeze 方案最多快 1.8 倍。交叉点约 8192 个产出元素
     
     分支3 - 多维 @ 1D（矩阵乘列向量）：
         场景：A(..., M, K) @ B(K,) -> C(..., M)
         公式：dL/dB[k] = sum(批次维度, m)(grad[..., m] * A[..., m, k])
              = sum(...)(grad @ A)
         实现：unsqueeze(-1) + @ + sum + squeeze
-        性能选择：使用矩阵乘法 + 求和，避免 einsum 的解析开销
+        性能选择：使用矩阵乘法 + 求和，走 BLAS，实测比 einsum 快约 1.0~1.8 倍
         注意：矩阵乘法产生 (..., K, 1)，需要 squeeze 得到 (..., K)
     
     分支4 - 多维 @ 多维（批量矩阵乘法）：
         场景：A(..., M, K) @ B(..., K, N) -> C(..., M, N)
         公式：dL/dB = A^T @ grad
         实现：标准矩阵乘法 @
-        性能选择：使用 @ 运算符，调用 BLAS 库，比 einsum 快 13-20 倍
+        性能选择：使用 @ 运算符，走 BLAS，实测比 einsum 快约 1.0~3.0 倍
     
     Args:
         result_tensor: 矩阵乘法结果张量 C
@@ -7921,7 +7928,7 @@ def _matmul_grad_right(result_tensor:TN, i:int)->TN:
     if left_ndim == 1 and right_ndim == 1:
         return left_tensor.conj() * grad_value
 
-    # 分支2：1D @ 多维，einsum 计算外积（快 4.23 倍）
+    # 分支2：1D @ 多维，einsum 计算外积（产出元素 ≳8192 时比 unsqueeze 方案快，交叉点约 8192）
     if left_ndim == 1 and right_ndim > 1:
         # 使用 ... 支持任意批次维度，输出形状为 (K, N) 或 (...批次维度..., K, N)
         return einsum('k,...n->...kn', left_tensor.conj(), grad_value)
@@ -7936,18 +7943,17 @@ def _matmul_grad_right(result_tensor:TN, i:int)->TN:
             mat_grad = sum(mat_grad, dim=sum_axes, keepdim=False)
 
         # 去掉最后的维度 (K, 1) -> (K,)
-        if mat_grad.data.ndim > 1:
-            return mat_grad.squeeze(-1)
-        return mat_grad
+        return mat_grad.squeeze(-1)
 
     # 4. 多维矩阵与多维矩阵的一般情况：left(..., M, K) @ right(..., K, N) -> result(..., M, N)
     # 梯度：dL/dright = left.T @ grad
-    # 使用标准矩阵乘法（@），性能优于 einsum（快 13-20 倍）
+    # 使用标准矩阵乘法（@），走 BLAS，实测比 einsum 快约 1.0~3.0 倍
     broadcast_axes = _get_broadcast_axis(result_tensor.data.shape[:-2], right_tensor.data.shape[:-2])
     mat_grad = left_tensor.mT.conj() @ grad_value
 
     if broadcast_axes:
-        return sum(mat_grad, dim=broadcast_axes, keepdim=False)
+        # 归约会消去被广播的 size-1 维度，需还原为 B 的形状
+        return sum(mat_grad, dim=broadcast_axes, keepdim=False)._reshape(right_tensor.shape)
     return mat_grad
 
 def _div_grad_left(result_tensor:TN, i:int)->TN:
