@@ -73,7 +73,7 @@ Riemann/
 │   ├── optimizers_comparison.py  # 优化器比较示例
 │   ├── mnist_demo.py             # MNIST手写数字识别GUI示例
 │   ├── nn_MNIST_CE_SGD.py        # 神经网络训练示例
-│   ├── cnn_CIFAR10_CE_SGD.py     # 卷积网路训练示例
+│   ├── cnn_CIFAR10_CE_SGD.py     # 卷积网络训练示例
 │   └── ...
 ├── README.md                 # 项目文档
 ├── LICENSE                   # 许可证文件
@@ -112,36 +112,32 @@ Riemann/
 
 `examples/` 目录包含了各种示例代码，展示如何使用Riemann库的不同功能：
 
-- **基础示例**: 如反向传播示例（backward_demo.py）、梯度计算示例（grad_demo.py）
-- **自定义梯度示例**: 如custom_grad_decorator.py，展示如何使用装饰器自定义梯度
-- **优化器示例**: 如optimizers_comparison.py，比较不同优化器的性能
-- **神经网络示例**: 如nn_MNIST_CE_SGD.py（MNIST手写数字识别）、cnn_CIFAR10_CE_SGD.py（CIFAR10图像分类）
-- **GUI应用示例**: 如mnist_demo.py，提供图形界面的MNIST手写数字识别应用
-
-这些示例代码为用户提供了实际使用Riemann库的参考，帮助用户快速上手和理解库的功能。
-
-Riemann提供了丰富的示例代码，位于`examples/`目录：
-
 - **backward_demo.py**: backward函数使用演示
 - **grad_demo.py**: grad函数使用演示
 - **hessian.py**: 海森矩阵计算示例
 - **jacobian.py**: 雅可比矩阵计算示例
-- **mnist_demo.py**: MNIST手写数字识别GUI示例（图形界面训练与识别）
-- **nn_MNIST_CE_SGD.py**: 基于MNIST的手写数字识别神经网络示例（交叉熵损失 + SGD优化）
-- **nn_MNIST_CE_Adam.py**: 基于MNIST的手写数字识别神经网络示例（交叉熵损失 + Adam优化）
-- **nn_MNIST_CE_Adagrad.py**: 基于MNIST的手写数字识别神经网络示例（交叉熵损失 + Adagrad优化）
-- **nn_MNIST_MSE_GD.py**: 基于MNIST的手写数字识别神经网络示例（均方误差 + 梯度下降）
-- **nn_MNIST_MSE_SGD.py**: 基于MNIST的手写数字识别神经网络示例（均方误差 + SGD优化）
-- **nn_MNIST_MSE_LBFGS.py**: 基于MNIST的手写数字识别神经网络示例（均方误差 + LBFGS优化）
-- **cnn_CIFAR10_CE_SGD.py**: 基于CIFAR10的卷积神经网络示例（交叉熵损失 + SGD优化）
-- **cnn_CIFAR10_CE_Adam.py**: 基于CIFAR10的卷积神经网络示例（交叉熵损失 + Adam优化）
-- **optimizers_comparison.py**: 优化器性能比较
-- **scatter.py**: 张量散射操作示例
+- **gradient_clipping_demo.py**: 梯度裁剪示例
 - **custom_grad_decorator.py**: 使用@track_grad装饰器自定义梯度跟踪函数示例
 - **custom_grad_FunctionClass.py**: 使用Function类自定义梯度跟踪函数示例
+- **scatter.py**: 张量散射操作示例
+- **optimizers_comparison.py**: 优化器性能比较
+- **nn_lr_scheduler.py**: 学习率调度器使用示例
+- **nn_MNIST_CE_SGD.py**: MNIST手写数字识别（交叉熵 + SGD）
+- **nn_MNIST_CE_Adam.py**: MNIST手写数字识别（交叉熵 + Adam）
+- **nn_MNIST_CE_Adagrad.py**: MNIST手写数字识别（交叉熵 + Adagrad）
+- **nn_MNIST_MSE_GD.py**: MNIST手写数字识别（均方误差 + 梯度下降）
+- **nn_MNIST_MSE_SGD.py**: MNIST手写数字识别（均方误差 + SGD）
+- **nn_MNIST_MSE_LBFGS.py**: MNIST手写数字识别（均方误差 + LBFGS）
+- **cnn_CIFAR10_CE_SGD.py**: CIFAR10图像分类卷积网络（交叉熵 + SGD）
+- **cnn_CIFAR10_CE_Adam.py**: CIFAR10图像分类卷积网络（交叉熵 + Adam）
+- **kan_mnist.py**: KAN网络MNIST分类示例
+- **transformer_timeseq.py**: Transformer时间序列预测示例
+- **mnist_demo.py**: MNIST手写数字识别GUI应用
 
 
 ## 安装方法
+
+**Python版本**: Riemann 要求 Python >= 3.9，支持 Python 3.9 ~ 3.13。
 
 ### 源码安装与开发环境配置
 
@@ -535,7 +531,7 @@ print("CNN训练和推理测试完成！")
 ### 例5：GPU加速示例
 
 ```python
-# 例6：GPU加速示例
+# 例5：GPU加速示例
 # 本示例展示了如何在Riemann中使用GPU加速神经网络训练
 # 包括设备检测与设置、模型和数据的设备迁移、GPU上的训练和评估过程
 
@@ -664,33 +660,33 @@ python test_010_grad.py
 
 ## 第三方依赖及许可证
 
-### Core Dependencies
+### 核心依赖
 
-| Library | Version Requirement | License Type | Notes                                     |
-|---------|---------------------|--------------|-------------------------------------------|
-| NumPy   | >=1.20.0            | BSD 3-Clause | Core numerical computation library        |
-| Pillow  | >=8.0.0             | BSD 3-Clause | Image processing library                  |
-| tqdm    | >=4.0.0             | MIT          | Progress bar for training and data loading|
+| 库        | 版本要求  | 许可证类型   | 说明                       |
+|-----------|-----------|--------------|----------------------------|
+| NumPy     | >=1.20.0  | BSD 3-Clause | 核心数值计算库             |
+| Pillow    | >=8.0.0   | BSD 3-Clause | 图像处理库                 |
+| tqdm      | >=4.0.0   | MIT          | 训练和数据加载进度条       |
 
-### Testing Dependencies
-| Library    | Version Requirement | Purpose           | License Type  | Notes                                     |
-|------------|---------------------|-------------------|---------------|-------------------------------------------|
-| PyTorch    | >=2.0.0             | Result comparison | BSD 3-Clause  | Used for verifying calculation results    |
-| torchvision| >=0.15.0            | Computer vision   | BSD 3-Clause  | PyTorch's computer vision library         |
-| pytest     | >=7.0.0             | Testing framework | MIT           | Used for organizing and running tests     |
+### 测试依赖
+| 库          | 版本要求  | 用途           | 许可证类型   | 说明                         |
+|-------------|-----------|----------------|--------------|------------------------------|
+| PyTorch     | >=2.0.0   | 结果对比       | BSD 3-Clause | 用于验证计算结果正确性       |
+| torchvision | >=0.15.0  | 计算机视觉     | BSD 3-Clause | PyTorch 的计算机视觉库       |
+| pytest      | >=7.0.0   | 测试框架       | MIT          | 用于组织和运行测试           |
 
-### Optional CUDA Dependencies
+### CUDA可选依赖
 
-| Library      | Version Requirement | Purpose           | License Type | Notes                                     |
-|--------------|---------------------|-------------------|--------------|-------------------------------------------|
-| cupy-cuda12x | Latest              | GPU acceleration  | MIT          | For CUDA 12.x on Linux x86_64             |
-| cupy-cuda11x | Latest              | GPU acceleration  | MIT          | For CUDA 11.x on Linux x86_64             |
-| cupy-cuda10x | Latest              | GPU acceleration  | MIT          | For CUDA 10.x on Linux x86_64             |
-| cupy         | Latest              | GPU acceleration  | MIT          | For other platforms (including Windows)   |
+| 库            | 版本要求 | 用途           | 许可证类型 | 说明                                     |
+|---------------|----------|----------------|------------|------------------------------------------|
+| cupy-cuda13x  | Latest   | GPU 加速       | MIT        | CUDA 13.x，支持 Linux/Windows x86_64     |
+| cupy-cuda12x  | Latest   | GPU 加速       | MIT        | CUDA 12.x，支持 Linux/Windows x86_64     |
+| cupy-cuda11x  | Latest   | GPU 加速       | MIT        | CUDA 11.x，支持 Linux/Windows x86_64     |
+| cupy-cuda10x  | Latest   | GPU 加速       | MIT        | CUDA 10.x，仅支持 Linux x86_64           |
 
-*Note: This project also utilizes Python's standard library components (like unittest) for testing, which don't require separate installation.*
+*注：本项目还使用了 Python 标准库中的组件（如 unittest）进行测试，无需单独安装。*
 
-*Note: Details of the BSD 3-Clause license for NumPy, PyTorch and Pillow can be found on their official websites.*
+*注：NumPy、PyTorch 和 Pillow 的 BSD 3-Clause 许可证详情可查阅其官方网站。*
 
 ## 许可证
 

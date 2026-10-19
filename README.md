@@ -113,36 +113,32 @@ The `docs/` directory is used to store project documentation:
 
 The `examples/` directory contains various example codes that demonstrate how to use different features of the Riemann library:
 
-- **Basic examples**: Such as backward propagation example (backward_demo.py), gradient calculation example (grad_demo.py)
-- **Custom gradient examples**: Such as custom_grad_decorator.py, demonstrating how to use decorators to customize gradients
-- **Optimizer examples**: Such as optimizers_comparison.py, comparing the performance of different optimizers
-- **Neural network examples**: Such as nn_MNIST_CE_SGD.py (MNIST handwritten digit recognition), cnn_CIFAR10_CE_SGD.py (CIFAR10 image classification)
-- **GUI application examples**: Such as mnist_demo.py, providing a graphical interface for MNIST handwritten digit recognition
-
-These example codes provide references for users to actually use the Riemann library, helping users quickly get started and understand the library's functionality.
-
-Riemann provides rich example codes located in the `examples/` directory:
-
 - **backward_demo.py**: Backward function usage demonstration
 - **grad_demo.py**: Grad function usage demonstration
 - **hessian.py**: Hessian matrix calculation example
 - **jacobian.py**: Jacobian matrix calculation example
-- **mnist_demo.py**: MNIST handwritten digit recognition GUI example (graphical interface training and recognition)
-- **nn_MNIST_CE_SGD.py**: Neural network training example based on MNIST (cross-entropy loss + SGD optimization)
-- **nn_MNIST_CE_Adam.py**: Neural network training example based on MNIST (cross-entropy loss + Adam optimization)
-- **nn_MNIST_CE_Adagrad.py**: Neural network training example based on MNIST (cross-entropy loss + Adagrad optimization)
-- **nn_MNIST_MSE_GD.py**: Neural network training example based on MNIST (mean squared error + gradient descent)
-- **nn_MNIST_MSE_SGD.py**: Neural network training example based on MNIST (mean squared error + SGD optimization)
-- **nn_MNIST_MSE_LBFGS.py**: Neural network training example based on MNIST (mean squared error + LBFGS optimization)
-- **cnn_CIFAR10_CE_SGD.py**: Convolutional neural network example based on CIFAR10 (cross-entropy loss + SGD optimization)
-- **cnn_CIFAR10_CE_Adam.py**: Convolutional neural network example based on CIFAR10 (cross-entropy loss + Adam optimization)
-- **optimizers_comparison.py**: Optimizer performance comparison
-- **scatter.py**: Tensor scatter operation example
+- **gradient_clipping_demo.py**: Gradient clipping example
 - **custom_grad_decorator.py**: Example of using @track_grad decorator to customize gradient tracking functions
 - **custom_grad_FunctionClass.py**: Example of using Function class to customize gradient tracking functions
+- **scatter.py**: Tensor scatter operation example
+- **optimizers_comparison.py**: Optimizer performance comparison
+- **nn_lr_scheduler.py**: Learning rate scheduler usage example
+- **nn_MNIST_CE_SGD.py**: MNIST handwritten digit recognition (cross-entropy + SGD)
+- **nn_MNIST_CE_Adam.py**: MNIST handwritten digit recognition (cross-entropy + Adam)
+- **nn_MNIST_CE_Adagrad.py**: MNIST handwritten digit recognition (cross-entropy + Adagrad)
+- **nn_MNIST_MSE_GD.py**: MNIST handwritten digit recognition (MSE + gradient descent)
+- **nn_MNIST_MSE_SGD.py**: MNIST handwritten digit recognition (MSE + SGD)
+- **nn_MNIST_MSE_LBFGS.py**: MNIST handwritten digit recognition (MSE + LBFGS)
+- **cnn_CIFAR10_CE_SGD.py**: CIFAR10 image classification CNN (cross-entropy + SGD)
+- **cnn_CIFAR10_CE_Adam.py**: CIFAR10 image classification CNN (cross-entropy + Adam)
+- **kan_mnist.py**: KAN network MNIST classification example
+- **transformer_timeseq.py**: Transformer time series forecasting example
+- **mnist_demo.py**: MNIST handwritten digit recognition GUI application
 
 
 ## Installation Method
+
+**Python Version**: Riemann requires Python >= 3.9, supports Python 3.9 ~ 3.13.
 
 ### Source Installation and Development Environment Configuration
 
@@ -538,7 +534,7 @@ print("CNN training and inference test completed!")
 ### Example 5: GPU Acceleration Example
 
 ```python
-# Example 6: GPU Acceleration Example
+# Example 5: GPU Acceleration Example
 # This example demonstrates how to use GPU acceleration for neural network training in Riemann
 # Including device detection and setup, model and data device migration, training and evaluation process on GPU
 
@@ -685,12 +681,12 @@ python test_010_grad.py
 
 ### Optional CUDA Dependencies
 
-| Library      | Version Requirement | Purpose           | License Type | Notes                                     |
-|--------------|---------------------|-------------------|--------------|-------------------------------------------|
-| cupy-cuda12x | Latest              | GPU acceleration  | MIT          | For CUDA 12.x on Linux x86_64             |
-| cupy-cuda11x | Latest              | GPU acceleration  | MIT          | For CUDA 11.x on Linux x86_64             |
-| cupy-cuda10x | Latest              | GPU acceleration  | MIT          | For CUDA 10.x on Linux x86_64             |
-| cupy         | Latest              | GPU acceleration  | MIT          | For other platforms (including Windows)   |
+| Library      | Version Requirement | Purpose          | License Type | Notes                                     |
+|--------------|---------------------|------------------|--------------|-------------------------------------------|
+| cupy-cuda13x | Latest              | GPU acceleration | MIT          | For CUDA 13.x on Linux/Windows x86_64     |
+| cupy-cuda12x | Latest              | GPU acceleration | MIT          | For CUDA 12.x on Linux/Windows x86_64     |
+| cupy-cuda11x | Latest              | GPU acceleration | MIT          | For CUDA 11.x on Linux/Windows x86_64     |
+| cupy-cuda10x | Latest              | GPU acceleration | MIT          | For CUDA 10.x on Linux x86_64 only        |
 
 *Note: This project also utilizes Python's standard library components (like unittest) for testing, which don't require separate installation.*
 

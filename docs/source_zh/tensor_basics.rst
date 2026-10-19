@@ -24,7 +24,7 @@
 从数据创建
 ~~~~~~~~~~
 
-您可以直接从 Python 列表或 NumPy 数组创建张量：
+Riemann 提供了 ``tensor``、``as_tensor``、``from_numpy`` 三个函数，用于从 Python 数组型数据（如列表、元组）或标量、NumPy/CuPy 数组或标量创建张量：
 
 .. code-block:: python
 
@@ -39,6 +39,79 @@
     np_array = np.array([1, 2, 3])
     x = rm.tensor(np_array)
     print(x)  # tensor([1, 2, 3])
+
+三个函数的关键区别在于**内存共享行为**和**支持的输入类型**：
+
+.. list-table:: tensor、as_tensor、from_numpy 函数对比
+    :widths: 20 27 27 26
+    :header-rows: 1
+
+    * - 对比项
+      - ``tensor``
+      - ``as_tensor``
+      - ``from_numpy``
+    * - 支持的输入类型
+      - Python 列表、元组、标量，NumPy/CuPy 数组或标量
+      - Python 列表、元组、标量，NumPy/CuPy 数组或标量，以及已有张量
+      - 仅 NumPy/CuPy 数组
+    * - 与输入数据的内存共享
+      - 不共享（始终复制数据）
+      - 尽可能共享（dtype、device 一致时共享）
+      - 一定共享
+    * - dtype 参数
+      - 支持
+      - 支持
+      - 不支持（保留原数组类型）
+    * - device 参数
+      - 支持
+      - 支持
+      - 不支持（设备由原数组决定）
+    * - requires_grad 参数
+      - 支持
+      - 支持
+      - 不支持（始终为 False）
+
+**tensor：始终复制数据**
+
+``tensor`` 创建的张量与输入数据不共享内存，修改张量不会影响原始数据，是最安全的创建方式：
+
+.. code-block:: python
+
+    arr = np.array([1.0, 2.0, 3.0])
+    x = rm.tensor(arr)
+    x[0] = 0
+    print(arr)  # [1. 2. 3.]，原数组不受影响
+
+**as_tensor：尽可能共享内存**
+
+当输入数据的 dtype、device 与目标一致时，``as_tensor`` 创建的张量与输入共享内存；仅在需要转换数据类型或设备时才复制数据。此外，``as_tensor`` 还支持直接从已有张量创建新张量：
+
+.. code-block:: python
+
+    # dtype、device 一致时共享内存
+    arr = np.array([1.0, 2.0, 3.0])
+    x = rm.as_tensor(arr)
+    x[0] = 0
+    print(arr)  # [0. 2. 3.]，原数组被修改
+
+    # 从已有张量创建（共享底层数据）
+    t = rm.tensor([1.0, 2.0, 3.0])
+    y = rm.as_tensor(t)
+
+**from_numpy：始终共享内存**
+
+``from_numpy`` 仅接受 NumPy/CuPy 数组，创建的张量始终与原数组共享内存，适用于需要张量与数组联动的场景（传入 CuPy 数组会自动创建 CUDA 张量）：
+
+.. code-block:: python
+
+    arr = np.array([1.0, 2.0, 3.0])
+    x = rm.from_numpy(arr)
+    x[0] = 0
+    print(arr)  # [0. 2. 3.]，原数组被修改
+
+.. note::
+
+    共享内存意味着修改张量会同时修改原始数组（反之亦然）。如果不希望原始数据被意外修改，请使用 ``tensor`` 函数。
 
 指定数据类型
 ~~~~~~~~~~~~
@@ -1022,11 +1095,241 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
     print("条件 (x > 5):", condition)
     print("where 结果:", result)
 
-**where 函数详细示例**
+**sum 函数**
 
-where 函数有两种主要用法：
-1. 当不提供 x 和 y 时，返回满足条件的元素的索引
-2. 当提供 x 和 y 时，根据条件从 x 和 y 中选择元素
+**功能描述：** 计算张量元素的和。常用于损失计算、特征聚合、统计汇总等场景。
+
+**参数：**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - 参数名
+    - 类型
+    - 描述
+  * - ``x``
+    - TN
+    - 输入张量
+  * - ``dim``
+    - int, tuple, None
+    - 求和维度。None 表示对所有元素求和（默认），int 表示沿指定轴求和，tuple 表示沿多个轴求和
+  * - ``keepdim``
+    - bool
+    - 是否保持原张量的维度数，默认为 False
+
+**返回值：** 求和结果张量
+
+**示例代码：**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    print("所有元素的和:", rm.sum(x))
+    # tensor(21.)
+
+    print("沿轴 0 的和:", rm.sum(x, dim=0))
+    # tensor([5., 7., 9.])
+
+    print("沿轴 1 的和:", rm.sum(x, dim=1, keepdim=True))
+    # tensor([[ 6.],
+    #         [15.]])
+
+**mean 函数**
+
+**功能描述：** 计算张量元素的平均值。常用于数据归一化、特征统计、损失计算等场景。
+
+**参数：**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - 参数名
+    - 类型
+    - 描述
+  * - ``x``
+    - TN
+    - 输入张量
+  * - ``dim``
+    - int, tuple, None
+    - 求平均的维度。None 表示对所有元素求平均（默认）
+  * - ``keepdim``
+    - bool
+    - 是否保持原张量的维度数，默认为 False
+
+**返回值：** 平均值张量
+
+**示例代码：**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    print("所有元素的平均值:", rm.mean(x))
+    # tensor(3.5)
+
+    print("沿轴 0 的平均值:", rm.mean(x, dim=0))
+    # tensor([2.5, 3.5, 4.5])
+
+**var 函数**
+
+**功能描述：** 计算张量元素的方差。常用于数据分布分析、标准化处理等场景。
+
+**参数：**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - 参数名
+    - 类型
+    - 描述
+  * - ``x``
+    - TN
+    - 输入张量
+  * - ``dim``
+    - int, tuple, None
+    - 计算方差的维度。None 表示对所有元素计算方差（默认）
+  * - ``unbiased``
+    - bool
+    - 是否使用无偏估计（贝塞尔校正），默认为 True
+  * - ``keepdim``
+    - bool
+    - 是否保持原张量的维度数，默认为 False
+
+**返回值：** 方差张量
+
+**示例代码：**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    print("所有元素的方差:", rm.var(x))
+    # tensor(3.5)
+
+    print("沿轴 0 的方差:", rm.var(x, dim=0))
+    # tensor([4.5, 4.5, 4.5])
+
+**max/min 函数**
+
+**功能描述：** 计算张量元素的最大值或最小值。常用于极值检测、特征选择、数据范围分析等场景。
+
+**参数：**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - 参数名
+    - 类型
+    - 描述
+  * - ``x``
+    - TN
+    - 输入张量
+  * - ``dim``
+    - int, tuple, None
+    - 求极值的维度。None 表示返回全局极值（默认），指定维度时返回该维度上的极值及索引
+  * - ``keepdim``
+    - bool
+    - 是否保持原张量的维度数，默认为 False
+
+**返回值：** dim 为 None 时返回标量张量；指定 dim 时返回 namedtuple ，包含 ``values`` （极值张量）和 ``indices`` （索引张量）两个字段
+
+**示例代码：**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 5.0, 3.0], [4.0, 2.0, 6.0]])
+    print("最大值:", rm.max(x))
+    # tensor(6.)
+
+    print("最小值:", rm.min(x))
+    # tensor(1.)
+
+    result = rm.max(x, dim=0)
+    print("沿轴 0 的最大值:", result.values)
+    # tensor([4., 5., 6.])
+    print("沿轴 0 的索引:", result.indices)
+    # tensor([1, 0, 1])
+
+    result = rm.min(x, dim=1)
+    print("沿轴 1 的最小值:", result.values)
+    # tensor([1., 2.])
+    print("沿轴 1 的索引:", result.indices)
+    # tensor([0, 1])
+
+**argmax/argmin 函数**
+
+**功能描述：** 返回张量中最大值或最小值的索引。常用于分类预测、极值定位等场景。argmax/argmin 是张量的方法。
+
+**参数：**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - 参数名
+    - 类型
+    - 描述
+  * - ``dim``
+    - int, None
+    - 查找极值索引的维度。None 表示返回全局展平索引（默认）
+  * - ``keepdim``
+    - bool
+    - 是否保持原张量的维度数，默认为 False
+
+**返回值：** 索引张量（int64 类型）
+
+**示例代码：**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 5.0, 3.0], [4.0, 2.0, 6.0]])
+    print("全局最大值索引:", x.argmax())
+    # tensor(5)
+
+    print("沿轴 0 的最大值索引:", x.argmax(dim=0))
+    # tensor([1, 0, 1])
+
+    print("沿轴 1 的最小值索引:", x.argmin(dim=1))
+    # tensor([0, 1])
+
+**where 函数**
+
+**功能描述：** 根据条件选择元素或返回满足条件的元素索引。常用于条件筛选、掩码操作、分段函数实现等场景。
+
+**参数：**
+
+.. list-table::
+  :widths: 15 30 55
+  :header-rows: 1
+
+  * - 参数名
+    - 类型
+    - 描述
+  * - ``cond``
+    - TN
+    - 条件张量（布尔类型）
+  * - ``x``
+    - TN, int, float, None
+    - 条件为 True 时选取的值，默认为 None
+  * - ``y``
+    - TN, int, float, None
+    - 条件为 False 时选取的值，默认为 None
+
+**返回值：** 当 x 和 y 均为 None 时，返回满足条件的元素索引元组（tuple of TN）；否则返回根据条件选择后的张量（TN）
+
+**示例代码：**
 
 .. code-block:: python
 
@@ -1096,6 +1399,87 @@ where 函数有两种主要用法：
     print(x_grad.grad)
     print("y_grad 的梯度:")
     print(y_grad.grad)
+
+**clamp_ 函数**
+
+**功能描述：** 将张量的每个元素原地限制在 [min, max] 范围内（原地操作，直接修改张量数据）。常用于梯度裁剪、数据范围限制等场景。
+
+**参数：**
+
+.. list-table::
+  :widths: 15 30 55
+  :header-rows: 1
+
+  * - 参数名
+    - 类型
+    - 描述
+  * - ``min``
+    - float, TN, None
+    - 下限值，可以是标量或张量，None 表示不限制下限，默认为 None
+  * - ``max``
+    - float, TN, None
+    - 上限值，可以是标量或张量，None 表示不限制上限，默认为 None
+
+**返回值：** 返回自身张量（self），元素已被原地裁剪。
+
+**示例代码：**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+    print("原始张量:", x)
+    # tensor([1., 2., 3., 4., 5.])
+
+    x.clamp_(min=2.0, max=4.0)
+    print("原地裁剪后:", x)
+    # tensor([2., 2., 3., 4., 4.])
+
+**clamp 函数**
+
+**功能描述：** 将张量的每个元素限制在 [min, max] 范围内，返回新张量（非原地操作，不修改原张量）。常用于梯度裁剪、数据范围限制等场景。
+
+**参数：**
+
+.. list-table::
+  :widths: 15 30 55
+  :header-rows: 1
+
+  * - 参数名
+    - 类型
+    - 描述
+  * - ``x``
+    - TN
+    - 输入张量
+  * - ``min``
+    - float, TN, None
+    - 下限值，可以是标量或张量，None 表示不限制下限，默认为 None
+  * - ``max``
+    - float, TN, None
+    - 上限值，可以是标量或张量，None 表示不限制上限，默认为 None
+
+**返回值：** 返回新张量，元素被裁剪到 [min, max] 范围内。不修改原张量。
+
+**示例代码：**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 5.0, 3.0], [4.0, 2.0, 6.0]])
+    print("原始张量:", x)
+    # tensor([[1., 5., 3.],
+    #         [4., 2., 6.]])
+
+    result = rm.clamp(x, min=2.0, max=5.0)
+    print("裁剪结果:", result)
+    # tensor([[2., 5., 3.],
+    #         [4., 2., 5.]])
+
+    print("原张量不变:", x)
+    # tensor([[1., 5., 3.],
+    #         [4., 2., 6.]])
 
 **sumall 函数的效率优势**
 

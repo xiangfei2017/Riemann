@@ -24,7 +24,7 @@ Creating Tensors
 From Data
 ~~~~~~~~~~
 
-You can create tensors directly from Python lists or NumPy arrays:
+Riemann provides three functions — ``tensor``, ``as_tensor``, and ``from_numpy`` — for creating tensors from Python array-like data (such as lists and tuples) or scalars, and from NumPy/CuPy arrays or scalars:
 
 .. code-block:: python
 
@@ -39,6 +39,79 @@ You can create tensors directly from Python lists or NumPy arrays:
     np_array = np.array([1, 2, 3])
     x = rm.tensor(np_array)
     print(x)  # tensor([1, 2, 3])
+
+The key differences between the three functions lie in **memory sharing behavior** and **supported input types**:
+
+.. list-table:: Comparison of tensor, as_tensor, and from_numpy
+    :widths: 20 27 27 26
+    :header-rows: 1
+
+    * - Item
+      - ``tensor``
+      - ``as_tensor``
+      - ``from_numpy``
+    * - Supported input types
+      - Python lists, tuples, scalars; NumPy/CuPy arrays or scalars
+      - Python lists, tuples, scalars; NumPy/CuPy arrays or scalars; existing tensors
+      - NumPy/CuPy arrays only
+    * - Memory sharing with input
+      - Never shares (always copies data)
+      - Shares when possible (when dtype and device match)
+      - Always shares
+    * - dtype parameter
+      - Supported
+      - Supported
+      - Not supported (keeps the array's dtype)
+    * - device parameter
+      - Supported
+      - Supported
+      - Not supported (device is determined by the array)
+    * - requires_grad parameter
+      - Supported
+      - Supported
+      - Not supported (always False)
+
+**tensor: always copies data**
+
+Tensors created by ``tensor`` never share memory with the input data; modifying the tensor does not affect the original data. This is the safest way to create tensors:
+
+.. code-block:: python
+
+    arr = np.array([1.0, 2.0, 3.0])
+    x = rm.tensor(arr)
+    x[0] = 0
+    print(arr)  # [1. 2. 3.], the original array is unchanged
+
+**as_tensor: shares memory when possible**
+
+When the input data's dtype and device match the target, tensors created by ``as_tensor`` share memory with the input; data is only copied when a type or device conversion is needed. In addition, ``as_tensor`` supports creating a new tensor from an existing tensor:
+
+.. code-block:: python
+
+    # Shares memory when dtype and device match
+    arr = np.array([1.0, 2.0, 3.0])
+    x = rm.as_tensor(arr)
+    x[0] = 0
+    print(arr)  # [0. 2. 3.], the original array is modified
+
+    # Create from an existing tensor (shares the underlying data)
+    t = rm.tensor([1.0, 2.0, 3.0])
+    y = rm.as_tensor(t)
+
+**from_numpy: always shares memory**
+
+``from_numpy`` only accepts NumPy/CuPy arrays. The created tensor always shares memory with the original array, which is useful when the tensor and the array need to stay in sync (a CuPy array automatically produces a CUDA tensor):
+
+.. code-block:: python
+
+    arr = np.array([1.0, 2.0, 3.0])
+    x = rm.from_numpy(arr)
+    x[0] = 0
+    print(arr)  # [0. 2. 3.], the original array is modified
+
+.. note::
+
+    Sharing memory means that modifying the tensor also modifies the original array (and vice versa). If you want to prevent the original data from being accidentally modified, use the ``tensor`` function.
 
 With Specific Data Types
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1022,11 +1095,241 @@ Riemann provides various statistical functions for tensor analysis. Here are the
     print("Condition (x > 5):", condition)
     print("Where result:", result)
 
-**where Function Detailed Example**
+**sum Function**
 
-The where function has two main use cases:
-1. When only condition is provided, returns indices of elements that satisfy the condition
-2. When condition, x, and y are provided, selects elements from x and y based on the condition
+**Description:** Computes the sum of tensor elements. Commonly used in loss computation, feature aggregation, and statistical summarization.
+
+**Parameters:**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - Parameter
+    - Type
+    - Description
+  * - ``x``
+    - TN
+    - Input tensor
+  * - ``dim``
+    - int, tuple, None
+    - Dimension along which to sum. None means sum over all elements (default), int means sum along the specified axis, tuple means sum along multiple axes
+  * - ``keepdim``
+    - bool
+    - Whether to keep the original number of dimensions, default is False
+
+**Returns:** Tensor containing the sum
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    print("Sum of all elements:", rm.sum(x))
+    # tensor(21.)
+
+    print("Sum along axis 0:", rm.sum(x, dim=0))
+    # tensor([5., 7., 9.])
+
+    print("Sum along axis 1:", rm.sum(x, dim=1, keepdim=True))
+    # tensor([[ 6.],
+    #         [15.]])
+
+**mean Function**
+
+**Description:** Computes the mean of tensor elements. Commonly used in data normalization, feature statistics, and loss computation.
+
+**Parameters:**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - Parameter
+    - Type
+    - Description
+  * - ``x``
+    - TN
+    - Input tensor
+  * - ``dim``
+    - int, tuple, None
+    - Dimension along which to compute the mean. None means over all elements (default)
+  * - ``keepdim``
+    - bool
+    - Whether to keep the original number of dimensions, default is False
+
+**Returns:** Tensor containing the mean
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    print("Mean of all elements:", rm.mean(x))
+    # tensor(3.5)
+
+    print("Mean along axis 0:", rm.mean(x, dim=0))
+    # tensor([2.5, 3.5, 4.5])
+
+**var Function**
+
+**Description:** Computes the variance of tensor elements. Commonly used in data distribution analysis and normalization.
+
+**Parameters:**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - Parameter
+    - Type
+    - Description
+  * - ``x``
+    - TN
+    - Input tensor
+  * - ``dim``
+    - int, tuple, None
+    - Dimension along which to compute the variance. None means over all elements (default)
+  * - ``unbiased``
+    - bool
+    - Whether to use unbiased estimation (Bessel's correction), default is True
+  * - ``keepdim``
+    - bool
+    - Whether to keep the original number of dimensions, default is False
+
+**Returns:** Tensor containing the variance
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    print("Variance of all elements:", rm.var(x))
+    # tensor(3.5)
+
+    print("Variance along axis 0:", rm.var(x, dim=0))
+    # tensor([4.5, 4.5, 4.5])
+
+**max/min Functions**
+
+**Description:** Computes the maximum or minimum of tensor elements. Commonly used in extreme value detection, feature selection, and data range analysis.
+
+**Parameters:**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - Parameter
+    - Type
+    - Description
+  * - ``x``
+    - TN
+    - Input tensor
+  * - ``dim``
+    - int, tuple, None
+    - Dimension along which to find the extreme value. None returns the global extreme value (default); specifying a dimension returns the extreme values and their indices along that dimension
+  * - ``keepdim``
+    - bool
+    - Whether to keep the original number of dimensions, default is False
+
+**Returns:** When dim is None, returns a scalar tensor; when dim is specified, returns a namedtuple containing ``values`` (extreme value tensor) and ``indices`` (index tensor)
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 5.0, 3.0], [4.0, 2.0, 6.0]])
+    print("Maximum value:", rm.max(x))
+    # tensor(6.)
+
+    print("Minimum value:", rm.min(x))
+    # tensor(1.)
+
+    result = rm.max(x, dim=0)
+    print("Max values along axis 0:", result.values)
+    # tensor([4., 5., 6.])
+    print("Max indices along axis 0:", result.indices)
+    # tensor([1, 0, 1])
+
+    result = rm.min(x, dim=1)
+    print("Min values along axis 1:", result.values)
+    # tensor([1., 2.])
+    print("Min indices along axis 1:", result.indices)
+    # tensor([0, 1])
+
+**argmax/argmin Functions**
+
+**Description:** Returns the index of the maximum or minimum value in the tensor. Commonly used in classification prediction and extreme value localization. argmax/argmin are tensor methods.
+
+**Parameters:**
+
+.. list-table::
+  :widths: 15 20 65
+  :header-rows: 1
+
+  * - Parameter
+    - Type
+    - Description
+  * - ``dim``
+    - int, None
+    - Dimension along which to find the extreme value index. None returns the global flattened index (default)
+  * - ``keepdim``
+    - bool
+    - Whether to keep the original number of dimensions, default is False
+
+**Returns:** Index tensor (int64 type)
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 5.0, 3.0], [4.0, 2.0, 6.0]])
+    print("Global max index:", x.argmax())
+    # tensor(5)
+
+    print("Max indices along axis 0:", x.argmax(dim=0))
+    # tensor([1, 0, 1])
+
+    print("Min indices along axis 1:", x.argmin(dim=1))
+    # tensor([0, 1])
+
+**where Function**
+
+**Description:** Selects elements based on a condition, or returns the indices of elements that satisfy the condition. Commonly used in conditional filtering, masking, and piecewise function implementation.
+
+**Parameters:**
+
+.. list-table::
+  :widths: 15 30 55
+  :header-rows: 1
+
+  * - Parameter
+    - Type
+    - Description
+  * - ``cond``
+    - TN
+    - Condition tensor (boolean type)
+  * - ``x``
+    - TN, int, float, None
+    - Value selected when condition is True, default is None
+  * - ``y``
+    - TN, int, float, None
+    - Value selected when condition is False, default is None
+
+**Returns:** When both x and y are None, returns a tuple of index tensors (tuple of TN); otherwise returns a tensor with elements selected based on the condition (TN)
+
+**Example:**
 
 .. code-block:: python
 
@@ -1096,6 +1399,87 @@ The where function has two main use cases:
     print(x_grad.grad)
     print("Gradient of y_grad:")
     print(y_grad.grad)
+
+**clamp_ Function**
+
+**Description:** Clamps each element of the tensor in-place to the range [min, max] (in-place operation, directly modifies tensor data). Commonly used in gradient clipping and data range limiting.
+
+**Parameters:**
+
+.. list-table::
+  :widths: 15 30 55
+  :header-rows: 1
+
+  * - Parameter
+    - Type
+    - Description
+  * - ``min``
+    - float, TN, None
+    - Lower bound, can be a scalar or tensor, None means no lower bound, default is None
+  * - ``max``
+    - float, TN, None
+    - Upper bound, can be a scalar or tensor, None means no upper bound, default is None
+
+**Returns:** Returns the tensor itself (self), with elements clamped in-place.
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+    print("Original tensor:", x)
+    # tensor([1., 2., 3., 4., 5.])
+
+    x.clamp_(min=2.0, max=4.0)
+    print("After in-place clamping:", x)
+    # tensor([2., 2., 3., 4., 4.])
+
+**clamp Function**
+
+**Description:** Clamps each element of the tensor to the range [min, max] and returns a new tensor (non-in-place operation, does not modify the original tensor). Commonly used in gradient clipping and data range limiting.
+
+**Parameters:**
+
+.. list-table::
+  :widths: 15 30 55
+  :header-rows: 1
+
+  * - Parameter
+    - Type
+    - Description
+  * - ``x``
+    - TN
+    - Input tensor
+  * - ``min``
+    - float, TN, None
+    - Lower bound, can be a scalar or tensor, None means no lower bound, default is None
+  * - ``max``
+    - float, TN, None
+    - Upper bound, can be a scalar or tensor, None means no upper bound, default is None
+
+**Returns:** Returns a new tensor with elements clamped to the [min, max] range. The original tensor is not modified.
+
+**Example:**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([[1.0, 5.0, 3.0], [4.0, 2.0, 6.0]])
+    print("Original tensor:", x)
+    # tensor([[1., 5., 3.],
+    #         [4., 2., 6.]])
+
+    result = rm.clamp(x, min=2.0, max=5.0)
+    print("Clamped result:", result)
+    # tensor([[2., 5., 3.],
+    #         [4., 2., 5.]])
+
+    print("Original tensor unchanged:", x)
+    # tensor([[1., 5., 3.],
+    #         [4., 2., 6.]])
 
 **sumall Function Efficiency Advantage**
 
