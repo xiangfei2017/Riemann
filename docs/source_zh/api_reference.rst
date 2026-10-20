@@ -904,6 +904,51 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :return: 右移位结果张量
    :rtype: riemann.TN
 
+.. method:: __rand__(other)
+
+   反射张量按位与运算符，等价于 `other & tensor`，左操作数为标量时调用。
+
+   :param other: 另一个张量或标量值
+   :type other: riemann.TN 或 int
+   :return: 按位与结果张量
+   :rtype: riemann.TN
+
+.. method:: __ror__(other)
+
+   反射张量按位或运算符，等价于 `other | tensor`。
+
+   :param other: 另一个张量或标量值
+   :type other: riemann.TN 或 int
+   :return: 按位或结果张量
+   :rtype: riemann.TN
+
+.. method:: __rxor__(other)
+
+   反射张量按位异或运算符，等价于 `other ^ tensor`。
+
+   :param other: 另一个张量或标量值
+   :type other: riemann.TN 或 int
+   :return: 按位异或结果张量
+   :rtype: riemann.TN
+
+.. method:: __rlshift__(other)
+
+   反射张量左移位运算符，等价于 `other << tensor`。
+
+   :param other: 移位位数
+   :type other: riemann.TN 或 int
+   :return: 左移位结果张量
+   :rtype: riemann.TN
+
+.. method:: __rrshift__(other)
+
+   反射张量右移位运算符，等价于 `other >> tensor`。
+
+   :param other: 移位位数
+   :type other: riemann.TN 或 int
+   :return: 右移位结果张量
+   :rtype: riemann.TN
+
 原地运算符
 ``````````
 
@@ -1752,6 +1797,48 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :param x: 输入张量
    :type x: riemann.TN
    :return: 指示实数的布尔张量
+   :rtype: riemann.TN
+
+.. function:: riemann.logical_and(input, other)
+
+   逐元素计算逻辑与，非零值视为 True。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :param other: 参与计算的张量或标量值，形状可与 input 广播
+   :type other: riemann.TN 或 Number
+   :return: 布尔类型张量，两个输入均非零的位置为 True
+   :rtype: riemann.TN
+
+.. function:: riemann.logical_or(input, other)
+
+   逐元素计算逻辑或，非零值视为 True。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :param other: 参与计算的张量或标量值，形状可与 input 广播
+   :type other: riemann.TN 或 Number
+   :return: 布尔类型张量，至少一个输入非零的位置为 True
+   :rtype: riemann.TN
+
+.. function:: riemann.logical_xor(input, other)
+
+   逐元素计算逻辑异或，非零值视为 True。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :param other: 参与计算的张量或标量值，形状可与 input 广播
+   :type other: riemann.TN 或 Number
+   :return: 布尔类型张量，恰好一个输入非零的位置为 True
+   :rtype: riemann.TN
+
+.. function:: riemann.logical_not(input)
+
+   逐元素计算逻辑非，非零值视为 True。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :return: 布尔类型张量，输入为零的位置为 True
    :rtype: riemann.TN
 
 排序运算

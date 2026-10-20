@@ -164,8 +164,8 @@ class StatisticsCollector:
 
 # 全局统计实例
 stats = StatisticsCollector()
-# 判断是否作为独立脚本运行
-IS_RUNNING_AS_SCRIPT = False
+# 判断是否作为独立脚本运行（仅控制过程打印）
+IS_SCRIPT_MODE = __name__ == '__main__'
 
 # 测试自定义梯度功能类
 class TestDefineGradFunc(unittest.TestCase):
@@ -175,15 +175,16 @@ class TestDefineGradFunc(unittest.TestCase):
         """测试前的准备工作"""
         np.random.seed(42)
         self.current_test_name = self._testMethodName
-        if IS_RUNNING_AS_SCRIPT:
-            stats.start_function(self.current_test_name)
+        # 统计在两种运行模式下均完整工作；过程打印仅在脚本模式下输出
+        stats.start_function(self.current_test_name)
+        if IS_SCRIPT_MODE:
             print(f"\n{Colors.HEADER}开始测试: {self.current_test_name}{Colors.ENDC}")
             print(f"{Colors.OKBLUE}测试目标: {self.current_test_name}{Colors.ENDC}")
     
     def tearDown(self):
         """测试结束后的清理工作"""
-        if IS_RUNNING_AS_SCRIPT:
-            stats.end_function()
+        stats.end_function()
+        if IS_SCRIPT_MODE:
             print(f"\n{Colors.OKBLUE}测试完成: {self.current_test_name}{Colors.ENDC}")
     
     def test_track_grad_decorator(self):
@@ -220,7 +221,7 @@ class TestDefineGradFunc(unittest.TestCase):
         ]
         
         for case in test_cases:
-            start_time = time.time()
+            error_msg = None
             try:
                 inputs = case["inputs"]
                 result = case["func"](*inputs)
@@ -240,14 +241,18 @@ class TestDefineGradFunc(unittest.TestCase):
                     x, y = inputs
                     expected_grads = case["expected_grads"]
                     passed = abs(x.grad.data - expected_grads[0]) < 1e-8 and abs(y.grad.data - expected_grads[1]) < 1e-8
-                    print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} 多输入梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}")
+                    if passed:
+                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} 多输入梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}")
+                    else:
+                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} 多输入梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}, 预期值 = {expected_grads}")
             except Exception as e:
                 passed = False
+                error_msg = str(e)
                 print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} {case['name']}: 错误 - {str(e)}")
-            finally:
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case['name'], passed)
-            time_taken = time.time() - start_time
+            # 统计在两种运行模式下均完整工作
+            stats.add_result(case['name'], passed)
+            # 断言传导：确保 unittest/pytest 将比较失败判为测试失败
+            self.assertTrue(passed, case['name'] + (f": {error_msg}" if error_msg else ""))
     
     def test_gradcheck_function(self):
         """测试 gradcheck 函数的功能"""
@@ -328,7 +333,7 @@ class TestDefineGradFunc(unittest.TestCase):
         ]
         
         for case in test_cases:
-            start_time = time.time()
+            error_msg = None
             try:
                 # 特殊处理自定义Function类测试
                 if case["name"] == "自定义Function类测试":
@@ -372,11 +377,12 @@ class TestDefineGradFunc(unittest.TestCase):
                     print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} {case['name']}: 梯度检查失败")
             except Exception as e:
                 passed = False
+                error_msg = str(e)
                 print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} {case['name']}: 错误 - {str(e)}")
-            finally:
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case['name'], passed)
-            time_taken = time.time() - start_time
+            # 统计在两种运行模式下均完整工作
+            stats.add_result(case['name'], passed)
+            # 断言传导：确保 unittest/pytest 将梯度检查失败判为测试失败
+            self.assertTrue(passed, case['name'] + (f": {error_msg}" if error_msg else ""))
 
     def test_function_class(self):
         """测试 Function 类的自定义梯度功能"""
@@ -430,7 +436,7 @@ class TestDefineGradFunc(unittest.TestCase):
         ]
         
         for case in test_cases:
-            start_time = time.time()
+            error_msg = None
             try:
                 inputs = case["inputs"]
                 result = case["func"](*inputs)
@@ -450,18 +456,21 @@ class TestDefineGradFunc(unittest.TestCase):
                     x, y = inputs
                     expected_grads = case["expected_grads"]
                     passed = abs(x.grad.data - expected_grads[0]) < 1e-8 and abs(y.grad.data - expected_grads[1]) < 1e-8
-                    print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} MulFunction 梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}")
+                    if passed:
+                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} MulFunction 梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}")
+                    else:
+                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} MulFunction 梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}, 预期值 = {expected_grads}")
             except Exception as e:
                 passed = False
+                error_msg = str(e)
                 print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} {case['name']}: 错误 - {str(e)}")
-            finally:
-                if IS_RUNNING_AS_SCRIPT:
-                    stats.add_result(case['name'], passed)
-            time_taken = time.time() - start_time
+            # 统计在两种运行模式下均完整工作
+            stats.add_result(case['name'], passed)
+            # 断言传导：确保 unittest/pytest 将比较失败判为测试失败
+            self.assertTrue(passed, case['name'] + (f": {error_msg}" if error_msg else ""))
 
 if __name__ == "__main__":
     print("\n开始测试自定义梯度功能...")
-    IS_RUNNING_AS_SCRIPT = True
     clear_screen()
     
     print("\n" + "="*60)
@@ -486,3 +495,7 @@ if __name__ == "__main__":
         print(f"\n{Colors.FAIL}测试失败！请检查测试结果。{Colors.ENDC}")
     
     print(f"\n所有测试完成，共执行 {stats.total_cases} 个测试用例")
+    
+    # 退出码综合两个来源：unittest 方法级异常 + 统计用例通过率
+    all_cases_passed = stats.total_cases > 0 and stats.passed_cases == stats.total_cases
+    sys.exit(0 if (test_result.wasSuccessful() and all_cases_passed) else 1)

@@ -5,13 +5,18 @@ import sys
 import os
 import time
 
-# 添加项目根目录到Python路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# 添加src目录到Python路径
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 # 导入riemann模块
-import src.riemann as rm
-from src.riemann import tensor, set_grad_enabled
-from src.riemann.dtype import float32, float64, int32, int64, bool_ as riemann_bool, complex64, complex128
+try:
+    import riemann as rm
+    from riemann import tensor, set_grad_enabled
+    from riemann.dtype import float32, float64, int32, int64, bool_ as riemann_bool, complex64, complex128
+except ImportError as e:
+    print(f"无法导入riemann模块: {e}")
+    print("请确保项目路径设置正确")
+    sys.exit(1)
 
 # 检查CUDA是否可用
 CUDA_AVAILABLE = rm.cuda.is_available()
@@ -174,7 +179,7 @@ class StatisticsCollector:
 
 statistics = StatisticsCollector()
 
-# 检测是否作为脚本直接运行
+# 检测是否作为脚本直接运行（仅控制脚本模式下的过程打印，统计在两种模式下均完整工作）
 IS_RUNNING_AS_SCRIPT = __name__ == '__main__'
 
 def compare_values(riemann_result, torch_result, test_name, rtol=1e-05, atol=1e-08):
@@ -220,7 +225,7 @@ def compare_values(riemann_result, torch_result, test_name, rtol=1e-05, atol=1e-
 
 
 def print_test_result(test_name, success=True, error_msg=None, color=True):
-    """打印测试结果"""
+    """打印测试结果并记录统计；失败时抛 AssertionError，确保 unittest/pytest 将比较失败判为测试失败"""
     if success:
         status = f"{Colors.OKGREEN}通过{Colors.ENDC}" if color else "通过"
     else:
@@ -231,8 +236,8 @@ def print_test_result(test_name, success=True, error_msg=None, color=True):
     
     # 直接输出测试结果，移除多余的换行符
     print(f"测试用例: {test_name} - {status}")
-    if not success and error_msg:
-        print(f"  Error: {error_msg}")
+    if not success:
+        raise AssertionError(f"{test_name}" + (f": {error_msg}" if error_msg else ""))
 
 
 class TestOperatorFunctions(unittest.TestCase):
@@ -242,19 +247,15 @@ class TestOperatorFunctions(unittest.TestCase):
         """每个测试用例执行前的设置"""
         set_grad_enabled(True)
         
-        # 获取当前测试方法名
+        # 获取当前测试方法名并开始统计（两种运行模式下统计均完整工作）
         self.current_method = self.id().split('.')[-1]
-        
+        statistics.start_function(self.current_method)
         if IS_RUNNING_AS_SCRIPT:
-            # 开始统计当前函数
-            statistics.start_function(self.current_method)
             print(f"\n{Colors.HEADER}--- 测试方法: {self.current_method} ---{Colors.ENDC}")
     
     def tearDown(self):
         """每个测试用例执行后的清理"""
-        if IS_RUNNING_AS_SCRIPT:
-            # 结束统计当前函数
-            statistics.end_function()
+        statistics.end_function()
     
     def test_arithmetic_operators(self):
         """测试算术运算符：+、-、*、/、取负号、取正号、幂运算"""
@@ -676,10 +677,97 @@ class TestOperatorFunctions(unittest.TestCase):
             trshift_result = tx >> shift_amount
             success, error = compare_values(rshift_result, trshift_result, f"Right shift {riemann_dtype}")
             print_test_result(f"Right shift {riemann_dtype}", success, error)
-            
+
+            # 测试反射运算符（标量在左）
+            rand_result = 5 & x
+            trand_result = 5 & tx
+            success, error = compare_values(rand_result, trand_result, f"Reflected AND {riemann_dtype}")
+            print_test_result(f"Reflected AND {riemann_dtype}", success, error)
+
+            ror_result = 5 | x
+            tror_result = 5 | tx
+            success, error = compare_values(ror_result, tror_result, f"Reflected OR {riemann_dtype}")
+            print_test_result(f"Reflected OR {riemann_dtype}", success, error)
+
+            rxor_result = 7 ^ x
+            trxor_result = 7 ^ tx
+            success, error = compare_values(rxor_result, trxor_result, f"Reflected XOR {riemann_dtype}")
+            print_test_result(f"Reflected XOR {riemann_dtype}", success, error)
+
+            rlshift_result = 2 << x
+            trlshift_result = 2 << tx
+            success, error = compare_values(rlshift_result, trlshift_result, f"Reflected left shift {riemann_dtype}")
+            print_test_result(f"Reflected left shift {riemann_dtype}", success, error)
+
+            rrshift_result = 16 >> x
+            trrshift_result = 16 >> tx
+            success, error = compare_values(rrshift_result, trrshift_result, f"Reflected right shift {riemann_dtype}")
+            print_test_result(f"Reflected right shift {riemann_dtype}", success, error)
+
         # 输出分隔空行
         print()
-        
+
+    def test_logical_functions(self):
+        """测试逻辑运算函数"""
+        # 整数张量（非零视为 True）
+        x = tensor(np.array([1, 0, 3, 0]))
+        y = tensor(np.array([2, 0, 0, 4]))
+        tx = torch.tensor([1, 0, 3, 0])
+        ty = torch.tensor([2, 0, 0, 4])
+
+        and_result = rm.logical_and(x, y)
+        tand_result = torch.logical_and(tx, ty)
+        success, error = compare_values(and_result, tand_result, "logical_and int")
+        print_test_result("logical_and int", success, error)
+
+        or_result = rm.logical_or(x, y)
+        tor_result = torch.logical_or(tx, ty)
+        success, error = compare_values(or_result, tor_result, "logical_or int")
+        print_test_result("logical_or int", success, error)
+
+        xor_result = rm.logical_xor(x, y)
+        txor_result = torch.logical_xor(tx, ty)
+        success, error = compare_values(xor_result, txor_result, "logical_xor int")
+        print_test_result("logical_xor int", success, error)
+
+        not_result = rm.logical_not(x)
+        tnot_result = torch.logical_not(tx)
+        success, error = compare_values(not_result, tnot_result, "logical_not int")
+        print_test_result("logical_not int", success, error)
+
+        # 布尔张量
+        bx = tensor(np.array([True, False, True]))
+        tby = torch.tensor([True, False, True])
+        band_result = rm.logical_and(bx, rm.logical_not(bx))
+        tband_result = torch.logical_and(tby, torch.logical_not(tby))
+        success, error = compare_values(band_result, tband_result, "logical_and bool")
+        print_test_result("logical_and bool", success, error)
+
+        # 浮点张量（非零视为 True）
+        fx = tensor(np.array([0.0, 1.5, -2.0]))
+        tfx = torch.tensor([0.0, 1.5, -2.0])
+        fnot_result = rm.logical_not(fx)
+        tfnot_result = torch.logical_not(tfx)
+        success, error = compare_values(fnot_result, tfnot_result, "logical_not float")
+        print_test_result("logical_not float", success, error)
+
+        # 广播场景
+        b2 = tensor(np.array([[2, 0, 0, 4]]))
+        tb2 = torch.tensor([[2, 0, 0, 4]])
+        bc_result = rm.logical_and(x, b2)
+        tbc_result = torch.logical_and(tx, tb2)
+        success, error = compare_values(bc_result, tbc_result, "logical_and broadcast")
+        print_test_result("logical_and broadcast", success, error)
+
+        # 标量参数（riemann 扩展，torch 不支持标量，与 numpy 结果对比）
+        scalar_result = rm.logical_and(x, 2)
+        expected = np.logical_and(np.array([1, 0, 3, 0]), 2)
+        success = np.array_equal(scalar_result.data, expected) and scalar_result.data.dtype == np.bool_
+        print_test_result("logical_and scalar", success)
+
+        # 输出分隔空行
+        print()
+
     def test_type_conversion_functions(self):
         """测试类型转换函数"""
         # 创建测试数据
@@ -904,11 +992,12 @@ def main():
     result = runner.run(test_suite)
     
     # 打印测试统计摘要
-    if IS_RUNNING_AS_SCRIPT:
-        statistics.print_summary()
+    statistics.print_summary()
     
-    # 根据测试结果设置退出码
-    sys.exit(0 if result.wasSuccessful() else 1)
+    # 退出码综合两个来源：unittest 方法级异常 + 统计用例通过率，
+    # 避免比较失败（不抛异常）时误报通过
+    all_cases_passed = statistics.total_cases > 0 and statistics.passed_cases == statistics.total_cases
+    sys.exit(0 if (result.wasSuccessful() and all_cases_passed) else 1)
 
 if __name__ == '__main__':
     main()

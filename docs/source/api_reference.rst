@@ -904,6 +904,51 @@ Bitwise Operators
    :return: Right shift result tensor
    :rtype: riemann.TN
 
+.. method:: __rand__(other)
+
+   Reflected tensor bitwise AND operator, equivalent to `other & tensor` (invoked when the left operand is a scalar).
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int
+   :return: Bitwise AND result tensor
+   :rtype: riemann.TN
+
+.. method:: __ror__(other)
+
+   Reflected tensor bitwise OR operator, equivalent to `other | tensor`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int
+   :return: Bitwise OR result tensor
+   :rtype: riemann.TN
+
+.. method:: __rxor__(other)
+
+   Reflected tensor bitwise XOR operator, equivalent to `other ^ tensor`.
+
+   :param other: Another tensor or scalar value
+   :type other: riemann.TN or int
+   :return: Bitwise XOR result tensor
+   :rtype: riemann.TN
+
+.. method:: __rlshift__(other)
+
+   Reflected tensor left shift operator, equivalent to `other << tensor`.
+
+   :param other: Number of bits to shift
+   :type other: riemann.TN or int
+   :return: Left shift result tensor
+   :rtype: riemann.TN
+
+.. method:: __rrshift__(other)
+
+   Reflected tensor right shift operator, equivalent to `other >> tensor`.
+
+   :param other: Number of bits to shift
+   :type other: riemann.TN or int
+   :return: Right shift result tensor
+   :rtype: riemann.TN
+
 In-place Operators
 ``````````````````
 
@@ -1752,6 +1797,48 @@ Comparison Operations
    :param x: Input tensor
    :type x: riemann.TN
    :return: Boolean tensor indicating real numbers
+   :rtype: riemann.TN
+
+.. function:: riemann.logical_and(input, other)
+
+   Element-wise logical AND. Non-zero values are treated as True.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param other: Tensor or scalar to compute with, broadcastable to input
+   :type other: riemann.TN or Number
+   :return: Boolean tensor, True where both inputs are non-zero
+   :rtype: riemann.TN
+
+.. function:: riemann.logical_or(input, other)
+
+   Element-wise logical OR. Non-zero values are treated as True.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param other: Tensor or scalar to compute with, broadcastable to input
+   :type other: riemann.TN or Number
+   :return: Boolean tensor, True where at least one input is non-zero
+   :rtype: riemann.TN
+
+.. function:: riemann.logical_xor(input, other)
+
+   Element-wise logical XOR. Non-zero values are treated as True.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :param other: Tensor or scalar to compute with, broadcastable to input
+   :type other: riemann.TN or Number
+   :return: Boolean tensor, True where exactly one input is non-zero
+   :rtype: riemann.TN
+
+.. function:: riemann.logical_not(input)
+
+   Element-wise logical NOT. Non-zero values are treated as True.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: Boolean tensor, True where the input is zero
    :rtype: riemann.TN
 
 Sorting Operations

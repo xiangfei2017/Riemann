@@ -1657,59 +1657,12 @@ Riemann supports various tensor comparison operators for comparing tensor elemen
     print("x > y:", x > y)
     print("x >= y:", x >= y)
 
-Tensor Logical Operators
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-Riemann supports various tensor logical operators for logical operations on boolean tensors.
-
-.. list-table:: Tensor Logical Operators
-  :widths: 15 35 25 25
-  :header-rows: 1
-
-  * - Operator
-    - Description
-    - Example
-    - Result Type
-  * - ``&``
-    - Logical AND
-    - ``x & y``
-    - Boolean tensor
-  * - ``|``
-    - Logical OR
-    - ``x | y``
-    - Boolean tensor
-  * - ``^``
-    - Logical XOR
-    - ``x ^ y``
-    - Boolean tensor
-  * - ``~``
-    - Logical NOT
-    - ``~x``
-    - Boolean tensor
-
-**Logical Operators Example**
-
-.. code-block:: python
-
-    import riemann as rm
-
-    # Create boolean tensors
-    x = rm.tensor([True, True, False, False])
-    y = rm.tensor([True, False, True, False])
-    print("x:", x)
-    print("y:", y)
-
-    # Logical operations
-    print("\nLogical operation results:")
-    print("x & y:", x & y)
-    print("x | y:", x | y)
-    print("x ^ y:", x ^ y)
-    print("~x:", ~x)
-
 Tensor Bitwise Operators
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 Riemann supports various tensor bitwise operators for bitwise operations on integer tensors.
+On boolean tensors, bitwise operations act in the True/False domain and are equivalent to the corresponding logical operations.
+When the left operand is a scalar, the reflected operators (e.g. ``5 & x``, ``True | x``) also work, matching PyTorch behavior.
 
 .. list-table:: Tensor Bitwise Operators
   :widths: 15 35 25 25
@@ -1765,6 +1718,51 @@ Riemann supports various tensor bitwise operators for bitwise operations on inte
     print("x << 1:", x << 1)
     print("x >> 1:", x >> 1)
 
+
+Tensor Logical Functions
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Logical functions evaluate elements as booleans (non-zero is True) and always return boolean tensors, independent of the input dtype.
+They differ from bitwise operators: ``&`` operates on integer bits, while ``logical_and`` treats each element as a whole truth value.
+
+.. list-table:: Tensor Logical Functions
+  :widths: 25 45 30
+  :header-rows: 1
+
+  * - Function
+    - Description
+    - Example
+  * - ``logical_and``
+    - Logical AND
+    - ``rm.logical_and(x, y)``
+  * - ``logical_or``
+    - Logical OR
+    - ``rm.logical_or(x, y)``
+  * - ``logical_xor``
+    - Logical XOR
+    - ``rm.logical_xor(x, y)``
+  * - ``logical_not``
+    - Logical NOT
+    - ``rm.logical_not(x)``
+
+**Logical Functions Example**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # Integer tensors: non-zero treated as True
+    x = rm.tensor([1, 0, 3, 0])
+    y = rm.tensor([2, 0, 0, 4])
+
+    # Logical operations return boolean tensors
+    print(rm.logical_and(x, y))     # tensor([ True, False, False, False])
+    print(rm.logical_or(x, y))      # tensor([ True, False,  True,  True])
+    print(rm.logical_xor(x, y))     # tensor([False, False,  True,  True])
+    print(rm.logical_not(x))        # tensor([False,  True, False,  True])
+
+    # ``other`` can be a scalar, broadcastable like a tensor
+    print(rm.logical_and(x, 2))     # tensor([ True, False,  True, False])
 
 Tensor Check and Comparison Functions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -68,7 +68,6 @@ import inspect
 import warnings
 from typing import Callable, Any, TypeAlias, overload
 from contextlib import contextmanager
-import math
 import numpy as np
 from .cuda import Device, cp, is_in_cuda_context, get_default_device
 from .dtype import *
@@ -2530,6 +2529,26 @@ class TN:
     def __rshift__(self, other):
         other_data = int(other.data if isinstance(other,TN) else other)
         return _wrap_tensor_from_numpy(self.data >> other_data)
+
+    def __rand__(self, other):
+        other_data = other.data if isinstance(other,TN) else other
+        return _wrap_tensor_from_numpy(other_data & self.data)
+
+    def __ror__(self, other):
+        other_data = other.data if isinstance(other,TN) else other
+        return _wrap_tensor_from_numpy(other_data | self.data)
+
+    def __rxor__(self, other):
+        other_data = other.data if isinstance(other,TN) else other
+        return _wrap_tensor_from_numpy(other_data ^ self.data)
+
+    def __rlshift__(self, other):
+        other_data = int(other.data if isinstance(other,TN) else other)
+        return _wrap_tensor_from_numpy(other_data << self.data)
+
+    def __rrshift__(self, other):
+        other_data = int(other.data if isinstance(other,TN) else other)
+        return _wrap_tensor_from_numpy(other_data >> self.data)
     
     def detach(self):
         """
@@ -10252,21 +10271,116 @@ def isnan(x:TN)->TN:
 def isreal(x:TN)->TN:
     """
     检测张量中的实数元素。
-    
+
     参数:
         x: 输入张量
-    
+
     返回:
         布尔类型张量，对应位置为True表示输入张量中该位置是实数
     """
     if not isinstance(x, TN):
         raise TypeError('x must be a tensor')
-    
+
     arrlib = x._get_array_lib()
     value = arrlib.isreal(x.data)
     ret = as_tensor(value,device=x.device)
-    
+
     return ret
+
+def logical_and(input:TN, other:TN|int|float|bool)->TN:
+    """
+    逐元素计算逻辑与，非零值视为 True，返回布尔类型张量。
+
+    参数:
+        input: 输入张量
+        other: 另一个张量或标量值，形状可与 input 广播
+
+    返回:
+        布尔类型张量，对应位置为 True 表示两个输入在该位置均非零
+    """
+    if not isinstance(input, TN):
+        raise TypeError('input must be a tensor')
+
+    if isinstance(other, TN):
+        if other.device != input.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                             f"but found devices: input={input.device}, other={other.device}")
+        other_data = other.data
+    else:
+        other_data = other
+
+    arrlib = input._get_array_lib()
+    value = arrlib.logical_and(input.data, other_data)
+    return as_tensor(value,device=input.device)
+
+def logical_or(input:TN, other:TN|int|float|bool)->TN:
+    """
+    逐元素计算逻辑或，非零值视为 True，返回布尔类型张量。
+
+    参数:
+        input: 输入张量
+        other: 另一个张量或标量值，形状可与 input 广播
+
+    返回:
+        布尔类型张量，对应位置为 True 表示两个输入在该位置至少一个非零
+    """
+    if not isinstance(input, TN):
+        raise TypeError('input must be a tensor')
+
+    if isinstance(other, TN):
+        if other.device != input.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                             f"but found devices: input={input.device}, other={other.device}")
+        other_data = other.data
+    else:
+        other_data = other
+
+    arrlib = input._get_array_lib()
+    value = arrlib.logical_or(input.data, other_data)
+    return as_tensor(value,device=input.device)
+
+def logical_xor(input:TN, other:TN|int|float|bool)->TN:
+    """
+    逐元素计算逻辑异或，非零值视为 True，返回布尔类型张量。
+
+    参数:
+        input: 输入张量
+        other: 另一个张量或标量值，形状可与 input 广播
+
+    返回:
+        布尔类型张量，对应位置为 True 表示两个输入在该位置恰好一个非零
+    """
+    if not isinstance(input, TN):
+        raise TypeError('input must be a tensor')
+
+    if isinstance(other, TN):
+        if other.device != input.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                             f"but found devices: input={input.device}, other={other.device}")
+        other_data = other.data
+    else:
+        other_data = other
+
+    arrlib = input._get_array_lib()
+    value = arrlib.logical_xor(input.data, other_data)
+    return as_tensor(value,device=input.device)
+
+def logical_not(x:TN)->TN:
+    """
+    逐元素计算逻辑非，非零值视为 True，返回布尔类型张量。
+
+    参数:
+        x: 输入张量
+
+    返回:
+        布尔类型张量，对应位置为 True 表示输入张量中该位置为零
+    """
+    if not isinstance(x, TN):
+        raise TypeError('x must be a tensor')
+
+    arrlib = x._get_array_lib()
+    value = arrlib.logical_not(x.data)
+    return as_tensor(value,device=x.device)
 
 def tril(input_tensor: TN, diagonal: int = 0) -> TN:
     """

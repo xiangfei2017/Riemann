@@ -1657,59 +1657,12 @@ Riemann 支持多种张量比较运算符，用于比较张量元素。
     print("x > y:", x > y)
     print("x >= y:", x >= y)
 
-张量逻辑运算符
-~~~~~~~~~~~~~~~~
-
-Riemann 支持多种张量逻辑运算符，用于对布尔张量进行逻辑操作。
-
-.. list-table:: 张量逻辑运算符
-  :widths: 15 35 25 25
-  :header-rows: 1
-
-  * - 运算符
-    - 功能描述
-    - 示例
-    - 结果类型
-  * - ``&``
-    - 逻辑与
-    - ``x & y``
-    - 布尔张量
-  * - ``|``
-    - 逻辑或
-    - ``x | y``
-    - 布尔张量
-  * - ``^``
-    - 逻辑异或
-    - ``x ^ y``
-    - 布尔张量
-  * - ``~``
-    - 逻辑非
-    - ``~x``
-    - 布尔张量
-
-**逻辑运算符示例**
-
-.. code-block:: python
-
-    import riemann as rm
-
-    # 创建布尔张量
-    x = rm.tensor([True, True, False, False])
-    y = rm.tensor([True, False, True, False])
-    print("x:", x)
-    print("y:", y)
-
-    # 逻辑运算
-    print("\n逻辑运算结果:")
-    print("x & y:", x & y)
-    print("x | y:", x | y)
-    print("x ^ y:", x ^ y)
-    print("~x:", ~x)
-
 张量位操作运算符
 ~~~~~~~~~~~~~~~~
 
 Riemann 支持多种张量位操作运算符，用于对整数张量进行位操作。
+对布尔张量，位操作在 True/False 域上进行，效果等价于对应的逻辑运算。
+左操作数为标量时，反射运算符（如 ``5 & x``、``True | x``）同样可用，与 PyTorch 行为一致。
 
 .. list-table:: 张量位操作运算符
   :widths: 15 35 25 25
@@ -1764,6 +1717,51 @@ Riemann 支持多种张量位操作运算符，用于对整数张量进行位操
     print("~x:", ~x)
     print("x << 1:", x << 1)
     print("x >> 1:", x >> 1)
+
+张量逻辑运算函数
+~~~~~~~~~~~~~~~~
+
+逻辑运算函数将元素按布尔值处理（非零为 True），无论输入是什么 dtype 都返回布尔张量。
+它们与位运算符的区别在于：``&`` 作用于整数的二进制位，而 ``logical_and`` 把每个元素整体当作真值处理。
+
+.. list-table:: 张量逻辑运算函数
+  :widths: 25 45 30
+  :header-rows: 1
+
+  * - 函数
+    - 功能描述
+    - 示例
+  * - ``logical_and``
+    - 逻辑与
+    - ``rm.logical_and(x, y)``
+  * - ``logical_or``
+    - 逻辑或
+    - ``rm.logical_or(x, y)``
+  * - ``logical_xor``
+    - 逻辑异或
+    - ``rm.logical_xor(x, y)``
+  * - ``logical_not``
+    - 逻辑非
+    - ``rm.logical_not(x)``
+
+**逻辑运算函数示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 整数张量：非零视为 True
+    x = rm.tensor([1, 0, 3, 0])
+    y = rm.tensor([2, 0, 0, 4])
+
+    # 逻辑运算返回布尔张量
+    print(rm.logical_and(x, y))     # tensor([ True, False, False, False])
+    print(rm.logical_or(x, y))      # tensor([ True, False,  True,  True])
+    print(rm.logical_xor(x, y))     # tensor([False, False,  True,  True])
+    print(rm.logical_not(x))        # tensor([False,  True, False,  True])
+
+    # other 可为标量，与张量一样支持广播
+    print(rm.logical_and(x, 2))     # tensor([ True, False,  True, False])
 
 张量检查和比较函数
 ~~~~~~~~~~~~~~~~~~
