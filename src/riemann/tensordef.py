@@ -2951,7 +2951,35 @@ class TN:
         except Exception as e:
             raise RuntimeError(f"mask with shape {mask.shape} is not broadcastable to tensor shape {self.shape}") from e
     
-    def squeeze(self, dim: int | tuple = None):  # type: ignore
+    def squeeze(self, dim: int|tuple|None = None):
+        """
+        移除张量中大小为1的维度（降维），原张量不变；
+        若最终没有任何维度被移除，则原样返回（同一对象）。
+
+        参数:
+            dim: 指定要移除的维度，各取值行为如下:
+                - None（默认）: 移除所有大小为1的维度。
+                  例如 (2,1,3)→(2,3)，(1,1)→()，(2,3)→(2,3)。
+                - (): 空元组，无操作，直接返回原张量本身。
+                - int: 仅尝试移除该维度。支持负数索引（从末尾计数，
+                  有效范围 [-ndim, ndim-1]），越界抛出 IndexError；
+                  该维度大小不为1时不做任何操作，原样返回（对齐 PyTorch）。
+                  例如形状 (2,1,3): squeeze(1)→(2,3)，
+                  squeeze(0)→(2,1,3)，squeeze(-1)→(2,1,3)。
+                - tuple: 对每个维度独立应用 int 的规则后一次移除:
+                  越界抛出 IndexError；大小不为1的维度静默跳过；
+                  重复指定大小为1的维度抛出 RuntimeError。
+                  所有维度大小均为1时结果为0维标量张量。
+                  例如形状 (2,1,4,1): squeeze((1,3))→(2,4)。
+
+        返回:
+            TN: 移除指定大小为1维度后的张量
+
+        异常:
+            IndexError: 当指定的维度索引越界时抛出
+            RuntimeError: 当元组中重复指定大小为1的维度时抛出
+            TypeError: 当 dim 不是 None、int 或 tuple 时抛出
+        """
         # dim为None时，收集所有大小为1的维度索引，直接交给_squeeze处理
         # 这些维度天然合法（非负、无重复、大小均为1），无需再走校验流程
         if dim is None:
@@ -3010,7 +3038,32 @@ class TN:
             ret.gradfuncs = (_squeeze_backward,)
         return ret
 
-    def unsqueeze(self, dim: int | tuple):
+    def unsqueeze(self, dim: int|tuple|None = None):
+        """
+        在指定位置插入大小为1的新维度（升维），原张量不变。
+        输出维度数 = 原维度数 + 插入的维度个数，元素总数不变。
+
+        参数:
+            dim: 指定插入位置，各取值行为如下:
+                - None 或 (): 无操作，直接返回原张量本身
+                  （框架扩展语义，供 sum/mean 等反向传播复用）。
+                - int: 在该位置插入一个大小为1的维度。支持负数索引
+                  （基于插入后的维度数从末尾计数，有效范围
+                  [-(ndim+1), ndim]，ndim 为原维度数），越界抛出 IndexError。
+                  例如形状 (2,3): unsqueeze(0)→(1,2,3)，
+                  unsqueeze(1)→(2,1,3)，unsqueeze(-1)→(2,3,1)。
+                - tuple: 同时在多个位置插入大小为1的维度。各位置基于
+                  插入后的维度数独立归一化负数索引，重复位置抛出
+                  ValueError。例如形状 (2,3): unsqueeze((0,2))→(1,2,1,3)。
+
+        返回:
+            TN: 插入大小为1维度后的张量
+
+        异常:
+            IndexError: 当指定的维度索引越界时抛出
+            ValueError: 当元组中存在重复的插入位置时抛出
+            TypeError: 当 dim 不是 int 或 tuple 时抛出
+        """
         # 无操作快速路径：dim为None或空元组时直接返回原张量
         if dim is None or dim == ():
             return self
@@ -6850,17 +6903,19 @@ def flip(input: TN, dims:list[int]|tuple[int,...]) -> TN:
     return result
 
 def _get_broadcast_axis(big_shape,small_shape):
-    """获取在广播（broadcasting）操作中需要扩展的轴。
+    """计算 small_shape 广播为 big_shape 时发生广播的轴索引。
 
-    当两个形状不同的数组进行二元运算时，根据广播规则，较小的数组会被扩展到较大数组的形状。
-    此函数计算较小数组需要在哪些轴上进行扩展。
+    广播轴有两个来源：
+    1. 前导维：small_shape 右对齐后缺失的前 dims 个轴；
+    2. 扩展维：对应轴上 small_shape 为 1 而 big_shape 大于 1（1 -> n 广播）。
+    形状相同的轴（含 1 -> 1）不计入。
 
     参数:
-        big_shape: 较大数组的形状（广播后的目标形状）
-        small_shape: 需要广播扩展的较小数组的形状
+        big_shape: 广播结果的目标形状，维数须不少于 small_shape
+        small_shape: 被广播扩展的小形状
 
     返回:
-        包含需要广播扩展的轴索引的元组
+        广播轴索引元组（升序），无广播时为空元组 ()
 
     示例:
         >>> _get_broadcast_axis((2, 2, 2), (2,))
@@ -6873,29 +6928,25 @@ def _get_broadcast_axis(big_shape,small_shape):
         (0, 1, 2)
 
     异常:
-        ValueError: 当两个数组形状不兼容（无法进行广播）时抛出
+        ValueError: 两形状不兼容（无法广播）时抛出
     """
-    # 右对齐缺失的维度
     len_of_bigshape = len(big_shape)
     dims = len_of_bigshape - len(small_shape)
-    
-    # 使用生成器表达式避免创建中间列表，直接转换为元组
-    # 前dims个轴总是需要广播（因为small_shape缺少这些维度）
+
+    # 前 dims 个轴是 small_shape 缺失的前导维，恒为广播轴
     prefix = range(dims)
-    
-    # 计算剩余维度中需要广播的轴
+
+    # 右对齐逐轴比较剩余轴：big_shape 是广播结果，故各轴只能满足
+    # big == small（含 1 -> 1，不计入）或 small == 1（1 -> n，计入）
     suffix = []
     for i in range(dims, len_of_bigshape):
         j = i - dims
-        # big_shape是计算结果数组，是广播后的shape，所以big_shape[i]>=small_shape[j]
-        # 二者不等时，small_shape[j]一定是1，对应的i轴就需要广播
         if big_shape[i] != small_shape[j]:
             if small_shape[j] == 1:
                 suffix.append(i)
             else:
                 raise ValueError(big_shape, small_shape)
-    
-    # 合并结果并转换为元组
+
     if suffix:
         return tuple(prefix) + tuple(suffix)
     return tuple(prefix)
@@ -7853,23 +7904,31 @@ def _matmul_grad_left(result_tensor:TN, i:int)->TN:
 
     # 分支2：1D @ 多维，矩阵乘法 + 批次求和
     if left_ndim == 1 and right_ndim > 1:
+        # grad 为 C 的形状 (..., N)，插入行维变为"单行矩阵"才能与 B^T 参与 @ 运算
         new_grad = grad_value.unsqueeze(-2)  # (..., N) -> (..., 1, N)
         mat_grad = new_grad @ right_tensor.mT.conj()  # (..., 1, N) @ (..., N, K) -> (..., 1, K)
 
-        sum_axes = tuple(range(right_ndim - 1))  # 批次维度 + 新增的1维度
+        # A 无批次维，前 right_ndim-1 个轴（B 的批次维 + 插入的行维）全由广播引入，
+        # 求和消去后恰剩 (K,)，即 A 的形状，无需 reshape
+        sum_axes = tuple(range(right_ndim - 1))
         return sum(mat_grad, dim=sum_axes, keepdim=False)
 
-    # 分支3：多维 @ 1D，einsum 计算外积（产出元素 ≳8192 时比 unsqueeze 方案快，交叉点约 8192）
+    # 分支3：多维 @ 1D，einsum 计算外积
     if left_ndim > 1 and right_ndim == 1:
         return einsum('...m,k->...mk', grad_value, right_tensor.conj())
 
-    # 分支4：多维 @ 多维，标准矩阵乘法（走 BLAS，实测比 einsum 快约 1.0~3.0 倍）
+    # 分支4：多维 @ 多维，标准矩阵乘法 @
+    # 只比较批次部分（[:-2] 剥离矩阵维），找出 A 被广播的批次轴
     broadcast_axes = _get_broadcast_axis(result_tensor.data.shape[:-2], left_tensor.data.shape[:-2])
+    # 乘积形状 = C 的批次 + (M, K)，矩阵部分已是 dA
     mat_grad = grad_value @ right_tensor.mT.conj()
 
     if broadcast_axes:
-        # 归约会消去被广播的 size-1 维度，需还原为 A 的形状
+        # 广播使 A 的一份数据被当成多份参与计算（缺前导批次维或 size-1 维被扩大），
+        # 多份位置的梯度须沿广播轴求和归还为一份；求和后形状随广播类型而异，
+        # 统一 reshape 对齐 A 的形状（_reshape 形状一致时零开销）。
         return sum(mat_grad, dim=broadcast_axes, keepdim=False)._reshape(left_tensor.shape)
+    # 无广播时 mat_grad 已是 A 的形状，直接返回
     return mat_grad
 
 def _matmul_grad_right(result_tensor:TN, i:int)->TN:
@@ -7898,9 +7957,8 @@ def _matmul_grad_right(result_tensor:TN, i:int)->TN:
         场景：A(..., M, K) @ B(K,) -> C(..., M)
         公式：dL/dB[k] = sum(批次维度, m)(grad[..., m] * A[..., m, k])
              = sum(...)(grad @ A)
-        实现：unsqueeze(-1) + @ + sum + squeeze
+        实现：unsqueeze(-1) + @ + sum(批次维度 + 尾部1维)
         性能选择：使用矩阵乘法 + 求和，走 BLAS，实测比 einsum 快约 1.0~1.8 倍
-        注意：矩阵乘法产生 (..., K, 1)，需要 squeeze 得到 (..., K)
     
     分支4 - 多维 @ 多维（批量矩阵乘法）：
         场景：A(..., M, K) @ B(..., K, N) -> C(..., M, N)
@@ -7928,32 +7986,34 @@ def _matmul_grad_right(result_tensor:TN, i:int)->TN:
     if left_ndim == 1 and right_ndim == 1:
         return left_tensor.conj() * grad_value
 
-    # 分支2：1D @ 多维，einsum 计算外积（产出元素 ≳8192 时比 unsqueeze 方案快，交叉点约 8192）
+    # 分支2：1D @ 多维，einsum 计算外积
     if left_ndim == 1 and right_ndim > 1:
-        # 使用 ... 支持任意批次维度，输出形状为 (K, N) 或 (...批次维度..., K, N)
+        # A 是 1D 不贡献批次维，C 的批次即 B 的批次，einsum 直接产出 B 的形状 (..., K, N)
         return einsum('k,...n->...kn', left_tensor.conj(), grad_value)
 
-    # 分支3：多维 @ 1D，矩阵乘法 + 批次求和 + squeeze
+    # 分支3：多维 @ 1D，矩阵乘法 + 批次求和
     if left_ndim > 1 and right_ndim == 1:
+        # grad 为 C 的形状 (..., M)，插入列维变为"单列矩阵"才能与 A^T 参与 @ 运算
         new_grad = grad_value.unsqueeze(-1)  # (..., M) -> (..., M, 1)
         mat_grad = left_tensor.mT.conj() @ new_grad  # (..., K, M) @ (..., M, 1) -> (..., K, 1)
 
-        sum_axes = tuple(range(left_ndim - 2))  # 批次维度
-        if sum_axes:
-            mat_grad = sum(mat_grad, dim=sum_axes, keepdim=False)
+        # B 无批次维，对 A 的批次维（A 被广播时聚合多份梯度）与尾部列维 1
+        # 一次求和后恰剩 (K,)，即 B 的形状，无需 reshape
+        sum_axes = tuple(range(left_ndim - 2)) + (-1,)
+        return sum(mat_grad, dim=sum_axes, keepdim=False)
 
-        # 去掉最后的维度 (K, 1) -> (K,)
-        return mat_grad.squeeze(-1)
-
-    # 4. 多维矩阵与多维矩阵的一般情况：left(..., M, K) @ right(..., K, N) -> result(..., M, N)
-    # 梯度：dL/dright = left.T @ grad
-    # 使用标准矩阵乘法（@），走 BLAS，实测比 einsum 快约 1.0~3.0 倍
+    # 分支4：多维 @ 多维，标准矩阵乘法 @
+    # 只比较批次部分（[:-2] 剥离矩阵维），找出 B 被广播的批次轴
     broadcast_axes = _get_broadcast_axis(result_tensor.data.shape[:-2], right_tensor.data.shape[:-2])
+    # 乘积形状 = C 的批次 + (K, N)，矩阵部分已是 dB
     mat_grad = left_tensor.mT.conj() @ grad_value
 
     if broadcast_axes:
-        # 归约会消去被广播的 size-1 维度，需还原为 B 的形状
+        # 广播使 B 的一份数据被当成多份参与计算（缺前导批次维或 size-1 维被扩大），
+        # 多份位置的梯度须沿广播轴求和归还为一份；求和后形状随广播类型而异，
+        # 统一 reshape 对齐 B 的形状（_reshape 形状一致时零开销）。
         return sum(mat_grad, dim=broadcast_axes, keepdim=False)._reshape(right_tensor.shape)
+    # 无广播时 mat_grad 已是 B 的形状，直接返回
     return mat_grad
 
 def _div_grad_left(result_tensor:TN, i:int)->TN:

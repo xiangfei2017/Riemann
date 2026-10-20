@@ -44,27 +44,21 @@ def clear_screen():
 # 测试统计类
 class StatisticsCollector:
     def __init__(self):
-        self.total_cases = 0
-        self.passed_cases = 0
         self.total_time = 0.0
         self.function_stats = {}
         self.current_function = None
         self.current_function_start_time = 0
         self.current_test_details = []  # 存储当前测试的详细信息
-        
+
     def _start_function(self, function_name):
         self.current_function = function_name
         self.current_function_start_time = time.time()
         self.current_test_details = []  # 重置详细信息列表
-        
+
         if function_name not in self.function_stats:
             self.function_stats[function_name] = {"total": 0, "passed": 0, "time": 0.0, "sub_cases_total": 0, "sub_cases_passed": 0}
-    
+
     def add_result(self, case_name, passed, details=None):
-        self.total_cases += 1
-        if passed:
-            self.passed_cases += 1
-        
         if self.current_function:
             self.function_stats[self.current_function]["total"] += 1
             if passed:
@@ -130,11 +124,22 @@ class StatisticsCollector:
         print("\n" + "="*total_width)
         print(f"{Colors.BOLD}测试统计摘要{Colors.ENDC}")
         print("="*total_width)
-        print(f"总测试用例数: {self.total_cases}")
-        print(f"通过测试用例数: {Colors.OKGREEN if self.passed_cases == self.total_cases else Colors.FAIL}{self.passed_cases}{Colors.ENDC}")
+
+        # 汇总口径与表格行一致：优先统计子用例，仅整组异常无子用例记录时回退组级计数
+        total_cases = passed_cases = 0
+        for func_stats in self.function_stats.values():
+            if func_stats["sub_cases_total"] > 0:
+                total_cases += func_stats["sub_cases_total"]
+                passed_cases += func_stats["sub_cases_passed"]
+            else:
+                total_cases += func_stats["total"]
+                passed_cases += func_stats["passed"]
+
+        print(f"总测试用例数: {total_cases}")
+        print(f"通过测试用例数: {Colors.OKGREEN if passed_cases == total_cases else Colors.FAIL}{passed_cases}{Colors.ENDC}")
         # 避免除零错误
-        pass_rate = (self.passed_cases / self.total_cases * 100) if self.total_cases > 0 else 0
-        print(f"测试通过率: {Colors.OKGREEN if self.passed_cases == self.total_cases else Colors.FAIL}{pass_rate:.2f}%{Colors.ENDC}")
+        pass_rate = (passed_cases / total_cases * 100) if total_cases > 0 else 0
+        print(f"测试通过率: {Colors.OKGREEN if passed_cases == total_cases else Colors.FAIL}{pass_rate:.2f}%{Colors.ENDC}")
         print(f"总耗时: {self.total_time:.4f} 秒")
         print("\n各用例测试详情:")
         print("-"*total_width)
@@ -904,6 +909,12 @@ class TestMatmulFunctions(unittest.TestCase):
                 ("二维列向量与二维行向量乘法 (3, 1) @ (1, 4)", (3, 1), (1, 4)),
                 ("三维张量与一维向量乘法 (2, 3, 4) @ (4,)", (2, 3, 4), (4,)),
                 ("一维向量与三维张量乘法 (3,) @ (2, 3, 4)", (3,), (2, 3, 4)),
+                ("一维向量与批次维为1的三维张量乘法 (3,) @ (1, 3, 4)", (3,), (1, 3, 4)),
+                ("批次维为1的三维张量与一维向量乘法 (1, 3, 4) @ (4,)", (1, 3, 4), (4,)),
+                ("一维向量与四维张量乘法 (3,) @ (2, 3, 3, 4)", (3,), (2, 3, 3, 4)),
+                ("四维张量与一维向量乘法 (2, 3, 3, 4) @ (4,)", (2, 3, 3, 4), (4,)),
+                ("一维向量与含size-1批次维的四维张量乘法 (3,) @ (2, 1, 3, 4)", (3,), (2, 1, 3, 4)),
+                ("含size-1批次维的四维张量与一维向量乘法 (2, 1, 3, 4) @ (4,)", (2, 1, 3, 4), (4,)),
             ]
             
             for device in devices:
@@ -1034,6 +1045,10 @@ class TestMatmulFunctions(unittest.TestCase):
                 ("二维复数行向量与二维复数矩阵乘法", (1, 3), (3, 4)),
                 ("二维复数列向量与二维复数矩阵乘法", (3, 1), (1, 4)),
                 ("二维复数矩阵与一维复数向量乘法", (3, 4), (4,)),
+                ("一维复数向量与批次复数张量乘法 (3,) @ (2, 3, 4)", (3,), (2, 3, 4)),
+                ("批次复数张量与一维复数向量乘法 (2, 3, 4) @ (4,)", (2, 3, 4), (4,)),
+                ("一维复数向量与批次维为1的复数张量乘法 (3,) @ (1, 3, 4)", (3,), (1, 3, 4)),
+                ("批次维为1的复数张量与一维复数向量乘法 (1, 3, 4) @ (4,)", (1, 3, 4), (4,)),
             ]
             
             for device in devices:
