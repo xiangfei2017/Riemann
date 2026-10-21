@@ -1103,6 +1103,13 @@ Activation Function List
      - ``beta``: Smoothness parameter, default 1.0
        ``threshold``: Threshold, default 20
      - Differentiable everywhere, no hard threshold
+   * - ``SwiGLU``
+     - Swish-Gated Linear Unit, fused Linear + SiLU gate
+     - LLaMA / Mistral / Gemma style transformer FFN blocks
+     - ``in_features``: Input feature size
+       ``hidden_features``: Output size, default equals ``in_features``
+       ``bias``: Whether the linear layer uses bias, default True
+     - Single fused linear splits into ``silu(gate) * up``, both paths from one weight matrix
 
 Loss Functions
 ==============
@@ -1660,6 +1667,49 @@ Layer normalization layer, normalizes all features of a single sample.
     # Multi-dimensional input
     x = rm.randn(20, 10, 128)
     output = ln(x)
+    print(output.shape)  # [20, 10, 128]
+
+RMSNorm Layer
+-------------
+
+Root Mean Square Layer Normalization layer. Normalizes by the
+root mean square of the input over specified trailing dimensions,
+without subtracting the mean. Simpler than LayerNorm and often used
+in LLaMA-family models.
+
+**Purpose**:
+
+- Normalizes the input by ``sqrt(mean(x^2) + eps)`` (no mean subtraction)
+- Used as the pre-norm in LLaMA, Mistral and Gemma style transformers
+- Computationally cheaper than LayerNorm while maintaining comparable quality
+- Compatible with ``torch.nn.RMSNorm``
+
+**Parameters**:
+
+- ``normalized_shape``: Dimensions to normalize, can be an integer or tuple
+- ``eps``: Small constant for numerical stability, default 1e-5
+- ``elementwise_affine``: Whether to use a learnable per-dimension
+  affine weight, default True
+
+**Usage Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # Create RMSNorm layer
+    rms = nn.RMSNorm(normalized_shape=128)
+    
+    # Normalizes over the last dimension (128)
+    x = rm.randn(20, 128)
+    output = rms(x)
+    print(output.shape)  # [20, 128]
+    
+    # Normalizes over the last two dimensions together
+    rms2 = nn.RMSNorm(normalized_shape=(10, 128))
+    x = rm.randn(20, 10, 128)
+    output = rms2(x)
     print(output.shape)  # [20, 10, 128]
 
 Embedding Layer

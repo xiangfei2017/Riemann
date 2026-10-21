@@ -393,7 +393,7 @@ def relu(x: TN) -> TN:
 def _relu_backward(result_tensor: TN, i: int) -> TN:
     """梯度计算：输入>0时梯度为1，否则为0"""
     x = result_tensor.fromvars[0]
-    mask = (x > 0).type(x.dtype)
+    mask = (x > 0.0) 
     return result_tensor.grad_value * mask
 
 def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
@@ -433,8 +433,8 @@ def _leaky_relu_backward(result_tensor: TN, i: int) -> TN:
     alpha = result_tensor.parms[0]
     x = result_tensor.fromvars[0]
     # 计算梯度：x>0时梯度为1，否则为alpha
-    mask = (x > 0).type(x.dtype)
-    grad = result_tensor.grad_value * (mask + (1.0 - mask) * alpha)
+    mask = (x > 0.) 
+    grad = result_tensor.grad_value * (mask + (1.0 - mask) * alpha).type(x.dtype)
     return grad
 
 def prelu(x: TN, alpha: TN) -> TN:
@@ -457,13 +457,13 @@ def prelu(x: TN, alpha: TN) -> TN:
 
 def _prelu_grad_x(result_tensor: TN, i: int) -> TN:
     x, alpha = result_tensor.fromvars
-    mask = (x > 0).type(x.dtype)
-    grad_x = result_tensor.grad_value * (mask + (1.0 - mask) * alpha.data)
+    mask = (x > 0.) 
+    grad_x = result_tensor.grad_value * (mask + (1.0 - mask) * alpha).type(x.dtype)
     return grad_x
 
 def _prelu_grad_alpha(result_tensor: TN, i: int) -> TN:
     x, alpha = result_tensor.fromvars
-    mask = (x <= 0)
+    mask = (x <= 0.) 
     # 对alpha的梯度需要求和（假设alpha为标量或向量）
     grad_alpha = sum(result_tensor.grad_value * mask * x)
     return grad_alpha
@@ -488,7 +488,7 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
         requires_grad = is_grad_enabled() and x.requires_grad
     )
     
-    if x.requires_grad:
+    if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = (training, lower, upper, alpha)
         ret.gradfuncs = (_rrelu_grad_x,)
@@ -497,8 +497,8 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
 def _rrelu_grad_x(result_tensor: TN, i: int) -> TN:
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[3]
-    mask = (x > 0).type(x.dtype)
-    grad = result_tensor.grad_value * (mask + (1.0 - mask) * alpha)
+    mask = (x > 0.) 
+    grad = result_tensor.grad_value * (mask + (1.0 - mask) * alpha).type(x.dtype)
     return grad
 
 def elu(x: TN, alpha: float = 1.0) -> TN:
@@ -620,7 +620,7 @@ def _celu_backward(result_tensor: TN, i: int) -> TN:
     # 梯度: 1 (if x > 0) else exp(x / alpha)
     positive_grad = 1.0
     negative_grad = exp(x / alpha)
-    grad = where(x_data > 0, positive_grad, negative_grad)
+    grad = where(x > 0, positive_grad, negative_grad)
     
     return result_tensor.grad_value * grad
 
@@ -3107,6 +3107,59 @@ def layer_norm(input, normalized_shape, weight=None, bias=None, eps=1e-05):
         return normalized * weight_reshaped + bias_reshaped
     else:
         return normalized
+
+def rms_norm(input: TN, normalized_shape, weight: TN | None = None, eps: float = 1e-05) -> TN:
+    """Root Mean Square Layer Normalization (RMSNorm).
+
+    Compatible with torch.nn.functional.rms_norm.
+    Normalizes over the last ``len(normalized_shape)`` dimensions by the
+    root mean square of ``input**2`` (no mean subtraction), optionally
+    applying a per-dimension affine weight.
+
+    Unlike LayerNorm, RMSNorm does **not** subtract the mean and does
+    **not** have a bias term.
+
+    Args:
+        input: The input tensor to normalize.
+        normalized_shape: An int or tuple of ints specifying the trailing
+            dimensions to normalize over (same semantics as LayerNorm).
+        weight: Optional per-channel affine weight. Default: None.
+        eps: Small value added to the mean square to avoid division by zero.
+
+    Returns:
+        TN: RMS-normalized tensor with the same shape as input.
+    """
+    if isinstance(normalized_shape, int):
+        normalized_shape = (normalized_shape,)
+
+    if len(normalized_shape) > len(input.shape):
+        raise ValueError(
+            f"normalized_shape {normalized_shape} is longer than input shape {input.shape}"
+        )
+
+    start_dim = len(input.shape) - len(normalized_shape)
+
+    for i, dim in enumerate(normalized_shape):
+        if input.shape[start_dim + i] != dim:
+            raise ValueError(
+                f"normalized_shape {normalized_shape} does not match input shape "
+                f"{input.shape} starting from dimension {start_dim}"
+            )
+
+    dims = tuple(range(start_dim, len(input.shape)))
+
+    # RMS = sqrt(mean(x^2) + eps)
+    ms = (input ** 2).mean(dim=dims, keepdim=True)
+    inv_rms = 1.0 / sqrt(ms + eps)
+
+    normalized = input * inv_rms
+
+    if weight is not None:
+        reshape_size = (1,) * start_dim + normalized_shape
+        weight_reshaped = weight.reshape(reshape_size)
+        normalized = normalized * weight_reshaped
+
+    return normalized
 
 def embedding(
     input: TN,

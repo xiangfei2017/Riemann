@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 # 导入Riemann库
 import riemann as rm
 from riemann.nn import BatchNorm1d, BatchNorm2d, BatchNorm3d
-from riemann.nn import LayerNorm
+from riemann.nn import LayerNorm, RMSNorm
 from riemann.nn import MSELoss
 
 # 从rm.cuda获取cupy引用和CUDA可用性
@@ -425,6 +425,98 @@ def compare_layer_norm(rm_ln_class, torch_ln, input_data, test_name, stats, **rm
         stats.add_result(f"{test_name}", False, f"测试异常: {str(e)}")
 
 
+def compare_rms_norm(rm_rn_class, torch_rn, input_data, test_name, stats, **rm_rn_kwargs):
+    """测试Riemann RMSNorm与PyTorch RMSNorm的比较（仅weight, 无bias）"""
+    try:
+        devices = ["cpu"]
+        if CUDA_AVAILABLE and TORCH_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            device_test_name = f"{test_name}-{device}"
+
+            rm_rn = rm_rn_class(device=device, **rm_rn_kwargs)
+
+            normalized_shape = torch_rn.normalized_shape
+            eps = torch_rn.eps
+            elementwise_affine = torch_rn.elementwise_affine
+
+            new_torch_rn = tnn.RMSNorm(normalized_shape, eps=eps, elementwise_affine=elementwise_affine)
+
+            if elementwise_affine:
+                new_torch_rn.weight.data = torch_rn.weight.data.clone()
+
+            copy_weights_torch_to_riemann(new_torch_rn, rm_rn)
+
+            input_data_copy = np.array(input_data, copy=True)
+
+            rm_input = rm.tensor(input_data_copy, requires_grad=True, device=device)
+            torch_input = torch.tensor(input_data_copy, requires_grad=True, device=device)
+            new_torch_rn.to(device)
+            rm_rn.to(device)
+
+            stats.add_result(
+                f"{device_test_name}-输入形状",
+                rm_input.shape == torch_input.shape,
+                f"Riemann: {rm_input.shape}, PyTorch: {torch_input.shape}",
+            )
+
+            rm_output = rm_rn(rm_input)
+            torch_output = new_torch_rn(torch_input)
+
+            forward_close = tensor_allclose(rm_output, torch_output, rtol=1e-4, atol=1e-6)
+            stats.add_result(
+                f"{device_test_name}-前向传播",
+                forward_close,
+                f"输出形状: rm={rm_output.shape}, torch={torch_output.shape}",
+            )
+
+            target_data = np.random.randn(*rm_output.shape).astype(np.float32)
+            target_rm = rm.tensor(target_data, device=device)
+            target_torch = torch.tensor(target_data, device=device)
+
+            rm_loss = MSELoss()(rm_output, target_rm)
+            torch_loss = tnn.MSELoss()(torch_output, target_torch)
+
+            loss_close = tensor_allclose(rm_loss, torch_loss, rtol=1e-4, atol=1e-6)
+            stats.add_result(
+                f"{device_test_name}-损失计算",
+                loss_close,
+                f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}",
+            )
+
+            rm_loss.backward()
+            torch_loss.backward()
+
+            gradient_tests_passed = 0
+            gradient_tests_total = 0
+
+            if hasattr(rm_rn, 'weight') and rm_rn.weight is not None:
+                gradient_tests_total += 1
+                weight_close, weight_msg = compare_gradients(new_torch_rn.weight, rm_rn.weight, "weight")
+                stats.add_result(f"{device_test_name}-weight梯度", weight_close, weight_msg)
+                if weight_close:
+                    gradient_tests_passed += 1
+
+            # 检查输入梯度（RMSNorm 唯一的梯度来源）
+            input_grad_close, input_grad_msg = compare_gradients(torch_input.grad, rm_input.grad, "input")
+            stats.add_result(f"{device_test_name}-input梯度", input_grad_close, input_grad_msg)
+            gradient_tests_total += 1
+            if input_grad_close:
+                gradient_tests_passed += 1
+
+            if gradient_tests_total > 0:
+                gradient_pass_rate = gradient_tests_passed / gradient_tests_total * 100
+                stats.add_result(
+                    f"{device_test_name}-梯度总体",
+                    gradient_pass_rate >= 90,
+                    f"梯度通过率: {gradient_pass_rate:.1f}% ({gradient_tests_passed}/{gradient_tests_total})",
+                )
+
+    except Exception as e:
+        stats.add_result(f"{test_name}", False, f"测试异常: {str(e)}")
+
+
 def compare_batch_norm(rm_bn_class, torch_bn, input_data, test_name, stats, mode="train", **rm_bn_kwargs):
     """测试Riemann BatchNorm与PyTorch BatchNorm的比较"""
     try:
@@ -708,6 +800,70 @@ def test_layer_norm(stats=None):
         stats.end_function()
 
 
+def test_rms_norm(stats=None):
+    """测试RMSNorm模块"""
+    if stats is None:
+        stats = StatisticsCollector()
+
+    stats.start_function("RMSNorm模块")
+
+    try:
+        np.random.seed(42)
+
+        test_configs = [
+            {"elementwise_affine": True, "desc": "elementwise_affine=True"},
+            {"elementwise_affine": False, "desc": "elementwise_affine=False"},
+        ]
+
+        # 1D输入 (N, D)
+        print("\n  RMSNorm 1D输入 (N, D):")
+        batch_size, feature_dim = 4, 5
+        input_data_1d = np.random.randn(batch_size, feature_dim).astype(np.float32)
+
+        for i, config in enumerate(test_configs):
+            print(f"    配置{i+1}: {config['desc']}")
+            torch_rn = tnn.RMSNorm(feature_dim, elementwise_affine=config["elementwise_affine"])
+            test_name = f"RMSNorm-1D-配置{i+1}"
+            compare_rms_norm(
+                RMSNorm, torch_rn, input_data_1d, test_name, stats,
+                normalized_shape=feature_dim,
+                elementwise_affine=config["elementwise_affine"],
+            )
+
+        # 2D输入 (N, C, L) - 对最后两维归一化
+        print("\n  RMSNorm 2D输入 (N, C, L):")
+        batch_size, seq_len, feature_dim = 2, 3, 4
+        input_data_2d = np.random.randn(batch_size, seq_len, feature_dim).astype(np.float32)
+
+        for i, config in enumerate(test_configs):
+            print(f"    配置{i+1}: {config['desc']}")
+            torch_rn = tnn.RMSNorm((seq_len, feature_dim), elementwise_affine=config["elementwise_affine"])
+            test_name = f"RMSNorm-2D-配置{i+1}"
+            compare_rms_norm(
+                RMSNorm, torch_rn, input_data_2d, test_name, stats,
+                normalized_shape=(seq_len, feature_dim),
+                elementwise_affine=config["elementwise_affine"],
+            )
+
+        # 3D输入 (N, C, H, W) - 对最后三维归一化
+        print("\n  RMSNorm 3D输入 (N, C, H, W):")
+        batch_size, channels, height, width = 2, 3, 4, 4
+        input_data_3d = np.random.randn(batch_size, channels, height, width).astype(np.float32)
+
+        for i, config in enumerate(test_configs):
+            print(f"    配置{i+1}: {config['desc']}")
+            torch_rn = tnn.RMSNorm((channels, height, width), elementwise_affine=config["elementwise_affine"])
+            test_name = f"RMSNorm-3D-配置{i+1}"
+            compare_rms_norm(
+                RMSNorm, torch_rn, input_data_3d, test_name, stats,
+                normalized_shape=(channels, height, width),
+                elementwise_affine=config["elementwise_affine"],
+            )
+
+    finally:
+        stats.end_function()
+
+
 def test_batch_norm_3d(stats=None):
     """测试BatchNorm3d模块"""
     # 如果没有传入stats实例，创建一个（用于pytest调用）
@@ -760,6 +916,7 @@ def main():
     test_batch_norm_2d(stats)
     test_batch_norm_3d(stats)
     test_layer_norm(stats)
+    test_rms_norm(stats)
     
     # 打印测试汇总
     stats.print_summary()

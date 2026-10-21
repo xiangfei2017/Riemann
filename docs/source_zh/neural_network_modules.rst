@@ -1127,6 +1127,13 @@ ParameterDict
      - ``beta``: 平滑参数，默认 1.0
        ``threshold``: 阈值，默认 20
      - 处处可导，无硬阈值
+   * - ``SwiGLU``
+     - Swish-Gated Linear Unit，融合 Linear + SiLU 门控
+     - LLaMA / Mistral / Gemma 风格 Transformer FFN 模块
+     - ``in_features``: 输入特征大小
+       ``hidden_features``: 输出维度，默认等于 ``in_features``
+       ``bias``: 线性层是否使用偏置，默认 True
+     - 单个融合 Linear 按 hidden 维拆分，执行 ``silu(gate) * up``
 
 损失函数
 ========
@@ -1684,6 +1691,46 @@ LayerNorm 层
     # 多维输入
     x = rm.randn(20, 10, 128)
     output = ln(x)
+    print(output.shape)  # [20, 10, 128]
+
+RMSNorm 层
+----------
+
+均方根层归一化层，对输入张量沿指定尾部维度按均方根进行归一化，
+不做均值减法。相比 LayerNorm 更简洁，是 LLaMA 系列模型中的标准组件。
+
+**用途**：
+
+- 通过 ``sqrt(mean(x^2) + eps)`` 对输入做缩放归一化（不减均值）
+- 作为 LLaMA、Mistral、Gemma 风格 Transformer 的 pre-norm
+- 计算量低于 LayerNorm，精度相当
+- 与 ``torch.nn.RMSNorm`` 接口兼容
+
+**参数**：
+
+- ``normalized_shape``: 需要归一化的维度，可以是整数或元组
+- ``eps``: 数值稳定性的小常数，默认 1e-5
+- ``elementwise_affine``: 是否使用可学习的逐维仿射权重，默认 True
+
+**使用示例**：
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.nn as nn
+    
+    # 创建 RMSNorm 层
+    rms = nn.RMSNorm(normalized_shape=128)
+    
+    # 对最后一个维度（128）做归一化
+    x = rm.randn(20, 128)
+    output = rms(x)
+    print(output.shape)  # [20, 128]
+    
+    # 同时对最后两个维度归一化
+    rms2 = nn.RMSNorm(normalized_shape=(10, 128))
+    x = rm.randn(20, 10, 128)
+    output = rms2(x)
     print(output.shape)  # [20, 10, 128]
 
 Embedding 层

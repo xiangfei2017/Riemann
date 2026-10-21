@@ -54,7 +54,9 @@ This file implements the following key components:
 - BatchNorm2d: 2D batch normalization layer
 - BatchNorm3d: 3D batch normalization layer
 - LayerNorm: Layer normalization
+- RMSNorm: Root Mean Square Layer normalization
 - Embedding: Embedding layer for categorical data
+- SwiGLU: Swish-Gated Linear Unit feed-forward module
 
 All modules implement a PyTorch-compatible interface, making it easy to migrate code
 between Riemann and PyTorch frameworks.
@@ -5340,6 +5342,62 @@ class LayerNorm(Module):
         """
         return f"normalized_shape={self.normalized_shape}, eps={self.eps}, affine={self.affine}"
 
+class RMSNorm(Module):
+    """Root Mean Square Layer Normalization (RMSNorm).
+
+    Compatible with torch.nn.RMSNorm.
+    RMSNorm normalizes over the last ``len(normalized_shape)`` trailing
+    dimensions by the root mean square of the input (only dividing, no
+    mean subtraction), and optionally applies a per-dimension affine
+    weight. Unlike LayerNorm, RMSNorm has **no bias** term.
+
+    Args:
+        normalized_shape: An int or tuple of ints specifying the trailing
+            dimensions to normalize over.
+        eps: Small value added to the mean square to avoid division by zero.
+            Default: 1e-05.
+        elementwise_affine: If True, learn a per-dimension affine weight.
+            Default: True.
+        device: Device for the parameters.
+        dtype: Data type for the parameters.
+
+    Example:
+        >>> m = RMSNorm(10)             # normalize over last dim (10)
+        >>> m = RMSNorm((20, 10))       # normalize over last two dims
+        >>> output = m(input)
+    """
+
+    def __init__(
+        self,
+        normalized_shape,
+        eps: float = 1e-05,
+        elementwise_affine: bool = True,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        self.normalized_shape = (
+            normalized_shape if isinstance(normalized_shape, (tuple, list)) else (normalized_shape,)
+        )
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+
+        if self.elementwise_affine:
+            self.weight = Parameter(
+                ones(self.normalized_shape, device=device, dtype=dtype)
+            )
+        else:
+            self.register_parameter("weight", None)
+
+    def forward(self, input):
+        return rms_norm(input, self.normalized_shape, self.weight, self.eps)
+
+    def extra_repr(self):
+        return (
+            f"normalized_shape={self.normalized_shape}, eps={self.eps}, "
+            f"elementwise_affine={self.elementwise_affine}"
+        )
+
 class Embedding(Module):
     """
     嵌入层 (Embedding Layer)
@@ -5470,4 +5528,50 @@ class Embedding(Module):
         return s
 
 # end of class Embedding
+
+
+class SwiGLU(Module):
+    """SwiGLU activation module.
+
+    Formula: ``out = silu(gate) * up`` where ``[gate, up]`` come from
+    splitting the output of a single linear layer in half along the
+    last dimension.  This is the gated feed-forward block used in
+    LLaMA / Mistral / Gemma style transformers.
+
+    Args:
+        in_features (int): Size of each input sample.
+        hidden_features (int | None): Size of the hidden (output)
+            dimension.  If ``None``, defaults to ``in_features``.
+        bias (bool): Whether the linear layer uses a bias term.
+            Default: ``True``.
+
+    Example:
+        >>> m = SwiGLU(64, 128)
+        >>> x = rm.randn(2, 10, 64)
+        >>> y = m(x)          # shape (2, 10, 128)
+    """
+
+    def __init__(self, in_features, hidden_features=None, bias=True):
+        super().__init__()
+        if hidden_features is None:
+            hidden_features = in_features
+        self.in_features = in_features
+        self.hidden_features = hidden_features
+        self.fc = Linear(in_features, hidden_features * 2, bias=bias)
+
+    def forward(self, input):
+        # Single Linear -> (..., 2 * hidden_features)
+        x = self.fc(input)
+        # Split the last dim into two equal halves
+        gate = x[..., : self.hidden_features]
+        up = x[..., self.hidden_features :]
+        return silu(gate) * up
+
+    def extra_repr(self):
+        return (
+            f"in_features={self.in_features}, "
+            f"hidden_features={self.hidden_features}, "
+            f"bias={self.fc.bias is not None}"
+        )
+
 
