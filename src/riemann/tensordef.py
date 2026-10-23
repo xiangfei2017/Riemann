@@ -69,7 +69,7 @@ import warnings
 from typing import Callable, Any, TypeAlias, overload
 from contextlib import contextmanager
 import numpy as np
-from .cuda import Device, cp, is_in_cuda_context, get_default_device
+from .cuda import Device, cp, get_default_device
 from .dtype import *
 from .gradmode import *
 
@@ -937,18 +937,19 @@ class TN:
                 else:
                     source_data = self.data
                 
-                # 处理non_blocking参数
-                if non_blocking and cp is not None:
-                    # 使用异步流传输
-                    # 创建非阻塞流进行异步数据传输
-                    stream = cp.cuda.Stream(non_blocking=True)
-                    with stream:
+                # 处理non_blocking参数（数组与流都需在目标设备上创建）
+                with cp.cuda.Device(target_device.index):
+                    if non_blocking and cp is not None:
+                        # 使用异步流传输
+                        # 创建非阻塞流进行异步数据传输
+                        stream = cp.cuda.Stream(non_blocking=True)
+                        with stream:
+                            ret.data = cp.asarray(source_data, dtype=target_dtype)
+                        # 注意：异步传输后，如果需要立即使用数据，应调用 stream.synchronize()
+                        # 这里不立即同步，让调用者决定何时同步
+                    else:
+                        # 同步传输（默认）
                         ret.data = cp.asarray(source_data, dtype=target_dtype)
-                    # 注意：异步传输后，如果需要立即使用数据，应调用 stream.synchronize()
-                    # 这里不立即同步，让调用者决定何时同步
-                else:
-                    # 同步传输（默认）
-                    ret.data = cp.asarray(source_data, dtype=target_dtype)
             else:
                 # CUDA -> CPU
                 # 注意：non_blocking 参数主要适用于 CPU -> GPU 传输
@@ -4970,19 +4971,20 @@ def device_context(tensor_obj: TN):
 def _get_device(device:str|int|Device=None)->Device:
     """
     获取设备，该函数根据输入的设备参数，返回一个Device对象。
-    
+
     参数:
         device: 可选，指定设备的字符串表示、整数索引或Device对象。
                 可以是'cpu'、'cuda'、'cuda:0'、从0开始的整数等。
-                如果为None，则默认使用CPU。
-    
+                如果为None，则返回当前默认设备（Device上下文覆盖优先，
+                其次是set_default_device设置的默认设备，最后为CPU）。
+
     返回值:
-        Device: 包含两个属性，type属性为‘cpu'或'cuda'，
+        Device: 包含两个属性，type属性为'cpu'或'cuda'，
                 index属性为CUDA设备索引（CPU为None）。
-    
+
     异常:
         RuntimeError: 当指定的device无效或不可用时抛出
-    """ 
+    """
 
     if device is not None:
         # 先将字符串、整数或Device对象统一转换为Device对象
@@ -4996,15 +4998,42 @@ def _get_device(device:str|int|Device=None)->Device:
         else:
             raise RuntimeError(f"Invalid device type: {type(device).__name__}")
     else:
-        # device参数为None，优先级：device上下文 > 默认设备
-        if cp and is_in_cuda_context():
-            # 当前线程在CUDA设备上下文中，使用当前CUDA设备
-            return_device = Device('cuda', cp.cuda.runtime.getDevice())
-        else:
-            # 否则使用默认设备
-            return_device = get_default_device()
-    
+        # device参数为None，使用当前默认设备
+        return_device = get_default_device()
+
     return return_device
+
+def _get_device_for_input(device:str|int|Device|None, data:any)->Device:
+    """
+    为有数据来源的张量创建函数（tensor/as_tensor）解析目标设备。
+
+    与torch的语义保持一致：
+    - 显式指定device参数时，以该参数为准；
+    - data本身是张量（TN）时，沿用data所在的设备；
+    - data为numpy/cupy数组、列表、标量等无设备语义的来源时，
+      使用当前默认设备（get_default_device）。
+
+    参数:
+        device: 可选，用户显式指定的设备参数，可为None。
+        data: 张量创建函数的data参数。
+
+    返回值:
+        Device: 解析后的目标设备。
+
+    异常:
+        RuntimeError: 当指定的device无效或不可用时抛出
+    """
+    if device is not None:
+        # 显式指定的device参数优先
+        return _get_device(device)
+    if isinstance(data, TN):
+        # 张量输入沿用其所在设备
+        return data.device
+    if cp and isinstance(data, cp.ndarray):
+        # cupy数组沿用其所在设备
+        return Device('cuda', data.device.id)
+    # 其他数据来源（numpy数组、列表、标量等）走默认设备
+    return _get_device(None)
 
 def _get_dtype(dtype:any)->np.dtype:
     """
@@ -5042,18 +5071,18 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
     它将输入数据转换为张量，并可选择设置数据类型和是否需要梯度计算。
     
     参数:
-        data: 类似数组的数据，包括列表、元组、标量、numpy/cupy数组或标量等
+        data: 类似数组的数据，包括列表、元组、标量、numpy/cupy数组、TN张量或标量等
         dtype: 可选，指定张量的数据类型。如果为None，则保留原始数据类型
         device: 可选，指定张量所在的设备，可以是'cpu'、'cuda'、device对象或None
         requires_grad: 可选，布尔值，指定是否需要计算该张量的梯度，默认为False
-            
+
     返回值:
         TN: 新创建的张量对象
-    
+
     异常:
         RuntimeError: 当requires_grad=True但数据类型不是浮点型时抛出
         RuntimeError: 当指定的device无效或不可用时抛出
-    
+
     示例:
         >>> # 从列表创建CPU张量
         >>> x = tensor([1, 2, 3])
@@ -5063,19 +5092,24 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
         >>> z = tensor([1.0, 2.0, 3.0], requires_grad=True)
         >>> # 指定数据类型和设备
         >>> w = tensor([1, 2, 3], dtype=float64, device='cpu')
-    
+
     注意事项:
         1. 参数data为numpy/cupy数组时，新建张量与data参数永远不共享内存
         2. 只有浮点型张量才能启用梯度计算
         3. 创建的张量默认是计算图的叶节点
     """
 
-    # 解析设备索引
-    dev = _get_device(device)
-    use_cuda, target_device_idx = (dev.type == 'cuda'), dev.index
+    # TN输入统一解包为底层数组（tensor不与任何数据来源共享内存）
+    if isinstance(data, TN):
+        data = data.data
+
+    # 解析设备索引：显式device优先，其次沿用数据来源设备，否则用默认设备
+    dev = _get_device_for_input(device, data)
+    use_cuda = (dev.type == 'cuda')
+    target_device_idx = dev.index
     
     # 根据CUPY_AVAILABLE决定检查的数组类型
-    array_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)  # type: ignore
+    array_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)
     if isinstance(data, array_type):
         if dtype is None:
             if use_cuda:
@@ -5164,21 +5198,24 @@ def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = Non
     
     注意事项:
         1. 新建张量与data参数尽可能共享内存。
-           参数data为numpy/cupy数组时，如dtype、device参数未指定，
-           或data数组的dtype、device与指定参数相同，新建张量与数组共享内存
+           当解析后的设备与data所在设备相同、且解析后的dtype与data的
+           dtype一致时（dtype未指定时沿用data的dtype），新建张量与
+           数组共享内存
         2. 只有浮点型张量才能启用梯度计算
         3. 创建的张量默认是计算图的叶节点
     """
 
-    # 解析设备索引
-    dev = _get_device(device)
-    use_cuda, target_device_idx = (dev.type == 'cuda'), dev.index
-    
+    # TN输入先解包为底层数组，再做设备解析
     if isinstance(data, TN):
         data = data.data
 
+    # 解析设备索引：显式device优先，其次沿用数据来源设备，否则用默认设备
+    dev = _get_device_for_input(device, data)
+    use_cuda = (dev.type == 'cuda')
+    target_device_idx = dev.index
+
     # 根据CUPY_AVAILABLE决定检查的数组类型
-    array_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)  # type: ignore
+    array_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)
     if isinstance(data, array_type):
         if dtype is None:
             if use_cuda:
@@ -5323,8 +5360,9 @@ def _wrap_tensor_from_numpy(arr: np.ndarray|cp.ndarray|np.generic|cp.generic, re
     elif cp and isinstance(arr,cp.ndarray):
         data = arr    
     elif cp and isinstance(arr,cp.generic):
-        # 标量转换为数组
-        data = cp.array(arr)
+        # 标量转换为数组（确保在标量所在设备上创建）
+        with arr.device:
+            data = cp.array(arr)
     else:
         raise TypeError("arr need to be numpy or cupy array or scalar")
     
@@ -7530,7 +7568,6 @@ def _max_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
     dim, keepdim, indices, maxmin_val = result_tensor.parms[i]
 
-    arrlib = x._get_array_lib()
     with device_context(x):
         # 使用前向保存的索引/极值，避免重复计算
         max_pos_one_like_x = _create_maxmin_mask(x.data, dim, indices=indices, maxmin_val=maxmin_val)
@@ -7549,7 +7586,6 @@ def _min_backward(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
     dim, keepdim, indices, maxmin_val = result_tensor.parms[i]
 
-    arrlib = x._get_array_lib()
     with device_context(x):
         # 使用前向保存的索引/极值，避免重复计算
         min_pos_one_like_x = _create_maxmin_mask(x.data, dim, indices=indices, maxmin_val=maxmin_val)
@@ -9062,6 +9098,8 @@ def _sort_backward(result_tensor: TN, i: int) -> TN:
     # 创建与输入形状相同的零张量
     grad = zeros_like(input_tensor)
     
+    # 获取输入张量对应的数组库
+    arrlib = input_tensor._get_array_lib()
     # 将梯度按照原始索引放置到正确的位置
     # 使用高级索引将梯度值分配回原始位置
     if sorted_indices.ndim == 1:
@@ -9069,8 +9107,9 @@ def _sort_backward(result_tensor: TN, i: int) -> TN:
         grad[sorted_indices] = grad_value
     else:
         # 多维情况，根据排序维度创建正确的坐标网格
-        # 创建与sorted_indices形状相同的坐标网格
-        coords = list(np.ogrid[tuple(slice(0, size) for size in sorted_indices.shape)])
+        # 创建与sorted_indices形状相同的坐标网格（确保在源张量的设备上创建）
+        with device_context(input_tensor):
+            coords = list(arrlib.ogrid[tuple(slice(0, size) for size in sorted_indices.shape)])
         # 用排序后的索引替换排序维度的坐标
         coords[sort_dim] = sorted_indices.data
         # 使用这些坐标将梯度值分配回原始位置
@@ -9111,8 +9150,9 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
     # numpy的sort不支持stable参数，所以这里忽略stable参数
     sorted_indices = arrlib.argsort(input.data, axis=dim)
     
-    # 创建用于索引的坐标网格
-    coords = list(arrlib.ogrid[tuple(slice(0, size) for size in input.data.shape)])
+    # 创建用于索引的坐标网格（确保在输入张量的设备上创建）
+    with device_context(input):
+        coords = list(arrlib.ogrid[tuple(slice(0, size) for size in input.data.shape)])
     # 用排序后的索引替换指定维度的坐标
     coords[dim] = sorted_indices
     
@@ -10515,7 +10555,7 @@ def sumall(*args) -> TN:
         arrlib = np if isinstance(first_tensor.data, np.ndarray) else cp
     else:
         # 没有张量参数，使用默认设备和对应数组库
-        target_device = get_default_device()
+        target_device = _get_device(None)
         arrlib = np if target_device.type =='cpu' else cp
     
     # 初始化和为0
@@ -10537,8 +10577,9 @@ def sumall(*args) -> TN:
                     # 从GPU转换到CPU
                     processed_arg = cp.asnumpy(arg)
                 elif arrlib is cp and isinstance(arg, np.ndarray):
-                    # 从CPU转换到GPU
-                    processed_arg = cp.asarray(arg)
+                    # 从CPU转换到GPU（确保在目标设备上创建，而非当前活动设备）
+                    with cp.cuda.Device(target_device.index):
+                        processed_arg = cp.asarray(arg)
                 else:
                     # 类型匹配，直接使用
                     processed_arg = arg
@@ -11165,8 +11206,9 @@ def _merge_descriptors(base_desc: _IndexDescriptor, current_desc: _IndexDescript
             # table1 是 CuPy，table2 是 NumPy：将 table1 转换为 NumPy
             table1 = table1.get()
         elif not _is_cupy_array(table1) and _is_cupy_array(table2):
-            # table1 是 NumPy，table2 是 CuPy：将 table1 转换为 CuPy
-            table1 = cp.asarray(table1)
+            # table1 是 NumPy，table2 是 CuPy：将 table1 转换到 table2 所在设备
+            with table2.device:
+                table1 = cp.asarray(table1)
 
         table1_size = table1.size
         valid_mask = (table2 >= 0) & (table2 < table1_size)
@@ -12180,7 +12222,9 @@ def _topk_backward(result_tensor: TN, i: int) -> TN:
     else:
         # 多维情况，根据topk维度创建正确的坐标网格
         arrlib = input_tensor._get_array_lib()
-        coords = list(arrlib.ogrid[tuple(slice(0, size) for size in topk_indices.shape)])
+        with device_context(input_tensor):
+            # 创建坐标网格（确保在源张量的设备上创建）
+            coords = list(arrlib.ogrid[tuple(slice(0, size) for size in topk_indices.shape)])
         # 用topk的索引替换该维度的坐标
         coords[topk_dim] = topk_indices.data
         # 使用这些坐标将梯度值分配回原始位置

@@ -57,6 +57,7 @@ sophisticated machine learning algorithms that rely on matrix operations
 and decompositions.
 """
 
+import contextlib
 import numpy as np
 from .tensordef import *
 import builtins
@@ -2085,18 +2086,19 @@ def _plu(arrlib,a):
     # 创建全零矩阵作为L，然后直接设置对角线为1
     L = arrlib.zeros_like(U)
     # 使用向量化方法设置L的对角线元素为1
-    # 获取对角线索引
-    diag_indices = arrlib.diag_indices(n)
-    # 对于批量矩阵，需要处理批量维度
-    if batch_dims:
-        # 创建批量索引
-        batch_indices = tuple(arrlib.arange(size)[:, None] for size in batch_dims)
-        # 组合批量索引和对角线索引
-        indices = batch_indices + diag_indices
-        L[indices] = 1.0
-    else:
-        # 对于单个矩阵，直接设置对角线
-        L[diag_indices] = 1.0
+    # 获取对角线索引并设置单位阵（从形状/标量创建的数组需在源数组所在设备上创建）
+    with a.device if arrlib is cp else contextlib.nullcontext():
+        diag_indices = arrlib.diag_indices(n)
+        # 对于批量矩阵，需要处理批量维度
+        if batch_dims:
+            # 创建批量索引
+            batch_indices = tuple(arrlib.arange(size)[:, None] for size in batch_dims)
+            # 组合批量索引和对角线索引
+            indices = batch_indices + diag_indices
+            L[indices] = 1.0
+        else:
+            # 对于单个矩阵，直接设置对角线
+            L[diag_indices] = 1.0
 
     # 创建全零矩阵作为P，然后直接设置对角线为1
     P = arrlib.zeros_like(U)
@@ -2141,8 +2143,9 @@ def _plu(arrlib,a):
         else:
             # 对于实矩阵，总是进行行交换
             if batch_dims:
-                # 对于批量矩阵，创建与批量维度匹配的布尔数组
-                should_swap = arrlib.ones(batch_dims, dtype=bool)
+                # 对于批量矩阵，创建与批量维度匹配的布尔数组（确保在源数组所在设备上创建）
+                with a.device if arrlib is cp else contextlib.nullcontext():
+                    should_swap = arrlib.ones(batch_dims, dtype=bool)
             else:
                 # 对于单个矩阵，使用布尔值
                 should_swap = True
@@ -2266,18 +2269,19 @@ def _lu(arrlib, a):
     # 创建全零矩阵作为L，然后直接设置对角线为1
     L = arrlib.zeros_like(U)
     # 使用向量化方法设置L的对角线元素为1
-    # 获取对角线索引
-    diag_indices = arrlib.diag_indices(n)
-    # 对于批量矩阵，需要处理批量维度
-    if batch_dims:
-        # 创建批量索引
-        batch_indices = tuple(arrlib.arange(size)[:, None] for size in batch_dims)
-        # 组合批量索引和对角线索引
-        indices = batch_indices + diag_indices
-        L[indices] = 1.0
-    else:
-        # 对于单个矩阵，直接设置对角线
-        L[diag_indices] = 1.0
+    # 获取对角线索引并设置单位阵（从形状/标量创建的数组需在源数组所在设备上创建）
+    with a.device if arrlib is cp else contextlib.nullcontext():
+        diag_indices = arrlib.diag_indices(n)
+        # 对于批量矩阵，需要处理批量维度
+        if batch_dims:
+            # 创建批量索引
+            batch_indices = tuple(arrlib.arange(size)[:, None] for size in batch_dims)
+            # 组合批量索引和对角线索引
+            indices = batch_indices + diag_indices
+            L[indices] = 1.0
+        else:
+            # 对于单个矩阵，直接设置对角线
+            L[diag_indices] = 1.0
 
     # 对每个矩阵进行消元，使用更清晰的循环结构
     for k in range(n-1):
@@ -2717,7 +2721,8 @@ def qr(A, mode='reduced', *, out=None):
         if mode == 'r':
             # mode='r'时，只计算R矩阵
             R_data = arrlib.linalg.qr(A.data, mode='r')
-            Q_data = arrlib.empty((0,), dtype=A.dtype)
+            with device_context(A):
+                Q_data = arrlib.empty((0,), dtype=A.dtype)
         else:
             # mode='reduced'或'complete'时，计算完整的QR分解
             Q_data, R_data = arrlib.linalg.qr(A.data, mode=mode)

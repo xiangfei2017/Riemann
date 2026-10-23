@@ -219,15 +219,32 @@ class TestTensorCreationFunctions(unittest.TestCase):
 
     def setUp(self):
         if IS_RUNNING_AS_SCRIPT:
-            # 如果作为脚本运行，设置当前测试函数
+            # 如果作为脚本运行，设置当前测试函数并打印分组头
             test_method_name = self._testMethodName
             self.current_test_name = test_method_name
             stats.start_function(test_method_name)
+            print(f"\n{Colors.HEADER}开始测试: {test_method_name}{Colors.ENDC}")
     
     def tearDown(self):
         if IS_RUNNING_AS_SCRIPT:
-            # 如果作为脚本运行，结束当前测试函数的计时
+            # 如果作为脚本运行，结束当前测试函数的计时并打印分组尾
             stats.end_function()
+            print(f"{Colors.OKBLUE}测试完成: {self.current_test_name}{Colors.ENDC}")
+
+    def _run_subcase(self, doc, name, test_func):
+        """运行单个子用例：统计、打印分组明细，失败时向上抛出异常"""
+        case_name = f"{doc} - {name}"
+        start_time = time.time()
+        try:
+            test_func()
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, True)
+                print(f"测试用例: {case_name} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, False, [str(e)])
+                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
     
     def test_zeros(self):
         """测试zeros函数"""
@@ -1105,6 +1122,269 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     stats.add_result(case_name, False, [str(e)])
                     print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                 raise
+
+    def test_tensor_source_data(self):
+        """测试tensor源数据设备解析"""
+        doc = self.test_tensor_source_data.__doc__
+        cp = rm.cuda.cp if rm.cuda.CUPY_AVAILABLE else None
+
+        # 1. 张量输入：独立拷贝、沿用源设备
+        def _tn_copy():
+            a = rm.tensor([1.0, 2.0], dtype=rm.float32)
+            b = rm.tensor(a)
+            self.assertIsNot(b.data, a.data, "tensor(TN)不应共享内存")
+            self.assertEqual(b.device, a.device, "tensor(TN)应沿用源设备")
+            a.data[0] = 99.0
+            self.assertEqual(float(b.data[0]), 1.0, "tensor(TN)应为独立拷贝")
+        self._run_subcase(doc, "张量输入-独立拷贝并沿用源设备", _tn_copy)
+
+        # 2. 张量输入：不继承requires_grad
+        def _tn_no_grad():
+            a = rm.tensor([1.0, 2.0], dtype=rm.float32, requires_grad=True)
+            self.assertFalse(rm.tensor(a).requires_grad, "tensor(TN)不应继承requires_grad")
+        self._run_subcase(doc, "张量输入-不继承requires_grad", _tn_no_grad)
+
+        # 3. 显式device参数覆盖源设备（CPU→CPU路径）
+        def _explicit_to_cpu():
+            a = rm.tensor([1.0, 2.0], dtype=rm.float32)
+            b = rm.tensor(a, device='cpu')
+            self.assertEqual(b.device.type, 'cpu', "显式device应决定目标设备")
+        self._run_subcase(doc, "显式device覆盖源设备-张量到CPU", _explicit_to_cpu)
+
+        if CUDA_AVAILABLE:
+            # 4. 张量输入：沿用CUDA源设备（不被静默移到CPU，与torch对齐）
+            def _tn_cuda_source():
+                c = rm.tensor([3.0, 4.0], dtype=rm.float32, device='cuda:0')
+                d = rm.tensor(c)
+                self.assertEqual(d.device.type, 'cuda', "tensor(TN)应沿用CUDA源设备")
+                self.assertEqual(d.device.index, 0)
+                self.assertIsNot(d.data, c.data, "tensor(TN)不应共享内存")
+                self.assertTrue(np.allclose(d.to('cpu').numpy(), [3.0, 4.0]), "tensor(TN)值应与源一致")
+            self._run_subcase(doc, "张量输入-沿用CUDA源设备", _tn_cuda_source)
+
+            # 5. cupy数组输入：沿用所在设备且独立拷贝
+            def _cupy_source():
+                arr = cp.array([1.0, 2.0], dtype=cp.float32)
+                t = rm.tensor(arr)
+                self.assertEqual(t.device.type, 'cuda', "tensor(cupy数组)应沿用其所在设备")
+                self.assertEqual(t.device.index, 0)
+                self.assertIsNot(t.data, arr, "tensor(cupy数组)不应共享内存")
+                arr[0] = 42.0
+                self.assertEqual(float(t.to('cpu').numpy()[0]), 1.0, "tensor(cupy数组)应为独立拷贝")
+            self._run_subcase(doc, "cupy数组输入-沿用所在设备且独立拷贝", _cupy_source)
+
+            # 6. 显式device覆盖源设备（CPU→CUDA）
+            def _explicit_to_cuda():
+                a = rm.tensor([1.0, 2.0], dtype=rm.float32)
+                b = rm.tensor(a, device='cuda:0')
+                self.assertEqual(b.device.type, 'cuda', "显式device应覆盖源设备")
+                self.assertEqual(b.device.index, 0)
+            self._run_subcase(doc, "显式device覆盖源设备-张量到CUDA", _explicit_to_cuda)
+
+    def test_as_tensor(self):
+        """测试as_tensor函数"""
+        # 构建测试用例列表
+        test_cases = []
+
+        # 基本测试用例
+        test_cases.extend([
+            {"name": "标量创建", "data": 5},
+            {"name": "一维列表创建", "data": [1, 2, 3, 4, 5]},
+            {"name": "二维列表创建", "data": [[1, 2, 3], [4, 5, 6]]},
+            {"name": "numpy数组创建", "data": np.array([1, 2, 3, 4, 5])},
+            {"name": "numpy二维数组创建", "data": np.array([[1, 2, 3], [4, 5, 6]])},
+        ])
+
+        # dtype测试用例
+        test_cases.extend([
+            {"name": "指定float32类型", "data": [1, 2, 3], "dtype": rm.float32},
+            {"name": "指定float64类型", "data": [1, 2, 3], "dtype": rm.float64},
+            {"name": "指定int32类型", "data": [1, 2, 3], "dtype": rm.int32},
+            {"name": "指定int64类型", "data": [1, 2, 3], "dtype": rm.int64},
+            {"name": "指定bool类型", "data": [True, False, True], "dtype": rm.bool_},
+            {"name": "指定complex64类型", "data": [1+2j, 3+4j], "dtype": rm.complex64},
+        ])
+
+        # device测试用例
+        for device in device_list:
+            device_name = device if device is not None else "默认设备"
+            test_cases.append({
+                "name": f"设备:{device_name}",
+                "data": [1, 2, 3],
+                "device": device
+            })
+
+        # requires_grad测试用例
+        test_cases.extend([
+            {"name": "启用梯度计算", "data": [1.0, 2.0, 3.0], "requires_grad": True},
+            {"name": "禁用梯度计算", "data": [1.0, 2.0, 3.0], "requires_grad": False},
+        ])
+
+        # 共享内存语义测试用例（重点）：dtype与设备均匹配时尽可能与源数据共享内存，否则拷贝
+        # （TN/cupy源的无参共享场景已在test_as_tensor_source_data中覆盖，此处不重复）
+        test_cases.extend([
+            {"name": "共享内存-numpy数组无参数", "data": np.array([1.0, 2.0, 3.0], dtype=np.float32), "expect_shared": True},
+            {"name": "共享内存-numpy数组dtype显式匹配", "data": np.array([1.0, 2.0], dtype=np.float64), "dtype": rm.float64, "expect_shared": True},
+            {"name": "共享内存-numpy数组显式cpu设备", "data": np.array([1, 2], dtype=np.int64), "device": "cpu", "expect_shared": True},
+            {"name": "拷贝-numpy数组dtype不同", "data": np.array([1.0, 2.0], dtype=np.float32), "dtype": rm.float64, "expect_shared": False},
+            {"name": "拷贝-列表数据", "data": [1.0, 2.0], "expect_shared": False},
+            {"name": "拷贝-标量数据", "data": 5, "expect_shared": False},
+        ])
+
+        if CUDA_AVAILABLE:
+            test_cases.extend([
+                {"name": "拷贝-numpy数组迁移到CUDA", "data": np.array([1.0], dtype=np.float32), "device": "cuda:0", "expect_shared": False},
+                {"name": "共享内存-cupy数组显式同设备", "data": rm.cuda.cp.array([1.0], dtype=rm.cuda.cp.float32), "device": "cuda:0", "expect_shared": True},
+            ])
+
+        for case in test_cases:
+            case_name = f"{self.test_as_tensor.__doc__} - {case['name']}"
+            start_time = time.time()
+            try:
+                # 提取参数
+                data = case["data"]
+                dtype = case.get("dtype", None)
+                device = case.get("device", None)
+                requires_grad = case.get("requires_grad", False)
+
+                # 使用Riemann创建as_tensor张量
+                rm_tensor = rm.as_tensor(data, dtype=dtype, device=device, requires_grad=requires_grad)
+
+                # 检查基本属性
+                passed = True
+                error_msg = ""
+
+                # 检查数据是否正确
+                # 处理cupy数组的转换
+                if rm.cuda.CUPY_AVAILABLE and isinstance(data, rm.cuda.cp.ndarray):
+                    expected_data = rm.cuda.cp.asnumpy(data)
+                else:
+                    expected_data = np.array(data)
+                if dtype is not None:
+                    expected_data = expected_data.astype(dtype)
+
+                # 根据设备选择正确的比较方式
+                if device and device.startswith("cuda") and CUDA_AVAILABLE:
+                    # CUDA张量需要转换回CPU进行比较
+                    rm_data = rm_tensor.to("cpu").detach().numpy()
+                else:
+                    rm_data = rm_tensor.detach().numpy()
+
+                if not np.array_equal(rm_data, expected_data):
+                    passed = False
+                    error_msg = "值不匹配"
+
+                # 检查数据类型
+                if dtype is not None and rm_tensor.dtype != dtype:
+                    passed = False
+                    error_msg = f"数据类型不匹配: 期望{dtype}, 得到{rm_tensor.dtype}"
+
+                # 检查设备
+                if device:
+                    expected_device = device if isinstance(device, str) else str(device)
+                    actual_device = str(rm_tensor.device)
+
+                    # 处理设备名称格式差异："cuda" vs "cuda:0"
+                    if expected_device == "cuda" and actual_device.startswith("cuda:"):
+                        # 如果期望的是"cuda"，而实际是"cuda:X"，则认为匹配
+                        pass
+                    elif actual_device != expected_device:
+                        passed = False
+                        error_msg = f"设备不匹配: 期望{expected_device}, 得到{actual_device}"
+
+                # 检查requires_grad
+                if rm_tensor.requires_grad != requires_grad:
+                    passed = False
+                    error_msg = f"requires_grad不匹配: 期望{requires_grad}, 得到{rm_tensor.requires_grad}"
+
+                # 检查内存共享语义
+                if "expect_shared" in case:
+                    src = data
+                    if isinstance(src, rm.TN):
+                        shared = rm_tensor.data is src.data
+                    elif rm.cuda.CUPY_AVAILABLE and isinstance(src, rm.cuda.cp.ndarray):
+                        shared = rm_tensor.data is src
+                    elif isinstance(src, np.ndarray):
+                        if rm.cuda.CUPY_AVAILABLE and isinstance(rm_tensor.data, rm.cuda.cp.ndarray):
+                            # 张量在CUDA上而源在CPU，必然不共享（np.shares_memory
+                            # 在cupy数组输入时会走cupy分派并报TypeError，需先短路）
+                            shared = False
+                        else:
+                            shared = rm_tensor.data is src or np.shares_memory(rm_tensor.data, src)
+                    else:
+                        # 列表/标量等无内存语义的来源永不共享
+                        shared = False
+                    if shared != case["expect_shared"]:
+                        passed = False
+                        error_msg = f"内存共享语义不符: 期望{'共享' if case['expect_shared'] else '拷贝'}, 得到{'共享' if shared else '拷贝'}"
+
+                time_taken = time.time() - start_time
+
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, passed)
+                    status = "通过" if passed else "失败"
+                    print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+                    if not passed:
+                        print(f"  错误: {error_msg}")
+
+                self.assertTrue(passed, f"测试用例'{case_name}'失败: {error_msg}")
+
+            except Exception as e:
+                time_taken = time.time() - start_time
+                if IS_RUNNING_AS_SCRIPT:
+                    stats.add_result(case_name, False, [str(e)])
+                    print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
+                raise
+
+    def test_as_tensor_source_data(self):
+        """测试as_tensor源数据设备解析"""
+        doc = self.test_as_tensor_source_data.__doc__
+        cp = rm.cuda.cp if rm.cuda.CUPY_AVAILABLE else None
+
+        # 1. 张量输入：共享内存、requires_grad默认False
+        def _tn_shared():
+            a = rm.tensor([1.0, 2.0], dtype=rm.float32, requires_grad=True)
+            b = rm.as_tensor(a)
+            self.assertIs(b.data, a.data, "as_tensor(TN)在设备与dtype匹配时应共享内存")
+            self.assertEqual(b.device, a.device, "as_tensor(TN)应沿用源设备")
+            self.assertFalse(b.requires_grad, "as_tensor(TN)默认不启用requires_grad")
+            a.data[0] = 42.0
+            self.assertEqual(float(b.data[0]), 42.0, "as_tensor(TN)应共享内存")
+        self._run_subcase(doc, "张量输入-共享内存且不继承requires_grad", _tn_shared)
+
+        # 2. 张量输入：dtype不同则不共享内存
+        def _tn_dtype_change():
+            a = rm.tensor([1.0, 2.0], dtype=rm.float32)
+            b = rm.as_tensor(a, dtype=rm.float64)
+            self.assertEqual(b.dtype, rm.float64, "as_tensor指定dtype应生效")
+            self.assertIsNot(b.data, a.data, "dtype不同时as_tensor(TN)不应共享内存")
+        self._run_subcase(doc, "张量输入-dtype不同则不共享内存", _tn_dtype_change)
+
+        if CUDA_AVAILABLE:
+            # 3. 张量输入：显式device迁移到CUDA
+            def _tn_to_cuda():
+                a = rm.tensor([1.0, 2.0], dtype=rm.float32)
+                b = rm.as_tensor(a, device='cuda:0')
+                self.assertEqual(b.device.type, 'cuda', "as_tensor显式device应迁移到目标设备")
+                self.assertEqual(b.device.index, 0)
+                self.assertTrue(np.allclose(b.to('cpu').numpy(), [1.0, 2.0]))
+            self._run_subcase(doc, "张量输入-显式device迁移到CUDA", _tn_to_cuda)
+
+            # 4. cupy数组输入：同设备同dtype共享内存
+            def _cupy_shared():
+                arr = cp.array([1.0, 2.0], dtype=cp.float32)
+                t = rm.as_tensor(arr)
+                self.assertEqual(t.device.type, 'cuda', "as_tensor(cupy数组)应沿用其所在设备")
+                self.assertIs(t.data, arr, "同设备同dtype时as_tensor(cupy数组)应共享内存")
+            self._run_subcase(doc, "cupy数组输入-同设备共享内存", _cupy_shared)
+
+            # 5. cupy数组输入：指定device迁移到CPU
+            def _cupy_to_cpu():
+                arr = cp.array([3.0, 4.0], dtype=cp.float32)
+                t = rm.as_tensor(arr, device='cpu')
+                self.assertEqual(t.device.type, 'cpu', "as_tensor指定device应迁移到CPU")
+                self.assertTrue(np.allclose(t.numpy(), [3.0, 4.0]))
+            self._run_subcase(doc, "cupy数组输入-指定device迁移到CPU", _cupy_to_cpu)
 
 # 如果作为独立脚本运行
 if __name__ == '__main__':

@@ -161,8 +161,8 @@ stats = StatisticsCollector()
 IS_RUNNING_AS_SCRIPT = __name__ == "__main__"
 
 
-class CUDAUnitTest(unittest.TestCase):
-    """使用 unittest 框架的 CUDA 测试类，用于 pytest 发现"""
+class TestCUDAUnit(unittest.TestCase):
+    """使用 unittest 框架的 CUDA 测试类（Test 前缀以便 pytest 发现）"""
     
     def setUp(self):
         """测试前的准备工作"""
@@ -206,6 +206,16 @@ class CUDAUnitTest(unittest.TestCase):
                     "name": "test_context_device_priority",
                     "description": "测试上下文优先级高于默认设备设置",
                     "test_func": lambda: self._test_context_device_priority()
+                },
+                {
+                    "name": "test_context_overrides_default_device",
+                    "description": "测试上下文覆盖与全局默认设备的双向优先级（含CPU上下文覆盖CUDA默认）",
+                    "test_func": lambda: self._test_context_overrides_default_device()
+                },
+                {
+                    "name": "test_context_cupy_device_switch",
+                    "description": "测试上下文对CuPy当前设备的切换与恢复（含异常退出与无索引解析）",
+                    "test_func": lambda: self._test_context_cupy_device_switch()
                 }
             ]
             
@@ -235,12 +245,12 @@ class CUDAUnitTest(unittest.TestCase):
     def _test_nested_context(self):
         """测试嵌套上下文管理（子用例）"""
         with cuda.Device('cuda:0'):
-            self.assertTrue(cuda.is_in_cuda_context())
+            self.assertEqual(cuda.get_default_device(), 'cuda:0')
             
             with cuda.Device('cpu'):
-                self.assertFalse(cuda.is_in_cuda_context())
+                self.assertEqual(cuda.get_default_device(), 'cpu')
             
-            self.assertTrue(cuda.is_in_cuda_context())
+            self.assertEqual(cuda.get_default_device(), 'cuda:0')
     
     def _test_multi_device_context(self):
         """测试多设备上下文管理（子用例）"""
@@ -256,7 +266,7 @@ class CUDAUnitTest(unittest.TestCase):
     
     def _test_context_exception_handling(self):
         """测试上下文异常处理（子用例）"""
-        original_context = cuda.is_in_cuda_context()
+        original_default_device = cuda.get_default_device()
         
         try:
             with cuda.Device('cuda:0'):
@@ -264,7 +274,7 @@ class CUDAUnitTest(unittest.TestCase):
         except:
             pass
         
-        self.assertEqual(cuda.is_in_cuda_context(), original_context)
+        self.assertEqual(cuda.get_default_device(), original_default_device)
     
     def _test_large_tensor_creation(self):
         """测试大规模张量创建（子用例）"""
@@ -702,6 +712,51 @@ class CUDAUnitTest(unittest.TestCase):
         s.backward()
         self.assertIsNotNone(grad_tensor.grad)
     
+    def test_tensor_creation_device_resolution(self):
+        """测试张量创建函数在上下文/默认设备下的设备解析"""
+        try:
+            # 定义设备解析的子用例（与上下文无关的源数据解析用例在test_000_tensor_creation.py中）
+            creation_test_cases = [
+                {
+                    "name": "test_source_device_beats_context",
+                    "description": "测试有源数据沿用源设备、不受Device上下文影响",
+                    "test_func": lambda: self._test_source_device_beats_context()
+                },
+                {
+                    "name": "test_default_device_for_sourceless_data",
+                    "description": "测试无源数据（列表/标量/numpy数组）使用默认设备",
+                    "test_func": lambda: self._test_default_device_for_sourceless_data()
+                },
+                {
+                    "name": "test_sumall_device_resolution",
+                    "description": "测试sumall无张量参数时使用默认设备",
+                    "test_func": lambda: self._test_sumall_device_resolution()
+                }
+            ]
+            
+            # 运行所有设备解析子用例
+            for case in creation_test_cases:
+                start_time = time.time()
+                try:
+                    case["test_func"]()
+                    passed = True
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case["name"], passed)
+                        print(f"测试用例: {case['description']} - {Colors.OKGREEN}通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+                except Exception as e:
+                    passed = False
+                    if IS_RUNNING_AS_SCRIPT:
+                        stats.add_result(case["name"], passed, [str(e)])
+                        print(f"测试用例: {case['description']} - {Colors.FAIL}失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+                    raise
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("test_tensor_creation_device_resolution", True)
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("test_tensor_creation_device_resolution", False, [str(e)])
+            raise
+    
     def test_basic_cuda_features(self):
         """测试基本 CUDA 功能"""
         try:
@@ -823,6 +878,19 @@ class CUDAUnitTest(unittest.TestCase):
         # 创建 CUDA 设备对象（使用字符串）
         cuda_device2 = cuda.Device('cuda:0')
         self.assertEqual(cuda_device, cuda_device2, "不同方式创建的 CUDA 设备应相同")
+        
+        # CPU设备的index为None
+        self.assertIsNone(cpu_device.index, "CPU设备的index应为None")
+        
+        # 未指定索引的Device('cuda')应解析为当前真实的CUDA设备
+        cuda_device3 = cuda.Device('cuda')
+        self.assertEqual(cuda_device3.index, cuda.current_device(),
+                         "未指定索引时应使用当前CUDA设备")
+        
+        # 设备与字符串/整数比较
+        self.assertEqual(cuda_device, 'cuda:0')
+        self.assertEqual(cuda_device, 0)
+        self.assertNotEqual(cuda_device, 'cpu')
 
     def _test_context_device_priority(self):
         """测试上下文优先级高于默认设备设置（子用例）"""
@@ -842,6 +910,134 @@ class CUDAUnitTest(unittest.TestCase):
         finally:
             # 恢复原始默认设备
             cuda.set_default_device(original_default)
+    
+    def _test_context_overrides_default_device(self):
+        """测试上下文覆盖与全局默认设备的双向优先级（子用例）"""
+        # 保存当前默认设备
+        original_default = cuda.get_default_device()
+        
+        try:
+            # 场景1: CUDA上下文优先于全局默认CPU（正向）
+            cuda.set_default_device('cpu')
+            with cuda.Device('cuda:0'):
+                self.assertEqual(str(cuda.get_default_device()), 'cuda:0')
+                t1 = rm.tensor([1, 2, 3])
+                self.assertEqual(t1.device.type, 'cuda', "CUDA上下文应覆盖全局默认CPU")
+            
+            # 场景2: CPU上下文优先于全局默认CUDA（反向，与torch对齐）
+            cuda.set_default_device('cuda:0')
+            with cuda.Device('cpu'):
+                self.assertEqual(str(cuda.get_default_device()), 'cpu')
+                t2 = rm.tensor([1, 2, 3])
+                self.assertEqual(t2.device.type, 'cpu', "CPU上下文应覆盖全局默认CUDA")
+                t3 = rm.zeros(3)
+                self.assertEqual(t3.device.type, 'cpu', "上下文内无源创建函数应使用上下文设备")
+            
+            # 退出上下文后恢复全局默认
+            self.assertEqual(cuda.get_default_device().type, 'cuda')
+            
+            # 场景3: 上下文内修改全局默认不影响当前上下文覆盖
+            cuda.set_default_device('cpu')
+            with cuda.Device('cuda:0'):
+                cuda.set_default_device('cpu')
+                self.assertEqual(str(cuda.get_default_device()), 'cuda:0',
+                                 "上下文覆盖不应被上下文内的set_default_device修改")
+            # 退出后返回上下文内修改过的全局默认
+            self.assertEqual(cuda.get_default_device().type, 'cpu')
+        finally:
+            cuda.set_default_device(original_default)
+    
+    def _test_context_cupy_device_switch(self):
+        """测试上下文对CuPy当前设备的切换与恢复（子用例）"""
+        original_cupy_device = cuda.current_device()
+        
+        try:
+            # 进入上下文后CuPy当前设备被切换
+            with cuda.Device('cuda:0'):
+                self.assertEqual(cuda.current_device(), 0, "进入CUDA上下文后CuPy当前设备应切换")
+                
+                # 无索引的Device('cuda')应解析为当前真实的CUDA设备
+                dev = cuda.Device('cuda')
+                self.assertEqual(dev.index, 0, "未指定索引的Device('cuda')应使用当前CUDA设备")
+            
+            # 正常退出后恢复
+            self.assertEqual(cuda.current_device(), original_cupy_device,
+                             "退出上下文后CuPy当前设备应恢复")
+            
+            # 异常退出后同样恢复
+            try:
+                with cuda.Device('cuda:0'):
+                    raise ValueError("测试异常")
+            except ValueError:
+                pass
+            self.assertEqual(cuda.current_device(), original_cupy_device,
+                             "异常退出后CuPy当前设备应恢复")
+        finally:
+            cuda.set_device(original_cupy_device)
+    
+    def _test_source_device_beats_context(self):
+        """测试有源数据沿用源设备、不受Device上下文影响（子用例）"""
+        import cupy as cp
+        
+        with cuda.Device('cuda:0'):
+            src = rm.tensor([1.0, 2.0], dtype=rm.float32)
+        
+        # CPU上下文内的GPU张量输入仍沿用源设备（与torch对齐）
+        with cuda.Device('cpu'):
+            t1 = rm.tensor(src)
+            self.assertEqual(t1.device.type, 'cuda', "tensor(TN) 应沿用源设备，不受上下文影响")
+            t2 = rm.as_tensor(src)
+            self.assertEqual(t2.device.type, 'cuda', "as_tensor(TN) 应沿用源设备，不受上下文影响")
+            
+            # cupy数组同理
+            arr = cp.array([3.0, 4.0], dtype=cp.float32)
+            t3 = rm.tensor(arr)
+            self.assertEqual(t3.device.type, 'cuda', "tensor(cupy数组) 应沿用其所在设备，不受上下文影响")
+    
+    def _test_default_device_for_sourceless_data(self):
+        """测试无源数据（列表/标量/numpy数组）使用默认设备（子用例）"""
+        original_default = cuda.get_default_device()
+        
+        try:
+            cuda.set_default_device('cuda:0')
+            
+            # 列表、numpy数组等无源数据走默认设备
+            t1 = rm.tensor([1, 2, 3])
+            self.assertEqual(t1.device.type, 'cuda', "列表数据应创建在默认设备上")
+            t2 = rm.tensor(np.array([1.0, 2.0]))
+            self.assertEqual(t2.device.type, 'cuda', "numpy数组应迁移到默认设备")
+            t3 = rm.zeros(3)
+            self.assertEqual(t3.device.type, 'cuda', "zeros应创建在默认设备上")
+            
+            # 上下文覆盖全局默认
+            with cuda.Device('cpu'):
+                t4 = rm.tensor([1, 2, 3])
+                self.assertEqual(t4.device.type, 'cpu', "上下文内的无源数据应使用上下文设备")
+        finally:
+            cuda.set_default_device(original_default)
+    
+    def _test_sumall_device_resolution(self):
+        """测试sumall无张量参数时使用默认设备（子用例）"""
+        original_default = cuda.get_default_device()
+        
+        try:
+            cuda.set_default_device('cuda:0')
+            
+            # 无张量参数：使用默认设备
+            s = rm.sumall(1, 2, 3)
+            self.assertEqual(s.device.type, 'cuda', "sumall无张量参数时应使用默认设备")
+            
+            # 上下文覆盖默认设备
+            with cuda.Device('cpu'):
+                s2 = rm.sumall(1.0, 2.0)
+                self.assertEqual(s2.device.type, 'cpu', "上下文内sumall应使用上下文设备")
+            
+            # 有张量参数：使用第一个张量的设备
+            t = rm.tensor([1.0, 2.0], device='cpu')
+            s3 = rm.sumall(t, 1)
+            self.assertEqual(s3.device.type, 'cpu', "sumall有张量参数时应使用张量的设备")
+        finally:
+            cuda.set_default_device(original_default)
 
 if __name__ == "__main__":
     # 清屏
@@ -860,7 +1056,7 @@ if __name__ == "__main__":
     print()
     
     # 创建测试套件
-    test_suite = unittest.TestLoader().loadTestsFromTestCase(CUDAUnitTest)
+    test_suite = unittest.TestLoader().loadTestsFromTestCase(TestCUDAUnit)
     
     # 运行测试
     runner = unittest.TextTestRunner(verbosity=0)  # 禁用默认输出，使用自定义输出

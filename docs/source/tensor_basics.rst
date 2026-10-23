@@ -171,7 +171,7 @@ Tensor Function Parameters
 
 - **data**: Can be any data that can be converted to a numpy array, including lists, tuples, scalars, numpy arrays, etc.
 - **dtype**: Optional, specifies the data type of the tensor. If None, the data type is inferred from the input data.
-- **device**: Optional, specifies the device where the tensor is located, can be 'cpu', 'cuda', 'cuda:0', integer index, or Device object. If None, uses the current device context or default device.
+- **device**: Optional, specifies the device where the tensor is located, can be 'cpu', 'cuda', 'cuda:0', integer index, or Device object. If None, the device is resolved from the input data: tensors (TN) and cupy arrays keep their source device, while other data (numpy arrays, lists, scalars) use the default device.
 - **requires_grad**: Optional, boolean value, specifies whether gradient calculation is needed for this tensor, default is False.
 
 **Handling of None parameters**:
@@ -189,9 +189,9 @@ Tensor Function Parameters
 
 **When device is None**:
 
-- First checks if in a CUDA device context
-- If in CUDA context, uses the current CUDA device
-- Otherwise uses the default device (default: CPU)
+- If data is a tensor (TN) or a cupy array, its source device is kept (aligned with PyTorch)
+- Otherwise (numpy arrays, lists, scalars, etc.), the default device is used
+- The default device is resolved as: device override inside a ``with Device(...)`` context > global default set by ``set_default_device`` > CPU
 
 **Usage examples**:
 
@@ -314,7 +314,7 @@ Riemann's Device object can be initialized in the following ways:
 Device Context Management
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Riemann supports using context managers to temporarily switch devices. Tensors created inside the with block will use the specified device by default:
+Riemann supports using context managers to temporarily switch the default device. Inside the with block, the context device becomes the return value of ``get_default_device()`` and takes precedence over the global default set by ``set_default_device()``. Tensors created in the block from device-less data (lists, scalars, numpy arrays) use the context device:
 
 .. code-block:: python
 
@@ -337,6 +337,12 @@ Riemann supports using context managers to temporarily switch devices. Tensors c
     # After exiting context, default device is restored
     w = rm.tensor([10, 11, 12])
     print(w.device)  # cpu
+
+**Notes on context management**:
+
+- The context override takes precedence over the global default device set by ``set_default_device()``
+- The context only affects data without device semantics (lists, scalars, numpy arrays, etc.) and functions without a reference tensor (zeros, ones, etc.); ``tensor()`` and ``as_tensor()`` called with a tensor or a cupy array always keep its source device, regardless of the context
+- For a CUDA device, entering the context also switches the current CuPy device, so native CuPy code inside the block runs on the same device
 
 **Advantages of context management**:
 
@@ -461,7 +467,7 @@ When creating special tensors, if you don't specify `dtype` and `device` paramet
 
 - When `dtype` and `device` parameters are not specified, the function behavior is consistent with the `tensor()` function
 - Default data type is `float32`
-- Default device is the current device context or default device setting
+- Default device follows ``get_default_device()``: the device override inside a ``with Device(...)`` context takes precedence, then the global default set by ``set_default_device``, then CPU
 
 **Reference Tensor-based "like" Functions** (e.g., zeros_like, ones_like, etc.):
 
@@ -482,12 +488,12 @@ When creating special tensors, if you don't specify `dtype` and `device` paramet
 
 **Default Device (device)**:
 
-- When not specifying the `device` parameter, the current device context or default device setting is used
-- This is consistent with the default behavior of the `tensor()` function
+- When not specifying the `device` parameter, the default device is used (the device override inside a ``with Device(...)`` context takes precedence over the global default device)
+- This is consistent with the default behavior of the `tensor()` function for device-less data
 
 .. code-block:: python
 
-    # Default uses current device context or default device
+    # Default uses the default device (context override > global default)
     x = rm.zeros(3, 4)
     print(x.device)  # Defaults to cpu
     

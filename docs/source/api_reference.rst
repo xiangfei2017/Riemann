@@ -2549,11 +2549,16 @@ CUDA Support
 
    .. method:: __enter__()
 
-      Enter the device context.
+      Enter the device context. Within the context, this device becomes
+      the return value of :func:`riemann.get_default_device`, so tensor
+      creation functions called without an explicit ``device`` argument
+      use this device (aligned with ``torch.device`` context semantics).
+      For a CUDA device, the current CuPy device is also switched.
 
    .. method:: __exit__(exc_type, exc_val, exc_tb)
 
-      Exit the device context.
+      Exit the device context and restore the default device and the
+      current CUDA device to their states before entering.
 
    .. method:: __eq__(other)
 
@@ -2615,13 +2620,6 @@ CUDA Support
    :param device: Device to synchronize, default is current device
    :type device: str, int, or Device, optional
 
-.. function:: riemann.cuda.is_in_cuda_context()
-
-   Check if the current thread is in a CUDA device context.
-
-   :return: True if in a CUDA device context, False otherwise
-   :rtype: bool
-
 .. function:: riemann.memory_allocated(device_idx=None)
 
    Return the amount of memory allocated on the given CUDA device.
@@ -2635,12 +2633,19 @@ CUDA Support
 
    Get the default device for tensor creation.
 
-   :return: The default device
+   Priority: the device override inside a ``with Device(...)`` context
+   takes precedence over the global default device set by
+   :func:`riemann.set_default_device`, which in turn takes precedence
+   over CPU (aligned with PyTorch).
+
+   :return: The current default device
    :rtype: Device
 
 .. function:: riemann.set_default_device(device)
 
-   Set the default device for tensor creation.
+   Set the global default device for tensor creation. The device override
+   inside a ``with Device(...)`` context takes precedence over this
+   global default.
 
    :param device: The device to set as default. Can be:
        - String: 'cpu', 'cuda' or 'cuda:0', 'cuda:1'

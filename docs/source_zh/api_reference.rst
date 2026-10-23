@@ -2658,11 +2658,14 @@ CUDA支持
 
    .. method:: __enter__()
 
-      进入设备上下文。
+      进入设备上下文。在上下文内，该设备成为
+      :func:`riemann.get_default_device` 的返回值，未显式指定
+      ``device`` 参数的张量创建函数将使用该设备（与 ``torch.device``
+      上下文语义对齐）。若为CUDA设备，同时切换CuPy的当前设备。
 
    .. method:: __exit__(exc_type, exc_val, exc_tb)
 
-      退出设备上下文。
+      退出设备上下文，将默认设备与CUDA当前设备恢复为进入前的状态。
 
    .. method:: __eq__(other)
 
@@ -2724,13 +2727,6 @@ CUDA支持
    :param device: 要同步的设备，默认为当前设备
    :type device: str, int, or Device, optional
 
-.. function:: riemann.cuda.is_in_cuda_context()
-
-   检查当前线程是否在CUDA设备上下文中。
-
-   :return: 如果在CUDA设备上下文中返回True，否则返回False
-   :rtype: bool
-
 .. function:: riemann.memory_allocated(device_idx=None)
 
    返回给定CUDA设备上分配的内存量。
@@ -2744,12 +2740,17 @@ CUDA支持
 
    获取张量创建的默认设备。
 
-   :return: 默认设备
+   优先级：``with Device(...)`` 上下文内的设备覆盖优先于
+   :func:`riemann.set_default_device` 设置的全局默认设备，
+   全局默认设备又优先于CPU（与PyTorch一致）。
+
+   :return: 当前的默认设备
    :rtype: Device
 
 .. function:: riemann.set_default_device(device)
 
-   设置张量创建的默认设备。
+   设置张量创建的全局默认设备。``with Device(...)`` 上下文内的
+   设备覆盖优先于该全局默认设备。
 
    :param device: 要设置为默认的设备。可以是：
        - 字符串：'cpu'、'cuda'或'cuda:0'、'cuda:1'

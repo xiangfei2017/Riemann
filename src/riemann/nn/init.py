@@ -39,7 +39,7 @@ from typing import Literal, Optional, Union
 
 import numpy as np
 
-from ..tensordef import TN, no_grad
+from ..tensordef import TN, no_grad, device_context
 from ..cuda import cp
 
 
@@ -379,7 +379,8 @@ def eye_(tensor: TN) -> TN:
     
     # 直接操作底层数据，与PyTorch的out参数行为一致
     arrlib = np if tensor.device.type == 'cpu' else cp
-    tensor.data = arrlib.eye(tensor.shape[0], tensor.shape[1], dtype=tensor.dtype)
+    with device_context(tensor):
+        tensor.data = arrlib.eye(tensor.shape[0], tensor.shape[1], dtype=tensor.dtype)
     return tensor
 
 

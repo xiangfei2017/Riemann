@@ -68,10 +68,10 @@ except ImportError:
 
 import threading
 
-# 线程本地存储，用于跟踪当前是否在CUDA设备上下文中
-_thread_local = threading.local()
+# 线程本地存储，用于 Device 上下文管理器对默认设备的临时覆盖
+_tls = threading.local()
 
-# 全局默认设备
+# 进程级全局默认设备（由 set_default_device 写入）
 _default_device = None
 
 class Device:
@@ -97,8 +97,9 @@ class Device:
             # 显式传入index参数
             self.index = index
         elif self.type == 'cuda':
-            # 检查是否在CUDA上下文中，如果是则使用当前设备索引
-            if CUPY_AVAILABLE and is_in_cuda_context():
+            # 未显式指定索引时，感知当前真实的CUDA设备
+            # （包括用户直接使用cp.cuda.Device(...)切换的情况）
+            if CUPY_AVAILABLE:
                 self.index = current_device()
             else:
                 self.index = 0
@@ -139,33 +140,34 @@ class Device:
     
     def __enter__(self):
         """
-        Enter the device context.
+        进入设备上下文。
+
+        在上下文内，该设备成为 get_default_device() 的返回值，
+        未显式指定device参数的张量创建函数将使用该设备（与torch的
+        torch.device上下文语义对齐）。若为CUDA设备，同时切换CuPy
+        的当前设备。
         """
-        # Save current state
-        self._old_in_cuda_context = getattr(_thread_local, 'in_cuda_context', False)
+        # 保存旧的覆盖设备，并将当前设备设为上下文覆盖
+        self._old_override = getattr(_tls, 'override', None)
+        _tls.override = self
+
         self._old_device = None
-        
-        if self.type == 'cpu':
-            # Using CPU, set context flag to False
-            _thread_local.in_cuda_context = False
-        else:
-            # Using CUDA, save current device and switch to this device
-            if CUPY_AVAILABLE:
-                self._old_device = current_device()
-                set_device(self.index)
-            _thread_local.in_cuda_context = True
-        
+        if self.type == 'cuda' and CUPY_AVAILABLE:
+            # 保存当前CUDA设备并切换到目标设备
+            self._old_device = current_device()
+            set_device(self.index)
+
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """
-        Exit the device context.
+        退出设备上下文，恢复进入前的默认设备覆盖与CUDA当前设备。
         """
-        # Restore thread-local context state
-        _thread_local.in_cuda_context = self._old_in_cuda_context
-        
-        # Restore device if needed
-        if hasattr(self, '_old_device') and self._old_device is not None:
+        # 恢复线程本地的覆盖设备
+        _tls.override = self._old_override
+
+        # 恢复进入前的CUDA当前设备
+        if self._old_device is not None:
             set_device(self._old_device)
     
     def synchronize(self):
@@ -305,15 +307,6 @@ def synchronize(device: str | int | Device = None) -> None:
         dev = Device(device)
         dev.synchronize()
 
-def is_in_cuda_context() -> bool:
-    """
-    Checks if the current thread is inside a CUDA device context.
-    
-    Returns:
-        bool: True if inside a CUDA device context, False otherwise.
-    """
-    return getattr(_thread_local, 'in_cuda_context', False)
-
 def memory_allocated(device_idx: int | None = None) -> int:
     """
     Returns the amount of memory allocated on the given CUDA device.
@@ -339,18 +332,25 @@ def memory_allocated(device_idx: int | None = None) -> int:
 
 def get_default_device() -> Device:
     """
-    Gets the default device for tensor creation.
-    
-    Returns:
-        Device: The default device.
+    获取张量创建时使用的默认设备。
+
+    优先级：Device上下文覆盖（with Device(...)）>
+    set_default_device设置的全局默认设备 > CPU，与torch的行为一致。
+
+    返回值:
+        Device: 当前的默认设备。
     """
-    global _default_device
-    
-    # 如果未设置默认设备，返回CPU
-    if _default_device is None:
-        return Device('cpu')
-    
-    return _default_device
+    # Device上下文内的临时覆盖优先
+    override = getattr(_tls, 'override', None)
+    if override is not None:
+        return override
+
+    # 其次是全局默认设备
+    if _default_device is not None:
+        return _default_device
+
+    # 未设置任何默认设备时返回CPU
+    return Device('cpu')
 
 def set_default_device(device: str | int | Device) -> None:
     """
