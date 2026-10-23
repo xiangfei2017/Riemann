@@ -1670,12 +1670,14 @@ class TestActivationFunctions(unittest.TestCase):
                             bias=bias,
                         )
                         # 复制权重，确保参数完全一致
+                        # 注意：CUDA张量的data是CuPy数组，不允许np.array隐式转换，
+                        # 须先.cpu()搬到主机内存再取NumPy数组
                         torch_swiglu.fc.weight.data = torch.tensor(
-                            np.array(rm_swiglu.fc.weight.data)
+                            rm_swiglu.fc.weight.cpu().detach().numpy()
                         )
                         if bias:
                             torch_swiglu.fc.bias.data = torch.tensor(
-                                np.array(rm_swiglu.fc.bias.data)
+                                rm_swiglu.fc.bias.cpu().detach().numpy()
                             )
                         if device != "cpu":
                             torch_swiglu = torch_swiglu.to(device)
