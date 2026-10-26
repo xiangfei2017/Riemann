@@ -404,9 +404,9 @@ def _vector_norm(A, p):
         return min_result.values if hasattr(min_result, 'values') else min_result
     elif isinstance(p, (int, float)) and p > 0:
         abs_A = abs(A)
-        float_p = get_default_dtype().type(p)
+        float_p = A.dtype.type(p)
         value = abs_A ** float_p
-        return sum(value) ** (1.0/float_p)
+        return sum(value) ** A.dtype.type(1.0 / p)
     elif p == -1:
         abs_A = abs(A)
         # 避免除以零
@@ -517,9 +517,9 @@ def _compute_axis_norm(A, p, dim, keepdim):
         return min_result.values if hasattr(min_result, 'values') else min_result
     elif isinstance(p, (int, float)) and p > 0:
         abs_A = abs(A)
-        float_p = get_default_dtype().type(p)
+        float_p = A.dtype.type(p)
         value = abs_A ** float_p
-        return sum(value, dim=dim, keepdim=keepdim) ** (1.0/float_p)
+        return sum(value, dim=dim, keepdim=keepdim) ** A.dtype.type(1.0 / p)
     elif p == -1:
         abs_A = abs(A)
         # 避免除以零
@@ -866,9 +866,9 @@ def _compute_multi_axis_norm(A: TN, p: int | float | str | None, dim: tuple, kee
     elif isinstance(p, (int, float)) and p > 0:
         # 通用p-范数
         abs_A = abs(A)
-        float_p = get_default_dtype().type(p)
+        float_p = A.dtype.type(p)
         value = abs_A ** float_p
-        return sum(value, dim=dim, keepdim=keepdim) ** (1.0/float_p)
+        return sum(value, dim=dim, keepdim=keepdim) ** A.dtype.type(1.0 / p)
     elif p == float('inf'):
         # 多轴无穷范数：最大值
         abs_A = abs(A)

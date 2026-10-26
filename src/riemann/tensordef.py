@@ -363,22 +363,45 @@ class TN:
 
     def __array__(self, dtype=None, copy=False):
         '''
-        numpy函数处理TN张量的参数时，自动调用张量的该方法函数将张量转换为numpy数组。
+        numpy/cupy的array asarray函数处理TN张量参数时，自动调用张量的该接口函数将张量转换为numpy/cupy数组。
+        该接口仅返回 CPU 端的 numpy ndarray（np.array 原生不支持 GPU 数组自动拉回）。
         '''
-        # 获取数据
-        arr = self.data
+        # cupy 数据：cupy.ndarray 未实现返回 numpy 数组的 __array__，显式 cp.asnumpy 拉回 CPU
+        if cp is not None and isinstance(self.data, cp.ndarray):
+            arr = cp.asnumpy(self.data)
+        else:
+            arr = self.data
         
-        # 根据指定的dtype转换数据
-        if dtype is not None and arr.dtype != dtype:
-            arr = arr.astype(dtype)
-            copy = False  # 类型转换后，已创建新数组
-        
-        # 处理copy参数
-        if copy:
-            arr = arr.copy()
+        # astype(None) 会被 numpy 解析为默认类型 float64（np.dtype(None) == float64），
+        # dtype 为 None 时必须显式归位为原 dtype，使零拷贝/复制语义与显式传入 dtype 时一致
+        if dtype is None:
+            dtype = arr.dtype
+        # numpy 2.x 可能以 copy=None（NEP 56 "copy if needed"）调用 __array__，
+        # astype 对 copy=None 的解析不保证零拷贝，归一为 bool 保持语义明确
+        return arr.astype(dtype, copy=bool(copy))
 
-        return arr
-
+    def __buffer__(self, flags):
+        """供 memoryview(obj)/bytes(obj) 及 numpy缓冲区转换调用；GPU数据先经__array__拉回CPU"""
+        return memoryview(self.__array__())
+    
+    def __release_buffer__(self, buffer):
+        pass
+    
+    @property
+    def __cuda_array_interface__(self):
+        """供 cupy / torch(cuda) / numba 等调用"""
+        if hasattr(self.data, '__cuda_array_interface__'):
+            return self.data.__cuda_array_interface__
+        raise AttributeError("Data is not on GPU")
+    
+    def __dlpack__(self, stream=None):
+        """供 torch.from_dlpack / jax.dlpack 等调用"""
+        return self.data.__dlpack__(stream=stream)
+    
+    def __dlpack_device__(self):
+        """返回 DLPack 设备信息"""
+        return self.data.__dlpack_device__()
+    
     def __hash__(self):
         """
         使TN对象可哈希，允许将其放入set或用作字典键。
@@ -5026,14 +5049,20 @@ def _get_device_for_input(device:str|int|Device|None, data:any)->Device:
     if device is not None:
         # 显式指定的device参数优先
         return _get_device(device)
-    if isinstance(data, TN):
-        # 张量输入沿用其所在设备
-        return data.device
-    if cp and isinstance(data, cp.ndarray):
-        # cupy数组沿用其所在设备
-        return Device('cuda', data.device.id)
-    # 其他数据来源（numpy数组、列表、标量等）走默认设备
-    return _get_device(None)
+    
+    # 通过 __dlpack_device__ 获取 device（不导入任何框架）
+    if hasattr(data, '__dlpack_device__'):
+        try:
+            dev_type, dev_id = data.__dlpack_device__()
+            if dev_type == 2:  # kDLCUDA
+                device = f'cuda:{dev_id}' if dev_id > 0 else 'cuda'
+            elif dev_type == 1:  # kDLCPU
+                device = 'cpu'
+            # 其他 dev_type（如 kDLROCM=3、kDLMetal=5）不识别，保持 None 走默认设备
+        except (TypeError, AttributeError, ValueError):
+            pass  # __dlpack_device__ 签名异常或返回值非法
+    
+    return _get_device(device)
 
 def _get_dtype(dtype:any)->np.dtype:
     """
@@ -5069,11 +5098,22 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
     
     该函数是Riemann框架中创建张量的主要入口点,
     它将输入数据转换为张量，并可选择设置数据类型和是否需要梯度计算。
-    
+
     参数:
-        data: 类似数组的数据，包括列表、元组、标量、numpy/cupy数组、TN张量或标量等
-        dtype: 可选，指定张量的数据类型。如果为None，则保留原始数据类型
-        device: 可选，指定张量所在的设备，可以是'cpu'、'cuda'、device对象或None
+        data: 输入数据，支持以下类型：
+              - Python 标量（int/float/bool/complex）、列表/元组（支持任意嵌套
+                形成多维张量）、range 对象
+              - numpy 数组、cupy 数组以及 numpy/cupy 标量（np.float32 等）
+              - TN 张量（本框架创建的张量，总是独立拷贝、不共享内存）
+              - 其他实现 __array__/__dlpack__ 协议的第三方框架张量（torch、jax
+                等），经协议接口自动转换为底层数组
+        dtype: 可选，指定张量的数据类型（'float32'、np.float32等）。None 时不做
+              类型转换：数组语义的输入（numpy/cupy数组、TN、框架张量）保留其
+              原始dtype，标量/列表/元组/range 等按框架规则推断（默认float32）
+        device: 可选，指定张量所在的设备，可以是'cpu'、'cuda'、'cuda:0'等字符串、
+              Device对象或None。None 时不做设备迁移：data 有设备语义（TN、
+              numpy/cupy数组、框架张量）时沿用其所在设备，纯Python数据使用
+              当前默认设备
         requires_grad: 可选，布尔值，指定是否需要计算该张量的梯度，默认为False
 
     返回值:
@@ -5094,190 +5134,146 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
         >>> w = tensor([1, 2, 3], dtype=float64, device='cpu')
 
     注意事项:
-        1. 参数data为numpy/cupy数组时，新建张量与data参数永远不共享内存
+        1. 新建张量与data参数永远不共享内存：numpy/cupy数组、TN张量、torch等
+           框架张量输入均做独立拷贝
         2. 只有浮点型张量才能启用梯度计算
         3. 创建的张量默认是计算图的叶节点
     """
-
-    # TN输入统一解包为底层数组（tensor不与任何数据来源共享内存）
-    if isinstance(data, TN):
-        data = data.data
 
     # 解析设备索引：显式device优先，其次沿用数据来源设备，否则用默认设备
     dev = _get_device_for_input(device, data)
     use_cuda = (dev.type == 'cuda')
     target_device_idx = dev.index
-    
-    # 根据CUPY_AVAILABLE决定检查的数组类型
-    array_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)
-    if isinstance(data, array_type):
-        if dtype is None:
-            if use_cuda:
-                if isinstance(data, np.ndarray):
-                    # numpy数组迁移到目标CUDA设备
-                    with cp.cuda.Device(target_device_idx):
-                        arr = cp.asarray(data)
-                else:
-                    # 检查cupy数组所在的设备是否与目标设备相同
-                    # 所有CuPy数组都有device属性，因此无需hasattr检查
-                    if data.device.id != target_device_idx:
-                        # 数组在不同设备上，迁移到目标设备
-                        with cp.cuda.Device(target_device_idx):
-                            arr = cp.asarray(data, dtype=data.dtype)
-                    else:
-                        arr = data.copy()  # 已经是当前设备上的cp.ndarray
-            else: 
-                if isinstance(data, np.ndarray):
-                    arr = data.copy()  # 已经是np.ndarray
-                else:
-                    # cupy数组迁移到cpu
-                    arr = cp.asnumpy(data)
-        
-        else: # dtype is not None
-            if use_cuda:
-                if isinstance(data, np.ndarray):
-                    # numpy数组迁移到目标CUDA设备，同时转换dtype
-                    with cp.cuda.Device(target_device_idx):
-                        arr = cp.asarray(data, dtype=dtype)
-                else:
-                    # 检查cupy数组所在的设备是否与目标设备相同
-                    # 所有CuPy数组都有device属性，因此无需hasattr检查
-                    if data.device.id != target_device_idx:
-                        # 数组在不同设备上，迁移到目标设备
-                        with cp.cuda.Device(target_device_idx):
-                            arr = cp.asarray(data, dtype=dtype)
-                    else:
-                        # 数组在当前设备上，直接转换dtype
-                        arr = data.astype(dtype)
-            else:
-                if isinstance(data, np.ndarray):
-                    arr = data.astype(dtype)                    
-                else:
-                    # cupy数组迁移到cpu
-                    arr = cp.asnumpy(data).astype(dtype, copy=False)
+
+    # dtype 推断：只有没有 __array__ 协议的对象（range/列表/元组/标量等）才手动推断，
+    # 其余类型让 np.array/cp.array 自己根据 __array__ 接口推断
+    if dtype is None and not hasattr(data, '__array__'):
+        try:
+            dtype = infer_data_type(data)
+        except TypeError:
+            dtype = None  # infer 也无法识别时兜底，交给 np.array/cp.array 处理
+
+    if use_cuda:
+        # GPU 目标设备：cp.array 统一处理 CPU→GPU 上推、同设备 copy、跨设备迁移、
+        # 以及外部 GPU 框架张量（通过 __cuda_array_interface__）、TN（通过 __array__/CAI）
+        with cp.cuda.Device(target_device_idx):
+            arr = cp.array(data, dtype=dtype)
     else:
-        # data是python数据类型或numpy/cupy标量时，转换为相应数组
-        if use_cuda:
-            # 在目标CUDA设备上创建新数组
-            with cp.cuda.Device(target_device_idx):
-                if dtype is None:
-                    arr = cp.array(data, dtype=infer_data_type(data))
-                else:
-                    arr = cp.array(data, dtype=dtype)
-        else:
-            # 创建numpy数组
+        # CPU 目标设备
+        if cp is not None and isinstance(data, cp.ndarray):
+            # 裸 cp.ndarray 没有 __array__ 方法返回 CPU numpy 数组，需显式拉回；
+            # asnumpy 结果已是全新CPU数组，dtype为None时asarray保持原dtype
+            arr = np.asarray(cp.asnumpy(data), dtype=dtype)
+        elif hasattr(data, '__array__') and not isinstance(data, np.ndarray):
+            # TN/torch/jax等协议对象：np.array会调用对象的__array__(dtype,copy)，torch等
+            # 未适配numpy 2.0的__array__接口契约，只支持dtype参数，会告警，故用asarray+astype替代
+            arr = np.asarray(data)
             if dtype is None:
-                arr = np.array(data, dtype=infer_data_type(data))
-            else:
-                arr = np.array(data, dtype=dtype)
-    
-    tsobj = TN()    # 初始化空对象实例
+                dtype = arr.dtype  # astype(None)会被解析为float64，归位为自然dtype
+            arr = arr.astype(dtype, copy=True)  # 必然产生新数组，保证tensor不共享源内存
+        else:
+            # 列表/元组/标量/range/numpy数组：np.array 直接构造或拷贝，无协议探测路径
+            arr = np.array(data, dtype=dtype)
+
+    tsobj = TN()
     tsobj.data = arr
     tsobj.requires_grad = bool(requires_grad)
     if requires_grad:
         if not is_float_or_complex(tsobj.data.dtype):
             raise RuntimeError('Only floating point tensors can require gradients')
-    return tsobj
+    return tsobj    
 
 def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, requires_grad:bool|None = False)->TN:
     """
-    创建一个新的张量对象。将输入数据转换为张量，并可选择设置数据类型、设备和是否需要梯度计算。
+    将输入数据转换为张量，尽可能与输入数据共享底层内存。
     
+    该函数与tensor函数使用同一套协议化转换框架，区别仅在于内存语义：
+    tensor总是复制数据（对应np.array），而as_tensor在解析后的设备与data所在
+    设备相同、且解析后的dtype与data的dtype一致时（dtype未指定时沿用data的
+    dtype），不复制数据而是共享底层内存（对应np.asarray）；data本身是TN张量
+    且dtype与设备均匹配时，直接返回该TN对象本身，不做任何拷贝与修改。
+
     参数:
-        data: 类似数组的数据，包括列表、元组、标量、numpy/cupy数组或标量、TN张量等
-        dtype: 可选，指定张量的数据类型。如果为None，则保留原始数据类型
-        device: 可选，指定张量所在的设备，可以是'cpu'、'cuda'、device对象或None
+        data: 输入数据，支持以下类型：
+              - Python 标量（int/float/bool/complex）、列表/元组（支持任意嵌套
+                形成多维张量）、range 对象
+              - numpy 数组、cupy 数组以及 numpy/cupy 标量（np.float32 等）
+              - TN 张量（本框架创建的张量，内存语义见上）
+              - 其他实现 __array__/__dlpack__ 协议的第三方框架张量（torch、jax
+                等），经协议接口自动转换为底层数组，同设备同dtype时共享底层存储
+        dtype: 可选，指定张量的数据类型（'float32'、np.float32等）。None 时不做
+              类型转换：数组语义的输入（numpy/cupy数组、TN、框架张量）保留其
+              原始dtype，标量/列表/元组/range 等按框架规则推断（默认float32）
+        device: 可选，指定张量所在的设备，可以是'cpu'、'cuda'、'cuda:0'等字符串、
+              Device对象或None。None 时不做设备迁移：data 有设备语义（TN、
+              numpy/cupy数组、框架张量）时沿用其所在设备，纯Python数据使用
+              当前默认设备
         requires_grad: 可选，布尔值，指定是否需要计算该张量的梯度，默认为False
-            
+
     返回值:
-        TN: 新创建的张量对象
-    
+        TN: 张量对象（data为TN且dtype与设备匹配时直接返回原对象，否则新建）
+
     异常:
         RuntimeError: 当requires_grad=True但数据类型不是浮点型时抛出
         RuntimeError: 当指定的device无效或不可用时抛出
-    
+
+    示例:
+        >>> import numpy as np
+        >>> # numpy数组同设备同dtype时共享内存
+        >>> arr = np.array([1.0, 2.0, 3.0])
+        >>> x = as_tensor(arr)
+        >>> x[0] = 0  # 修改张量会影响原始数组
+
     注意事项:
-        1. 新建张量与data参数尽可能共享内存。
-           当解析后的设备与data所在设备相同、且解析后的dtype与data的
-           dtype一致时（dtype未指定时沿用data的dtype），新建张量与
-           数组共享内存
+        1. 新建张量与data参数尽可能共享内存：numpy数组、torch等框架张量在同设备
+           同dtype时经协议共享底层存储；设备迁移或dtype转换时必复制；data为TN且
+           dtype与设备匹配时直接返回原对象，requires_grad参数被忽略，原对象的
+           requires_grad等属性保持不变
         2. 只有浮点型张量才能启用梯度计算
         3. 创建的张量默认是计算图的叶节点
     """
-
-    # TN输入先解包为底层数组，再做设备解析
+    # TN输入：dtype为None或与源dtype一致、且目标设备与源设备一致时，直接返回
+    # 原张量对象，不新建、不修改任何属性（requires_grad等随原对象保留），对齐
+    # torch.as_tensor的"data itself is returned"语义；device=None时解析结果
+    # 即源设备，天然匹配。不匹配时解包为底层裸数组，走后续统一转换路径
     if isinstance(data, TN):
-        data = data.data
-
+        # src_dev = _get_device_for_input(None, data)
+        # tgt_dev = _get_device_for_input(device, data)
+        dtype_matched = (dtype is None or np.dtype(dtype) == data.dtype)
+        device_matched = (device is None or _get_device(device) == data.device)
+        # device_matched = (src_dev.type == tgt_dev.type and src_dev.index == tgt_dev.index)
+        if dtype_matched and device_matched:
+            return data
+    
     # 解析设备索引：显式device优先，其次沿用数据来源设备，否则用默认设备
     dev = _get_device_for_input(device, data)
     use_cuda = (dev.type == 'cuda')
     target_device_idx = dev.index
 
-    # 根据CUPY_AVAILABLE决定检查的数组类型
-    array_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)
-    if isinstance(data, array_type):
-        if dtype is None:
-            if use_cuda:
-                if isinstance(data, np.ndarray):
-                    # numpy数组迁移到目标CUDA设备
-                    with cp.cuda.Device(target_device_idx):
-                        arr = cp.asarray(data)
-                else:
-                    # 检查cupy数组所在的设备是否与目标设备相同
-                    # 所有CuPy数组都有device属性，因此无需hasattr检查
-                    if data.device.id != target_device_idx:
-                        # 数组在不同设备上，迁移到目标设备
-                        with cp.cuda.Device(target_device_idx):
-                            arr = cp.asarray(data, dtype=data.dtype)
-                    else:
-                        arr = data  # 已经是当前设备上的cp.ndarray
-            else: 
-                if isinstance(data, np.ndarray):
-                    arr = data  # 已经是np.ndarray
-                else:
-                    # cupy数组迁移到cpu
-                    arr = cp.asnumpy(data)
-        
-        else: # dtype is not None
-            if use_cuda:
-                if isinstance(data, np.ndarray):
-                    # numpy数组迁移到目标CUDA设备，同时转换dtype
-                    with cp.cuda.Device(target_device_idx):
-                        arr = cp.asarray(data, dtype=dtype)
-                else:
-                    # 检查cupy数组所在的设备是否与目标设备相同
-                    # 所有CuPy数组都有device属性，因此无需hasattr检查
-                    if data.device.id != target_device_idx:
-                        # 数组在不同设备上，迁移到目标设备
-                        with cp.cuda.Device(target_device_idx):
-                            arr = cp.asarray(data, dtype=dtype)
-                    else:
-                        # 数组在当前设备上，直接转换dtype
-                        arr = data.astype(dtype, copy=False)
-            else:
-                if isinstance(data, np.ndarray):
-                    arr = data.astype(dtype, copy=False)         
-                else:
-                    # cupy数组迁移到cpu
-                    arr = cp.asnumpy(data).astype(dtype, copy=False)
+    # dtype 推断：只有没有 __array__ 协议的对象（range/列表/元组/标量等）才手动推断，
+    # 其余类型让 np.asarray/cp.asarray 自己根据 __array__ 接口推断
+    if dtype is None and not hasattr(data, '__array__'):
+        try:
+            dtype = infer_data_type(data)
+        except TypeError:
+            dtype = None  # infer 也无法识别时兜底，交给 np.asarray/cp.asarray 处理
+
+    if use_cuda:
+        # GPU 目标设备：cp.asarray 统一处理 CPU→GPU 上推、同设备零拷贝共享、跨设备迁移、
+        # 以及外部 GPU 框架张量（通过 __cuda_array_interface__）
+        with cp.cuda.Device(target_device_idx):
+            arr = cp.asarray(data, dtype=dtype)
     else:
-        # data是python数据类型或numpy/cupy标量时，转换为相应数组
-        if use_cuda:
-            # 在目标CUDA设备上创建新数组
-            with cp.cuda.Device(target_device_idx):
-                if dtype is None:
-                    arr = cp.array(data, dtype=infer_data_type(data))
-                else:
-                    arr = cp.array(data, dtype=dtype)
+        # CPU 目标设备
+        # 裸 cp.ndarray 没有 __array__ 方法返回 CPU numpy 数组，需显式拉回；
+        # torch/jax 等框架各自实现了 __array__，都能通过 np.asarray(data) 统一处理；
+        # numpy 原生数组在 dtype 为 None 时由 asarray 直接返回原对象实现共享内存
+        if cp is not None and isinstance(data, cp.ndarray):
+            arr = np.asarray(cp.asnumpy(data), dtype=dtype)
         else:
-            # 创建numpy数组
-            if dtype is None:
-                arr = np.array(data, dtype=infer_data_type(data))
-            else:
-                arr = np.array(data, dtype=dtype)
-    
-    tsobj = TN()    # 初始化空对象实例
+            arr = np.asarray(data, dtype=dtype)
+
+    tsobj = TN()
     tsobj.data = arr
     tsobj.requires_grad = bool(requires_grad)
     if requires_grad:
@@ -5360,9 +5356,8 @@ def _wrap_tensor_from_numpy(arr: np.ndarray|cp.ndarray|np.generic|cp.generic, re
     elif cp and isinstance(arr,cp.ndarray):
         data = arr    
     elif cp and isinstance(arr,cp.generic):
-        # 标量转换为数组（确保在标量所在设备上创建）
-        with arr.device:
-            data = cp.array(arr)
+        # 标量转换为数组
+        data = cp.array(arr)
     else:
         raise TypeError("arr need to be numpy or cupy array or scalar")
     
@@ -8123,7 +8118,10 @@ def _pow_grad_left(result_tensor:TN, i:int)->TN:
     left_var_shape = left_tensor.shape
     result_shape = result_tensor.shape
 
-    left_grad = result_tensor.grad_value * (right_value*(left_tensor ** (right_value - 1.))).conj()
+    # right_value 可能是numpy scalar,为了避免numpy的乘运算符优先TN的右乘运算符，
+    # 将right_value放在乘法运算的右边，确保TN乘法运算符被调用
+    d = (left_tensor ** (right_value - 1.0)) * right_value  
+    left_grad = result_tensor.grad_value * d.conj()
 
     # shape一样时，直接返回left_grad，否则对left_grad进行sum缩减
     if left_var_shape == result_shape:

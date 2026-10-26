@@ -166,6 +166,9 @@ def infer_data_type(v):
         dt = get_default_complex()
     elif isinstance(v,np.ndarray) or (cp and isinstance(v,cp.ndarray)):
         dt = v.dtype
+    elif isinstance(v,range):
+        # range 只产生整数序列，直接返回 int64，避免遍历推断
+        dt = np.dtype('int64')
     elif isinstance(v,(list,tuple)):
         if len(v) == 0:
             return default_float

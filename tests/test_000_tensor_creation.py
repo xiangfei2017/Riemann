@@ -24,6 +24,14 @@ device_list = [None, "cpu"]
 if CUDA_AVAILABLE:
     device_list.extend(["cuda", "cuda:0"])
 
+# 检查torch是否可用（torch张量输入场景的守卫）
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    TORCH_AVAILABLE = False
+
 # 定义颜色类用于美化输出
 class Colors:
     HEADER = '\033[95m'
@@ -1181,6 +1189,23 @@ class TestTensorCreationFunctions(unittest.TestCase):
                 self.assertEqual(b.device.index, 0)
             self._run_subcase(doc, "显式device覆盖源设备-张量到CUDA", _explicit_to_cuda)
 
+        if TORCH_AVAILABLE:
+            # 7. torch张量输入：经__array__协议独立拷贝、沿用源设备
+            def _torch_copy():
+                t = torch.tensor([1.0, 2.0], dtype=torch.float32)
+                b = rm.tensor(t)
+                self.assertEqual(b.device.type, 'cpu', "tensor(torch张量)应沿用源设备")
+                self.assertEqual(b.dtype, rm.float32, "tensor(torch张量)应保留dtype")
+                self.assertFalse(np.shares_memory(b.data, t.numpy()), "tensor(torch张量)不应共享内存")
+                t[0] = 99.0
+                self.assertEqual(float(b.data[0]), 1.0, "tensor(torch张量)应为独立拷贝")
+                # 显式传入匹配的dtype：torch.dtype与np.dtype比较恒为False，
+                # 此路径必须仍保证独立拷贝而非共享源内存
+                c = rm.tensor(t, dtype=rm.float32)
+                self.assertFalse(np.shares_memory(c.data, t.numpy()), "tensor(torch张量,显式匹配dtype)不应共享内存")
+                self.assertEqual(c.dtype, rm.float32)
+            self._run_subcase(doc, "torch张量输入-独立拷贝并沿用源设备", _torch_copy)
+
     def test_as_tensor(self):
         """测试as_tensor函数"""
         # 构建测试用例列表
@@ -1341,16 +1366,16 @@ class TestTensorCreationFunctions(unittest.TestCase):
         doc = self.test_as_tensor_source_data.__doc__
         cp = rm.cuda.cp if rm.cuda.CUPY_AVAILABLE else None
 
-        # 1. 张量输入：共享内存、requires_grad默认False
+        # 1. 张量输入：dtype与设备匹配时直接返回原张量对象（对齐torch.as_tensor语义）
         def _tn_shared():
             a = rm.tensor([1.0, 2.0], dtype=rm.float32, requires_grad=True)
             b = rm.as_tensor(a)
-            self.assertIs(b.data, a.data, "as_tensor(TN)在设备与dtype匹配时应共享内存")
-            self.assertEqual(b.device, a.device, "as_tensor(TN)应沿用源设备")
-            self.assertFalse(b.requires_grad, "as_tensor(TN)默认不启用requires_grad")
+            self.assertIs(b, a, "as_tensor(TN)在dtype与设备匹配时应直接返回原张量对象")
+            self.assertIs(rm.as_tensor(a, dtype=rm.float32), a, "显式传入匹配的dtype时也应返回原对象")
+            self.assertIs(rm.as_tensor(a, device='cpu'), a, "显式传入匹配的设备时也应返回原对象")
             a.data[0] = 42.0
-            self.assertEqual(float(b.data[0]), 42.0, "as_tensor(TN)应共享内存")
-        self._run_subcase(doc, "张量输入-共享内存且不继承requires_grad", _tn_shared)
+            self.assertEqual(float(b.data[0]), 42.0, "as_tensor(TN)应与源张量共享内存")
+        self._run_subcase(doc, "张量输入-dtype与设备匹配时直接返回原对象", _tn_shared)
 
         # 2. 张量输入：dtype不同则不共享内存
         def _tn_dtype_change():
@@ -1385,6 +1410,26 @@ class TestTensorCreationFunctions(unittest.TestCase):
                 self.assertEqual(t.device.type, 'cpu', "as_tensor指定device应迁移到CPU")
                 self.assertTrue(np.allclose(t.numpy(), [3.0, 4.0]))
             self._run_subcase(doc, "cupy数组输入-指定device迁移到CPU", _cupy_to_cpu)
+
+        if TORCH_AVAILABLE:
+            # 6. torch张量输入：经__array__协议同设备同dtype共享内存
+            def _torch_shared():
+                t = torch.tensor([1.0, 2.0], dtype=torch.float32)
+                b = rm.as_tensor(t)
+                self.assertEqual(b.device.type, 'cpu', "as_tensor(torch张量)应沿用源设备")
+                self.assertEqual(b.dtype, rm.float32, "as_tensor(torch张量)应保留dtype")
+                self.assertTrue(np.shares_memory(b.data, t.numpy()), "as_tensor(torch张量)应共享内存")
+                t[0] = 42.0
+                self.assertEqual(float(b.data[0]), 42.0, "as_tensor(torch张量)应与源张量共享内存")
+            self._run_subcase(doc, "torch张量输入-同设备同dtype共享内存", _torch_shared)
+
+            # 7. torch张量输入：dtype不同则不共享内存
+            def _torch_dtype_change():
+                t = torch.tensor([1.0, 2.0], dtype=torch.float32)
+                b = rm.as_tensor(t, dtype=rm.float64)
+                self.assertEqual(b.dtype, rm.float64, "as_tensor指定dtype应生效")
+                self.assertFalse(np.shares_memory(b.data, t.numpy()), "dtype不同时as_tensor(torch张量)不应共享内存")
+            self._run_subcase(doc, "torch张量输入-dtype不同则不共享内存", _torch_dtype_change)
 
 # 如果作为独立脚本运行
 if __name__ == '__main__':
