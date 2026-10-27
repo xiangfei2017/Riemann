@@ -1080,10 +1080,14 @@ class LBFGS(Optimizer):
         """
         arrlib = self.arrlib
         
+        # 向量按参数的实际 dtype 创建：numpy 默认 float64，若沿用默认会把 float32
+        # 参数经向量回写后提升为 float64，与 PyTorch 的行为（保持在参数 dtype 上演算）不符
+        param_dtype = next((info['param'].dtype for info in param_info), None)
+        
         # 将参数列表转换为单一向量
         def params_to_vector(param_list):
             """将参数列表转换为单一向量"""
-            vec = arrlib.zeros(total_params)
+            vec = arrlib.zeros(total_params, dtype=param_dtype)
             for info in param_info:
                 p = info['param']
                 offset = info['offset']
@@ -1110,7 +1114,7 @@ class LBFGS(Optimizer):
         # 将梯度转换为单一向量
         def grads_to_vector():
             """将梯度转换为单一向量"""
-            vec = arrlib.zeros(total_params)
+            vec = arrlib.zeros(total_params, dtype=param_dtype)
             for info in param_info:
                 p = info['param']
                 offset = info['offset']
