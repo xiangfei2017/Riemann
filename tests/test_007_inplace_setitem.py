@@ -263,7 +263,7 @@ class TestInplaceSetitemFunctions(unittest.TestCase):
                     riemann_tensors.append(rm_tensor(input_np, requires_grad=True, device=device))
                 
                 # 创建结果张量
-                result_riemann = rm_tensor(np.zeros_like(riemann_tensors[0].data), requires_grad=True, device=device)
+                result_riemann = rm_tensor(rm.zeros_like(riemann_tensors[0]), requires_grad=True, device=device)
                 result_riemann = result_riemann.clone()  # 克隆以支持梯度计算
                 
                 # 执行原地索引赋值操作

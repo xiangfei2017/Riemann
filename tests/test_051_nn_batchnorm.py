@@ -235,41 +235,33 @@ class StatisticsCollector:
 # ==================== 工具函数 ====================
 
 def copy_weights_torch_to_riemann(torch_layer, riemann_layer):
-    """将PyTorch层的权重复制到Riemann层，使用深拷贝避免内存共享"""
-    # 复制权重参数
+    """将PyTorch层的权重复制到Riemann层（独立拷贝，不共享内存，不直接访问data属性）"""
+    # 复制权重参数（Parameter）：用新的Parameter对象替换，自动处理dtype/设备
     if hasattr(torch_layer, 'weight') and hasattr(riemann_layer, 'weight'):
         if torch_layer.weight is not None:
-            # 获取PyTorch权重的numpy数组
-            torch_weight = torch_layer.weight.detach().numpy()
-            # 使用深拷贝创建独立的numpy数组，避免内存共享
-            torch_weight_copy = np.array(torch_weight, copy=True)
-            # 直接赋值numpy数组，Riemann会自动处理设备转换
-            riemann_layer.weight.data = torch_weight_copy
-    
-    # 复制偏置参数
+            old = riemann_layer.weight
+            riemann_layer.weight = rm.Parameter(
+                rm.tensor(torch_layer.weight.detach().numpy(), dtype=old.dtype, device=old.device),
+                requires_grad=old.requires_grad,
+            )
+
+    # 复制偏置参数（Parameter）
     if hasattr(torch_layer, 'bias') and hasattr(riemann_layer, 'bias'):
         if torch_layer.bias is not None:
-            # 获取PyTorch偏置的numpy数组
-            torch_bias = torch_layer.bias.detach().numpy()
-            # 使用深拷贝创建独立的numpy数组，避免内存共享
-            torch_bias_copy = np.array(torch_bias, copy=True)
-            # 直接赋值numpy数组，Riemann会自动处理设备转换
-            riemann_layer.bias.data = torch_bias_copy
-    
-    # 复制BatchNorm的运行时统计量
-    if hasattr(torch_layer, 'running_mean') and hasattr(riemann_layer, 'running_mean'):
-        if torch_layer.running_mean is not None:
-            running_mean = torch_layer.running_mean.detach().numpy()
-            running_mean_copy = np.array(running_mean, copy=True)
-            # 直接赋值numpy数组，Riemann会自动处理设备转换
-            riemann_layer.running_mean.data = running_mean_copy
-    
-    if hasattr(torch_layer, 'running_var') and hasattr(riemann_layer, 'running_var'):
-        if torch_layer.running_var is not None:
-            running_var = torch_layer.running_var.detach().numpy()
-            running_var_copy = np.array(running_var, copy=True)
-            # 直接赋值numpy数组，Riemann会自动处理设备转换
-            riemann_layer.running_var.data = running_var_copy
+            old = riemann_layer.bias
+            riemann_layer.bias = rm.Parameter(
+                rm.tensor(torch_layer.bias.detach().numpy(), dtype=old.dtype, device=old.device),
+                requires_grad=old.requires_grad,
+            )
+
+    # 复制BatchNorm的运行时统计量（缓冲区，普通TN）：直接构造新张量替换
+    for attr in ('running_mean', 'running_var'):
+        if hasattr(torch_layer, attr) and hasattr(riemann_layer, attr):
+            src = getattr(torch_layer, attr)
+            if src is not None:
+                old = getattr(riemann_layer, attr)
+                setattr(riemann_layer, attr,
+                        rm.tensor(src.detach().numpy(), dtype=old.dtype, device=old.device))
 
 
 def tensor_allclose(rm_tensor, torch_tensor, rtol=1e-4, atol=1e-6):
@@ -345,8 +337,9 @@ def compare_layer_norm(rm_ln_class, torch_ln, input_data, test_name, stats, **rm
             
             # 复制原始PyTorch层的权重和偏置到新层
             if elementwise_affine:
-                new_torch_ln.weight.data = torch_ln.weight.data.clone()
-                new_torch_ln.bias.data = torch_ln.bias.data.clone()
+                with torch.no_grad():
+                    new_torch_ln.weight.copy_(torch_ln.weight)
+                    new_torch_ln.bias.copy_(torch_ln.bias)
             
             # 复制权重，确保两个模块参数完全一致
             copy_weights_torch_to_riemann(new_torch_ln, rm_ln)
@@ -389,7 +382,7 @@ def compare_layer_norm(rm_ln_class, torch_ln, input_data, test_name, stats, **rm
             # 比较损失
             loss_close = tensor_allclose(rm_loss, torch_loss, rtol=1e-4, atol=1e-6)
             stats.add_result(f"{device_test_name}-损失计算", loss_close,
-                            f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
+                            f"损失值: rm={rm_loss.item():.6f}, torch={torch_loss.item():.6f}")
             
             # 反向传播
             rm_loss.backward()
@@ -444,7 +437,8 @@ def compare_rms_norm(rm_rn_class, torch_rn, input_data, test_name, stats, **rm_r
             new_torch_rn = tnn.RMSNorm(normalized_shape, eps=eps, elementwise_affine=elementwise_affine)
 
             if elementwise_affine:
-                new_torch_rn.weight.data = torch_rn.weight.data.clone()
+                with torch.no_grad():
+                    new_torch_rn.weight.copy_(torch_rn.weight)
 
             copy_weights_torch_to_riemann(new_torch_rn, rm_rn)
 
@@ -482,7 +476,7 @@ def compare_rms_norm(rm_rn_class, torch_rn, input_data, test_name, stats, **rm_r
             stats.add_result(
                 f"{device_test_name}-损失计算",
                 loss_close,
-                f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}",
+                f"损失值: rm={rm_loss.item():.6f}, torch={torch_loss.item():.6f}",
             )
 
             rm_loss.backward()
@@ -544,11 +538,12 @@ def compare_batch_norm(rm_bn_class, torch_bn, input_data, test_name, stats, mode
             
             # 复制原始PyTorch层的权重和运行时统计量到新层
             if affine:
-                new_torch_bn.weight.data = torch_bn.weight.data.clone()
-                new_torch_bn.bias.data = torch_bn.bias.data.clone()
+                with torch.no_grad():
+                    new_torch_bn.weight.copy_(torch_bn.weight)
+                    new_torch_bn.bias.copy_(torch_bn.bias)
             if track_running_stats:
-                new_torch_bn.running_mean.data = torch_bn.running_mean.data.clone()
-                new_torch_bn.running_var.data = torch_bn.running_var.data.clone()
+                new_torch_bn.running_mean.copy_(torch_bn.running_mean)
+                new_torch_bn.running_var.copy_(torch_bn.running_var)
             
             # 设置模式
             if mode == "train":
@@ -599,7 +594,7 @@ def compare_batch_norm(rm_bn_class, torch_bn, input_data, test_name, stats, mode
             # 比较损失
             loss_close = tensor_allclose(rm_loss, torch_loss, rtol=1e-4, atol=1e-6)
             stats.add_result(f"{device_test_name}-损失计算", loss_close,
-                            f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
+                            f"损失值: rm={rm_loss.item():.6f}, torch={torch_loss.item():.6f}")
             
             # 反向传播
             rm_loss.backward()

@@ -206,10 +206,10 @@ stats = StatisticsCollector()
 # 辅助函数
 def tensor_allclose(tensor1, tensor2, rtol=1e-05, atol=1e-08):
     """比较两个张量是否近似相等"""
-    if hasattr(tensor1, 'data'):
-        tensor1 = tensor1.data
-    if hasattr(tensor2, 'data'):
-        tensor2 = tensor2.data
+    if isinstance(tensor1, rm.TN):
+        tensor1 = tensor1.detach().numpy()
+    if isinstance(tensor2, rm.TN):
+        tensor2 = tensor2.detach().numpy()
     return np.allclose(tensor1, tensor2, rtol=rtol, atol=atol)
 
 # ==================== 测试用的模块类 ====================
@@ -630,21 +630,21 @@ def test_type_conversion():
         
         # 转换为float32
         module.type(np.float32)
-        weight_dtype = module.linear.weight.data.dtype
+        weight_dtype = module.linear.weight.detach().numpy().dtype
         passed = weight_dtype == np.float32
         stats.add_result("type()转换为float32", passed, f"权重类型: {weight_dtype}")
         
         # 测试2: float() 方法
         print("测试 float() 方法...")
         module.float()
-        weight_dtype_after_float = module.linear.weight.data.dtype
+        weight_dtype_after_float = module.linear.weight.dtype
         passed = weight_dtype_after_float == np.float32
         stats.add_result("float()转换", passed, f"权重类型: {weight_dtype_after_float}")
         
         # 测试3: double() 方法
         print("测试 double() 方法...")
         module.double()
-        weight_dtype_after_double = module.linear.weight.data.dtype
+        weight_dtype_after_double = module.linear.weight.dtype
         passed = weight_dtype_after_double == np.float64
         stats.add_result("double()转换", passed, f"权重类型: {weight_dtype_after_double}")
         
@@ -652,7 +652,7 @@ def test_type_conversion():
         print("测试 half() 方法...")
         try:
             module.half()
-            weight_dtype_after_half = module.linear.weight.data.dtype
+            weight_dtype_after_half = module.linear.weight.dtype
             passed = weight_dtype_after_half == np.float16
             stats.add_result("half()转换", passed, f"权重类型: {weight_dtype_after_half}")
         except Exception as e:
@@ -977,22 +977,22 @@ def test_to_method():
                 # 检查模型参数是否在CUDA上
                 params_on_cuda = True
                 for i, param in enumerate(cuda_module.parameters()):
-                    if not hasattr(param.data, 'device'):
+                    if not param.is_cuda():
                         params_on_cuda = False
                         break
                     # 检查device属性的字符串表示是否包含'cuda'
-                    device_str = str(param.data.device)
+                    device_str = str(param.device)
                     if 'cuda' not in device_str.lower():
                         params_on_cuda = False
                         break
                 
                 buffers_on_cuda = True
                 for i, buffer in enumerate(cuda_module.buffers()):
-                    if not hasattr(buffer.data, 'device'):
+                    if not buffer.is_cuda():
                         buffers_on_cuda = False
                         break
                     # 检查device属性的字符串表示是否包含'cuda'
-                    device_str = str(buffer.data.device)
+                    device_str = str(buffer.device)
                     if 'cuda' not in device_str.lower():
                         buffers_on_cuda = False
                         break
@@ -1015,13 +1015,13 @@ def test_to_method():
                 # 检查模型参数是否在CPU上
                 params_on_cpu = True
                 for param in cpu_module_back.parameters():
-                    if hasattr(param.data, 'device') and param.data.device == 'cuda':
+                    if param.is_cuda():
                         params_on_cpu = False
                         break
                 
                 buffers_on_cpu = True
                 for buffer in cpu_module_back.buffers():
-                    if hasattr(buffer.data, 'device') and buffer.data.device == 'cuda':
+                    if buffer.is_cuda():
                         buffers_on_cpu = False
                         break
                 
@@ -1049,8 +1049,8 @@ def test_to_method():
             float32_module = module.to(np.float32)
             
             # 检查模型参数是否为float32
-            params_float32 = all(param.data.dtype == np.float32 for param in float32_module.parameters())
-            buffers_float32 = all(buffer.data.dtype == np.float32 for buffer in float32_module.buffers())
+            params_float32 = all(param.dtype == np.float32 for param in float32_module.parameters())
+            buffers_float32 = all(buffer.dtype == np.float32 for buffer in float32_module.buffers())
             passed = params_float32 and buffers_float32
             stats.add_result("to()方法dtype转换", passed, f"参数为float32: {params_float32}, 缓冲区为float32: {buffers_float32}")
             

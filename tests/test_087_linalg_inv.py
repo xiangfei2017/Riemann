@@ -199,16 +199,9 @@ def compare_values(riemann_val, torch_val, rtol=1e-3, atol=1e-3):
         return False
     
     # 转换为numpy数组
-    if hasattr(riemann_val, 'data'):
-        riemann_np = riemann_val.data
-    else:
-        riemann_np = riemann_val
-    
-    if hasattr(torch_val, 'detach'):
-        torch_np = torch_val.detach().cpu().numpy()
-    else:
-        torch_np = torch_val
-    
+    riemann_np = riemann_val.detach().numpy()        
+    torch_np = torch_val.detach().cpu().numpy()
+        
     # 处理形状不匹配的情况
     try:
         # 增加容差参数，特别是对于梯度比较
@@ -250,7 +243,7 @@ def verify_inverse(A, A_inv, is_pinv=False, rtol=1e-3, atol=1e-5):
         # 对于伪逆，通常验证A @ A+ @ A ≈ A
         A_Ainv_A = A @ A_inv @ A
         try:
-            np.testing.assert_allclose(A.data, A_Ainv_A.data, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(A.detach().numpy(), A_Ainv_A.detach().numpy(), rtol=rtol, atol=atol)
             return True
         except AssertionError as e:
             print(f"伪逆矩阵验证失败: {e}")
@@ -258,8 +251,8 @@ def verify_inverse(A, A_inv, is_pinv=False, rtol=1e-3, atol=1e-5):
     else:
         # 对于逆矩阵，需要验证两个方向都接近单位矩阵
         try:
-            np.testing.assert_allclose(I.data, A_Ainv.data, rtol=rtol, atol=atol)
-            np.testing.assert_allclose(I.data, Ainv_A.data, rtol=rtol, atol=atol)
+            np.testing.assert_allclose(I.detach().numpy(), A_Ainv.detach().numpy(), rtol=rtol, atol=atol)
+            np.testing.assert_allclose(I.detach().numpy(), Ainv_A.detach().numpy(), rtol=rtol, atol=atol)
             return True
         except AssertionError as e:
             print(f"逆矩阵验证失败: {e}")

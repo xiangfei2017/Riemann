@@ -153,7 +153,7 @@ class TestLinalgCond(unittest.TestCase):
                 
                 # 对比结果 - 统一转换为numpy数组进行比较，使用更宽松的容差
                 np.testing.assert_allclose(
-                    riemann_result.data,
+                    riemann_result.detach().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-5,  # 稍微放宽相对误差
                     atol=1e-7,  # 稍微放宽绝对误差
@@ -213,7 +213,7 @@ class TestLinalgCond(unittest.TestCase):
                 
                 # 对比结果，使用更宽松的容差
                 np.testing.assert_allclose(
-                    riemann_result.data,
+                    riemann_result.detach().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-5,
                     atol=1e-7,
@@ -308,15 +308,15 @@ class TestLinalgCond(unittest.TestCase):
                     if p == 2 or p != -2:  # p=2或其他p值，结果应该是无穷大
                         # 检查结果是否为无穷大（考虑数值计算误差）
                         # 使用np.isinf或直接比较结果是否大于一个很大的数
-                        is_infinite = np.isinf(result.data) or (result.data > 1e10)
+                        is_infinite = np.isinf(result.detach().numpy()) or (result.detach().numpy() > 1e10)
                         self.assertTrue(
                             is_infinite,
-                            f"奇异矩阵(p={p})的条件数应该是无穷大，得到: {result.data}"
+                            f"奇异矩阵(p={p})的条件数应该是无穷大，得到: {result.detach().numpy()}"
                         )
                     else:  # p=-2，结果应该接近0
                         self.assertAlmostEqual(
-                            result.data, 0.0, places=5,
-                            msg=f"奇异矩阵(p=-2)的条件数应该接近0，得到: {result.data}"
+                            result.detach().numpy(), 0.0, places=5,
+                            msg=f"奇异矩阵(p=-2)的条件数应该接近0，得到: {result.detach().numpy()}"
                         )
                     
                     if IS_RUNNING_AS_SCRIPT:
@@ -365,7 +365,7 @@ class TestLinalgCond(unittest.TestCase):
                 
                 # 对比结果，使用更宽松的容差
                 np.testing.assert_allclose(
-                    riemann_result.data,
+                    riemann_result.detach().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-5,
                     atol=1e-7,
@@ -380,8 +380,8 @@ class TestLinalgCond(unittest.TestCase):
                 self.assertEqual(riemann_type, torch_type)
                 
                 # 测试复数矩阵条件数应该是实数
-                self.assertFalse(np.iscomplexobj(riemann_result.data),
-                                f"复数矩阵条件数应该是实数，实际类型: {riemann_result.data.dtype}")
+                self.assertFalse(np.iscomplexobj(riemann_result.detach().numpy()),
+                                f"复数矩阵条件数应该是实数，实际类型: {riemann_result.detach().dtype}")
                 
                 if IS_RUNNING_AS_SCRIPT:
                     print(f"  {Colors.OKGREEN}✓ 通过{Colors.ENDC} - 复数矩阵条件数 p={p}")
@@ -452,7 +452,7 @@ class TestLinalgCond(unittest.TestCase):
                 ref_result = cond(riemann_tensor, p=p)
                 
                 # 创建适当形状的out张量（out参数作为输出容器，不需要梯度）
-                out_tensor = tensor(np.zeros_like(ref_result.data), requires_grad=False)
+                out_tensor = tensor(np.zeros_like(ref_result.detach().numpy()), requires_grad=False)
                 
                 # 使用out参数调用cond函数
                 result = cond(riemann_tensor, p=p, out=out_tensor)
@@ -463,8 +463,8 @@ class TestLinalgCond(unittest.TestCase):
                 
                 # 2. 检查out张量的值是否与参考结果一致
                 np.testing.assert_allclose(
-                    out_tensor.data,
-                    ref_result.data,
+                    out_tensor.detach().numpy(),
+                    ref_result.detach().numpy(),
                     rtol=1e-5,
                     atol=1e-7,
                     err_msg=f"out张量的值不正确，p={p}"

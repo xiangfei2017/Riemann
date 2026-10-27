@@ -327,7 +327,7 @@ class TestBasicFunctions(unittest.TestCase):
                     # 对于复数结果，需要显式提供梯度张量
                     if np.issubdtype(sum_result.dtype, np.complexfloating):
                         # 创建与sum_result形状相同的复数全1张量作为梯度
-                        grad_tensor = tensor(np.ones_like(sum_result.data, dtype=sum_result.dtype), device=device)
+                        grad_tensor = rm.ones_like(sum_result, dtype=sum_result.dtype, device=device)
                         sum_result.backward(grad_tensor)
                     else:
                         # 对于实数结果，可以隐式创建梯度
@@ -366,7 +366,7 @@ class TestBasicFunctions(unittest.TestCase):
                             # 对于arccosh在复数域的梯度比较，考虑多值性带来的符号差异
                             try:
                                 # 获取梯度数据，确保转换为NumPy数组
-                                riemann_grad_data = riemann_grad.data.get() if hasattr(riemann_grad.data, 'get') else riemann_grad.data
+                                riemann_grad_data = riemann_grad.detach().cpu().numpy()
                                 torch_grad_data = torch_grad.detach().cpu().numpy()
                                 # 尝试直接比较
                                 np.testing.assert_allclose(riemann_grad_data, torch_grad_data, rtol=1e-3, atol=1e-3)
@@ -374,7 +374,7 @@ class TestBasicFunctions(unittest.TestCase):
                             except AssertionError:
                                 # 如果直接比较失败，尝试比较绝对值
                                 try:
-                                    riemann_grad_data = riemann_grad.data.get() if hasattr(riemann_grad.data, 'get') else riemann_grad.data
+                                    riemann_grad_data = riemann_grad.detach().cpu().numpy()
                                     torch_grad_data = torch_grad.detach().cpu().numpy()
                                     np.testing.assert_allclose(np.abs(riemann_grad_data), np.abs(torch_grad_data), rtol=1e-3, atol=1e-3)
                                     grads_match = True

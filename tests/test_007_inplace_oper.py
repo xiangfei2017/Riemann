@@ -304,7 +304,7 @@ if CUDA_AVAILABLE:
 
 # 定义原地操作的测试用例
 INPLACE_OPS = [
-    {"name": "原地赋值", "op": "=", "rm_func": lambda x, idx, y: setattr(x, "data", np.copy(x.data)), "torch_func": lambda x, idx, y: x},  # 占位符，实际使用赋值操作
+    {"name": "原地赋值", "op": "=", "rm_func": lambda x, idx, y: setattr(x, "data", np.copy(x.numpy())), "torch_func": lambda x, idx, y: x},  # 占位符，实际使用赋值操作
     {"name": "原地加法", "op": "+", "rm_func": lambda x, idx, y: x[idx].__iadd__(y), "torch_func": lambda x, idx, y: x[idx].__iadd__(y)},
     {"name": "原地减法", "op": "-", "rm_func": lambda x, idx, y: x[idx].__isub__(y), "torch_func": lambda x, idx, y: x[idx].__isub__(y)},
     {"name": "原地乘法", "op": "*", "rm_func": lambda x, idx, y: x[idx].__imul__(y), "torch_func": lambda x, idx, y: x[idx].__imul__(y)},
@@ -1542,8 +1542,8 @@ class TestInplaceOperations(unittest.TestCase):
                                 # 标量比较
                                 view_passed = abs(float(view2) - float(direct)) < 1e-10
                             else:
-                                # 使用allclose直接比较张量
-                                view_passed = np.allclose(view2.data, direct.data, rtol=1e-05, atol=1e-08)
+                                # 使用allclose直接比较张量（rm_x 需梯度，须先 detach 再取 numpy）
+                                view_passed = np.allclose(view2.detach().numpy(), direct.detach().numpy(), rtol=1e-05, atol=1e-08)
                         except Exception as e:
                             view_passed = False
                     
@@ -1751,9 +1751,6 @@ class TestInplaceOperations(unittest.TestCase):
                         torch_x = torch.tensor(base_data, requires_grad=True, device=device)
                         torch_x = torch_x * 1
                         torch_x.retain_grad()
-                    
-                    # 记录操作前的值
-                    rm_before = rm_x.data.copy()
                     
                     # 执行原地操作
                     idx = test_case["index"]

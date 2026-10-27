@@ -861,11 +861,11 @@ class TestJvpVjpFunctions(unittest.TestCase):
 
                     # JVP: J@v = 3x^2 * v = 3*4*1 = 12
                     rm_out, rm_jvp_result = jvp(f, rm_x, rm_v)
-                    jvp_correct = np.allclose(rm_jvp_result.data, 12.0)
+                    jvp_correct = np.allclose(rm_jvp_result.detach().numpy(), 12.0)
 
                     # VJP: v^T@J = v * 3x^2 = 1 * 12 = 12
                     rm_out2, rm_vjp_result = vjp(f, rm_x, rm_v)
-                    vjp_correct = np.allclose(rm_vjp_result.data, 12.0)
+                    vjp_correct = np.allclose(rm_vjp_result.detach().numpy(), 12.0)
 
                     if TORCH_AVAILABLE:
                         torch_x = torch.tensor(2.0, requires_grad=True, device=device)
@@ -906,7 +906,7 @@ class TestJvpVjpFunctions(unittest.TestCase):
                     has_grad = rm_jvp_result.requires_grad
 
                     # JVP = grad·v = (2+4) + (27+48) = 81（标量输出）
-                    jvp_correct = np.allclose(rm_jvp_result.data, 81.0)
+                    jvp_correct = np.allclose(rm_jvp_result.detach().numpy(), 81.0)
 
                     return has_grad and jvp_correct
 
@@ -938,15 +938,15 @@ class TestJvpVjpFunctions(unittest.TestCase):
                     rm_out, rm_jvp_result = jvp(f, (rm_x, rm_y), (rm_vx, rm_vy), strict=False)
 
                     # JVP = grad·v = (2+4) + 0 = 6（标量输出）
-                    jvp_correct = np.allclose(rm_jvp_result.data, 6.0)
+                    jvp_correct = np.allclose(rm_jvp_result.detach().numpy(), 6.0)
 
                     # VJP strict=False，标量输出 v 为标量
                     rm_v_out = rm.tensor(1.0, device=device)
                     rm_out2, rm_vjp_result = vjp(f, (rm_x, rm_y), rm_v_out, strict=False)
 
                     # grad_x = 2*x = [2, 4], grad_y = [0, 0]
-                    vjp_x = np.allclose(rm_vjp_result[0].data, [2.0, 4.0])
-                    vjp_y = np.allclose(rm_vjp_result[1].data, [0.0, 0.0])
+                    vjp_x = np.allclose(rm_vjp_result[0].detach().numpy(), [2.0, 4.0])
+                    vjp_y = np.allclose(rm_vjp_result[1].detach().numpy(), [0.0, 0.0])
 
                     return jvp_correct and vjp_x and vjp_y
 

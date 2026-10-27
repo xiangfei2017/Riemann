@@ -201,16 +201,9 @@ def compare_values(riemann_result, torch_result, test_name, rtol=1e-05, atol=1e-
         else:
             dtype_match = str(riemann_dtype).lower() == str(torch_dtype).lower().replace('torch.', '')
         
-        # 获取riemann结果数据
-        riemann_data = riemann_result.data
-        
-        # 检查是否为CuPy数组，如果是，转换为NumPy数组
-        if hasattr(riemann_data, 'get'):
-            riemann_data = riemann_data.get()
-        
         # 比较值
         np.testing.assert_allclose(
-            riemann_data,
+            riemann_result.detach().cpu().numpy(),
             torch_result.detach().cpu().numpy(),
             rtol=rtol,
             atol=atol,

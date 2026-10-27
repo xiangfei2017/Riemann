@@ -422,7 +422,7 @@ class TestEmbedding(unittest.TestCase):
                     actual_padding_idx = case["padding_idx"]
                     if actual_padding_idx < 0:
                         actual_padding_idx = weight_shape[0] + actual_padding_idx
-                    if not all(rm_weight.grad[actual_padding_idx].data == 0):
+                    if not all(rm_weight.grad[actual_padding_idx] == 0):
                         padding_idx_grad_passed = False
                         print(f"  padding_idx={case['padding_idx']}的梯度不为0")
                     
@@ -782,7 +782,7 @@ class TestEmbedding(unittest.TestCase):
                 self.assertTrue(device in str(rm_embedding.weight.device))
                 
                 # 测试3: padding_idx的权重初始化
-                self.assertTrue(np.allclose(rm_embedding.weight.data[padding_idx], 0.0))
+                self.assertTrue(np.allclose(rm_embedding.weight.detach().numpy()[padding_idx], 0.0))
                 
                 # 测试4: 前向传播
                 input_data = np.array([0, 1, 2, 0, 3])
@@ -795,7 +795,8 @@ class TestEmbedding(unittest.TestCase):
                 # 测试5: 与PyTorch的兼容性
                 if TORCH_AVAILABLE:
                     torch_embedding = torch.nn.Embedding(num_embeddings, embedding_dim, padding_idx=padding_idx, device=device)
-                    torch_embedding.weight.data = torch.tensor(rm_embedding.weight.data, device=device)
+                    with torch.no_grad():
+                        torch_embedding.weight.copy_(torch.from_dlpack(rm_embedding.weight.detach()))
                     
                     torch_input = torch.tensor(input_data, dtype=torch.long, device=device)
                     torch_output = torch_embedding(torch_input)

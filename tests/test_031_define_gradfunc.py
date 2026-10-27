@@ -231,20 +231,20 @@ class TestDefineGradFunc(unittest.TestCase):
                 if len(inputs) == 1:
                     # 单输入情况
                     x = inputs[0]
-                    passed = abs(x.grad.data - case["expected_grad"]) < 1e-8
+                    passed = abs(x.grad.detach().numpy() - case["expected_grad"]) < 1e-8
                     if passed:
-                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} 单输入梯度计算: x.grad = {x.grad.data}, 预期值 = {case['expected_grad']}")
+                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} 单输入梯度计算: x.grad = {x.grad.detach().numpy()}, 预期值 = {case['expected_grad']}")
                     else:
-                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} 单输入梯度计算: x.grad = {x.grad.data}, 预期值 = {case['expected_grad']}")
+                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} 单输入梯度计算: x.grad = {x.grad.detach().numpy()}, 预期值 = {case['expected_grad']}")
                 else:
                     # 多输入情况
                     x, y = inputs
                     expected_grads = case["expected_grads"]
-                    passed = abs(x.grad.data - expected_grads[0]) < 1e-8 and abs(y.grad.data - expected_grads[1]) < 1e-8
+                    passed = abs(x.grad.detach().numpy() - expected_grads[0]) < 1e-8 and abs(y.grad.detach().numpy() - expected_grads[1]) < 1e-8
                     if passed:
-                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} 多输入梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}")
+                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} 多输入梯度计算: x.grad = {x.grad.detach().numpy()}, y.grad = {y.grad.detach().numpy()}")
                     else:
-                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} 多输入梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}, 预期值 = {expected_grads}")
+                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} 多输入梯度计算: x.grad = {x.grad.detach().numpy()}, y.grad = {y.grad.detach().numpy()}, 预期值 = {expected_grads}")
             except Exception as e:
                 passed = False
                 error_msg = str(e)
@@ -417,7 +417,7 @@ class TestDefineGradFunc(unittest.TestCase):
             def backward(ctx, grad_output):
                 """反向传播"""
                 x, = ctx.saved_tensors
-                return grad_output * rm.tensor(x.data > 0)
+                return grad_output * rm.tensor(x.detach().numpy() > 0)
         
         # 测试用例列表
         test_cases = [
@@ -446,20 +446,20 @@ class TestDefineGradFunc(unittest.TestCase):
                 if len(inputs) == 1:
                     # 单输入情况
                     x = inputs[0]
-                    passed = abs(x.grad.data - case["expected_grad"]) < 1e-8
+                    passed = abs(x.grad.detach().numpy() - case["expected_grad"]) < 1e-8
                     if passed:
-                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} ReLUFunction 梯度计算: x.grad = {x.grad.data}, 预期值 = {case['expected_grad']}")
+                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} ReLUFunction 梯度计算: x.grad = {x.grad.detach().numpy()}, 预期值 = {case['expected_grad']}")
                     else:
-                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} ReLUFunction 梯度计算: x.grad = {x.grad.data}, 预期值 = {case['expected_grad']}")
+                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} ReLUFunction 梯度计算: x.grad = {x.grad.detach().numpy()}, 预期值 = {case['expected_grad']}")
                 else:
                     # 多输入情况
                     x, y = inputs
                     expected_grads = case["expected_grads"]
-                    passed = abs(x.grad.data - expected_grads[0]) < 1e-8 and abs(y.grad.data - expected_grads[1]) < 1e-8
+                    passed = abs(x.grad.detach().numpy() - expected_grads[0]) < 1e-8 and abs(y.grad.detach().numpy() - expected_grads[1]) < 1e-8
                     if passed:
-                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} MulFunction 梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}")
+                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} MulFunction 梯度计算: x.grad = {x.grad.detach().numpy()}, y.grad = {y.grad.detach().numpy()}")
                     else:
-                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} MulFunction 梯度计算: x.grad = {x.grad.data}, y.grad = {y.grad.data}, 预期值 = {expected_grads}")
+                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} MulFunction 梯度计算: x.grad = {x.grad.detach().numpy()}, y.grad = {y.grad.detach().numpy()}, 预期值 = {expected_grads}")
             except Exception as e:
                 passed = False
                 error_msg = str(e)

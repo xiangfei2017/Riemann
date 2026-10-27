@@ -776,7 +776,7 @@ class TestHessianFunctions(unittest.TestCase):
 
                     # Hessian = 2*I (对角线为2)
                     expected = 2.0 * np.eye(3)
-                    value_correct = np.allclose(rm_hess.data, expected)
+                    value_correct = np.allclose(rm_hess.detach().numpy(), expected)
 
                     return has_grad and value_correct
 
@@ -862,9 +862,9 @@ class TestHessianFunctions(unittest.TestCase):
                     hyx = rm_hess[1][0]
                     hyy = rm_hess[1][1]
 
-                    x_correct = np.allclose(hxx.data, 2.0 * np.eye(2))
-                    y_zero = np.allclose(hyy.data, 0.0)
-                    xy_zero = np.allclose(hxy.data, 0.0) and np.allclose(hyx.data, 0.0)
+                    x_correct = np.allclose(hxx.detach().numpy(), 2.0 * np.eye(2))
+                    y_zero = np.allclose(hyy.detach().numpy(), 0.0)
+                    xy_zero = np.allclose(hxy.detach().numpy(), 0.0) and np.allclose(hyx.detach().numpy(), 0.0)
 
                     return x_correct and y_zero and xy_zero
 

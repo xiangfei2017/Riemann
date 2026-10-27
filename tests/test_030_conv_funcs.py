@@ -425,9 +425,9 @@ class TestConvFunctions(unittest.TestCase):
                         print(f"前向传播失败: {case_name}")
                         print(f"Riemann结果形状: {rm_result.shape}")
                         print(f"PyTorch结果形状: {torch_result.shape}")
-                        print(f"Riemann结果前10个值: {rm_result.data.flatten()[:10]}")
-                        print(f"PyTorch结果前10个值: {torch_result.data.flatten()[:10]}")
-                        print(f"最大差异: {abs(rm_result.data - torch_result.data).max()}")
+                        print(f"Riemann结果前10个值: {rm_result.detach().numpy().flatten()[:10]}")
+                        print(f"PyTorch结果前10个值: {torch_result.detach().numpy().flatten()[:10]}")
+                        print(f"最大差异: {abs(rm_result.detach().numpy() - torch_result.detach().numpy()).max()}")
                     
                     # 反向传播测试
                     backward_passed = True
@@ -444,9 +444,9 @@ class TestConvFunctions(unittest.TestCase):
                         backward_passed = compare_values(rm_input.grad, torch_input.grad, atol=1e-5, rtol=1e-5)
                         if not backward_passed:
                             print(f"反向传播失败: {case_name}")
-                            print(f"Riemann梯度前10个值: {rm_input.grad.data.flatten()[:10]}")
-                            print(f"PyTorch梯度前10个值: {torch_input.grad.data.flatten()[:10]}")
-                            print(f"最大差异: {abs(rm_input.grad.data - torch_input.grad.data).max()}")
+                            print(f"Riemann梯度前10个值: {rm_input.grad.detach().numpy().flatten()[:10]}")
+                            print(f"PyTorch梯度前10个值: {torch_input.grad.detach().numpy().flatten()[:10]}")
+                            print(f"最大差异: {abs(rm_input.grad.detach().numpy() - torch_input.grad.detach().numpy()).max()}")
                     
                     passed = forward_passed and backward_passed
                     
@@ -3966,8 +3966,8 @@ class TestConvFunctions(unittest.TestCase):
                 # 额外验证：通过索引能否正确获取最大值
                 indices_valid = True
                 if indices_passed:
-                    rm_indices_flat = rm_indices.data.flatten()
-                    rm_result_flat = rm_result.data.flatten()
+                    rm_indices_flat = rm_indices.detach().numpy().flatten()
+                    rm_result_flat = rm_result.detach().numpy().flatten()
                     for idx in range(len(rm_indices_flat)):
                         flat_idx = int(rm_indices_flat[idx])
                         h_idx = flat_idx // W_in
@@ -4120,8 +4120,8 @@ class TestConvFunctions(unittest.TestCase):
                 # 额外验证：通过索引能否正确获取最大值
                 indices_valid = True
                 if indices_passed:
-                    rm_indices_flat = rm_indices.data.flatten()
-                    rm_result_flat = rm_result.data.flatten()
+                    rm_indices_flat = rm_indices.detach().numpy().flatten()
+                    rm_result_flat = rm_result.detach().numpy().flatten()
                     for idx in range(len(rm_indices_flat)):
                         flat_idx = int(rm_indices_flat[idx])
                         d_idx = flat_idx // (H_in * W_in)
@@ -4264,7 +4264,7 @@ class TestConvFunctions(unittest.TestCase):
                     )
                 
                     # 计算预期的fold结果
-                    np_unfolded = rm_unfolded.data  # 转换为numpy数组
+                    np_unfolded = rm_unfolded.detach().numpy()  # 转换为numpy数组
                     output_size = case.get("output_size", None)
                     expected_output = calculate_expected_fold(np_unfolded, case["dimension"], case["size"], case["step"], output_size)
                     
@@ -4277,7 +4277,7 @@ class TestConvFunctions(unittest.TestCase):
                     )
                     
                     # 比较前向传播结果
-                    rm_output = rm_folded.data
+                    rm_output = rm_folded.detach().numpy()
                     forward_passed = np.allclose(rm_output, expected_output, atol=1e-6, rtol=1e-6)
                     
                     # 反向传播测试

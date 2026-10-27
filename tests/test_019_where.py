@@ -9,7 +9,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 # 导入riemann模块
 try:
     import riemann as rm
-    from riemann.tensordef import where
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)
@@ -922,7 +921,7 @@ class TestWhereFunctions(unittest.TestCase):
                 print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_forward else Colors.FAIL}{'通过' if passed_forward else '失败'}{Colors.ENDC}")
                 print(f"测试用例: {grad_case_name} - {Colors.OKGREEN if passed_grad else Colors.FAIL}{'通过' if passed_grad else '失败'}{Colors.ENDC} ({time_taken:.4f}秒)")
                 if passed_forward:
-                    print(f"  结果数据类型: {rm_result.data.dtype}")
+                    print(f"  结果数据类型: {rm_result.dtype}")
             
             # 断言确保测试通过
             self.assertTrue(passed_forward, f"混合数据类型测试失败: {case_name}")

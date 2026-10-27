@@ -508,7 +508,7 @@ def copy_weights_torch_to_riemann(torch_layer, riemann_layer, device="cpu"):
 
 def tensor_allclose(rm_tensor, torch_tensor, rtol=1e-4, atol=1e-6):
     """比较Riemann张量和PyTorch张量是否接近"""
-    rm_data = rm_tensor.data if hasattr(rm_tensor, 'data') else rm_tensor
+    rm_data = rm_tensor.detach().numpy()
     torch_data = torch_tensor.detach().numpy()
     return np.allclose(rm_data, torch_data, rtol=rtol, atol=atol)
 
@@ -575,13 +575,7 @@ def compare_gradients(torch_param, riemann_param, name="parameter"):
     
     # 对于Riemann，即使grad为None，也尝试从data.grad获取
     if riemann_param.grad is None:
-        # 尝试从data.grad获取梯度
-        if hasattr(riemann_param, 'data') and hasattr(riemann_param.data, 'grad'):
-            riemann_grad = riemann_param.data.grad
-            if riemann_grad is None:
-                return False, f"Riemann梯度为None"
-        else:
-            return False, f"Riemann梯度为None"
+        return False, f"Riemann梯度为None"
     else:
         riemann_grad = riemann_param.grad
     
@@ -594,7 +588,7 @@ def compare_gradients(torch_param, riemann_param, name="parameter"):
     if hasattr(riemann_grad, 'is_cuda') and riemann_grad.is_cuda:
         riemann_grad_data = riemann_grad.detach().cpu().numpy()
     else:
-        riemann_grad_data = riemann_grad.data if hasattr(riemann_grad, 'data') else riemann_grad
+        riemann_grad_data = riemann_grad.detach().numpy()
     
     # 确保riemann_grad_data是numpy数组
     if not isinstance(riemann_grad_data, np.ndarray):
@@ -673,7 +667,7 @@ def compare_network(rm_net, torch_net, input_data, targets, pool_type, network_t
     # 比较损失
     loss_close = compare_values(rm_loss, torch_loss)
     stats.add_result(f"网络比较 {network_type} {pool_type.upper()}池化-{device}-损失计算", loss_close,
-                    f"损失值: rm={rm_loss.data:.6f}, torch={torch_loss.item():.6f}")
+                    f"损失值: rm={rm_loss.item():.6f}, torch={torch_loss.item():.6f}")
     
     # 执行完整的梯度测试，无论设备类型
     # 反向传播

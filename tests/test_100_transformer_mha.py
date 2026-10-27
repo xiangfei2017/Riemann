@@ -208,26 +208,26 @@ def compare_values(rm_result, torch_result, atol=1e-4, rtol=1e-4):
 def sync_parameters(rm_attn, torch_attn, embed_dim, kdim=None):
     """同步Riemann和PyTorch的参数"""
     if rm_attn._qkv_same_embed_dim:
-        rm_attn.in_proj_weight.data[:] = rm.tensor(torch_attn.in_proj_weight.detach().numpy())
+        rm_attn.in_proj_weight.detach().copy_(torch_attn.in_proj_weight.detach().numpy())
         if torch_attn.in_proj_bias is not None:
-            rm_attn.in_proj_bias.data[:] = rm.tensor(torch_attn.in_proj_bias.detach().numpy())
+            rm_attn.in_proj_bias.detach().copy_(torch_attn.in_proj_bias.detach().numpy())
     else:
-        rm_attn.q_proj_weight.data[:] = rm.tensor(torch_attn.q_proj_weight.detach().numpy())
-        rm_attn.k_proj_weight.data[:] = rm.tensor(torch_attn.k_proj_weight.detach().numpy())
-        rm_attn.v_proj_weight.data[:] = rm.tensor(torch_attn.v_proj_weight.detach().numpy())
+        rm_attn.q_proj_weight.detach().copy_(torch_attn.q_proj_weight.detach().numpy())
+        rm_attn.k_proj_weight.detach().copy_(torch_attn.k_proj_weight.detach().numpy())
+        rm_attn.v_proj_weight.detach().copy_(torch_attn.v_proj_weight.detach().numpy())
         if torch_attn.in_proj_bias is not None:
             torch_bias = torch_attn.in_proj_bias.detach().numpy()
-            rm_attn.q_proj_bias.data[:] = rm.tensor(torch_bias[:embed_dim])
-            rm_attn.k_proj_bias.data[:] = rm.tensor(torch_bias[embed_dim:embed_dim+embed_dim])
-            rm_attn.v_proj_bias.data[:] = rm.tensor(torch_bias[embed_dim+embed_dim:])
+            rm_attn.q_proj_bias.detach().copy_(torch_bias[:embed_dim])
+            rm_attn.k_proj_bias.detach().copy_(torch_bias[embed_dim:embed_dim+embed_dim])
+            rm_attn.v_proj_bias.detach().copy_(torch_bias[embed_dim+embed_dim:])
     
-    rm_attn.out_proj.weight.data[:] = rm.tensor(torch_attn.out_proj.weight.detach().numpy())
+    rm_attn.out_proj.weight.detach().copy_(torch_attn.out_proj.weight.detach().numpy())
     if torch_attn.out_proj.bias is not None:
-        rm_attn.out_proj.bias.data[:] = rm.tensor(torch_attn.out_proj.bias.detach().numpy())
+        rm_attn.out_proj.bias.detach().copy_(torch_attn.out_proj.bias.detach().numpy())
     
     if hasattr(torch_attn, 'bias_k') and torch_attn.bias_k is not None:
-        rm_attn.bias_k.data[:] = rm.tensor(torch_attn.bias_k.detach().numpy())
-        rm_attn.bias_v.data[:] = rm.tensor(torch_attn.bias_v.detach().numpy())
+        rm_attn.bias_k.detach().copy_(torch_attn.bias_k.detach().numpy())
+        rm_attn.bias_v.detach().copy_(torch_attn.bias_v.detach().numpy())
 
 
 def check_forward_backward(rm_tensors, torch_tensors, rm_attn, torch_attn, rm_output, torch_output,

@@ -204,21 +204,10 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         for i, (r, t) in enumerate(zip(rm_result, torch_result)):
             try:
                 # 获取Riemann数据，处理CUDA情况
-                if hasattr(r.data, 'get'):
-                    # 如果是CUDA张量，先移动到CPU
-                    r_data = r.data.get()
-                else:
-                    r_data = r.data
+                r_data = r.detach().cpu().numpy()
                 
                 # 获取PyTorch张量的numpy数据，处理可能的复数格式和CUDA情况
-                if hasattr(t, 'detach'):
-                    if hasattr(t, 'is_cuda') and t.is_cuda:
-                        # 如果是CUDA张量，先移动到CPU
-                        t_numpy = t.detach().cpu().numpy()
-                    else:
-                        t_numpy = t.detach().numpy()
-                else:
-                    t_numpy = t
+                t_numpy = t.detach().cpu().numpy()
                 
                 # 调试信息
                 if IS_RUNNING_AS_SCRIPT:
@@ -268,14 +257,9 @@ def check_eigen_reconstruction(A, w, V, atol=1e-6):
     """检查使用特征分解结果重构原始矩阵的误差"""
     try:
         # 获取数据，处理CUDA情况
-        if hasattr(A.data, 'get'):
-            A_data = A.data.get()
-            V_data = V.data.get()
-            w_data = w.data.get()
-        else:
-            A_data = A.data
-            V_data = V.data
-            w_data = w.data
+        A_data = A.detach().cpu().numpy()
+        V_data = V.detach().cpu().numpy()
+        w_data = w.detach().cpu().numpy()
         
         # 计算 A @ V
         AV = A_data @ V_data
@@ -294,16 +278,13 @@ def check_eigh_reconstruction(A, w, V, atol=1e-6):
     """检查使用特征分解结果重构原始矩阵的误差（对于Hermitian矩阵）"""
     try:
         # 获取数据，处理CUDA情况
-        if hasattr(A.data, 'get'):
-            A_data = A.data.get()
-            V_data = V.data.get()
-            w_data = w.data.get()
+        A_data = A.detach().cpu().numpy()
+        V_data = V.detach().cpu().numpy()
+        w_data = w.detach().cpu().numpy()
+        if A.is_cuda:
             # 对于CUDA计算，使用更大的误差阈值
             current_atol = 1e-4
-        else:
-            A_data = A.data
-            V_data = V.data
-            w_data = w.data
+        else:        
             current_atol = atol
         
         # 计算 A @ V

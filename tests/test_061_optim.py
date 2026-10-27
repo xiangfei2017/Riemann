@@ -416,7 +416,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                     param_id = id(param)
                     if param_id in optimizer.state:
                         self.assertIn('velocity', optimizer.state[param_id])
-                        self.assertEqual(optimizer.state[param_id]['velocity'].shape, param.data.shape)
+                        self.assertEqual(optimizer.state[param_id]['velocity'].shape, param.shape)
                 
                 passed = True
                 
@@ -458,11 +458,11 @@ class TestOptimizedOptimizer(unittest.TestCase):
                 loss = (diff * diff).mean()
                 loss.backward()
                 
-                initial_weight = self.model.weight.data.copy()
+                initial_weight = self.model.weight.copy().numpy()
                 optimizer.step()
                 
                 # 检查参数是否更新
-                self.assertFalse(np.allclose(initial_weight, self.model.weight.data))
+                self.assertFalse(np.allclose(initial_weight, self.model.weight.detach().numpy()))
                 
                 passed = True
                 
@@ -493,7 +493,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                     diff = output - self.y
                     loss = (diff * diff).mean()
                     loss.backward()
-                    return loss.data.item()
+                    return loss.item()
                 
                 # 测试带closure的step
                 loss_value = optimizer.step(closure)
@@ -595,7 +595,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                         self.assertIsNone(param.grad)
                     else:
                         if param.grad is not None:
-                            self.assertTrue(np.allclose(param.grad.data, 0))
+                            self.assertTrue(np.allclose(param.grad, 0))
                 
                 passed = True
                 
@@ -915,11 +915,11 @@ class TestOptimizedOptimizer(unittest.TestCase):
                 loss = (diff * diff).mean()
                 loss.backward()
                 
-                initial_weight = self.model.weight.data.copy()
+                initial_weight = self.model.weight.copy()
                 optimizer.step()
                 
                 # 检查参数是否更新
-                self.assertFalse(np.allclose(initial_weight, self.model.weight.data))
+                self.assertFalse(np.allclose(initial_weight, self.model.weight.detach().numpy()))
                 
                 # 检查状态是否正确初始化
                 for param in self.model.parameters():
@@ -929,17 +929,17 @@ class TestOptimizedOptimizer(unittest.TestCase):
                         self.assertIn('exp_avg', optimizer.state[param_id])
                         self.assertIn('exp_avg_sq', optimizer.state[param_id])
                         self.assertEqual(optimizer.state[param_id]['step'], 1)
-                        self.assertEqual(optimizer.state[param_id]['exp_avg'].shape, param.data.shape)
-                        self.assertEqual(optimizer.state[param_id]['exp_avg_sq'].shape, param.data.shape)
+                        self.assertEqual(optimizer.state[param_id]['exp_avg'].shape, param.shape)
+                        self.assertEqual(optimizer.state[param_id]['exp_avg_sq'].shape, param.shape)
                         if case.get('amsgrad', False):
                             self.assertIn('max_exp_avg_sq', optimizer.state[param_id])
-                            self.assertEqual(optimizer.state[param_id]['max_exp_avg_sq'].shape, param.data.shape)
+                            self.assertEqual(optimizer.state[param_id]['max_exp_avg_sq'].shape, param.shape)
                 
                 # 清零梯度
                 optimizer.zero_grad()
                 for param in self.model.parameters():
                     if param.grad is not None:
-                        self.assertTrue(np.allclose(param.grad.data, 0))
+                        self.assertTrue(np.allclose(param.grad, 0))
                 
                 passed = True
                 
@@ -1037,7 +1037,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                         self.assertIsNone(param.grad)
                     else:
                         if param.grad is not None:
-                            self.assertTrue(np.allclose(param.grad.data, 0))
+                            self.assertTrue(np.allclose(param.grad, 0))
                 
                 passed = True
                 
@@ -1112,12 +1112,12 @@ class TestOptimizedOptimizer(unittest.TestCase):
             print(f"\n{Colors.BOLD}Adam优化器与PyTorch行为一致性测试{Colors.ENDC}")
             
             # 重置模型参数
-            self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-            self.model.bias.data = np.zeros(5).astype(np.float32)
+            self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+            self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
             
             # 保存初始参数
-            initial_weight = self.model.weight.data.copy()
-            initial_bias = self.model.bias.data.copy()
+            initial_weight = self.model.weight.copy().numpy()
+            initial_bias = self.model.bias.copy().numpy()
             
             # 创建Riemann Adam优化器
             rm_optimizer = Adam(
@@ -1151,8 +1151,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             )
             
             # 转换输入和目标为PyTorch张量
-            torch_x = torch.tensor(self.x.data.copy(), requires_grad=True)
-            torch_y = torch.tensor(self.y.data.copy())
+            torch_x = torch.tensor(self.x.copy().numpy(), requires_grad=True)
+            torch_y = torch.tensor(self.y.copy().numpy())
             
             # 执行几步优化并比较结果
             for step in range(3):
@@ -1173,10 +1173,10 @@ class TestOptimizedOptimizer(unittest.TestCase):
                 torch_optimizer.zero_grad()
                 
                 # 比较参数
-                rm_weight = self.model.weight.data
-                rm_bias = self.model.bias.data
-                torch_weight = torch_model.weight.data.detach().numpy()
-                torch_bias = torch_model.bias.data.detach().numpy()
+                rm_weight = self.model.weight.detach().numpy()
+                rm_bias = self.model.bias.detach().numpy()
+                torch_weight = torch_model.weight.detach().numpy()
+                torch_bias = torch_model.bias.detach().numpy()
                 
                 weight_match = np.allclose(rm_weight, torch_weight, atol=1e-6, rtol=1e-6)
                 bias_match = np.allclose(rm_bias, torch_bias, atol=1e-6, rtol=1e-6)
@@ -1232,8 +1232,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             start_time = time.time()
             try:
                 # 重置模型参数
-                self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-                self.model.bias.data = np.zeros(5).astype(np.float32)
+                self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+                self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
                 
                 # 创建AdamW优化器
                 optimizer = AdamW(
@@ -1264,7 +1264,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                     optimizer.zero_grad()
                 
                 # 检查参数是否更新
-                self.assertFalse(np.allclose(self.model.weight.data, np.random.randn(10, 5).astype(np.float32) * 0.1))
+                self.assertFalse(np.allclose(self.model.weight.detach().numpy(), np.random.randn(10, 5).astype(np.float32) * 0.1))
                 
                 passed = True
                 
@@ -1289,8 +1289,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             start_time = time.time()
             try:
                 # 重置模型参数
-                self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-                self.model.bias.data = np.zeros(5).astype(np.float32)
+                self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+                self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
                 
                 optimizer = AdamW(
                     self.model.parameters(), 
@@ -1370,7 +1370,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                         self.assertIsNone(param.grad)
                     else:
                         if param.grad is not None:
-                            self.assertTrue(np.allclose(param.grad.data, 0))
+                            self.assertTrue(np.allclose(param.grad, 0))
                 
                 passed = True
                 
@@ -1445,12 +1445,12 @@ class TestOptimizedOptimizer(unittest.TestCase):
             print(f"\n{Colors.BOLD}AdamW优化器与PyTorch行为一致性测试{Colors.ENDC}")
             
             # 重置模型参数
-            self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-            self.model.bias.data = np.zeros(5).astype(np.float32)
+            self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+            self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
             
             # 保存初始参数
-            initial_weight = self.model.weight.data.copy()
-            initial_bias = self.model.bias.data.copy()
+            initial_weight = self.model.weight.detach().numpy()
+            initial_bias = self.model.bias.detach().numpy()
             
             # 创建Riemann AdamW优化器
             rm_optimizer = AdamW(
@@ -1486,8 +1486,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             )
             
             # 转换输入和目标为PyTorch张量
-            torch_x = torch.tensor(self.x.data.copy(), requires_grad=True)
-            torch_y = torch.tensor(self.y.data.copy())
+            torch_x = torch.tensor(self.x.detach().numpy(), requires_grad=True)
+            torch_y = torch.tensor(self.y.detach().numpy())
             
             # 执行多步优化并比较结果
             for step in range(3):
@@ -1508,10 +1508,10 @@ class TestOptimizedOptimizer(unittest.TestCase):
                 torch_optimizer.zero_grad()
                 
                 # 比较参数
-                rm_weight = self.model.weight.data
-                rm_bias = self.model.bias.data
-                torch_weight = torch_model.weight.data.detach().numpy()
-                torch_bias = torch_model.bias.data.detach().numpy()
+                rm_weight = self.model.weight.detach().numpy()
+                rm_bias = self.model.bias.detach().numpy()
+                torch_weight = torch_model.weight.detach().numpy()
+                torch_bias = torch_model.bias.detach().numpy()
                 
                 weight_match = np.allclose(rm_weight, torch_weight, atol=1e-4, rtol=1e-4)
                 bias_match = np.allclose(rm_bias, torch_bias, atol=1e-4, rtol=1e-4)
@@ -1564,8 +1564,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             start_time = time.time()
             try:
                 # 重置模型参数
-                self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-                self.model.bias.data = np.zeros(5).astype(np.float32)
+                self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+                self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
                 
                 # 创建RMSprop优化器
                 optimizer = RMSprop(
@@ -1598,7 +1598,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                     optimizer.zero_grad()
                 
                 # 检查参数是否更新
-                self.assertFalse(np.allclose(self.model.weight.data, np.random.randn(10, 5).astype(np.float32) * 0.1))
+                self.assertFalse(np.allclose(self.model.weight.detach().numpy(), np.random.randn(10, 5).astype(np.float32) * 0.1))
                 
                 passed = True
                 
@@ -1623,8 +1623,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             start_time = time.time()
             try:
                 # 重置模型参数
-                self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-                self.model.bias.data = np.zeros(5).astype(np.float32)
+                self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+                self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
                 
                 optimizer = RMSprop(
                     self.model.parameters(), 
@@ -1704,7 +1704,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                         self.assertIsNone(param.grad)
                     else:
                         if param.grad is not None:
-                            self.assertTrue(np.allclose(param.grad.data, 0))
+                            self.assertTrue(np.allclose(param.grad, 0))
                 
                 passed = True
                 
@@ -1782,12 +1782,12 @@ class TestOptimizedOptimizer(unittest.TestCase):
             print(f"\n{Colors.BOLD}RMSprop优化器与PyTorch行为一致性测试{Colors.ENDC}")
             
             # 重置模型参数
-            self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-            self.model.bias.data = np.zeros(5).astype(np.float32)
+            self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+            self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
             
             # 保存初始参数
-            initial_weight = self.model.weight.data.copy()
-            initial_bias = self.model.bias.data.copy()
+            initial_weight = self.model.weight.copy().numpy()
+            initial_bias = self.model.bias.copy().numpy()
             
             # 创建Riemann RMSprop优化器
             rm_optimizer = RMSprop(
@@ -1825,8 +1825,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             )
             
             # 转换输入和目标为PyTorch张量
-            torch_x = torch.tensor(self.x.data.copy(), requires_grad=True)
-            torch_y = torch.tensor(self.y.data.copy())
+            torch_x = torch.tensor(self.x.detach().numpy(), requires_grad=True)
+            torch_y = torch.tensor(self.y.detach().numpy())
             
             # 执行多步优化并比较结果
             for step in range(3):
@@ -1847,10 +1847,10 @@ class TestOptimizedOptimizer(unittest.TestCase):
                 torch_optimizer.zero_grad()
                 
                 # 比较参数
-                rm_weight = self.model.weight.data
-                rm_bias = self.model.bias.data
-                torch_weight = torch_model.weight.data.detach().numpy()
-                torch_bias = torch_model.bias.data.detach().numpy()
+                rm_weight = self.model.weight.detach().numpy()
+                rm_bias = self.model.bias.detach().numpy()
+                torch_weight = torch_model.weight.detach().numpy()
+                torch_bias = torch_model.bias.detach().numpy()
                 
                 weight_match = np.allclose(rm_weight, torch_weight, atol=1e-4, rtol=1e-4)
                 bias_match = np.allclose(rm_bias, torch_bias, atol=1e-4, rtol=1e-4)
@@ -1929,11 +1929,11 @@ class TestOptimizedOptimizer(unittest.TestCase):
                 loss = (diff * diff).mean()
                 loss.backward()
                 
-                initial_weight = self.model.weight.data.copy()
+                initial_weight = self.model.weight.copy().numpy()
                 optimizer.step()
                 
                 # 检查参数是否更新
-                self.assertFalse(np.allclose(initial_weight, self.model.weight.data))
+                self.assertFalse(np.allclose(initial_weight, self.model.weight.detach().numpy()))
                 
                 # 检查状态是否正确初始化
                 for param in self.model.parameters():
@@ -1942,13 +1942,13 @@ class TestOptimizedOptimizer(unittest.TestCase):
                         self.assertIn('step', optimizer.state[param_id])
                         self.assertIn('sum', optimizer.state[param_id])
                         self.assertEqual(optimizer.state[param_id]['step'], 1)
-                        self.assertEqual(optimizer.state[param_id]['sum'].shape, param.data.shape)
+                        self.assertEqual(optimizer.state[param_id]['sum'].shape, param.shape)
                 
                 # 清零梯度
                 optimizer.zero_grad()
                 for param in self.model.parameters():
                     if param.grad is not None:
-                        self.assertTrue(np.allclose(param.grad.data, 0))
+                        self.assertTrue(np.allclose(param.grad, 0))
                 
                 passed = True
                 
@@ -2046,7 +2046,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                         self.assertIsNone(param.grad)
                     else:
                         if param.grad is not None:
-                            self.assertTrue(np.allclose(param.grad.data, 0))
+                            self.assertTrue(np.allclose(param.grad, 0))
                 
                 passed = True
                 
@@ -2121,12 +2121,12 @@ class TestOptimizedOptimizer(unittest.TestCase):
             print(f"\n{Colors.BOLD}Adagrad优化器与PyTorch行为一致性测试{Colors.ENDC}")
             
             # 重置模型参数
-            self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-            self.model.bias.data = np.zeros(5).astype(np.float32)
+            self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+            self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
             
             # 保存初始参数
-            initial_weight = self.model.weight.data.copy()
-            initial_bias = self.model.bias.data.copy()
+            initial_weight = self.model.weight.copy().numpy()
+            initial_bias = self.model.bias.copy().numpy()
             
             # 创建Riemann Adagrad优化器
             rm_optimizer = Adagrad(
@@ -2162,8 +2162,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             )
             
             # 转换输入和目标为PyTorch张量
-            torch_x = torch.tensor(self.x.data.copy(), requires_grad=True)
-            torch_y = torch.tensor(self.y.data.copy())
+            torch_x = torch.tensor(self.x.detach().copy(), requires_grad=True)
+            torch_y = torch.tensor(self.y.detach().copy())
             
             # 执行几步优化并比较结果
             for step in range(3):
@@ -2184,10 +2184,10 @@ class TestOptimizedOptimizer(unittest.TestCase):
                 torch_optimizer.zero_grad()
                 
                 # 比较参数
-                rm_weight = self.model.weight.data
-                rm_bias = self.model.bias.data
-                torch_weight = torch_model.weight.data.detach().numpy()
-                torch_bias = torch_model.bias.data.detach().numpy()
+                rm_weight = self.model.weight.copy().numpy()
+                rm_bias = self.model.bias.copy().numpy()
+                torch_weight = torch_model.weight.detach().numpy()
+                torch_bias = torch_model.bias.detach().numpy()
                 
                 weight_match = np.allclose(rm_weight, torch_weight, atol=1e-6, rtol=1e-6)
                 bias_match = np.allclose(rm_bias, torch_bias, atol=1e-6, rtol=1e-6)
@@ -2242,8 +2242,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             start_time = time.time()
             try:
                 # 重置模型参数
-                self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-                self.model.bias.data = np.zeros(5).astype(np.float32)
+                self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+                self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
                 
                 # 创建LBFGS优化器
                 optimizer = LBFGS(
@@ -2280,11 +2280,11 @@ class TestOptimizedOptimizer(unittest.TestCase):
                     loss.backward()
                     return loss
                 
-                initial_weight = self.model.weight.data.copy()
+                initial_weight = self.model.weight.copy().numpy()
                 loss = optimizer.step(closure)
                 
                 # 检查参数是否更新
-                self.assertFalse(np.allclose(initial_weight, self.model.weight.data))
+                self.assertFalse(np.allclose(initial_weight, self.model.weight.detach().numpy()))
                 
                 # 检查返回值
                 self.assertIsInstance(loss, (float, np.floating, type(self.x)))  # 允许返回tensor类型
@@ -2293,7 +2293,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                 optimizer.zero_grad()
                 for param in self.model.parameters():
                     if param.grad is not None:
-                        self.assertTrue(np.allclose(param.grad.data, 0))
+                        self.assertTrue(np.allclose(param.grad, 0))
                 
                 passed = True
                 
@@ -2396,7 +2396,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                         self.assertIsNone(param.grad)
                     else:
                         if param.grad is not None:
-                            self.assertTrue(np.allclose(param.grad.data, 0))
+                            self.assertTrue(np.allclose(param.grad, 0))
                 
                 passed = True
                 
@@ -2476,86 +2476,99 @@ class TestOptimizedOptimizer(unittest.TestCase):
         if TORCH_AVAILABLE:
             print(f"\n{Colors.BOLD}LBFGS优化器与PyTorch行为一致性测试{Colors.ENDC}")
             
-            # 重置模型参数
-            self.model.weight.data = np.random.randn(10, 5).astype(np.float32) * 0.1
-            self.model.bias.data = np.zeros(5).astype(np.float32)
-            
-            # 保存初始参数
-            initial_weight = self.model.weight.data.copy()
-            initial_bias = self.model.bias.data.copy()
-            
-            # 创建Riemann LBFGS优化器
-            rm_optimizer = LBFGS(
-                self.model.parameters(),
-                lr=1.0,
-                max_iter=10,
-                history_size=100
-            )
-            
-            # 创建PyTorch模型和LBFGS优化器
-            import torch.nn as torch_nn
-            import torch.optim as torch_optim
-            
-            class TorchSimpleModel(torch_nn.Module):
-                def __init__(self):
-                    super().__init__()
-                    self.weight = torch_nn.Parameter(torch.tensor(initial_weight))
-                    self.bias = torch_nn.Parameter(torch.tensor(initial_bias))
+            case_name = "LBFGS与PyTorch行为一致性"
+            start_time = time.time()
+            try:
+                # 重置模型参数
+                self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+                self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
                 
-                def forward(self, x):
-                    return x @ self.weight + self.bias
+                # 保存初始参数
+                initial_weight = self.model.weight.copy().numpy()
+                initial_bias = self.model.bias.copy().numpy()
+                
+                # 创建Riemann LBFGS优化器
+                rm_optimizer = LBFGS(
+                    self.model.parameters(),
+                    lr=1.0,
+                    max_iter=10,
+                    history_size=100
+                )
+                
+                # 创建PyTorch模型和LBFGS优化器
+                import torch.nn as torch_nn
+                import torch.optim as torch_optim
+                
+                class TorchSimpleModel(torch_nn.Module):
+                    def __init__(self):
+                        super().__init__()
+                        self.weight = torch_nn.Parameter(torch.tensor(initial_weight))
+                        self.bias = torch_nn.Parameter(torch.tensor(initial_bias))
+                    
+                    def forward(self, x):
+                        return x @ self.weight + self.bias
+                
+                torch_model = TorchSimpleModel()
+                torch_optimizer = torch_optim.LBFGS(
+                    torch_model.parameters(),
+                    lr=1.0,
+                    max_iter=10,
+                    history_size=100
+                )
+                
+                # 转换输入和目标为PyTorch张量
+                torch_x = torch.tensor(self.x.detach().numpy(), requires_grad=True)
+                torch_y = torch.tensor(self.y.detach().numpy())
+                
+                # 执行优化并比较结果
+                def rm_closure():
+                    rm_optimizer.zero_grad()
+                    output = self.model(self.x)
+                    diff = output - self.y
+                    loss = (diff * diff).mean()
+                    loss.backward()
+                    return loss
+                
+                def torch_closure():
+                    torch_optimizer.zero_grad()
+                    output = torch_model(torch_x)
+                    diff = output - torch_y
+                    loss = (diff * diff).mean()
+                    loss.backward()
+                    return loss.detach()
+                
+                # 执行优化
+                rm_loss = rm_optimizer.step(rm_closure)
+                torch_loss = torch_optimizer.step(torch_closure)
+                
+                # 比较参数
+                rm_weight = self.model.weight.detach().numpy()
+                rm_bias = self.model.bias.detach().numpy()
+                torch_weight = torch_model.weight.detach().numpy()
+                torch_bias = torch_model.bias.detach().numpy()
+                
+                weight_match = np.allclose(rm_weight, torch_weight, atol=1e-4, rtol=1e-4)
+                bias_match = np.allclose(rm_bias, torch_bias, atol=1e-4, rtol=1e-4)
+                
+                print(f"  权重匹配={weight_match}, 偏置匹配={bias_match}")
+                print(f"  Riemann损失: {rm_loss:.6f}, PyTorch损失: {torch_loss.item():.6f}")
+                
+                # 由于LBFGS实现细节可能不同，不做严格的数值断言，只要求本段不抛异常
+                passed = True
+                
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
             
-            torch_model = TorchSimpleModel()
-            torch_optimizer = torch_optim.LBFGS(
-                torch_model.parameters(),
-                lr=1.0,
-                max_iter=10,
-                history_size=100
-            )
-            
-            # 转换输入和目标为PyTorch张量
-            torch_x = torch.tensor(self.x.data.copy(), requires_grad=True)
-            torch_y = torch.tensor(self.y.data.copy())
-            
-            # 执行优化并比较结果
-            def rm_closure():
-                rm_optimizer.zero_grad()
-                output = self.model(self.x)
-                diff = output - self.y
-                loss = (diff * diff).mean()
-                loss.backward()
-                return loss
-            
-            def torch_closure():
-                torch_optimizer.zero_grad()
-                output = torch_model(torch_x)
-                diff = output - torch_y
-                loss = (diff * diff).mean()
-                loss.backward()
-                return loss.detach()
-            
-            # 执行优化
-            rm_loss = rm_optimizer.step(rm_closure)
-            torch_loss = torch_optimizer.step(torch_closure)
-            
-            # 比较参数
-            rm_weight = self.model.weight.data
-            rm_bias = self.model.bias.data
-            torch_weight = torch_model.weight.data.detach().numpy()
-            torch_bias = torch_model.bias.data.detach().numpy()
-            
-            weight_match = np.allclose(rm_weight, torch_weight, atol=1e-4, rtol=1e-4)
-            bias_match = np.allclose(rm_bias, torch_bias, atol=1e-4, rtol=1e-4)
-            
-            print(f"  权重匹配={weight_match}, 偏置匹配={bias_match}")
-            print(f"  Riemann损失: {rm_loss:.6f}, PyTorch损失: {torch_loss.item():.6f}")
-            
-            # 由于LBFGS实现细节可能不同，我们不做严格断言，只记录结果
-            status = "通过" if True else "失败"
-            print(f"  测试结果: {Colors.OKGREEN}{status}{Colors.ENDC}")
+            time_taken = time.time() - start_time
             
             if IS_RUNNING_AS_SCRIPT:
-                stats.add_result("LBFGS与PyTorch行为一致性", True)
+                stats.add_result(case_name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            # 断言确保失败不会被统计掩盖
+            self.assertTrue(passed, f"LBFGS与PyTorch一致性测试失败: {case_name}")
 
 if __name__ == '__main__':
     # 设置为独立脚本运行模式

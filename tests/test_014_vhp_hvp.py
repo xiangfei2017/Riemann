@@ -688,11 +688,11 @@ class TestVhpHvpFunctions(unittest.TestCase):
 
                     # HVP: H@v = d²f/dx² * v = 12x² * 1 = 48
                     _, rm_hvp_result = hvp(f, rm_x, rm_v)
-                    hvp_correct = np.allclose(rm_hvp_result.data, 48.0)
+                    hvp_correct = np.allclose(rm_hvp_result.detach().numpy(), 48.0)
 
                     # VHP: v^T@H = v * 12x² = 48
                     _, rm_vhp_result = vhp(f, rm_x, rm_v)
-                    vhp_correct = np.allclose(rm_vhp_result.data, 48.0)
+                    vhp_correct = np.allclose(rm_vhp_result.detach().numpy(), 48.0)
 
                     if TORCH_AVAILABLE:
                         torch_x = torch.tensor(2.0, requires_grad=True, device=device)
@@ -739,11 +739,11 @@ class TestVhpHvpFunctions(unittest.TestCase):
 
                     # HVP: H@v = 2*v (Hessian = 2*I)
                     _, rm_hvp_result = hvp(f, rm_x, rm_v)
-                    hvp_correct = np.allclose(rm_hvp_result.data, 2.0 * np_v)
+                    hvp_correct = np.allclose(rm_hvp_result.detach().numpy(), 2.0 * np_v)
 
                     # VHP: v^T@H = 2*v
                     _, rm_vhp_result = vhp(f, rm_x, rm_v)
-                    vhp_correct = np.allclose(rm_vhp_result.data, 2.0 * np_v)
+                    vhp_correct = np.allclose(rm_vhp_result.detach().numpy(), 2.0 * np_v)
 
                     if TORCH_AVAILABLE:
                         torch_x = torch.tensor(x_data, requires_grad=True, device=device)
@@ -794,8 +794,8 @@ class TestVhpHvpFunctions(unittest.TestCase):
                     has_grad = all(h.requires_grad for h in rm_hvp_result)
 
                     # HVP: H@v = (2*vx, 6y*vy) = [2, 2], [18, 24]
-                    hvp_x = np.allclose(rm_hvp_result[0].data, [2.0, 2.0])
-                    hvp_y = np.allclose(rm_hvp_result[1].data, [18.0, 24.0])
+                    hvp_x = np.allclose(rm_hvp_result[0].detach().numpy(), [2.0, 2.0])
+                    hvp_y = np.allclose(rm_hvp_result[1].detach().numpy(), [18.0, 24.0])
 
                     passed = has_grad and hvp_x and hvp_y
                     time_taken = time.time() - start_time
@@ -839,23 +839,23 @@ class TestVhpHvpFunctions(unittest.TestCase):
                     _, rm_vhp_result = vhp(f, (rm_x, rm_y), (rm_vx, rm_vy), strict=False)
 
                     # HVP: H@v = (2*vx, 0 for unused y)
-                    hvp_x = np.allclose(rm_hvp_result[0].data, [2.0, 2.0])
+                    hvp_x = np.allclose(rm_hvp_result[0].detach().numpy(), [2.0, 2.0])
                     # y 未使用，strict=False 时 HVP_y 必须为零张量而非 None（与 torch 的 _fill_in_zeros 语义一致）
                     hvp_y = (rm_hvp_result[1] is not None
-                             and np.allclose(rm_hvp_result[1].data, [0.0, 0.0])
+                             and np.allclose(rm_hvp_result[1].detach().numpy(), [0.0, 0.0])
                              and not rm_hvp_result[1].requires_grad)
 
                     # VHP: v@H = (2*vx, 0 for unused y)
-                    vhp_x = np.allclose(rm_vhp_result[0].data, [2.0, 2.0])
+                    vhp_x = np.allclose(rm_vhp_result[0].detach().numpy(), [2.0, 2.0])
                     vhp_y = (rm_vhp_result[1] is not None
-                             and np.allclose(rm_vhp_result[1].data, [0.0, 0.0])
+                             and np.allclose(rm_vhp_result[1].detach().numpy(), [0.0, 0.0])
                              and not rm_vhp_result[1].requires_grad)
 
                     # create_graph=True 时未使用输入的 HVP 仍为零张量且 requires_grad=False（对齐 torch）
                     _, rm_hvp_cg = hvp(f, (rm_x, rm_y), (rm_vx, rm_vy), strict=False, create_graph=True)
-                    hvp_cg_x = np.allclose(rm_hvp_cg[0].data, [2.0, 2.0])
+                    hvp_cg_x = np.allclose(rm_hvp_cg[0].detach().numpy(), [2.0, 2.0])
                     hvp_cg_y = (rm_hvp_cg[1] is not None
-                                and np.allclose(rm_hvp_cg[1].data, [0.0, 0.0])
+                                and np.allclose(rm_hvp_cg[1].detach().numpy(), [0.0, 0.0])
                                 and not rm_hvp_cg[1].requires_grad)
 
                     passed = hvp_x and hvp_y and vhp_x and vhp_y and hvp_cg_x and hvp_cg_y

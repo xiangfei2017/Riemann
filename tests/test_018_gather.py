@@ -167,7 +167,7 @@ class TestGather(unittest.TestCase):
                          f"{test_name} - 形状不匹配: rm={rm_tensor.shape}, pt={pt_tensor.shape}")
         
         # 比较数据类型
-        rm_dtype = str(rm_tensor.data.dtype)
+        rm_dtype = str(rm_tensor.dtype)
         pt_dtype = str(pt_tensor.dtype)
         
         # 规范化类型名称
@@ -184,7 +184,7 @@ class TestGather(unittest.TestCase):
                          f"{test_name} - 数据类型不匹配: rm={rm_dtype}, pt={pt_dtype}")
         
         # 比较值
-        rm_data = rm_tensor.data if hasattr(rm_tensor, 'data') else rm_tensor
+        rm_data = rm_tensor.detach().numpy()
         pt_data = pt_tensor.detach().numpy()
         
         if rm_data.size == 0 and pt_data.size == 0:

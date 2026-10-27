@@ -207,7 +207,7 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         
         # 检查是否在CUDA上运行
         is_cuda = False
-        if rm_result and hasattr(rm_result[0].data, 'get'):
+        if rm_result and rm_result[0].is_cuda:
             is_cuda = True
         
         # 在CUDA上使用更大的误差阈值
@@ -221,7 +221,7 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
             if i == 1:  # S (奇异值)
                 try:
                     # 确保在CPU上比较
-                    r_data = r.data
+                    r_data = r.detach().numpy()
                     # 检查是否是cupy数组
                     if hasattr(r_data, 'get'):
                         r_data = r_data.get()
@@ -238,7 +238,7 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
                     k = min(r.shape[-2], r.shape[-1])
                     try:
                         # 确保在CPU上比较
-                        r_data = r.data
+                        r_data = r.detach().numpy()
                         # 检查是否是cupy数组
                         if hasattr(r_data, 'get'):
                             r_data = r_data.get()
@@ -257,7 +257,7 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
                     k = min(r.shape[-2], r.shape[-1])
                     try:
                         # 确保在CPU上比较
-                        r_data = r.data
+                        r_data = r.detach().numpy()
                         # 检查是否是cupy数组
                         if hasattr(r_data, 'get'):
                             r_data = r_data.get()
@@ -304,24 +304,24 @@ def check_reconstruction(A, U, S, Vh, atol=1e-6):
         actual_k = min(k, u_shape, vh_shape)
         
         # 确保在CPU上操作
-        S_data = S.data
+        S_data = S.detach().numpy()
         # 检查是否是cupy数组
         if hasattr(S_data, 'get'):
             S_data = S_data.get()
         sigma[:actual_k, :actual_k] = np.diag(S_data[:actual_k])
         
         # 重构矩阵
-        U_data = U.data
+        U_data = U.detach().numpy()
         # 检查是否是cupy数组
         if hasattr(U_data, 'get'):
             U_data = U_data.get()
-        Vh_data = Vh.data
+        Vh_data = Vh.detach().numpy()
         # 检查是否是cupy数组
         if hasattr(Vh_data, 'get'):
             Vh_data = Vh_data.get()
-        A_data = A.data
+        A_data = A.detach().numpy()
         # 检查是否是cupy数组
-        if hasattr(A_data, 'get'):
+        if A.is_cuda:
             A_data = A_data.get()
         
         reconstructed = U_data @ sigma @ Vh_data
@@ -344,21 +344,21 @@ def check_reconstruction(A, U, S, Vh, atol=1e-6):
         actual_k = min(k, u_shape, vh_shape)
         
         # 确保在CPU上操作
-        S_data = S.data
+        S_data = S.detach().numpy()
         # 检查是否是cupy数组
         if hasattr(S_data, 'get'):
             S_data = S_data.get()
         sigma[:actual_k, :actual_k] = np.diag(S_data[0, :actual_k])
         
-        U_data = U.data
+        U_data = U.detach().numpy()
         # 检查是否是cupy数组
         if hasattr(U_data, 'get'):
             U_data = U_data.get()
-        Vh_data = Vh.data
+        Vh_data = Vh.detach().numpy()
         # 检查是否是cupy数组
         if hasattr(Vh_data, 'get'):
             Vh_data = Vh_data.get()
-        A_data = A.data
+        A_data = A.detach().numpy()
         # 检查是否是cupy数组
         if hasattr(A_data, 'get'):
             A_data = A_data.get()
@@ -631,7 +631,7 @@ class TestLinalgSVD(unittest.TestCase):
                         rm_U_sum = rm_U.abs().sum()
                         rm_U_sum.backward()
                         # 确保在CPU上比较
-                        rm_grad_u = riemann_tensor_u.grad.data
+                        rm_grad_u = riemann_tensor_u.grad.detach().numpy()
                         # 检查是否是cupy数组
                         if hasattr(rm_grad_u, 'get'):
                             rm_grad_u = rm_grad_u.get()
@@ -684,7 +684,7 @@ class TestLinalgSVD(unittest.TestCase):
                         rm_S_sum = rm_S.sum()
                         rm_S_sum.backward()
                         # 确保在CPU上比较
-                        rm_grad_s = riemann_tensor_s.grad.data
+                        rm_grad_s = riemann_tensor_s.grad.detach().numpy()
                         # 检查是否是cupy数组
                         if hasattr(rm_grad_s, 'get'):
                             rm_grad_s = rm_grad_s.get()
@@ -735,7 +735,7 @@ class TestLinalgSVD(unittest.TestCase):
                         rm_Vh_sum = rm_Vh.abs().sum()
                         rm_Vh_sum.backward()
                         # 确保在CPU上比较
-                        rm_grad_vh = riemann_tensor_vh.grad.data
+                        rm_grad_vh = riemann_tensor_vh.grad.detach().numpy()
                         # 检查是否是cupy数组
                         if hasattr(rm_grad_vh, 'get'):
                             rm_grad_vh = rm_grad_vh.get()

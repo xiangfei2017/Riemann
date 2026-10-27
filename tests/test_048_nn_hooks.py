@@ -185,9 +185,9 @@ def tensor_allclose(a, b, rtol=1e-5, atol=1e-8):
     """比较两个张量是否接近"""
     if a is None or b is None:
         return a is b
-    if not hasattr(a, 'data') or not hasattr(b, 'data'):
+    if not isinstance(a, rm.TN) or not isinstance(b, rm.TN):
         return False
-    return np.allclose(a.data, b.data, rtol=rtol, atol=atol)
+    return np.allclose(a.detach().numpy(), b.detach().numpy(), rtol=rtol, atol=atol)
 
 
 # ==================== 测试模块定义 ====================
@@ -627,7 +627,7 @@ def test_forward_pre_hooks(stats):
         output = module(input_data)
         
         # 验证输出（输入被乘以2，所以输出应该是原来的2倍）
-        expected_output = (input_data * 2) @ module.weight.data.T + module.bias.data
+        expected_output = (input_data * 2) @ module.weight.detach().numpy().T + module.bias.detach().numpy()
         output_correct = tensor_allclose(output, expected_output)
         passed = hook_called and output_correct
         stats.add_result("前向预处理钩子 - 验证输入修改效果", passed, 
@@ -875,7 +875,7 @@ def test_backward_pre_hooks(stats):
         output = module(input_data)
         output.sum().backward()
         
-        expected_grad = rm.ones((2, 5)) @ module.weight.data * 2
+        expected_grad = rm.ones((2, 5)) @ module.weight.detach().numpy() * 2
         grad_correct = tensor_allclose(input_data.grad, expected_grad)
         
         passed = hook_called and grad_correct
@@ -914,7 +914,7 @@ def test_backward_pre_hooks(stats):
         x1 = rm.tensor([1.0, 2.0, 3.0])
         x2 = rm.tensor([4.0, 5.0, 6.0])
         out = module(x1, x2)
-        out_grad = rm.tensor(out.data, requires_grad=True)
+        out_grad = rm.tensor(out.detach().numpy(), requires_grad=True)
         out_grad.backward(rm.ones_like(out_grad))
         
         passed = not hook_called
@@ -1138,7 +1138,7 @@ def test_backward_hooks(stats):
         output = module(input_data)
         output.sum().backward()
         
-        expected_grad = rm.ones((2, 5)) @ module.weight.data * 3
+        expected_grad = rm.ones((2, 5)) @ module.weight.detach().numpy() * 3
         grad_correct = tensor_allclose(input_data.grad, expected_grad)
         
         passed = hook_called and grad_correct
@@ -1187,7 +1187,7 @@ def test_backward_hooks(stats):
         x1 = rm.tensor([1.0, 2.0, 3.0])
         x2 = rm.tensor([4.0, 5.0, 6.0])
         out = module(x1, x2)
-        out_grad = rm.tensor(out.data, requires_grad=True)
+        out_grad = rm.tensor(out.detach().numpy(), requires_grad=True)
         out_grad.backward(rm.ones_like(out_grad))
         
         passed = not hook_called
@@ -1253,7 +1253,7 @@ def test_backward_hooks(stats):
         output = module(input_data)
         output.sum().backward()
         
-        expected_grad = rm.ones((2, 5)) @ module.weight.data
+        expected_grad = rm.ones((2, 5)) @ module.weight.detach().numpy()
         grad_correct = tensor_allclose(input_data.grad, expected_grad)
         
         passed = hook_called and grad_correct
@@ -1296,7 +1296,7 @@ def test_backward_hooks(stats):
         output = module(input_data)
         output.sum().backward()
         
-        expected_grad = rm.ones((2, 5)) @ module.weight.data * 2
+        expected_grad = rm.ones((2, 5)) @ module.weight.detach().numpy() * 2
         grad_correct = tensor_allclose(input_data.grad, expected_grad)
         passed = hook_called and grad_correct
         stats.add_result("反向钩子 - 修改输入梯度", passed, 
@@ -1379,7 +1379,7 @@ def test_backward_hooks(stats):
         output = module(input_data)
         output.sum().backward()
         
-        expected_grad = rm.ones((2, 5)) @ module.weight.data * 3
+        expected_grad = rm.ones((2, 5)) @ module.weight.detach().numpy() * 3
         grad_correct = tensor_allclose(input_data.grad, expected_grad)
         passed = hook_called and grad_correct
         stats.add_result("反向钩子 - 单输入模块 + 修改输入梯度（×3）", passed, 
@@ -1407,8 +1407,8 @@ def test_backward_hooks(stats):
         
         # TwoInputModule: output = (x + y) @ weight, weight shape is (10, 5)
         # grad_input = grad_output @ weight.T = ones(2, 5) @ (10, 5).T = ones(2, 5) @ (5, 10) = ones(2, 10)
-        expected_x_grad = rm.ones((2, 5)) @ module.weight.data.T * 2
-        expected_y_grad = rm.ones((2, 5)) @ module.weight.data.T
+        expected_x_grad = rm.ones((2, 5)) @ module.weight.detach().numpy().T * 2
+        expected_y_grad = rm.ones((2, 5)) @ module.weight.detach().numpy().T
         x_grad_correct = tensor_allclose(x.grad, expected_x_grad)
         y_grad_correct = tensor_allclose(y.grad, expected_y_grad)
         passed = hook_called and grad_modified and x_grad_correct and y_grad_correct
@@ -1437,7 +1437,7 @@ def test_backward_hooks(stats):
         
         # TwoInputModule: output = (x + y) @ weight, weight shape is (10, 5)
         # grad_input = grad_output @ weight.T = ones(2, 5) @ (10, 5).T = ones(2, 5) @ (5, 10) = ones(2, 10)
-        expected_grad = rm.ones((2, 5)) @ module.weight.data.T * 2
+        expected_grad = rm.ones((2, 5)) @ module.weight.detach().numpy().T * 2
         x_grad_correct = tensor_allclose(x.grad, expected_grad)
         y_grad_correct = tensor_allclose(y.grad, expected_grad)
         passed = hook_called and grad_modified and x_grad_correct and y_grad_correct
@@ -1602,7 +1602,7 @@ def test_combined_hooks(stats):
         output.sum().backward()
         
         # 预处理钩子×2，反向钩子×3，总共×6
-        expected_grad = rm.ones((2, 5)) @ module.weight.data * 6
+        expected_grad = rm.ones((2, 5)) @ module.weight.detach().numpy() * 6
         grad_correct = tensor_allclose(input_data.grad, expected_grad)
         
         passed = pre_hook_called and backward_hook_called and grad_correct
@@ -1992,7 +1992,7 @@ def test_complex_scenarios(stats):
         loss = output.sum()
         loss.backward()
         
-        expected_grad_input = rm.ones((2, 5)) @ module.weight.data
+        expected_grad_input = rm.ones((2, 5)) @ module.weight.detach().numpy()
         grad_input_correct = (grad_input_values is not None and 
                              len(grad_input_values) == 1 and
                              tensor_allclose(grad_input_values[0], expected_grad_input))
@@ -2395,7 +2395,7 @@ def test_complex_scenarios(stats):
         loss3.backward()
         
         hook_called_correct = hook_called == 3
-        expected_grad = rm.ones((2, 5)) @ module.weight.data * 3
+        expected_grad = rm.ones((2, 5)) @ module.weight.detach().numpy() * 3
         grad_correct = tensor_allclose(input_data.grad, expected_grad)
         cache_cleaned = len(module._backward_hook_cache) == 0
         

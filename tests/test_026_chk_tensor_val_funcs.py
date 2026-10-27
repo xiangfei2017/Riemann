@@ -202,36 +202,13 @@ def compare_values(rm_result, expected_result, atol=1e-6, rtol=1e-6):
     
     # 处理张量和numpy数组的情况
     try:
-        # 提取Riemann结果数据
-        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            rm_data = rm_result.detach().cpu().numpy()
-        elif hasattr(rm_result, 'detach'):
-            rm_data = rm_result.detach().numpy()
-        elif hasattr(rm_result, 'data'):
-            rm_data = rm_result.data
-            # 处理CuPy数组
-            if hasattr(rm_data, 'get'):
-                rm_data = rm_data.get()
-        elif hasattr(rm_result, 'numpy'):
-            rm_data = rm_result.numpy()
-        else:
-            rm_data = rm_result
-        
+        rm_data = rm_result.detach().cpu().numpy()
+
         # 转换预期结果为numpy数组
         if isinstance(expected_result, (list, tuple)):
             expected_data = np.array(expected_result)
-        elif hasattr(expected_result, 'is_cuda') and expected_result.is_cuda:
-            expected_data = expected_result.detach().cpu().numpy()
-        elif hasattr(expected_result, 'detach'):
-            expected_data = expected_result.detach().numpy()
-        elif hasattr(expected_result, 'data'):
-            expected_data = expected_result.data
-            # 处理CuPy数组
-            if hasattr(expected_data, 'get'):
-                expected_data = expected_data.get()
-        elif hasattr(expected_result, 'numpy'):
-            expected_data = expected_result.numpy()
+        elif isinstance(expected_result, np.ndarray):
+            expected_data = expected_result
         else:
             expected_data = np.array(expected_result)
         

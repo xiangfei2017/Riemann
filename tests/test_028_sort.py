@@ -204,20 +204,16 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all_passed
     
     # 转换为numpy数组
-    if hasattr(rm_result, 'data'):
-        rm_np = rm_result.data
+    if isinstance(rm_result, rm.TN):
+        rm_np = rm_result.detach().numpy()
     elif isinstance(rm_result, np.ndarray):
         rm_np = rm_result
     else:
         rm_np = np.array(rm_result)
     
     # 智能处理torch_result，可以是PyTorch张量或Riemann张量或numpy数组
-    if hasattr(torch_result, 'detach') and hasattr(torch_result, 'cpu'):  # PyTorch张量
+    if isinstance(torch_result, torch.Tensor):  # PyTorch张量
         torch_np = torch_result.detach().cpu().numpy()
-    elif hasattr(torch_result, 'data'):  # Riemann张量
-        torch_np = torch_result.data
-    elif hasattr(torch_result, 'numpy'):
-        torch_np = torch_result.numpy()
     elif isinstance(torch_result, np.ndarray):
         torch_np = torch_result
     else:

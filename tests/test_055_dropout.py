@@ -388,7 +388,7 @@ def verify_channel_dropout_behavior(input_tensor, output_tensor, p, training, dr
     is_inplace = False
     try:
         if hasattr(input_tensor, 'data') and hasattr(output_tensor, 'data'):
-            if input_tensor.data is output_tensor.data:
+            if input_tensor.detach().numpy() is output_tensor.detach().numpy():
                 is_inplace = True
     except:
         pass

@@ -196,13 +196,13 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6, check_dtype=Tr
         return False
     
     # 比较形状
-    rm_shape = rm_result.shape if hasattr(rm_result, 'shape') else rm_result.data.shape
+    rm_shape = rm_result.shape if hasattr(rm_result, 'shape') else rm_result.shape
     torch_shape = torch_result.shape
     if rm_shape != torch_shape:
         return False
     
     # 获取数据
-    rm_data = rm_result.data
+    rm_data = rm_result.numpy()
     torch_data = torch_result.numpy()
     
     # 比较数据类型
@@ -232,13 +232,13 @@ def compare_arg_results(rm_result, torch_result):
         return False
     
     # 比较形状
-    rm_shape = rm_result.shape if hasattr(rm_result, 'shape') else rm_result.data.shape
+    rm_shape = rm_result.shape if hasattr(rm_result, 'shape') else rm_result.shape
     torch_shape = torch_result.shape
     if rm_shape != torch_shape:
         return False
     
     # 获取数据并转换为int64类型进行比较
-    rm_data = rm_result.data.astype(np.int64)
+    rm_data = rm_result.numpy().astype(np.int64)
     torch_data = torch_result.numpy().astype(np.int64)
     
     # 检查所有元素是否相等
@@ -524,7 +524,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     # 梯度值比较
                     if TORCH_AVAILABLE and passed_grad:
                         torch_grad = torch_tensor_grad.grad.numpy()
-                        rm_grad = rm_tensor_grad.grad.data
+                        rm_grad = rm_tensor_grad.grad.numpy()
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):
                             passed_grad = False
                             max_diff = np.max(np.abs(rm_grad - torch_grad))
@@ -894,7 +894,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     # 梯度值比较
                     if TORCH_AVAILABLE and passed_grad:
                         torch_grad = torch_tensor_grad.grad.numpy()
-                        rm_grad = rm_tensor_grad.grad.data
+                        rm_grad = rm_tensor_grad.grad.numpy()
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):
                             passed_grad = False
                             max_diff = np.max(np.abs(rm_grad - torch_grad))
@@ -1091,7 +1091,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     # 梯度值比较
                     if TORCH_AVAILABLE and passed_grad:
                         torch_grad = torch_tensor_grad.grad.numpy()
-                        rm_grad = rm_tensor_grad.grad.data
+                        rm_grad = rm_tensor_grad.grad.numpy()
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):
                             passed_grad = False
                             max_diff = np.max(np.abs(rm_grad - torch_grad))
@@ -1323,7 +1323,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     # 梯度值比较
                     if TORCH_AVAILABLE and passed_grad:
                         torch_grad = torch_tensor_grad.grad.numpy()
-                        rm_grad = rm_tensor_grad.grad.data
+                        rm_grad = rm_tensor_grad.grad.numpy()
                         # 对于包含0的情况，使用更大的容差
                         rtol, atol = (1e-5, 1e-5) if "数值稳定性" not in case["name"] else (1e-4, 1e-4)
                         if not np.allclose(rm_grad, torch_grad, rtol=rtol, atol=atol):
@@ -1332,11 +1332,11 @@ class TestMaxMinFunctions(unittest.TestCase):
                             grad_details.append(f"梯度值不匹配，最大差异: {max_diff}")
                     
                     # 检查是否有NaN或inf值
-                    if passed_grad and np.any(np.isnan(rm_tensor_grad.grad.data)):
+                    if passed_grad and np.any(np.isnan(rm_tensor_grad.grad.numpy())):
                         passed_grad = False
                         grad_details.append("梯度中包含NaN值")
                     
-                    if passed_grad and np.any(np.isinf(rm_tensor_grad.grad.data)):
+                    if passed_grad and np.any(np.isinf(rm_tensor_grad.grad.numpy())):
                         passed_grad = False
                         grad_details.append("梯度中包含无穷大值")
                     
@@ -1533,7 +1533,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     # 梯度值比较
                     if TORCH_AVAILABLE and passed_grad:
                         torch_grad = torch_tensor_grad.grad.numpy()
-                        rm_grad = rm_tensor_grad.grad.data
+                        rm_grad = rm_tensor_grad.grad.numpy()
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):
                             passed_grad = False
                             max_diff = np.max(np.abs(rm_grad - torch_grad))
@@ -1753,7 +1753,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     # 梯度值比较
                     if TORCH_AVAILABLE and passed_grad:
                         torch_grad = torch_tensor_grad.grad.numpy()
-                        rm_grad = rm_tensor_grad.grad.data
+                        rm_grad = rm_tensor_grad.grad.numpy()
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):
                             passed_grad = False
                             max_diff = np.max(np.abs(rm_grad - torch_grad))
@@ -1948,7 +1948,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     # 梯度值比较
                     if TORCH_AVAILABLE and passed_grad:
                         torch_grad = torch_tensor_grad.grad.numpy()
-                        rm_grad = rm_tensor_grad.grad.data
+                        rm_grad = rm_tensor_grad.grad.numpy()
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):
                             passed_grad = False
                             max_diff = np.max(np.abs(rm_grad - torch_grad))
@@ -2218,7 +2218,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                         if TORCH_AVAILABLE and passed_grad:
                             # 比较第一个输入的梯度
                             torch_grad1 = torch_tensor1_grad.grad.numpy()
-                            rm_grad1 = rm_tensor1_grad.grad.data
+                            rm_grad1 = rm_tensor1_grad.grad.numpy()
                             if not np.allclose(rm_grad1, torch_grad1, rtol=1e-4, atol=1e-4):
                                 passed_grad = False
                                 max_diff1 = np.max(np.abs(rm_grad1 - torch_grad1))
@@ -2226,7 +2226,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                             
                             # 比较第二个输入的梯度
                             torch_grad2 = torch_tensor2_grad.grad.numpy()
-                            rm_grad2 = rm_tensor2_grad.grad.data
+                            rm_grad2 = rm_tensor2_grad.grad.numpy()
                             if not np.allclose(rm_grad2, torch_grad2, rtol=1e-4, atol=1e-4):
                                 passed_grad = False
                                 max_diff2 = np.max(np.abs(rm_grad2 - torch_grad2))
@@ -2507,7 +2507,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                         if TORCH_AVAILABLE and passed_grad:
                             # 比较第一个输入的梯度
                             torch_grad1 = torch_tensor1_grad.grad.numpy()
-                            rm_grad1 = rm_tensor1_grad.grad.data
+                            rm_grad1 = rm_tensor1_grad.grad.numpy()
                             if not np.allclose(rm_grad1, torch_grad1, rtol=1e-4, atol=1e-4):
                                 passed_grad = False
                                 max_diff1 = np.max(np.abs(rm_grad1 - torch_grad1))
@@ -2515,7 +2515,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                             
                             # 比较第二个输入的梯度
                             torch_grad2 = torch_tensor2_grad.grad.numpy()
-                            rm_grad2 = rm_tensor2_grad.grad.data
+                            rm_grad2 = rm_tensor2_grad.grad.numpy()
                             if not np.allclose(rm_grad2, torch_grad2, rtol=1e-4, atol=1e-4):
                                 passed_grad = False
                                 max_diff2 = np.max(np.abs(rm_grad2 - torch_grad2))
@@ -2901,7 +2901,7 @@ class TestMaxMinFunctions(unittest.TestCase):
             
             # 验证结果
             self.assertIsInstance(result9, rm.TN)
-            self.assertEqual(result9.data, 10.0)
+            self.assertEqual(result9.numpy(), 10.0)
             
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("所有参数都是标量", True)

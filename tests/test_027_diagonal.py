@@ -224,9 +224,8 @@ def clear_screen():
 def compare_values(actual, expected, stats, case_name):
     """比较实际值和期望值"""
     try:
-        # 直接访问.data属性，避免numpy转换警告
-        actual_data = actual.data
-        expected_data = expected.data
+        actual_data = actual.detach().numpy()
+        expected_data = expected.detach().numpy()
         passed = np.array_equal(actual_data, expected_data)
         stats.add_result(case_name, passed)
         return passed
@@ -502,7 +501,7 @@ class TestDiagonalFunctions(unittest.TestCase):
             
             # 检查梯度
             grad_expected = rm.tensor([[1.0, 0.0], [0.0, 1.0]])
-            passed = x.grad is not None and np.array_equal(np.array(x.grad.data), np.array(grad_expected.data))
+            passed = x.grad is not None and np.array_equal(x.grad.detach().numpy(), grad_expected.detach().numpy())
             stats.add_result(case_name, passed)
             
             return passed
@@ -546,13 +545,13 @@ class TestDiagonalFunctions(unittest.TestCase):
                     result = rm.diag(case['input'])
                     
                     # 检查结果
-                    passed = np.array_equal(np.array(result.data), np.array(case['expected'].data))
+                    passed = np.array_equal(result.detach().numpy(), case['expected'].detach().numpy())
                     
                     # 测试失败时打印实际值和预期值
                     if not passed:
                         print(f"{Colors.FAIL}测试失败: {case_name} 实际值 != 预期值{Colors.ENDC}")
-                        print(f"实际值: {result.data}")
-                        print(f"预期值: {case['expected'].data}")
+                        print(f"实际值: {result.detach().numpy()}")
+                        print(f"预期值: {case['expected'].detach().numpy()}")
                         all_passed = False
                     
                     stats.add_result(case_name, passed)
@@ -602,7 +601,7 @@ class TestDiagonalFunctions(unittest.TestCase):
             
             # 检查梯度
             grad_expected = rm.tensor([1.0, 1.0, 1.0])
-            passed = x.grad is not None and np.array_equal(np.array(x.grad.data), np.array(grad_expected.data))
+            passed = x.grad is not None and np.array_equal(x.grad.detach().numpy(), grad_expected.detach().numpy())
             stats.add_result(case_name, passed)
             
             if IS_RUNNING_AS_SCRIPT:
@@ -694,12 +693,12 @@ class TestDiagonalFunctions(unittest.TestCase):
                             for i in range(3):
                                 grad_expected[i, i] = 0.0
                             
-                            passed = x.grad is not None and np.array_equal(np.array(x.grad.data), np.array(grad_expected.data))
+                            passed = x.grad is not None and np.array_equal(x.grad.detach().numpy(), grad_expected.detach().numpy())
                             
                             if not passed:
                                 print(f"{Colors.FAIL}测试失败: {case_name} 原矩阵梯度错误{Colors.ENDC}")
-                                print(f"实际梯度: {x.grad.data if x.grad is not None else None}")
-                                print(f"预期梯度: {grad_expected.data}")
+                                print(f"实际梯度: {x.grad.detach().numpy() if x.grad is not None else None}")
+                                print(f"预期梯度: {grad_expected.detach().numpy()}")
                         else:
                             # 测试填充值的梯度
                             value_tensor = case['value']
@@ -710,25 +709,25 @@ class TestDiagonalFunctions(unittest.TestCase):
                             
                             # 检查填充值的梯度 - 应为全1.0
                             grad_expected = rm.tensor([1.0, 1.0, 1.0])
-                            passed = value_tensor.grad is not None and np.array_equal(np.array(value_tensor.grad.data), np.array(grad_expected.data))
+                            passed = value_tensor.grad is not None and np.array_equal(value_tensor.grad.detach().numpy(), grad_expected.detach().numpy())
                             
                             if not passed:
                                 print(f"{Colors.FAIL}测试失败: {case_name} 填充值梯度错误{Colors.ENDC}")
-                                print(f"实际梯度: {value_tensor.grad.data if value_tensor.grad is not None else None}")
-                                print(f"预期梯度: {grad_expected.data}")
+                                print(f"实际梯度: {value_tensor.grad.detach().numpy() if value_tensor.grad is not None else None}")
+                                print(f"预期梯度: {grad_expected.detach().numpy()}")
                     else:
                         # 普通测试逻辑
                         x = rm.zeros((3, 3))
                         result = rm.fill_diagonal(x, case['value'])
                         
                         # 检查结果
-                        passed = np.array_equal(np.array(result.data), np.array(case['expected'].data))
+                        passed = np.array_equal(result.detach().numpy(), case['expected'].detach().numpy())
                         
                         # 测试失败时打印实际值和预期值
                         if not passed:
                             print(f"{Colors.FAIL}测试失败: {case_name} 实际值 != 预期值{Colors.ENDC}")
-                            print(f"实际值: {result.data}")
-                            print(f"预期值: {case['expected'].data}")
+                            print(f"实际值: {result.detach().numpy()}")
+                            print(f"预期值: {case['expected'].detach().numpy()}")
                     
                     case_time = time.time() - case_start_time
                     all_passed = all_passed and passed
@@ -795,7 +794,7 @@ class TestDiagonalFunctions(unittest.TestCase):
             
             # 检查填充值的梯度 - 应为全1.0
             grad_expected = rm.tensor([1.0, 1.0, 1.0])
-            passed = fill_values.grad is not None and np.array_equal(np.array(fill_values.grad.data), np.array(grad_expected.data))
+            passed = fill_values.grad is not None and np.array_equal(fill_values.grad.detach().numpy(), grad_expected.detach().numpy())
             
             stats.add_result(case_name, passed)
             
@@ -825,7 +824,7 @@ class TestDiagonalFunctions(unittest.TestCase):
             for i in range(3):
                 grad_expected[i, i] = 0.0
             
-            passed = x.grad is not None and np.array_equal(np.array(x.grad.data), np.array(grad_expected.data))
+            passed = x.grad is not None and np.array_equal(x.grad.detach().numpy(), grad_expected.detach().numpy())
             
             stats.add_result(case_name, passed)
             
@@ -851,14 +850,14 @@ class TestDiagonalFunctions(unittest.TestCase):
             
             # 检查填充值的梯度
             fill_grad_expected = rm.tensor([1.0, 1.0, 1.0])
-            fill_grad_passed = fill_values.grad is not None and np.array_equal(np.array(fill_values.grad.data), np.array(fill_grad_expected.data))
+            fill_grad_passed = fill_values.grad is not None and np.array_equal(fill_values.grad.detach().numpy(), fill_grad_expected.detach().numpy())
             
             # 检查原矩阵的梯度 - 对角线位置的梯度应为0.0（因为被覆盖了），非对角线位置的梯度应为1.0
             x_grad_expected = rm.ones((3, 3))
             for i in range(3):
                 x_grad_expected[i, i] = 0.0
             
-            x_grad_passed = x.grad is not None and np.array_equal(np.array(x.grad.data), np.array(x_grad_expected.data))
+            x_grad_passed = x.grad is not None and np.array_equal(x.grad.detach().numpy(), x_grad_expected.detach().numpy())
             
             # 综合通过情况
             passed = fill_grad_passed and x_grad_passed
@@ -878,61 +877,7 @@ class TestDiagonalFunctions(unittest.TestCase):
             if IS_RUNNING_AS_SCRIPT:
                 print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
             self.fail(f"测试过程中出现异常: {e}")
-
-    # test_diagonal_extreme_offset已合并到test_diagonal方法中
-
-    # batch_diag相关测试保留，因为它与diagonal函数功能不同
-            
-            self.assertTrue(passed, "基本1D张量batch_diag测试失败")
-            
-            # 测试具有批处理维度的张量
-            case_name = "批处理维度batch_diag"
-            start_time = time.time()
-            x_batch = rm.tensor([[1, 2, 3], [4, 5, 6]])  # 形状为(2, 3)
-            result_batch = rm.batch_diag(x_batch)
-            
-            # 期望是两个对角矩阵的批次
-            expected_batch = rm.tensor([
-                [[1, 0, 0], [0, 2, 0], [0, 0, 3]],  # 第一个对角矩阵
-                [[4, 0, 0], [0, 5, 0], [0, 0, 6]]   # 第二个对角矩阵
-            ])  # 形状为(2, 3, 3)
-            
-            passed = np.array_equal(np.array(result_batch.data), np.array(expected_batch.data))
-            stats.add_result(case_name, passed)
-            
-            if IS_RUNNING_AS_SCRIPT:
-                time_taken = time.time() - start_time
-                status = "通过" if passed else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken*1000:.2f}ms)")
-            
-            self.assertTrue(passed, "批处理维度batch_diag测试失败")
-            
-            # 测试高维批处理张量
-            case_name = "高维批处理batch_diag"
-            start_time = time.time()
-            x_high_dim = rm.tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])  # 形状为(2, 2, 2)
-            result_high_dim = rm.batch_diag(x_high_dim)
-            
-            # 期望形状为(2, 2, 2, 2)
-            expected_shape = (2, 2, 2, 2)
-            passed_shape = result_high_dim.shape == expected_shape
-            
-            stats.add_result(case_name, passed_shape)
-            
-            if IS_RUNNING_AS_SCRIPT:
-                time_taken = time.time() - start_time
-                status = "通过" if passed_shape else "失败"
-                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed_shape else Colors.FAIL}{status}{Colors.ENDC} ({time_taken*1000:.2f}ms)")
-            
-            self.assertTrue(passed_shape, f"高维批处理batch_diag形状测试失败，期望{expected_shape}，实际{result_high_dim.shape}")
-            
-        except Exception as e:
-            case_name = "异常测试"
-            stats.add_result(case_name, False, str(e))
-            if IS_RUNNING_AS_SCRIPT:
-                print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
-            self.fail(f"测试过程中出现异常: {e}")
-    
+   
     def test_batch_diag_grad(self):
         """测试batch_diag函数的梯度计算"""
         case_name = "batch_diag梯度计算"
@@ -945,7 +890,7 @@ class TestDiagonalFunctions(unittest.TestCase):
             
             # 检查梯度
             grad_expected = rm.tensor([1.0, 1.0, 1.0])
-            passed = x.grad is not None and np.array_equal(np.array(x.grad.data), np.array(grad_expected.data))
+            passed = x.grad is not None and np.array_equal(x.grad.detach().numpy(), grad_expected.detach().numpy())
             stats.add_result(case_name, passed)
             
             if IS_RUNNING_AS_SCRIPT:
@@ -964,7 +909,7 @@ class TestDiagonalFunctions(unittest.TestCase):
             
             # 检查梯度
             grad_batch_expected = rm.tensor([[1.0, 1.0], [1.0, 1.0]])
-            passed_batch = x_batch.grad is not None and np.array_equal(np.array(x_batch.grad.data), np.array(grad_batch_expected.data))
+            passed_batch = x_batch.grad is not None and np.array_equal(x_batch.grad.detach().numpy(), grad_batch_expected.detach().numpy())
             stats.add_result(case_name, passed_batch)
             
             if IS_RUNNING_AS_SCRIPT:
@@ -1031,14 +976,14 @@ class TestDiagonalFunctions(unittest.TestCase):
                     torch_x = torch.tensor(np_x)
                     torch_output = torch.tril(torch_x, diagonal=diagonal)
                     
-                    if not np.allclose(rm_output.data, torch_output.numpy(), rtol=1e-5, atol=1e-5):
+                    if not np.allclose(rm_output.detach().numpy(), torch_output.numpy(), rtol=1e-5, atol=1e-5):
                         passed = False
-                        max_diff = np.max(np.abs(rm_output.data - torch_output.numpy()))
+                        max_diff = np.max(np.abs(rm_output.detach().numpy() - torch_output.numpy()))
                         details = f"函数值不匹配，最大差异: {max_diff}"
                 else:
                     # 直接与numpy结果对比
                     np_output = np.tril(np_x, k=diagonal)
-                    if not np.array_equal(rm_output.data, np_output):
+                    if not np.array_equal(rm_output.detach().numpy(), np_output):
                         passed = False
                         details = "函数值与numpy.tril结果不匹配"
                 
@@ -1067,8 +1012,8 @@ class TestDiagonalFunctions(unittest.TestCase):
                         torch_sum.backward()
                         
                         # 比较梯度
-                        rm_grad = rm_x2.grad.data
-                        torch_grad = torch_x2.grad.numpy()
+                        rm_grad = rm_x2.grad.detach().numpy()
+                        torch_grad = torch_x2.grad.detach().numpy()
                         
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):
                             passed = False
@@ -1149,14 +1094,14 @@ class TestDiagonalFunctions(unittest.TestCase):
                     torch_x = torch.tensor(np_x)
                     torch_output = torch.triu(torch_x, diagonal=diagonal)
                     
-                    if not np.allclose(rm_output.data, torch_output.numpy(), rtol=1e-5, atol=1e-5):
+                    if not np.allclose(rm_output.detach().numpy(), torch_output.detach().numpy(), rtol=1e-5, atol=1e-5):
                         passed = False
-                        max_diff = np.max(np.abs(rm_output.data - torch_output.numpy()))
+                        max_diff = np.max(np.abs(rm_output.detach().numpy() - torch_output.detach().numpy()))
                         details = f"函数值不匹配，最大差异: {max_diff}"
                 else:
                     # 直接与numpy结果对比
                     np_output = np.triu(np_x, k=diagonal)
-                    if not np.array_equal(rm_output.data, np_output):
+                    if not np.array_equal(rm_output.detach().numpy(), np_output):
                         passed = False
                         details = "函数值与numpy.triu结果不匹配"
                 
@@ -1185,8 +1130,8 @@ class TestDiagonalFunctions(unittest.TestCase):
                         torch_sum.backward()
                         
                         # 比较梯度
-                        rm_grad = rm_x_grad.grad.data
-                        torch_grad = torch_x.grad.numpy()
+                        rm_grad = rm_x_grad.grad.detach().numpy()
+                        torch_grad = torch_x.grad.detach().numpy()
                         
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):
                             passed = False

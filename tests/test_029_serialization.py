@@ -254,8 +254,8 @@ class TestSerialization(unittest.TestCase):
                         
                         # 验证数据内容
                         # 处理CUDA张量
-                        orig_data = original_tensor.data.get() if cp is not None and hasattr(original_tensor.data, 'get') else original_tensor.data
-                        loaded_data = loaded_tensor.data.get() if cp is not None and hasattr(loaded_tensor.data, 'get') else loaded_tensor.data
+                        orig_data = original_tensor.detach().cpu().numpy()
+                        loaded_data = loaded_tensor.detach().cpu().numpy()
                         np.testing.assert_allclose(loaded_data, orig_data, rtol=1e-6)
                         
                         # 验证属性
@@ -318,8 +318,8 @@ class TestSerialization(unittest.TestCase):
                         
                         # 验证数据内容
                         # 处理CUDA参数
-                        orig_data = original_param.data.get() if cp is not None and hasattr(original_param.data, 'get') else original_param.data
-                        loaded_data = loaded_param.data.get() if cp is not None and hasattr(loaded_param.data, 'get') else loaded_param.data
+                        orig_data = original_param.detach().cpu().numpy()
+                        loaded_data = loaded_param.detach().cpu().numpy()
                         np.testing.assert_allclose(loaded_data, orig_data, rtol=1e-6)
                         
                         # 验证属性
@@ -374,7 +374,7 @@ class TestSerialization(unittest.TestCase):
                         for key, value in original_dict.items():
                             if hasattr(value, 'shape'):  # 张量
                                 self.assertEqual(loaded_dict[key].shape, value.shape)
-                                np.testing.assert_allclose(loaded_dict[key].data, value.data, rtol=1e-6)
+                                np.testing.assert_allclose(loaded_dict[key].detach().cpu().numpy(), value.detach().cpu().numpy(), rtol=1e-6)
                             else:  # 普通数据
                                 self.assertEqual(loaded_dict[key], value)
                         
@@ -434,7 +434,7 @@ class TestSerialization(unittest.TestCase):
                         for key in original_state_dict.keys():
                             self.assertEqual(loaded_state_dict[key].shape, original_state_dict[key].shape)
                             self.assertEqual(loaded_state_dict[key].requires_grad, original_state_dict[key].requires_grad)
-                            np.testing.assert_allclose(loaded_state_dict[key].data, original_state_dict[key].data, rtol=1e-6)
+                            np.testing.assert_allclose(loaded_state_dict[key].detach().cpu().numpy(), original_state_dict[key].detach().cpu().numpy(), rtol=1e-6)
                         
                         time_taken = time.time() - start_time
                         stats.add_result(case_name, True)
@@ -477,7 +477,7 @@ class TestSerialization(unittest.TestCase):
                         loaded = rm.load(temp_path, pickle_module=case['pickle_module'])
                         
                         self.assertEqual(loaded.shape, tensor.shape)
-                        np.testing.assert_allclose(loaded.data, tensor.data, rtol=1e-6)
+                        np.testing.assert_allclose(loaded.detach().cpu().numpy(), tensor.detach().cpu().numpy(), rtol=1e-6)
                         
                         time_taken = time.time() - start_time
                         stats.add_result(case_name, True)
@@ -518,7 +518,7 @@ class TestSerialization(unittest.TestCase):
                         loaded = rm.load(temp_path)
                         
                         self.assertEqual(loaded.shape, tensor.shape)
-                        np.testing.assert_allclose(loaded.data, tensor.data, rtol=1e-6)
+                        np.testing.assert_allclose(loaded.detach().cpu().numpy(), tensor.detach().cpu().numpy(), rtol=1e-6)
                         
                         time_taken = time.time() - start_time
                         stats.add_result(case_name, True)
@@ -559,7 +559,7 @@ class TestSerialization(unittest.TestCase):
                     loaded = rm.load(buffer)
                     
                     self.assertEqual(loaded.shape, tensor.shape)
-                    np.testing.assert_allclose(loaded.data, tensor.data, rtol=1e-6)
+                    np.testing.assert_allclose(loaded.detach().cpu().numpy(), tensor.detach().cpu().numpy(), rtol=1e-6)
                     
                     time_taken = time.time() - start_time
                     stats.add_result(case_name, True)
@@ -620,7 +620,7 @@ class TestSerialization(unittest.TestCase):
                         def verify_structure(orig, loaded):
                             if hasattr(orig, 'shape'):  # 张量
                                 self.assertEqual(loaded.shape, orig.shape)
-                                np.testing.assert_allclose(loaded.data, orig.data, rtol=1e-6)
+                                np.testing.assert_allclose(loaded.detach().cpu().numpy(), orig.detach().cpu().numpy(), rtol=1e-6)
                             elif isinstance(orig, dict):
                                 self.assertEqual(set(loaded.keys()), set(orig.keys()))
                                 for key in orig:
@@ -708,7 +708,7 @@ class TestSerialization(unittest.TestCase):
                 loaded_cpu_tensor = rm.load(temp_path)
                 
                 # 验证数据
-                np.testing.assert_allclose(loaded_cpu_tensor.data, cpu_tensor.data, rtol=1e-6)
+                np.testing.assert_allclose(loaded_cpu_tensor.detach().cpu().numpy(), cpu_tensor.detach().cpu().numpy(), rtol=1e-6)
                 
                 # 验证device参数
                 self.assertEqual(str(loaded_cpu_tensor.device), str(cpu_tensor.device))
@@ -724,7 +724,7 @@ class TestSerialization(unittest.TestCase):
                 loaded_cpu_param = rm.load(temp_path)
                 
                 # 验证参数数据
-                np.testing.assert_allclose(loaded_cpu_param.data, cpu_param.data, rtol=1e-6)
+                np.testing.assert_allclose(loaded_cpu_param.detach().cpu().numpy(), cpu_param.detach().cpu().numpy(), rtol=1e-6)
                 
                 # 验证参数device
                 self.assertEqual(str(loaded_cpu_param.device), str(cpu_param.device))
@@ -846,7 +846,7 @@ class TestSerialization(unittest.TestCase):
                         # 验证数据
                         if isinstance(loaded_array, rm.TN):
                             # 如果加载为Riemann张量，提取其数据
-                            loaded_data = loaded_array.data
+                            loaded_data = loaded_array.detach().cpu().numpy()
                         else:
                             loaded_data = loaded_array
                         np.testing.assert_array_equal(original_array, loaded_data)
@@ -1007,7 +1007,7 @@ class TestSerialization(unittest.TestCase):
                         original_np = original_array.get()
                         if isinstance(loaded_array, rm.TN):
                             # 如果加载为Riemann张量，提取其数据
-                            loaded_data = loaded_array.data
+                            loaded_data = loaded_array.detach().cpu().numpy()
                             # 确保转换为NumPy数组
                             if cp is not None and isinstance(loaded_data, cp.ndarray):
                                 loaded_data = loaded_data.get()
@@ -1099,13 +1099,13 @@ class TestSerialization(unittest.TestCase):
                                 if isinstance(loaded, rm.TN):
                                     self.assertEqual(loaded.shape, orig.shape)
                                     # 处理CUDA张量
-                                    orig_data = orig.data.get() if cp is not None and hasattr(orig.data, 'get') else orig.data
-                                    loaded_data = loaded.data.get() if cp is not None and hasattr(loaded.data, 'get') else loaded.data
+                                    orig_data = orig.detach().cpu().numpy()
+                                    loaded_data = loaded.detach().cpu().numpy()
                                     np.testing.assert_allclose(loaded_data, orig_data, rtol=1e-6)
                                 # 数组
                                 elif isinstance(orig, np.ndarray):
                                     if isinstance(loaded, rm.TN):
-                                        loaded_data = loaded.data.get() if cp is not None and hasattr(loaded.data, 'get') else loaded.data
+                                        loaded_data = loaded.detach().cpu().numpy()
                                         np.testing.assert_array_equal(orig, loaded_data)
                                     else:
                                         np.testing.assert_array_equal(orig, loaded)
@@ -1163,13 +1163,13 @@ class TestSerialization(unittest.TestCase):
                         # 验证数据
                         if isinstance(original_data, np.ndarray):
                             if isinstance(loaded_data, rm.TN):
-                                np.testing.assert_array_equal(original_data, loaded_data.data)
+                                np.testing.assert_array_equal(original_data, loaded_data.detach().cpu().numpy())
                             else:
                                 np.testing.assert_array_equal(original_data, loaded_data)
                         elif isinstance(original_data, rm.TN):
                             self.assertEqual(loaded_data.shape, original_data.shape)
                             if original_data.shape:
-                                np.testing.assert_allclose(loaded_data.data, original_data.data, rtol=1e-6)
+                                np.testing.assert_allclose(loaded_data.detach().cpu().numpy(), original_data.detach().cpu().numpy(), rtol=1e-6)
                         
                         time_taken = time.time() - start_time
                         stats.add_result(case_name, True)

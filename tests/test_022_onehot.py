@@ -186,8 +186,8 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return False
     
     # 转换为numpy数组
-    rm_data = rm_result.data if hasattr(rm_result, 'data') else rm_result
-    torch_data = torch_result.detach().cpu().numpy()
+    rm_data = rm_result.detach().numpy()
+    torch_data = torch_result.detach().numpy()
     
     # 处理形状不匹配的情况
     try:

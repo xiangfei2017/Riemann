@@ -180,9 +180,9 @@ def verify_solution(A, X, B, rtol=1e-5, atol=1e-5):
             if not result and IS_RUNNING_AS_SCRIPT:
                 print(f"A shape: {A.shape}, X shape: {X.shape}, B shape: {B.shape}")
                 print(f"verification_batch shape: {verification_batch.shape}")
-                print(f"verification_batch: {verification_batch.data}")
-                print(f"B: {B.data}")
-                print(f"差值: {rm.abs(verification_batch - B).data}")
+                print(f"verification_batch: {verification_batch.detach().numpy()}")
+                print(f"B: {B.detach().numpy()}")
+                print(f"差值: {rm.abs(verification_batch - B).detach().numpy()}")
             return result
         
         # 情况2：其他所有情况 - 直接使用 A @ X 验证
@@ -197,9 +197,9 @@ def verify_solution(A, X, B, rtol=1e-5, atol=1e-5):
             if not result and IS_RUNNING_AS_SCRIPT:
                 print(f"A shape: {A.shape}, X shape: {X.shape}, B shape: {B.shape}")
                 print(f"AX shape: {AX.shape}")
-                print(f"AX: {AX.data}")
-                print(f"B: {B.data}")
-                print(f"差值: {rm.abs(AX - B).data}")
+                print(f"AX: {AX.detach().numpy()}")
+                print(f"B: {B.detach().numpy()}")
+                print(f"差值: {rm.abs(AX - B).detach().numpy()}")
             return result
             
     except Exception as e:
@@ -220,9 +220,9 @@ def verify_solution_right(A, X, B, rtol=1e-5, atol=1e-5):
             if not result and IS_RUNNING_AS_SCRIPT:
                 print(f"A shape: {A.shape}, X shape: {X.shape}, B shape: {B.shape}")
                 print(f"verification_batch shape: {verification_batch.shape}")
-                print(f"verification_batch: {verification_batch.data}")
-                print(f"B: {B.data}")
-                print(f"差值: {rm.abs(verification_batch - B).data}")
+                print(f"verification_batch: {verification_batch.detach().numpy()}")
+                print(f"B: {B.detach().numpy()}")
+                print(f"差值: {rm.abs(verification_batch - B).detach().numpy()}")
             return result
         
         # 情况2：其他所有情况 - 直接使用 X @ A 验证
@@ -236,9 +236,9 @@ def verify_solution_right(A, X, B, rtol=1e-5, atol=1e-5):
             if not result and IS_RUNNING_AS_SCRIPT:
                 print(f"A shape: {A.shape}, X shape: {X.shape}, B shape: {B.shape}")
                 print(f"XA shape: {XA.shape}")
-                print(f"XA: {XA.data}")
-                print(f"B: {B.data}")
-                print(f"差值: {rm.abs(XA - B).data}")
+                print(f"XA: {XA.detach().numpy()}")
+                print(f"B: {B.detach().numpy()}")
+                print(f"差值: {rm.abs(XA - B).detach().numpy()}")
             return result
             
     except Exception as e:
@@ -336,9 +336,9 @@ class TestLinalgSolve(unittest.TestCase):
         
         # 比较梯度
         if TORCH_AVAILABLE and gradients:
-            A_grad_match = np.allclose(gradients['riemann']['A_grad'].data, 
+            A_grad_match = np.allclose(gradients['riemann']['A_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['A_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
-            B_grad_match = np.allclose(gradients['riemann']['B_grad'].data, 
+            B_grad_match = np.allclose(gradients['riemann']['B_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['B_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
         else:
             A_grad_match = True
@@ -378,9 +378,9 @@ class TestLinalgSolve(unittest.TestCase):
         
         # 比较梯度
         if TORCH_AVAILABLE and gradients:
-            A_grad_match = np.allclose(gradients['riemann']['A_grad'].data, 
+            A_grad_match = np.allclose(gradients['riemann']['A_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['A_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
-            B_grad_match = np.allclose(gradients['riemann']['B_grad'].data, 
+            B_grad_match = np.allclose(gradients['riemann']['B_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['B_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
         else:
             A_grad_match = True
@@ -420,9 +420,9 @@ class TestLinalgSolve(unittest.TestCase):
         
         # 比较梯度
         if TORCH_AVAILABLE and gradients:
-            A_grad_match = np.allclose(gradients['riemann']['A_grad'].data, 
+            A_grad_match = np.allclose(gradients['riemann']['A_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['A_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
-            B_grad_match = np.allclose(gradients['riemann']['B_grad'].data, 
+            B_grad_match = np.allclose(gradients['riemann']['B_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['B_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
         else:
             A_grad_match = True
@@ -462,9 +462,9 @@ class TestLinalgSolve(unittest.TestCase):
         
         # 比较梯度
         if TORCH_AVAILABLE and gradients:
-            A_grad_match = np.allclose(gradients['riemann']['A_grad'].data, 
+            A_grad_match = np.allclose(gradients['riemann']['A_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['A_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
-            B_grad_match = np.allclose(gradients['riemann']['B_grad'].data, 
+            B_grad_match = np.allclose(gradients['riemann']['B_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['B_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
         else:
             A_grad_match = True
@@ -506,9 +506,9 @@ class TestLinalgSolve(unittest.TestCase):
         
         # 比较梯度
         if TORCH_AVAILABLE and gradients:
-            A_grad_match = np.allclose(gradients['riemann']['A_grad'].data, 
+            A_grad_match = np.allclose(gradients['riemann']['A_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['A_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
-            B_grad_match = np.allclose(gradients['riemann']['B_grad'].data, 
+            B_grad_match = np.allclose(gradients['riemann']['B_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['B_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
         else:
             A_grad_match = True
@@ -528,7 +528,7 @@ class TestLinalgSolve(unittest.TestCase):
             print(f"A梯度匹配: {status_color}{'通过' if A_grad_match else '失败'}{Colors.ENDC}")
             print(f"B梯度匹配: {status_color}{'通过' if B_grad_match else '失败'}{Colors.ENDC}")
             print(f"期望解: {X_expected}")
-            print(f"实际解: {X_rm.data}")
+            print(f"实际解: {X_rm.detach().numpy()}")
         
         # 断言
         self.assertTrue(verification_passed, "解验证失败")
@@ -555,9 +555,9 @@ class TestLinalgSolve(unittest.TestCase):
         
         # 比较梯度
         if TORCH_AVAILABLE and gradients:
-            A_grad_match = np.allclose(gradients['riemann']['A_grad'].data, 
+            A_grad_match = np.allclose(gradients['riemann']['A_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['A_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
-            B_grad_match = np.allclose(gradients['riemann']['B_grad'].data, 
+            B_grad_match = np.allclose(gradients['riemann']['B_grad'].detach().cpu().numpy(), 
                                      gradients['torch']['B_grad'].detach().cpu().numpy(), rtol=1e-3, atol=1e-3)
         else:
             A_grad_match = True
@@ -594,7 +594,7 @@ class TestLinalgSolve(unittest.TestCase):
         verification_passed = verify_solution(A_rm, X_rm, B_rm)
         
         # 验证out参数被正确使用
-        out_correct = np.allclose(X_rm.data, out_rm.data)
+        out_correct = np.allclose(X_rm.detach().numpy(), out_rm.detach().numpy())
         
         # 验证返回的X不支持梯度跟踪（与PyTorch行为一致）
         x_no_grad = not X_rm.requires_grad
@@ -639,7 +639,7 @@ class TestLinalgSolve(unittest.TestCase):
         # XA = B => X = B @ A^(-1)
         A_inv = np.linalg.inv(A)
         X_expected = B @ A_inv  # (2,) @ (2,2) = (2,)
-        solution_correct = np.allclose(X_rm.data, X_expected, rtol=1e-5, atol=1e-5)
+        solution_correct = np.allclose(X_rm.detach().numpy(), X_expected, rtol=1e-5, atol=1e-5)
         
         # 记录结果
         if IS_RUNNING_AS_SCRIPT:
@@ -651,7 +651,7 @@ class TestLinalgSolve(unittest.TestCase):
             print(f"梯度跟踪: {status_color}{'通过' if grad_tracking else '失败'}{Colors.ENDC}")
             print(f"解正确: {status_color}{'通过' if solution_correct else '失败'}{Colors.ENDC}")
             print(f"期望解: {X_expected}")
-            print(f"实际解: {X_rm.data}")
+            print(f"实际解: {X_rm.detach().numpy()}")
         
         # 断言
         self.assertTrue(verification_passed, "解验证失败")
@@ -683,7 +683,7 @@ class TestLinalgSolve(unittest.TestCase):
         for i in range(A.shape[0]):
             A_inv = np.linalg.inv(A[i])
             X_expected[i] = B[i] @ A_inv  # (2,) @ (2,2) = (2,)
-        solution_correct = np.allclose(X_rm.data, X_expected, rtol=1e-5, atol=1e-5)
+        solution_correct = np.allclose(X_rm.detach().numpy(), X_expected, rtol=1e-5, atol=1e-5)
         
         # 记录结果
         if IS_RUNNING_AS_SCRIPT:
@@ -695,7 +695,7 @@ class TestLinalgSolve(unittest.TestCase):
             print(f"梯度跟踪: {status_color}{'通过' if grad_tracking else '失败'}{Colors.ENDC}")
             print(f"解正确: {status_color}{'通过' if solution_correct else '失败'}{Colors.ENDC}")
             print(f"期望解: {X_expected}")
-            print(f"实际解: {X_rm.data}")
+            print(f"实际解: {X_rm.detach().numpy()}")
         
         # 断言
         self.assertTrue(verification_passed, "解验证失败")

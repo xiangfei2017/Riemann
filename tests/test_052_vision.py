@@ -260,7 +260,7 @@ def create_test_image(size=(32, 32), mode='RGB'):
 
 def tensor_allclose(rm_tensor, torch_tensor, rtol=1e-4, atol=1e-6):
     """比较Riemann张量和PyTorch张量是否接近"""
-    rm_data = rm_tensor.data if hasattr(rm_tensor, 'data') else rm_tensor
+    rm_data = rm_tensor.detach().numpy()
     torch_data = torch_tensor.detach().numpy()
     return np.allclose(rm_data, torch_data, rtol=rtol, atol=atol)
 
@@ -558,7 +558,7 @@ def test_transforms(stats=None):
                             f"Riemann: {rm_result.shape}, PyTorch: {torch_result.shape}")
             
             # 比较张量值
-            rm_data = rm_result.data if hasattr(rm_result, 'data') else rm_result
+            rm_data = rm_result.detach().numpy()
             torch_data = torch_result.detach().numpy()
             value_match = np.allclose(rm_data, torch_data, rtol=1e-5, atol=1e-5)
             stats.add_result("Normalize-RGB-张量值", value_match,
@@ -861,8 +861,8 @@ def test_transforms(stats=None):
             # PILToTensor不缩放值到[0,1]，保持原始值[0,255]
             stats.add_result("PILToTensor-输出形状", rm_result.shape == (3, 64, 64),
                             f"形状: {rm_result.shape}")
-            stats.add_result("PILToTensor-值范围", rm_result.data.max() > 1.0,
-                            f"最大值: {rm_result.data.max():.2f} (应该>1.0，因为不缩放)")
+            stats.add_result("PILToTensor-值范围", rm_result.max() > 1.0,
+                            f"最大值: {rm_result.max():.2f} (应该>1.0，因为不缩放)")
             # 检查是否为TN类型（从riemann导入的tensor类型）
             from riemann.tensordef import TN
             stats.add_result("PILToTensor-类型", isinstance(rm_result, TN),
@@ -878,8 +878,8 @@ def test_transforms(stats=None):
             rm_convert = ConvertImageDtype(np.float32)
             rm_result = rm_convert(test_tensor)
             
-            stats.add_result("ConvertImageDtype-类型转换", rm_result.data.dtype == np.float32,
-                            f"转换后类型: {rm_result.data.dtype}")
+            stats.add_result("ConvertImageDtype-类型转换", rm_result.dtype == np.float32,
+                            f"转换后类型: {rm_result.dtype}")
             stats.add_result("ConvertImageDtype-形状保持", rm_result.shape == test_tensor.shape,
                             f"形状: {rm_result.shape}")
         except Exception as e:
@@ -970,7 +970,7 @@ def test_transforms(stats=None):
                             f"类型: {type(rm_result)}")
             
             # 擦除后的张量应该与原始张量不同
-            is_different = not np.allclose(rm_result.data, test_tensor.data)
+            is_different = not np.allclose(rm_result.detach().numpy(), test_tensor.detach().numpy())
             stats.add_result("RandomErasing-张量变化", is_different, "擦除后张量应该与原始张量不同")
         except Exception as e:
             stats.add_result("RandomErasing", False, f"测试异常: {str(e)}")

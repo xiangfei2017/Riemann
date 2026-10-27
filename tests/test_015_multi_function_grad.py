@@ -378,20 +378,11 @@ class TestMultiFunctionGrad(unittest.TestCase):
                 return all_passed
             
             # 比较数值 - 使用detach和numpy方法获取数据
-            # 对于riemann张量
-            if hasattr(rm_result, 'detach') and hasattr(rm_result.detach(), 'numpy'):
-                rm_data = rm_result.detach().numpy()
-            elif hasattr(rm_result, 'data'):
-                rm_data = rm_result.data
-            else:
-                rm_data = rm_result
-            
+            rm_data = rm_result.detach().numpy()
+                        
             # 对于torch张量
-            if hasattr(torch_result, 'detach') and hasattr(torch_result.detach(), 'numpy'):
-                torch_data = torch_result.detach().numpy()
-            else:
-                torch_data = torch_result
-            
+            torch_data = torch_result.detach().numpy()
+                        
             # 处理标量情况
             if np.isscalar(rm_data) and np.isscalar(torch_data):
                 passed = np.isclose(rm_data, torch_data, atol=atol, rtol=rtol)

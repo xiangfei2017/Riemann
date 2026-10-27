@@ -386,7 +386,7 @@ class TestEinsum(unittest.TestCase):
         # 隐式输出应与对应的显式输出完全一致
         if case.get('implicit'):
             explicit = rm.einsum(case['implicit'], *ops)
-            passed = passed and bool(np.allclose(result.data, explicit.data, atol=1e-6))
+            passed = passed and bool(np.allclose(result.detach().numpy(), explicit.detach().numpy(), atol=1e-6))
         # 输出 dtype 校验
         if case.get('check_dtype') is not None:
             passed = passed and result.dtype == case['check_dtype']

@@ -208,60 +208,60 @@ def compare_values(rm_result, torch_result, atol=5e-4, rtol=2e-3):
 def sync_encoder_params(rm_layer, torch_layer):
     """同步Encoder Layer的参数"""
     # 自注意力
-    rm_layer.self_attn.in_proj_weight.data[:] = rm.tensor(torch_layer.self_attn.in_proj_weight.detach().numpy())
+    rm_layer.self_attn.in_proj_weight.detach().copy_(torch_layer.self_attn.in_proj_weight.detach().numpy())
     if torch_layer.self_attn.in_proj_bias is not None:
-        rm_layer.self_attn.in_proj_bias.data[:] = rm.tensor(torch_layer.self_attn.in_proj_bias.detach().numpy())
-    rm_layer.self_attn.out_proj.weight.data[:] = rm.tensor(torch_layer.self_attn.out_proj.weight.detach().numpy())
+        rm_layer.self_attn.in_proj_bias.detach().copy_(torch_layer.self_attn.in_proj_bias.detach().numpy())
+    rm_layer.self_attn.out_proj.weight.detach().copy_(torch_layer.self_attn.out_proj.weight.detach().numpy())
     if torch_layer.self_attn.out_proj.bias is not None:
-        rm_layer.self_attn.out_proj.bias.data[:] = rm.tensor(torch_layer.self_attn.out_proj.bias.detach().numpy())
+        rm_layer.self_attn.out_proj.bias.detach().copy_(torch_layer.self_attn.out_proj.bias.detach().numpy())
     
     # FFN
-    rm_layer.linear1.weight.data[:] = rm.tensor(torch_layer.linear1.weight.detach().numpy())
+    rm_layer.linear1.weight.detach().copy_(torch_layer.linear1.weight.detach().numpy())
     if torch_layer.linear1.bias is not None:
-        rm_layer.linear1.bias.data[:] = rm.tensor(torch_layer.linear1.bias.detach().numpy())
-    rm_layer.linear2.weight.data[:] = rm.tensor(torch_layer.linear2.weight.detach().numpy())
+        rm_layer.linear1.bias.detach().copy_(torch_layer.linear1.bias.detach().numpy())
+    rm_layer.linear2.weight.detach().copy_(torch_layer.linear2.weight.detach().numpy())
     if torch_layer.linear2.bias is not None:
-        rm_layer.linear2.bias.data[:] = rm.tensor(torch_layer.linear2.bias.detach().numpy())
+        rm_layer.linear2.bias.detach().copy_(torch_layer.linear2.bias.detach().numpy())
     
     # LayerNorm
-    rm_layer.norm1.weight.data[:] = rm.tensor(torch_layer.norm1.weight.detach().numpy())
-    rm_layer.norm1.bias.data[:] = rm.tensor(torch_layer.norm1.bias.detach().numpy())
-    rm_layer.norm2.weight.data[:] = rm.tensor(torch_layer.norm2.weight.detach().numpy())
-    rm_layer.norm2.bias.data[:] = rm.tensor(torch_layer.norm2.bias.detach().numpy())
+    rm_layer.norm1.weight.detach().copy_(torch_layer.norm1.weight.detach().numpy())
+    rm_layer.norm1.bias.detach().copy_(torch_layer.norm1.bias.detach().numpy())
+    rm_layer.norm2.weight.detach().copy_(torch_layer.norm2.weight.detach().numpy())
+    rm_layer.norm2.bias.detach().copy_(torch_layer.norm2.bias.detach().numpy())
 
 def sync_decoder_params(rm_layer, torch_layer):
     """同步Decoder Layer的参数"""
     # 自注意力
-    rm_layer.self_attn.in_proj_weight.data[:] = rm.tensor(torch_layer.self_attn.in_proj_weight.detach().numpy())
+    rm_layer.self_attn.in_proj_weight.detach().copy_(torch_layer.self_attn.in_proj_weight.detach().numpy())
     if torch_layer.self_attn.in_proj_bias is not None:
-        rm_layer.self_attn.in_proj_bias.data[:] = rm.tensor(torch_layer.self_attn.in_proj_bias.detach().numpy())
-    rm_layer.self_attn.out_proj.weight.data[:] = rm.tensor(torch_layer.self_attn.out_proj.weight.detach().numpy())
+        rm_layer.self_attn.in_proj_bias.detach().copy_(torch_layer.self_attn.in_proj_bias.detach().numpy())
+    rm_layer.self_attn.out_proj.weight.detach().copy_(torch_layer.self_attn.out_proj.weight.detach().numpy())
     if torch_layer.self_attn.out_proj.bias is not None:
-        rm_layer.self_attn.out_proj.bias.data[:] = rm.tensor(torch_layer.self_attn.out_proj.bias.detach().numpy())
+        rm_layer.self_attn.out_proj.bias.detach().copy_(torch_layer.self_attn.out_proj.bias.detach().numpy())
     
     # 交叉注意力
-    rm_layer.multihead_attn.in_proj_weight.data[:] = rm.tensor(torch_layer.multihead_attn.in_proj_weight.detach().numpy())
+    rm_layer.multihead_attn.in_proj_weight.detach().copy_(torch_layer.multihead_attn.in_proj_weight.detach().numpy())
     if torch_layer.multihead_attn.in_proj_bias is not None:
-        rm_layer.multihead_attn.in_proj_bias.data[:] = rm.tensor(torch_layer.multihead_attn.in_proj_bias.detach().numpy())
-    rm_layer.multihead_attn.out_proj.weight.data[:] = rm.tensor(torch_layer.multihead_attn.out_proj.weight.detach().numpy())
+        rm_layer.multihead_attn.in_proj_bias.detach().copy_(torch_layer.multihead_attn.in_proj_bias.detach().numpy())
+    rm_layer.multihead_attn.out_proj.weight.detach().copy_(torch_layer.multihead_attn.out_proj.weight.detach().numpy())
     if torch_layer.multihead_attn.out_proj.bias is not None:
-        rm_layer.multihead_attn.out_proj.bias.data[:] = rm.tensor(torch_layer.multihead_attn.out_proj.bias.detach().numpy())
+        rm_layer.multihead_attn.out_proj.bias.detach().copy_(torch_layer.multihead_attn.out_proj.bias.detach().numpy())
     
     # FFN
-    rm_layer.linear1.weight.data[:] = rm.tensor(torch_layer.linear1.weight.detach().numpy())
+    rm_layer.linear1.weight.detach().copy_(torch_layer.linear1.weight.detach().numpy())
     if torch_layer.linear1.bias is not None:
-        rm_layer.linear1.bias.data[:] = rm.tensor(torch_layer.linear1.bias.detach().numpy())
-    rm_layer.linear2.weight.data[:] = rm.tensor(torch_layer.linear2.weight.detach().numpy())
+        rm_layer.linear1.bias.detach().copy_(torch_layer.linear1.bias.detach().numpy())
+    rm_layer.linear2.weight.detach().copy_(torch_layer.linear2.weight.detach().numpy())
     if torch_layer.linear2.bias is not None:
-        rm_layer.linear2.bias.data[:] = rm.tensor(torch_layer.linear2.bias.detach().numpy())
+        rm_layer.linear2.bias.detach().copy_(torch_layer.linear2.bias.detach().numpy())
     
     # LayerNorm
-    rm_layer.norm1.weight.data[:] = rm.tensor(torch_layer.norm1.weight.detach().numpy())
-    rm_layer.norm1.bias.data[:] = rm.tensor(torch_layer.norm1.bias.detach().numpy())
-    rm_layer.norm2.weight.data[:] = rm.tensor(torch_layer.norm2.weight.detach().numpy())
-    rm_layer.norm2.bias.data[:] = rm.tensor(torch_layer.norm2.bias.detach().numpy())
-    rm_layer.norm3.weight.data[:] = rm.tensor(torch_layer.norm3.weight.detach().numpy())
-    rm_layer.norm3.bias.data[:] = rm.tensor(torch_layer.norm3.bias.detach().numpy())
+    rm_layer.norm1.weight.detach().copy_(torch_layer.norm1.weight.detach().numpy())
+    rm_layer.norm1.bias.detach().copy_(torch_layer.norm1.bias.detach().numpy())
+    rm_layer.norm2.weight.detach().copy_(torch_layer.norm2.weight.detach().numpy())
+    rm_layer.norm2.bias.detach().copy_(torch_layer.norm2.bias.detach().numpy())
+    rm_layer.norm3.weight.detach().copy_(torch_layer.norm3.weight.detach().numpy())
+    rm_layer.norm3.bias.detach().copy_(torch_layer.norm3.bias.detach().numpy())
 
 class TestTransformerCoderLayer(unittest.TestCase):
     def setUp(self):
