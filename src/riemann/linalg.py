@@ -206,7 +206,7 @@ def cross(input, other, *, dim=-1, out=None):
     
     # 使用底层数组库计算叉积
     arrlib = input._get_array_lib()
-    result_data = arrlib.cross(input.data, other.data, axis=dim)
+    result_data = arrlib.cross(input._array, other._array, axis=dim)
     
     requires_grad = is_grad_enabled() and (input.requires_grad or other.requires_grad)
     ret = as_tensor(result_data, device=input.device, requires_grad=requires_grad)
@@ -466,11 +466,11 @@ def _matrix_norm(A, p):
         return max_result.values if hasattr(max_result, 'values') else max_result
     elif p == -2:
         _, S, _ = svd(A, full_matrices=False)
-        epsilon = tensor(arrlib.finfo(float).eps * S.max().data, device=dev, requires_grad=False)
+        epsilon = tensor(arrlib.finfo(float).eps * S.max()._array, device=dev, requires_grad=False)
         S_non_zero = where(S > epsilon, S, tensor(float('inf'), device=dev, requires_grad=False))
         min_result = min(S_non_zero)
         ret = min_result.values if hasattr(min_result, 'values') else min_result
-        if (ret.data == float('inf')).any():
+        if (ret._array == float('inf')).any():
             ret = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=A.requires_grad)
         return ret
     else:
@@ -607,11 +607,11 @@ def _compute_matrix_norm(A, p, dim, keepdim):
     elif p == -2 and A.ndim == 2:
         # 矩阵-2范数: 最小奇异值
         _, S, _ = svd(A, full_matrices=False)
-        epsilon = tensor(arrlib.finfo(float).eps * S.max().data, device=dev, requires_grad=False)
+        epsilon = tensor(arrlib.finfo(float).eps * S.max()._array, device=dev, requires_grad=False)
         S_non_zero = where(S > epsilon, S, tensor(float('inf'), device=dev, requires_grad=False))
         min_result = min(S_non_zero)
         ret = min_result.values if hasattr(min_result, 'values') else min_result
-        if (ret.data == float('inf')).any():
+        if (ret._array == float('inf')).any():
             ret = tensor(arrlib.finfo(float).eps, device=dev, requires_grad=A.requires_grad)
         if keepdim:
             ret = ret.unsqueeze(0).unsqueeze(0)
@@ -775,13 +775,13 @@ def _compute_min_singular_value_norm(A: TN, dim: tuple, keepdim: bool = False) -
     min_dim = S.ndim - 1
     
     # 计算最小非零奇异值
-    epsilon = tensor(arrlib.finfo(float).eps * S.max().data, device=dev, requires_grad=False)
+    epsilon = tensor(arrlib.finfo(float).eps * S.max()._array, device=dev, requires_grad=False)
     S_non_zero = where(S > epsilon, S, tensor(float('inf'), device=dev, requires_grad=False))
     min_result = min(S_non_zero, dim=min_dim, keepdim=True)
     min_singular = min_result.values if hasattr(min_result, 'values') else min_result
     
     # 处理无穷大情况（当所有奇异值都接近零时）
-    if (min_singular.data == float('inf')).any():
+    if (min_singular._array == float('inf')).any():
         # 对于全零矩阵，返回0而不是eps，与PyTorch行为一致
         min_singular = tensor(0.0, device=dev, requires_grad=A.requires_grad)
     
@@ -1188,7 +1188,7 @@ def det(A:TN):
     dev = A.device
     
     # 计算行列式
-    detvalue = arrlib.linalg.det(A.data)
+    detvalue = arrlib.linalg.det(A._array)
     
     ret = as_tensor(detvalue, device=dev, requires_grad=(is_grad_enabled() and A.requires_grad))
     
@@ -1245,7 +1245,7 @@ def inv(A:TN):
     
     # 计算逆矩阵并处理异常
     try:
-        invarr = arrlib.linalg.inv(A.data)
+        invarr = arrlib.linalg.inv(A._array)
         
     except arrlib.linalg.LinAlgError as e:
         raise RuntimeError(f"linalg.inv: Matrix is not invertible: {str(e)}")
@@ -1344,7 +1344,7 @@ def svd(A, full_matrices=True, driver=None, out=None):
 
     # 使用numpy.linalg.svd计算SVD，正确传递full_matrices参数 
     try: 
-        U_data, S_data, Vh_data = arrlib.linalg.svd(A.data, full_matrices=full_matrices) 
+        U_data, S_data, Vh_data = arrlib.linalg.svd(A._array, full_matrices=full_matrices) 
     except arrlib.linalg.LinAlgError as e: 
         raise RuntimeError(f"SVD computation failed: {str(e)}")
     
@@ -1681,7 +1681,7 @@ def eig(A, *, out=None):
     # 使用numpy.linalg.eig计算特征值分解 - 支持批量计算
     try: 
         # numpy.linalg.eig 原生支持批处理维度
-        w_data, V_data = arrlib.linalg.eig(A.data)
+        w_data, V_data = arrlib.linalg.eig(A._array)
     except arrlib.linalg.LinAlgError as e: 
         raise RuntimeError(f"Eig computation failed: {str(e)}")
         
@@ -1968,7 +1968,7 @@ def eigh(A, *, UPLO='L', out=None):
     # 使用numpy.linalg.eigh计算特征值分解 - 支持批量计算
     try: 
         # numpy.linalg.eig 原生支持批处理维度
-        w_data, V_data = arrlib.linalg.eigh(A.data,UPLO)
+        w_data, V_data = arrlib.linalg.eigh(A._array,UPLO)
     except arrlib.linalg.LinAlgError as e: 
         raise RuntimeError(f"Eigh computation failed: {str(e)}")
     
@@ -2350,11 +2350,11 @@ def _squared_mat_lu(A, *, pivot=True):
         if pivot:
             # 使用主元交换，返回(P, L, U)
             # 使用我们的_plu函数，确保与SciPy的LU分解函数的行为一致
-            P_data, L_data, U_data = _plu(arrlib, A.data)
+            P_data, L_data, U_data = _plu(arrlib, A._array)
         else:
             # 不使用主元交换，返回(L, U)
             # 使用我们的_lu函数，确保与SciPy的LU分解函数的行为一致
-            L_data, U_data = _lu(arrlib, A.data)
+            L_data, U_data = _lu(arrlib, A._array)
             P_data = []
             
     except Exception as e: 
@@ -2720,12 +2720,12 @@ def qr(A, mode='reduced', *, out=None):
     try:
         if mode == 'r':
             # mode='r'时，只计算R矩阵
-            R_data = arrlib.linalg.qr(A.data, mode='r')
+            R_data = arrlib.linalg.qr(A._array, mode='r')
             with device_context(A):
                 Q_data = arrlib.empty((0,), dtype=A.dtype)
         else:
             # mode='reduced'或'complete'时，计算完整的QR分解
-            Q_data, R_data = arrlib.linalg.qr(A.data, mode=mode)
+            Q_data, R_data = arrlib.linalg.qr(A._array, mode=mode)
     except arrlib.linalg.LinAlgError as e:
         raise RuntimeError(f"QR decomposition failed: {str(e)}")
     
@@ -2940,7 +2940,7 @@ def cholesky(input: TN, upper: bool = False, *, out: TN = None) -> TN:
     
     # 使用arrlib.linalg.cholesky计算Cholesky分解
     try:
-        L_data = arrlib.linalg.cholesky(input.data)
+        L_data = arrlib.linalg.cholesky(input._array)
     except arrlib.linalg.LinAlgError as e:
         raise RuntimeError(f"Cholesky decomposition failed: {str(e)}. The input matrix must be symmetric positive definite.")
     

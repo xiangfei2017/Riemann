@@ -552,22 +552,31 @@ Tensors have various attributes and state detection functions for obtaining basi
   * - ``shape``
     - Tensor shape
     - ``x.shape`` → ``(2, 3)``
-  * - ``size``
-    - Size of tensor in specified dimension
-    - ``x.size(0)`` → ``2``
-  * - ``numel``
-    - Total number of tensor elements
-    - ``x.numel()`` → ``6``
   * - ``is_leaf``
     - Whether tensor is a leaf node in computation graph
     - ``x.is_leaf`` → ``True``
   * - ``requires_grad``
     - Whether tensor requires gradient tracking
     - ``x.requires_grad`` → ``True``
+  * - ``is_cuda``
+    - Whether tensor is located on a CUDA device
+    - ``x.is_cuda`` → ``False``
+  * - ``is_cpu``
+    - Whether tensor is located on the CPU
+    - ``x.is_cpu`` → ``True``
+  * - ``real``
+    - Real part of a complex tensor; returns the tensor itself for real tensors
+    - ``z.real`` → tensor
+  * - ``imag``
+    - Imaginary part of a complex tensor; raises RuntimeError for real tensors
+    - ``z.imag`` → tensor
+  * - ``data``
+    - New tensor sharing the underlying data but detached from the computation graph
+    - ``x.data`` → tensor sharing memory
 
-**State Detection Functions**
+**State Detection and Query Functions**
 
-.. list-table:: State Detection Functions
+.. list-table:: State Detection and Query Functions
   :widths: 15 45 40
   :header-rows: 1
 
@@ -589,18 +598,18 @@ Tensors have various attributes and state detection functions for obtaining basi
   * - ``isnan``
     - Detect if tensor elements are NaN
     - ``x.isnan()`` → boolean tensor
-  * - ``is_cuda``
-    - Detect if tensor is on CUDA device
-    - ``x.is_cuda`` → ``False``
-  * - ``is_cpu``
-    - Detect if tensor is on CPU device
-    - ``x.is_cpu`` → ``True``
-  * - ``type``
-    - Get or set tensor data type
-    - ``x.type()`` → ``float32`` or ``x.type(rm.float64)``
   * - ``is_contiguous``
     - Detect if tensor is stored contiguously
     - ``x.is_contiguous()`` → ``True``
+  * - ``type``
+    - Get or set tensor data type
+    - ``x.type()`` → ``float32`` or ``x.type(rm.float64)``
+  * - ``size``
+    - Size of the tensor, or of the specified dimension
+    - ``x.size(0)`` → ``2``
+  * - ``numel``
+    - Total number of tensor elements
+    - ``x.numel()`` → ``6``
 
 **Attributes and State Detection Examples**
 

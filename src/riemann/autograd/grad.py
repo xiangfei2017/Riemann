@@ -199,7 +199,7 @@ def grad(outputs:TN,
     if grad_outputs is None:
         # if outputs.is_leaf:
         #     raise RuntimeError('Only non-leaf variables can call grad()')        
-        if outputs.data.ndim > 0:
+        if outputs._array.ndim > 0:
             raise RuntimeError('Only a scalar can call grad() without argument grad_outputs')
         
         if outputs.is_complex():
@@ -213,7 +213,7 @@ def grad(outputs:TN,
                                     requires_grad=create_graph)
     
     elif isinstance(grad_outputs,TN):
-        if grad_outputs.data.shape == outputs.data.shape:
+        if grad_outputs._array.shape == outputs._array.shape:
             # 直接使用原始outputs，设置其grad_value为grad_outputs
             outputs._init_calc_graph()
             outputs.grad_value = grad_outputs.to(outputs.device).detach().requires_grad_(create_graph)
@@ -327,7 +327,7 @@ def higher_order_grad(outputs: TN,
     if not isinstance(outputs, TN):
         raise ValueError("outputs must be a TN type tensor")
     
-    if outputs.data.ndim > 0 and outputs.requires_grad == False:
+    if outputs._array.ndim > 0 and outputs.requires_grad == False:
         raise ValueError("outputs must be a scalar tensor require grad")
     
     # 检查inputs格式并转换为列表
@@ -479,7 +479,7 @@ def gradcheck(func: Callable[..., Any], inputs: tuple[TN, ...], eps: float = 1e-
         raise ValueError("func must return a TN tensor or a tuple/list of TN tensors")
     
     # 确保输出是标量
-    if outputs.data.ndim > 0:
+    if outputs._array.ndim > 0:
         outputs = outputs.sum()
     
     # 计算解析梯度
@@ -495,7 +495,7 @@ def gradcheck(func: Callable[..., Any], inputs: tuple[TN, ...], eps: float = 1e-
         # 遍历张量的每个元素或只检查一个元素（快速模式）
         if fast_mode:
             # 只检查第一个元素
-            idx = tuple([0] * input_tensor.data.ndim)
+            idx = tuple([0] * input_tensor._array.ndim)
             
             # 创建输入副本列表
             inputs_pos = list(inputs)
@@ -503,41 +503,41 @@ def gradcheck(func: Callable[..., Any], inputs: tuple[TN, ...], eps: float = 1e-
             
             # 计算正向扰动的输出
             # 为正向扰动创建全新的输入张量
-            x_pos_data = input_tensor.data.copy()
+            x_pos_data = input_tensor._array.copy()
             x_pos_data[idx] += eps
             x_pos = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
-            x_pos.data = x_pos_data
+            x_pos._array = x_pos_data
             x_pos.requires_grad = input_tensor.requires_grad
             inputs_pos[i] = x_pos
             outputs_pos = func(*inputs_pos)
             if isinstance(outputs_pos, (tuple, list)):
                 outputs_pos = _sum_all(outputs_pos)
-            if outputs_pos.data.ndim > 0:
+            if outputs_pos._array.ndim > 0:
                 outputs_pos = outputs_pos.sum()
             
             # 计算负向扰动的输出
             # 为负向扰动创建全新的输入张量
-            x_neg_data = input_tensor.data.copy()
+            x_neg_data = input_tensor._array.copy()
             x_neg_data[idx] -= eps
             x_neg = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
-            x_neg.data = x_neg_data
+            x_neg._array = x_neg_data
             x_neg.requires_grad = input_tensor.requires_grad
             inputs_neg[i] = x_neg
             outputs_neg = func(*inputs_neg)
             if isinstance(outputs_neg, (tuple, list)):
                 outputs_neg = _sum_all(outputs_neg)
-            if outputs_neg.data.ndim > 0:
+            if outputs_neg._array.ndim > 0:
                 outputs_neg = outputs_neg.sum()
             
             # 计算数值梯度（中心差分）
-            numerical_grad.data[idx] = (outputs_pos.data - outputs_neg.data) / (2 * eps)
+            numerical_grad._array[idx] = (outputs_pos._array - outputs_neg._array) / (2 * eps)
         else:
             # 遍历所有元素
             # 统一使用索引迭代方法，适用于CUDA和CPU张量
             # 获取张量形状
-            shape = input_tensor.data.shape
+            shape = input_tensor._array.shape
             # 计算总元素数
-            num_elements = input_tensor.data.size
+            num_elements = input_tensor._array.size
             # 遍历每个元素的线性索引
             for linear_idx in range(num_elements):
                 # 将线性索引转换为多维索引
@@ -549,34 +549,34 @@ def gradcheck(func: Callable[..., Any], inputs: tuple[TN, ...], eps: float = 1e-
                 
                 # 计算正向扰动的输出
                 # 为正向扰动创建全新的输入张量
-                x_pos_data = input_tensor.data.copy()
+                x_pos_data = input_tensor._array.copy()
                 x_pos_data[idx] += eps
                 x_pos = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
-                x_pos.data = x_pos_data
+                x_pos._array = x_pos_data
                 x_pos.requires_grad = input_tensor.requires_grad
                 inputs_pos[i] = x_pos
                 outputs_pos = func(*inputs_pos)
                 if isinstance(outputs_pos, (tuple, list)):
                     outputs_pos = _sum_all(outputs_pos)
-                if outputs_pos.data.ndim > 0:
+                if outputs_pos._array.ndim > 0:
                     outputs_pos = outputs_pos.sum()
                 
                 # 计算负向扰动的输出
                 # 为负向扰动创建全新的输入张量
-                x_neg_data = input_tensor.data.copy()
+                x_neg_data = input_tensor._array.copy()
                 x_neg_data[idx] -= eps
                 x_neg = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
-                x_neg.data = x_neg_data
+                x_neg._array = x_neg_data
                 x_neg.requires_grad = input_tensor.requires_grad
                 inputs_neg[i] = x_neg
                 outputs_neg = func(*inputs_neg)
                 if isinstance(outputs_neg, (tuple, list)):
                     outputs_neg = _sum_all(outputs_neg)
-                if outputs_neg.data.ndim > 0:
+                if outputs_neg._array.ndim > 0:
                     outputs_neg = outputs_neg.sum()
                 
                 # 计算数值梯度（中心差分）
-                numerical_grad.data[idx] = (outputs_pos.data - outputs_neg.data) / (2 * eps)
+                numerical_grad._array[idx] = (outputs_pos._array - outputs_neg._array) / (2 * eps)
         
         numerical_grads.append(numerical_grad)
     
@@ -588,13 +588,13 @@ def gradcheck(func: Callable[..., Any], inputs: tuple[TN, ...], eps: float = 1e-
             return False
         
         # 计算绝对误差和相对误差
-        abs_error = np.abs(num_grad.data - an_grad.data)
-        rel_error = abs_error / (np.abs(num_grad.data) + np.abs(an_grad.data) + 1e-10)
+        abs_error = np.abs(num_grad._array - an_grad._array)
+        rel_error = abs_error / (np.abs(num_grad._array) + np.abs(an_grad._array) + 1e-10)
         
         # 检查误差是否在容限范围内
         if fast_mode:
             # 快速模式下只检查第一个元素
-            idx = tuple([0] * num_grad.data.ndim)
+            idx = tuple([0] * num_grad._array.ndim)
             if abs_error[idx] > atol and rel_error[idx] > rtol:
                 if raise_exception:
                     raise RuntimeError(f"Gradient check failed for input {i} (fast mode): "

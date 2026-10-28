@@ -1036,7 +1036,7 @@ RMSprop 是一种自适应学习率优化算法，它为每个参数维护一个
                     if p.grad is None:
                         continue
                     
-                    d_p = p.grad.data
+                    d_p = p.grad.detach()
                     if group['momentum'] != 0:
                         param_state = self.state[p]
                         if 'momentum_buffer' not in param_state:
@@ -1046,7 +1046,7 @@ RMSprop 是一种自适应学习率优化算法，它为每个参数维护一个
                             buf.mul_(group['momentum']).add_(d_p)
                             d_p = buf
                     
-                    p.data.add_(-group['lr'], d_p)
+                    p.data.add_(-group['lr'] * d_p)
             
             return loss
     

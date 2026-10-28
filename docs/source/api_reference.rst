@@ -2781,7 +2781,7 @@ Gradient Computation
       # Use track_grad decorator to create automatic differentiation-supported log function
       @track_grad(_log_derivative)
       def mylog(x):
-          return tensor(np.log(x.data))
+          return tensor(np.log(x.detach().array()))
       
       # Use automatic differentiation-supported log function
       x = tensor(2., requires_grad=True)
@@ -2796,7 +2796,7 @@ Gradient Computation
       # Use track_grad decorator to create automatic differentiation-supported addition function
       @track_grad(_add_derivative)
       def myadd(x, y):
-          return tensor(x.data + y.data)
+          return tensor(x.detach().array() + y.detach().array())
       
       # Use automatic differentiation-supported addition function
       x = tensor(2., requires_grad=True)

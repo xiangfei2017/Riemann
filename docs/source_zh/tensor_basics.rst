@@ -552,22 +552,31 @@ Riemann 提供了丰富的特殊张量创建函数，下表列出了所有支持
   * - ``shape``
     - 张量的形状
     - ``x.shape`` → ``(2, 3)``
-  * - ``size``
-    - 张量在指定维度上的大小
-    - ``x.size(0)`` → ``2``
-  * - ``numel``
-    - 张量的元素总数
-    - ``x.numel()`` → ``6``
   * - ``is_leaf``
     - 张量是否为计算图中的叶子节点
     - ``x.is_leaf`` → ``True``
   * - ``requires_grad``
     - 张量是否需要梯度跟踪
     - ``x.requires_grad`` → ``True``
+  * - ``is_cuda``
+    - 张量是否位于 CUDA 设备上
+    - ``x.is_cuda`` → ``False``
+  * - ``is_cpu``
+    - 张量是否位于 CPU 设备上
+    - ``x.is_cpu`` → ``True``
+  * - ``real``
+    - 复数张量的实部；实数张量返回自身
+    - ``z.real`` → 张量
+  * - ``imag``
+    - 复数张量的虚部；非复数张量抛出 RuntimeError
+    - ``z.imag`` → 张量
+  * - ``data``
+    - 与底层数据共享内存、但已脱离计算图的新张量
+    - ``x.data`` → 共享内存的张量
 
-**状态检测函数**
+**状态检测与查询函数**
 
-.. list-table:: 状态检测函数
+.. list-table:: 状态检测与查询函数
   :widths: 15 45 40
   :header-rows: 1
 
@@ -589,18 +598,18 @@ Riemann 提供了丰富的特殊张量创建函数，下表列出了所有支持
   * - ``isnan``
     - 检测张量元素是否为 NaN
     - ``x.isnan()`` → 布尔张量
-  * - ``is_cuda``
-    - 检测张量是否在 CUDA 设备上
-    - ``x.is_cuda`` → ``False``
-  * - ``is_cpu``
-    - 检测张量是否在 CPU 设备上
-    - ``x.is_cpu`` → ``True``
-  * - ``type``
-    - 获取或设置张量的数据类型
-    - ``x.type()`` → ``float32`` 或 ``x.type(rm.float64)``
   * - ``is_contiguous``
     - 检测张量是否为连续存储
     - ``x.is_contiguous()`` → ``True``
+  * - ``type``
+    - 获取或设置张量的数据类型
+    - ``x.type()`` → ``float32`` 或 ``x.type(rm.float64)``
+  * - ``size``
+    - 获取张量整体或指定维度的大小
+    - ``x.size(0)`` → ``2``
+  * - ``numel``
+    - 张量的元素总数
+    - ``x.numel()`` → ``6``
 
 **属性与状态检测示例**
 

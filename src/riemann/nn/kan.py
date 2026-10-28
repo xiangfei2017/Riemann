@@ -182,12 +182,12 @@ class KANLinear(Module):
             )
             
             # 通过曲线拟合将噪声转换为样条系数
-            self.spline_weight.data = (
+            self.spline_weight._array = (
                 (self.scale_spline if not self.enable_standalone_scale_spline else 1.0)
                 * self.curve2coeff(
                     self.grid.T[self.spline_order : -self.spline_order],
                     noise,
-                ).data
+                )._array
             )
             
             # 初始化样条缩放参数
@@ -418,7 +418,7 @@ class KANLinear(Module):
         self.grid.copy_(grid.T)
         
         # 更新样条系数以适应新网格
-        self.spline_weight.data = self.curve2coeff(x, unreduced_spline_output).data
+        self.spline_weight._array = self.curve2coeff(x, unreduced_spline_output)._array
 
     def regularization_loss(self, regularize_activation=1.0, regularize_entropy=1.0) -> TN:
         """计算正则化损失

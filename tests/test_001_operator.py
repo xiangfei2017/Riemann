@@ -755,7 +755,7 @@ class TestOperatorFunctions(unittest.TestCase):
         # 标量参数（riemann 扩展，torch 不支持标量，与 numpy 结果对比）
         scalar_result = rm.logical_and(x, 2)
         expected = np.logical_and(np.array([1, 0, 3, 0]), 2)
-        success = np.array_equal(scalar_result.data, expected) and scalar_result.data.dtype == np.bool_
+        success = np.array_equal(scalar_result.array(), expected) and scalar_result.dtype == np.bool_
         print_test_result("logical_and scalar", success)
 
         # 输出分隔空行

@@ -189,7 +189,7 @@ def sigmoid(x: TN) -> TN:
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
-    x_data = x.data
+    x_data = x._array
     arrlib = x._get_array_lib()
     # 数值稳定性处理：对极端值使用硬截断
     data = arrlib.where(x_data > 20, 1.0, 
@@ -276,8 +276,8 @@ def softmax(x:TN, dim:int)->TN:
         raise ValueError(f"dim must be an integer, got type: {type(dim)}")
     
     arrlib = x._get_array_lib()
-    max_result = x.data.max(axis=dim, keepdims=True)
-    x_max = x.data - max_result
+    max_result = x._array.max(axis=dim, keepdims=True)
+    x_max = x._array - max_result
     ex = arrlib.exp(x_max)
     ret_data = ex / ex.sum(axis=dim, keepdims=True)
 
@@ -331,8 +331,8 @@ def log_softmax(x: TN, dim: int = -1) -> TN:
         raise ValueError(f"dim must be an integer, got type: {type(dim)}")
 
     arrlib = x._get_array_lib()
-    x_max = x.data.max(axis=dim, keepdims=True)
-    shifted = x.data - x_max
+    x_max = x._array.max(axis=dim, keepdims=True)
+    shifted = x._array - x_max
     # log-sum-exp：分母至少含 exp(0)=1，log 参数恒 >= 1
     lse = arrlib.log(arrlib.exp(shifted).sum(axis=dim, keepdims=True))
     ret_data = shifted - lse
@@ -378,7 +378,7 @@ def relu(x: TN) -> TN:
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
     
     arrlib = x._get_array_lib()
-    data = arrlib.maximum(0, x.data)
+    data = arrlib.maximum(0, x._array)
     ret = _wrap_tensor_from_numpy(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
@@ -417,7 +417,7 @@ def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
         tensor([-0.1,  0.0,  1.0])
     """
     arrlib = x._get_array_lib()
-    data = arrlib.where(x.data > 0, x.data, alpha * x.data)
+    data = arrlib.where(x._array > 0, x._array, alpha * x._array)
     ret = _wrap_tensor_from_numpy(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
@@ -443,7 +443,7 @@ def prelu(x: TN, alpha: TN) -> TN:
 
     # 前向计算：alpha为可训练参数，用于控制负值的缩放
     arrlib = x._get_array_lib()
-    data = arrlib.where(x.data > 0, x.data, alpha.data * x.data)
+    data = arrlib.where(x._array > 0, x._array, alpha._array * x._array)
     ret = _wrap_tensor_from_numpy(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
@@ -482,7 +482,7 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
         alpha = arrlib.array(alpha, dtype=x.dtype)
 
     # 前向计算
-    data = arrlib.where(x.data > 0, x.data, alpha * x.data)
+    data = arrlib.where(x._array > 0, x._array, alpha * x._array)
     ret = _wrap_tensor_from_numpy(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
@@ -529,7 +529,7 @@ def elu(x: TN, alpha: float = 1.0) -> TN:
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
     
     arrlib = x._get_array_lib()
-    x_data = x.data
+    x_data = x._array
     
     # 计算 ELU: x (if x > 0) else alpha * (exp(x) - 1)
     positive_part = x_data
@@ -593,7 +593,7 @@ def celu(x: TN, alpha: float = 1.0) -> TN:
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
     
     arrlib = x._get_array_lib()
-    x_data = x.data
+    x_data = x._array
     
     # 计算 CELU: x (if x > 0) else alpha * (exp(x / alpha) - 1)
     positive_part = x_data
@@ -652,7 +652,7 @@ def tanh(input: TN) -> TN:
     arrlib = input._get_array_lib()
     
     # 计算 tanh
-    data = arrlib.tanh(input.data)
+    data = arrlib.tanh(input._array)
     
     ret = _wrap_tensor_from_numpy(
         data,
@@ -708,7 +708,7 @@ def selu(x: TN) -> TN:
     scale = 1.0507009873554804934193349852946
     
     arrlib = x._get_array_lib()
-    x_data = x.data
+    x_data = x._array
     
     # 计算 SELU: scale * x (if x > 0) else scale * alpha * (exp(x) - 1)
     positive_part = scale * x_data
@@ -766,7 +766,7 @@ def gelu(x: TN) -> TN:
 
     arrlib = x._get_array_lib()
     c = arrlib.sqrt(2.0 / arrlib.pi, dtype=x.dtype)
-    x_data = x.data
+    x_data = x._array
     data = 0.5 * x_data * (1.0 + arrlib.tanh(c * (x_data + 0.044715 * x_data**3.0)))
     ret = _wrap_tensor_from_numpy(
         data, 
@@ -2273,7 +2273,7 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     
     if return_indices:
         # 修复索引计算，使其与PyTorch一致
-        indices_data = indices.data
+        indices_data = indices._array
         
         # 将indices_data转换为形状为(N*C, L_out)
         indices_reshaped = indices_data.reshape(N * C, L_out)
@@ -2369,7 +2369,7 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     
     if return_indices:
         # 计算每个输出位置对应的输入位置
-        indices_data = indices.data
+        indices_data = indices._array
         
         # 将indices_data转换为形状为(N*C, H_out*W_out)
         indices_reshaped = indices_data.reshape((N * C, H_out*W_out))
@@ -2469,7 +2469,7 @@ def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
     
     if return_indices:
         # 计算每个输出位置对应的输入位置
-        indices_data = indices.data
+        indices_data = indices._array
         
         # 将indices_data转换为形状为(N*C, D_out*H_out*W_out)
         indices_reshaped = indices_data.reshape(N*C, D_out*H_out*W_out)
@@ -3001,8 +3001,8 @@ def batch_norm(input: TN, running_mean: TN | None = None, running_var: TN | None
             running_var_new = (1 - momentum) * running_var + momentum * var_unbiased
             
             # 更新运行时统计量（原地操作）
-            running_mean.data = running_mean_new.data
-            running_var.data = running_var_new.data
+            running_mean._array = running_mean_new._array
+            running_var._array = running_var_new._array
         
         # 前向传播使用有偏方差（与PyTorch保持一致）
         var = var_biased
@@ -3226,21 +3226,21 @@ def embedding(
             if padding_idx < 0:  # type: ignore
                 raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
     
-    weight_data = weight.data
+    weight_data = weight._array
 
     # 处理max_norm
     if max_norm is not None:
         # 使用张量操作计算每个嵌入向量的范数，保持维度
-        norms = arrlib.linalg.norm(weight.data, ord=norm_type, axis=1, keepdims=True)
+        norms = arrlib.linalg.norm(weight._array, ord=norm_type, axis=1, keepdims=True)
         # 创建掩码，找出范数超过max_norm的嵌入向量
         mask = norms > max_norm  # type: ignore
         
         # 如果有需要重归一化的嵌入向量
         mask = norms > max_norm  # type: ignore
         # 计算重归一化后的嵌入向量
-        normalized = weight.data / norms * max_norm
+        normalized = weight._array / norms * max_norm
         # 使用where操作更新权重
-        weight_data = arrlib.where(mask, normalized, weight.data)
+        weight_data = arrlib.where(mask, normalized, weight._array)
     
     # PyTorch不会自动将padding_idx的权重设为0，只是不计算其梯度
     # 因此这里不做额外处理，保持与PyTorch行为一致
@@ -3261,7 +3261,7 @@ def embedding(
                 freq[idx] = count
             
     # 获取输入的数据    
-    input_data = input.data
+    input_data = input._array
     
     # 使用numpy的索引操作直接获取嵌入向量
     output_data = weight_data[input_data]
@@ -4091,7 +4091,7 @@ def adaptive_max_pool2d(input: TN, output_size: tuple[int, int] | int, return_in
                     output[:, :, i, j] = max_result.values
                     if return_indices:
                         max_idx = cell_reshaped.argmax(dim=2)
-                        max_idx_data = max_idx.data
+                        max_idx_data = max_idx._array
                         idx_h_data = max_idx_data // (end_w - start_w) + start_h
                         idx_w_data = max_idx_data % (end_w - start_w) + start_w
                         indices[:, :, i, j] = idx_h_data * W_in + idx_w_data
@@ -4102,7 +4102,7 @@ def adaptive_max_pool2d(input: TN, output_size: tuple[int, int] | int, return_in
                     output[:, :, i, j] = max_result.values
                     if return_indices:
                         max_idx = col_region.argmax(dim=2)
-                        indices[:, :, i, j] = (max_idx.data + start_h) * W_in + start_w
+                        indices[:, :, i, j] = (max_idx._array + start_h) * W_in + start_w
         else:
             # 高度方向只有一个元素
             row_slice = input[:, :, start_h, :]  # (N, C, W_in)
@@ -4118,7 +4118,7 @@ def adaptive_max_pool2d(input: TN, output_size: tuple[int, int] | int, return_in
                     output[:, :, i, j] = max_result.values
                     if return_indices:
                         max_idx = cell_region.argmax(dim=2)
-                        indices[:, :, i, j] = start_h * W_in + max_idx.data + start_w
+                        indices[:, :, i, j] = start_h * W_in + max_idx._array + start_w
                 else:
                     output[:, :, i, j] = row_slice[:, :, start_w]
                     if return_indices:
@@ -4235,7 +4235,7 @@ def adaptive_max_pool3d(input: TN, output_size: tuple[int, int, int] | int, retu
                             d_size = end_d - start_d
                             h_size = end_h - start_h
                             w_size = end_w - start_w
-                            max_idx_data = max_idx.data
+                            max_idx_data = max_idx._array
                             idx_d_data = max_idx_data // (h_size * w_size) + start_d
                             rem_data = max_idx_data % (h_size * w_size)
                             idx_h_data = rem_data // w_size + start_h
@@ -4249,7 +4249,7 @@ def adaptive_max_pool3d(input: TN, output_size: tuple[int, int, int] | int, retu
                         if return_indices:
                             max_idx = cell_reshaped.argmax(dim=2)
                             d_size = end_d - start_d
-                            max_idx_data = max_idx.data
+                            max_idx_data = max_idx._array
                             idx_d_data = max_idx_data // d_size + start_d
                             idx_h_data = max_idx_data % d_size + start_h
                             indices[:, :, d, i, j] = idx_d_data * H_in * W_in + idx_h_data * W_in + start_w
@@ -4261,7 +4261,7 @@ def adaptive_max_pool3d(input: TN, output_size: tuple[int, int, int] | int, retu
                         if return_indices:
                             max_idx = cell_reshaped.argmax(dim=2)
                             d_size = end_d - start_d
-                            max_idx_data = max_idx.data
+                            max_idx_data = max_idx._array
                             idx_d_data = max_idx_data // d_size + start_d
                             idx_w_data = max_idx_data % d_size + start_w
                             indices[:, :, d, i, j] = idx_d_data * H_in * W_in + start_h * W_in + idx_w_data
@@ -4271,7 +4271,7 @@ def adaptive_max_pool3d(input: TN, output_size: tuple[int, int, int] | int, retu
                         output[:, :, d, i, j] = max_result.values
                         if return_indices:
                             max_idx = cell_region.argmax(dim=2)
-                            indices[:, :, d, i, j] = (max_idx.data + start_d) * H_in * W_in + start_h * W_in + start_w
+                            indices[:, :, d, i, j] = (max_idx._array + start_d) * H_in * W_in + start_h * W_in + start_w
         else:
             # 深度方向只有一个元素
             depth_slice = input[:, :, start_d, :, :]  # (N, C, H_in, W_in)
@@ -4294,7 +4294,7 @@ def adaptive_max_pool3d(input: TN, output_size: tuple[int, int, int] | int, retu
                         if return_indices:
                             max_idx = cell_reshaped.argmax(dim=2)
                             h_size = end_h - start_h
-                            max_idx_data = max_idx.data
+                            max_idx_data = max_idx._array
                             idx_h_data = max_idx_data // h_size + start_h
                             idx_w_data = max_idx_data % h_size + start_w
                             indices[:, :, d, i, j] = start_d * H_in * W_in + idx_h_data * W_in + idx_w_data
@@ -4304,14 +4304,14 @@ def adaptive_max_pool3d(input: TN, output_size: tuple[int, int, int] | int, retu
                         output[:, :, d, i, j] = max_result.values
                         if return_indices:
                             max_idx = cell_region.argmax(dim=2)
-                            indices[:, :, d, i, j] = start_d * H_in * W_in + (max_idx.data + start_h) * W_in + start_w
+                            indices[:, :, d, i, j] = start_d * H_in * W_in + (max_idx._array + start_h) * W_in + start_w
                     elif end_w > start_w:
                         cell_region = depth_slice[:, :, start_h, start_w:end_w]
                         max_result = cell_region.max(dim=2)
                         output[:, :, d, i, j] = max_result.values
                         if return_indices:
                             max_idx = cell_region.argmax(dim=2)
-                            indices[:, :, d, i, j] = start_d * H_in * W_in + start_h * W_in + max_idx.data + start_w
+                            indices[:, :, d, i, j] = start_d * H_in * W_in + start_h * W_in + max_idx._array + start_w
                     else:
                         output[:, :, d, i, j] = depth_slice[:, :, start_h, start_w]
                         if return_indices:

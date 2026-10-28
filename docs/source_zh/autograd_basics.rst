@@ -422,7 +422,7 @@ detach() 方法返回一个新的张量对象，它与原张量共享相同的�
     
     print(f"detached_y: {detached_y}")
     print(f"detached_y.requires_grad: {detached_y.requires_grad}")
-    print(f"修改 detached_y 会修改 y: {id(detached_y.data) == id(y.data)}")
+    print(f"修改 detached_y 会修改 y: {detached_y.array().ctypes.data == y.detach().array().ctypes.data}")
 
 **特点**：创建新张量对象，与原张量共享内存，禁用梯度跟踪
 
@@ -458,7 +458,7 @@ clone() 方法创建一个完全独立的新张量对象，拥有自己的数据
     
     print(f"cloned_y: {cloned_y}")
     print(f"cloned_y.requires_grad: {cloned_y.requires_grad}")
-    print(f"修改 cloned_y 不会修改 y: {id(cloned_y.data) != id(y.data)}")
+    print(f"修改 cloned_y 不会修改 y: {cloned_y.detach().array().ctypes.data != y.detach().array().ctypes.data}")
     
     # 演示梯度可以通过克隆张量传递到原始张量
     loss = cloned_y.sum()
@@ -482,7 +482,7 @@ copy() 方法创建一个新的张量对象，拥有自己的数据内存，并�
     
     print(f"copied_y: {copied_y}")
     print(f"copied_y.requires_grad: {copied_y.requires_grad}")
-    print(f"修改 copied_y 不会修改 y: {id(copied_y.data) != id(y.data)}")
+    print(f"修改 copied_y 不会修改 y: {copied_y.detach().array().ctypes.data != y.detach().array().ctypes.data}")
 
 **特点**：创建新张量对象，复制数据（不共享内存），禁用梯度跟踪
 
@@ -867,13 +867,13 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        
        def sigmoid_derivative(x):
            """sigmoid 函数的梯度：返回包含一个元素的元组"""
-           sig = 1. / (1. + np.exp(-x.data))
+           sig = 1. / (1. + np.exp(-x.detach().array()))
            return (rm.tensor(sig * (1. - sig)),)  # 注意：必须返回元组
        
        @rm.track_grad(sigmoid_derivative)
        def custom_sigmoid(x):
            """带梯度支持的自定义 sigmoid 函数"""
-           return rm.tensor(1. / (1. + np.exp(-x.data)))
+           return rm.tensor(1. / (1. + np.exp(-x.detach().array())))
        
        # 测试自定义 sigmoid 函数的梯度
        x = rm.tensor(0.0, requires_grad=True)
@@ -952,7 +952,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
                返回：
                    应用 sigmoid 后的输出张量
                """
-               sig = 1. / (1. + np.exp(-x.data))
+               sig = 1. / (1. + np.exp(-x.detach().array()))
                ctx.save_for_backward(rm.tensor(sig))  # 保存用于反向传播
                return rm.tensor(sig)
            
@@ -1050,7 +1050,7 @@ share_grad_map 函数
     print(f"c.grad = {c_new.grad}")  # 输出: [0.0, 0.0]
     
     # 验证：前向值相同，a 和 b 的梯度不变
-    assert float(y1.data) == float(y2.data)
+    assert y1.item() == y2.item()
     assert (a_new.grad == rm.tensor([3., 4.])).all()
     assert (b_new.grad == rm.tensor([1., 2.])).all()
 

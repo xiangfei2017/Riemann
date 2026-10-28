@@ -38,7 +38,7 @@ class CustomSigmoid(rm.autograd.Function):
             Sigmoid 函数的计算结果
         """
         # 使用 numpy 进行前向计算，因为 numpy 的指数运算更高效
-        exp_val = np.exp(-x.data)  # 计算 e^(-x)
+        exp_val = np.exp(-x)  # 计算 e^(-x)
         sig = 1.0 / (1.0 + exp_val)  # 计算 sigmoid
         
         # 将 sigmoid 结果保存到上下文中，以便在 backward 中使用

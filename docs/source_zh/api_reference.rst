@@ -2885,7 +2885,7 @@ CUDA支持
       # 使用track_grad修饰器创建支持自动微分的对数函数
       @track_grad(_log_derivative)
       def mylog(x):
-          return tensor(np.log(x.data))
+          return tensor(np.log(x.detach().array()))
       
       # 使用带自动微分的对数函数
       x = tensor(2., requires_grad=True)
@@ -2900,7 +2900,7 @@ CUDA支持
       # 使用track_grad修饰器创建支持自动微分的加法函数
       @track_grad(_add_derivative)
       def myadd(x, y):
-          return tensor(x.data + y.data)
+          return tensor(x.detach().array() + y.detach().array())
       
       # 使用带自动微分的加法函数
       x = tensor(2., requires_grad=True)

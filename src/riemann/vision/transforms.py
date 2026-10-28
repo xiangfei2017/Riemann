@@ -313,7 +313,7 @@ class ToPILImage(Transform):
         """
         if isinstance(pic, TN):
             # TN张量处理
-            np_pic = pic.data
+            np_pic = pic._array
             if np_pic.ndim == 3 and np_pic.shape[0] == 1:
                 # 单通道图像，移除通道维度
                 np_pic = np_pic.squeeze(0)
@@ -421,12 +421,12 @@ class Normalize(Transform):
         
         if self.inplace:
             for i, (m, s) in enumerate(zip(self.mean, self.std)):
-                tensor_obj.data[i] = (tensor_obj.data[i] - m) / s
+                tensor_obj._array[i] = (tensor_obj._array[i] - m) / s
             return tensor_obj
         else:
             result = []
             for i, (m, s) in enumerate(zip(self.mean, self.std)):
-                result.append((tensor_obj.data[i] - m) / s)
+                result.append((tensor_obj._array[i] - m) / s)
             return as_tensor(np.stack(result, axis=0))
     
     def __repr__(self) -> str:
@@ -758,7 +758,7 @@ class Grayscale(Transform):
                 return img
             elif img.shape[0] == 3:
                 # RGB转灰度
-                r, g, b = img.data[0], img.data[1], img.data[2]
+                r, g, b = img._array[0], img._array[1], img._array[2]
                 gray = 0.299 * r + 0.587 * g + 0.114 * b
                 gray_tensor = as_tensor(gray, dtype=img.dtype, requires_grad=img.requires_grad)
                 
@@ -1442,7 +1442,7 @@ class RandomErasing(Transform):
                     fill_value = self.value
                 
                 # 执行擦除
-                img.data[:, i:i+eh, j:j+ew] = fill_value
+                img._array[:, i:i+eh, j:j+ew] = fill_value
                 break
         
         return img
@@ -1792,7 +1792,7 @@ class SanitizeBoundingBox(Transform):
             raise ValueError(f'Expected boxes shape (N, 4), got {boxes.shape}')
         
         # 计算宽度和高度
-        x1, y1, x2, y2 = boxes.data[:, 0], boxes.data[:, 1], boxes.data[:, 2], boxes.data[:, 3]
+        x1, y1, x2, y2 = boxes._array[:, 0], boxes._array[:, 1], boxes._array[:, 2], boxes._array[:, 3]
         width = x2 - x1
         height = y2 - y1
         
@@ -1801,11 +1801,11 @@ class SanitizeBoundingBox(Transform):
         valid_mask = valid_mask & (x1 >= 0) & (y1 >= 0)  # 确保坐标非负
         
         # 过滤边界框
-        valid_boxes = as_tensor(boxes.data[valid_mask])
+        valid_boxes = as_tensor(boxes._array[valid_mask])
         
         # 过滤标签
         if labels is not None:
-            valid_labels = as_tensor(labels.data[valid_mask])
+            valid_labels = as_tensor(labels._array[valid_mask])
         else:
             valid_labels = None
         

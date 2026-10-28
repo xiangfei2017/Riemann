@@ -4051,7 +4051,7 @@ Riemann的KAN实现采用以下自适应策略：
 .. code-block:: python
 
     # 使用curve2coeff将曲线点转换为新网格的B样条系数
-    self.spline_weight.data = self.curve2coeff(x, unreduced_spline_output).data
+    self.spline_weight.data.copy_(self.curve2coeff(x, unreduced_spline_output).detach())
 
 **算法优势**：
 

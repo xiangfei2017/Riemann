@@ -46,7 +46,7 @@ def custom_sigmoid(x: rm.TN) -> rm.TN:
         rm.TN: sigmoid(x)的结果
     """
     # 前向计算：使用numpy实现sigmoid，并确保数据类型与输入一致
-    exp_val = np.exp(-x.data)  # 使用numpy进行前向计算
+    exp_val = np.exp(-x)  # 使用numpy进行前向计算
     sig = 1.0 / (1.0 + exp_val)
     
     # 返回与输入具有相同数据类型的张量

@@ -192,12 +192,12 @@ class Parameter(TN):
         # 处理空参数情况 - 与PyTorch一致，创建空tensor而不是None
         if data is None:
             # 使用默认dtype，与PyTorch的get_default_dtype()行为一致
-            self.data = np.array([], dtype=get_default_dtype())
+            self._array = np.array([], dtype=get_default_dtype())
         else:
             # 确保输入是张量
             if not isinstance(data, TN):
                 raise TypeError(f"Expected a TN tensor, got {type(data)}")
-            self.data = data.data
+            self._array = data._array
             
         self.requires_grad = requires_grad
         
@@ -288,10 +288,10 @@ class Parameter(TN):
         """
         from ..serialization import _parameter_constructor
         
-        if self.data is None:
+        if self._array is None:
             return (_parameter_constructor, (None, self.requires_grad))
         else:
-            data = self.data
+            data = self._array
             if cp and isinstance(data, cp.ndarray):
                 # 使用 .get() 方法显式转换 cupy 数组为 numpy 数组
                 data = data.get()
@@ -1904,7 +1904,7 @@ class Module:
                 if keep_vars:
                     destination[prefix + name] = param
                 else:
-                    destination[prefix + name] = param.data
+                    destination[prefix + name] = param._array
         
         # 保存缓冲区
         for name, buffer in self._buffers.items():
@@ -1912,7 +1912,7 @@ class Module:
                 if keep_vars:
                     destination[prefix + name] = buffer
                 else:
-                    destination[prefix + name] = buffer.data
+                    destination[prefix + name] = buffer._array
         
         # 递归保存子模块
         for name, module in self._modules.items():
@@ -1991,11 +1991,11 @@ class Module:
                 else:
                     try:
                         # 统一处理：获取目标对象的底层数组
-                        target_data = local_state[key].data
+                        target_data = local_state[key]._array
                         
                         # 如果value是张量对象（keep_vars=True的情况），获取其data属性
                         if isinstance(value, (TN, Parameter)):
-                            source_data = value.data
+                            source_data = value._array
                         else:
                             source_data = value
                         
@@ -2092,9 +2092,9 @@ class Module:
         
             >>> def init_weights(m):
             ...     if isinstance(m, Linear):
-            ...         rm.init.normal_(m.weight.data, 0.0, 0.02)
+            ...         rm.init.normal_(m.weight._array, 0.0, 0.02)
             ...         if m.bias is not None:
-            ...             rm.init.constant_(m.bias.data, 0)
+            ...             rm.init.constant_(m.bias._array, 0)
             ...
             >>> net = MyNetwork()
             >>> net.apply(init_weights)  # 初始化所有Linear层的权重
@@ -3218,7 +3218,7 @@ class Module:
                     if sub_value is not None:
                         if isinstance(sub_value, Parameter):
                             # 深拷贝参数
-                            new_data = as_tensor(sub_value.data.copy())
+                            new_data = as_tensor(sub_value._array.copy())
                             new_param = Parameter(new_data)
                             new_param.requires_grad = sub_value.requires_grad
                             new_dict[sub_key] = new_param
@@ -3285,7 +3285,7 @@ class Module:
                     if sub_value is not None:
                         if isinstance(sub_value, Parameter):
                             # 深拷贝参数
-                            new_data = as_tensor(sub_value.data.copy())
+                            new_data = as_tensor(sub_value._array.copy())
                             new_param = Parameter(new_data)
                             new_param.requires_grad = sub_value.requires_grad
                             new_dict[sub_key] = new_param
@@ -5485,7 +5485,7 @@ class Embedding(Module):
                 padding_idx += num_embeddings
             if padding_idx >= num_embeddings or padding_idx < 0:
                 raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
-            self.weight.data[padding_idx] = 0.0  # type: ignore  # type: ignore  # type: ignore
+            self.weight._array[padding_idx] = 0.0  # type: ignore  # type: ignore  # type: ignore
     
     def forward(self, input: TN) -> TN:
         """

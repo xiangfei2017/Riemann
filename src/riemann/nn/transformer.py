@@ -187,25 +187,25 @@ class MultiheadAttention(Module):
         if self._qkv_same_embed_dim:
             arrlib = self.in_proj_weight._get_array_lib()
             with device_context(self.in_proj_weight):
-                self.in_proj_weight.data[:] = arrlib.random.uniform(-bound, bound, self.in_proj_weight.shape)
+                self.in_proj_weight._array[:] = arrlib.random.uniform(-bound, bound, self.in_proj_weight.shape)
             if self.in_proj_bias is not None:
-                self.in_proj_bias.data.fill(0.)
+                self.in_proj_bias._array.fill(0.)
         else:
             # q、k、v 权重都在同一设备上，只需获取一次 arrlib 和一个上下文
             arrlib = self.q_proj_weight._get_array_lib()
             with device_context(self.q_proj_weight):
-                self.q_proj_weight.data[:] = arrlib.random.uniform(-bound, bound, self.q_proj_weight.shape)
-                self.k_proj_weight.data[:] = arrlib.random.uniform(-bound, bound, self.k_proj_weight.shape)
-                self.v_proj_weight.data[:] = arrlib.random.uniform(-bound, bound, self.v_proj_weight.shape)
+                self.q_proj_weight._array[:] = arrlib.random.uniform(-bound, bound, self.q_proj_weight.shape)
+                self.k_proj_weight._array[:] = arrlib.random.uniform(-bound, bound, self.k_proj_weight.shape)
+                self.v_proj_weight._array[:] = arrlib.random.uniform(-bound, bound, self.v_proj_weight.shape)
             if self.q_proj_bias is not None:
-                self.q_proj_bias.data.fill(0.)
-                self.k_proj_bias.data.fill(0.)
-                self.v_proj_bias.data.fill(0.)
+                self.q_proj_bias._array.fill(0.)
+                self.k_proj_bias._array.fill(0.)
+                self.v_proj_bias._array.fill(0.)
         
         if self.bias_k is not None:
-            self.bias_k.data.fill(0.)
+            self.bias_k._array.fill(0.)
         if self.bias_v is not None:
-            self.bias_v.data.fill(0.)
+            self.bias_v._array.fill(0.)
     
     def forward(
         self,

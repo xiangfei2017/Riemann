@@ -490,14 +490,14 @@ def _legacy_save(obj, f, pickle_module, pickle_protocol):
     def persistent_id(obj):
         if isinstance(obj, (TN, Parameter)):
             if isinstance(obj, Parameter):
-                tensor_obj = obj.data if obj.data is not None else obj
+                tensor_obj = obj._array if obj._array is not None else obj
             else:
                 tensor_obj = obj
             
-            if tensor_obj.data is None:
+            if tensor_obj._array is None:
                 return None
             
-            data = tensor_obj.data
+            data = tensor_obj._array
             dtype = data.dtype
             
             if isinstance(data, np.ndarray):

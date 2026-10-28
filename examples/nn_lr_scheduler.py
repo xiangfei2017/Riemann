@@ -37,7 +37,7 @@ def generate_sample_data():
     # 生成目标数据（线性关系）
     weights = np.random.randn(10, 1).astype(np.float32)
     bias = np.random.randn(1).astype(np.float32)
-    y = rm.tensor(np.dot(x.data, weights) + bias)
+    y = rm.tensor(np.dot(x, weights) + bias)
     return x, y
 
 
@@ -61,10 +61,10 @@ def train_with_scheduler(model, optimizer, scheduler, x, y, num_epochs=10):
         current_lr = optimizer.param_groups[0]['lr']
         lr_history.append(current_lr)
         # 打印信息
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.data:.4f}, LR: {current_lr:.6f}")
+        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss:.4f}, LR: {current_lr:.6f}")
         # 更新学习率
         if isinstance(scheduler, ReduceLROnPlateau):
-            scheduler.step(loss.data)
+            scheduler.step(loss.item())
         else:
             scheduler.step()
         # 清零梯度

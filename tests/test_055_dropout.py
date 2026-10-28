@@ -285,8 +285,8 @@ def verify_channel_dropout_behavior(input_tensor, output_tensor, p, training, dr
         return False
 
     # 3. 保留通道的均值缩放检验：输出通道均值 ≈ 输入通道均值 / (1 - p)
-    #    原地操作：同一底层存储（.data 身份），精度稍差放宽容差。
-    is_inplace = (output_tensor is input_tensor) or (input_tensor.data is output_tensor.data)
+    #    原地操作：同一底层存储（.array() 身份），精度稍差放宽容差。
+    is_inplace = (output_tensor is input_tensor) or (input_tensor.detach().array() is output_tensor.detach().array())
     channel_tol = tol * 2 if is_inplace else tol
 
     # 向量化通道均值比较

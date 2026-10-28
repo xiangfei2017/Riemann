@@ -422,7 +422,7 @@ The detach() method returns a new tensor object that shares the same data memory
     
     print(f"detached_y: {detached_y}")
     print(f"detached_y.requires_grad: {detached_y.requires_grad}")
-    print(f"Modifying detached_y will modify y: {id(detached_y.data) == id(y.data)}")
+    print(f"Modifying detached_y will modify y: {detached_y.array().ctypes.data == y.detach().array().ctypes.data}")
 
 **Characteristics**: Creates new tensor object, shares memory with original, disables gradient tracking
 
@@ -458,7 +458,7 @@ The clone() method creates a completely new tensor object with its own data memo
     
     print(f"cloned_y: {cloned_y}")
     print(f"cloned_y.requires_grad: {cloned_y.requires_grad}")
-    print(f"Modifying cloned_y won't modify y: {id(cloned_y.data) != id(y.data)}")
+    print(f"Modifying cloned_y won't modify y: {cloned_y.detach().array().ctypes.data != y.detach().array().ctypes.data}")
     
     # Demonstrate gradient can propagate through cloned tensor to original tensor
     loss = cloned_y.sum()
@@ -482,7 +482,7 @@ The copy() method creates a new tensor object with its own data memory and is co
     
     print(f"copied_y: {copied_y}")
     print(f"copied_y.requires_grad: {copied_y.requires_grad}")
-    print(f"Modifying copied_y won't modify y: {id(copied_y.data) != id(y.data)}")
+    print(f"Modifying copied_y won't modify y: {copied_y.detach().array().ctypes.data != y.detach().array().ctypes.data}")
 
 **Characteristics**: Creates new tensor object, copies data (no memory sharing), disables gradient tracking
 
@@ -868,13 +868,13 @@ Riemann provides three ways to implement custom functions with gradient tracking
        
        def sigmoid_derivative(x):
            """Gradient function for sigmoid: returns tuple with one element"""
-           sig = 1. / (1. + np.exp(-x.data))
+           sig = 1. / (1. + np.exp(-x.detach().array()))
            return (rm.tensor(sig * (1. - sig)),)  # Note: must return a tuple
        
        @rm.track_grad(sigmoid_derivative)
        def custom_sigmoid(x):
            """Custom sigmoid function with gradient support"""
-           return rm.tensor(1. / (1. + np.exp(-x.data)))
+           return rm.tensor(1. / (1. + np.exp(-x.detach().array())))
        
        # Test custom sigmoid with gradient
        x = rm.tensor(0.0, requires_grad=True)
@@ -953,7 +953,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
                Returns:
                    Output tensor after applying sigmoid
                """
-               sig = 1. / (1. + np.exp(-x.data))
+               sig = 1. / (1. + np.exp(-x.detach().array()))
                ctx.save_for_backward(rm.tensor(sig))  # Save for backward
                return rm.tensor(sig)
            
@@ -1051,7 +1051,7 @@ A tuple or list of tensors with the same values but connected to a shared comput
     print(f"c.grad = {c_new.grad}")  # Output: [0.0, 0.0]
     
     # Verify: forward values are identical, a and b gradients unchanged
-    assert float(y1.data) == float(y2.data)
+    assert y1.item() == y2.item()
     assert (a_new.grad == rm.tensor([3., 4.])).all()
     assert (b_new.grad == rm.tensor([1., 2.])).all()
 

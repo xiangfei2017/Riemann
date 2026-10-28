@@ -3978,7 +3978,7 @@ Using least squares to map old grid to new grid:
 
 .. code-block:: python
 
-    self.spline_weight.data = self.curve2coeff(x, unreduced_spline_output).data
+    self.spline_weight.data.copy_(self.curve2coeff(x, unreduced_spline_output).detach())
 
 **Algorithm Advantages**:
 

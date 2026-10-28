@@ -92,10 +92,10 @@ def _no_grad_uniform_(tensor: TN, a: float, b: float) -> TN:
     """无梯度均匀分布初始化 (Uniform Initialization without Gradient)"""
     arrlib = _get_array_lib(tensor)
     if tensor.device.type == 'cpu':
-        tensor.data[:] = arrlib.random.uniform(a, b, tensor.shape).astype(tensor.dtype)
+        tensor._array[:] = arrlib.random.uniform(a, b, tensor.shape).astype(tensor.dtype)
     else:
         with cp.cuda.Device(tensor.device.index):
-            tensor.data[:] = arrlib.random.uniform(a, b, tensor.shape).astype(tensor.dtype)
+            tensor._array[:] = arrlib.random.uniform(a, b, tensor.shape).astype(tensor.dtype)
     return tensor
 
 
@@ -103,10 +103,10 @@ def _no_grad_normal_(tensor: TN, mean: float, std: float) -> TN:
     """无梯度正态分布初始化 (Normal Initialization without Gradient)"""
     arrlib = _get_array_lib(tensor)
     if tensor.device.type == 'cpu':
-        tensor.data[:] = arrlib.random.normal(mean, std, tensor.shape).astype(tensor.dtype)
+        tensor._array[:] = arrlib.random.normal(mean, std, tensor.shape).astype(tensor.dtype)
     else:
         with cp.cuda.Device(tensor.device.index):
-            tensor.data[:] = arrlib.random.normal(mean, std, tensor.shape).astype(tensor.dtype)
+            tensor._array[:] = arrlib.random.normal(mean, std, tensor.shape).astype(tensor.dtype)
     return tensor
 
 
@@ -148,7 +148,7 @@ def _no_grad_trunc_normal_(
     # 裁剪确保在正确范围内
     normal_vals = arrlib.clip(normal_vals, a, b)
     
-    tensor.data[:] = normal_vals.astype(tensor.dtype)
+    tensor._array[:] = normal_vals.astype(tensor.dtype)
     return tensor
 
 
@@ -380,7 +380,7 @@ def eye_(tensor: TN) -> TN:
     # 直接操作底层数据，与PyTorch的out参数行为一致
     arrlib = np if tensor.device.type == 'cpu' else cp
     with device_context(tensor):
-        tensor.data = arrlib.eye(tensor.shape[0], tensor.shape[1], dtype=tensor.dtype)
+        tensor._array = arrlib.eye(tensor.shape[0], tensor.shape[1], dtype=tensor.dtype)
     return tensor
 
 
@@ -673,9 +673,9 @@ def orthogonal_(tensor: TN, gain: float = 1.0) -> TN:
     
     # 复制到tensor
     if tensor.device.type == 'cpu':
-        tensor.data[:] = q.reshape(tensor.shape)
+        tensor._array[:] = q.reshape(tensor.shape)
     else:
-        tensor.data[:] = cp.asarray(q.reshape(tensor.shape))
+        tensor._array[:] = cp.asarray(q.reshape(tensor.shape))
     tensor.mul_(gain)
     return tensor
 

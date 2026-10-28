@@ -236,7 +236,7 @@ def hessian(func: Callable[..., TN],
 
     def gradient_fn(*args: TN) -> tuple[TN, ...]:
         output = func(*args)
-        if output.data.ndim > 0:
+        if output._array.ndim > 0:
             raise RuntimeError("Hessian only supports scalar-valued functions")
         grads = grad(output, args, create_graph=True, allow_unused=not strict)  # type: ignore
         return tuple(g if g is not None else tensor(0.0, device=output.device, requires_grad=True) for g in grads)
@@ -315,7 +315,7 @@ def jvp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
                     if create_graph:
                         jvp_val = jvp_val + (g * vec).sum()
                     else:
-                        jvp_val = jvp_val + (g.data * vec.data).sum()
+                        jvp_val = jvp_val + (g._array * vec._array).sum()
                 elif strict:
                     raise RuntimeError(f"At least one of the outputs is independent of input {j}")
         else:
@@ -323,7 +323,7 @@ def jvp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
             # 需逐输出元素做反向传播（每个元素对应雅可比的一行）
             jvp_val = zeros_like(out, requires_grad=create_graph)
             base_grad_output = zeros_like(out)
-            all_indices = [np.unravel_index(j, out.shape) for j in range(out.data.size)]  # type: ignore
+            all_indices = [np.unravel_index(j, out.shape) for j in range(out._array.size)]  # type: ignore
 
             for idx in all_indices:
                 # one-hot 向量选中第 idx 个输出元素
@@ -343,10 +343,10 @@ def jvp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
                     contribution = 0.0
                     for j, (g, vec) in enumerate(zip(all_grads, v)):
                         if g is not None:
-                            contribution += (g.data * vec.data).sum()
+                            contribution += (g._array * vec._array).sum()
                         elif strict:
                             raise RuntimeError(f"At least one of the outputs is independent of input {j}")
-                    jvp_val.data[idx] = contribution
+                    jvp_val._array[idx] = contribution
 
         jvp_results.append(jvp_val)
 

@@ -363,17 +363,17 @@ class GD(Optimizer):
                     continue
                 
                 # 添加梯度形状验证
-                # if p.grad.data.shape != p.data.shape:
-                #     raise ValueError(f"Gradient shape {p.grad.data.shape} does not match parameter shape {p.data.shape}")
+                # if p.grad._array.shape != p._array.shape:
+                #     raise ValueError(f"Gradient shape {p.grad._array.shape} does not match parameter shape {p._array.shape}")
                 
                 # 应用L2正则化
                 if weight_decay > 0:
-                    grad = p.grad.data + weight_decay * p.data
+                    grad = p.grad._array + weight_decay * p._array
                 else:
-                    grad = p.grad.data
+                    grad = p.grad._array
                     
                 # 参数更新：θ = θ - η * ∇θ
-                p.data -= lr * grad
+                p._array -= lr * grad
                 
 
 
@@ -463,11 +463,11 @@ class SGD(Optimizer):
                     continue
                 
                 # 添加梯度形状验证
-                # if p.grad.data.shape != p.data.shape:
-                #     raise ValueError(f"Gradient shape {p.grad.data.shape} does not match parameter shape {p.data.shape}")
+                # if p.grad._array.shape != p._array.shape:
+                #     raise ValueError(f"Gradient shape {p.grad._array.shape} does not match parameter shape {p._array.shape}")
                 
-                grad = p.grad.data
-                param_data = p.data
+                grad = p.grad._array
+                param_data = p._array
                 
                 # 原地应用权重衰减，避免创建新数组
                 if has_weight_decay:
@@ -588,14 +588,14 @@ class Adam(Optimizer):
                     continue
                 
                 # 添加梯度形状验证
-                # if p.grad.data.shape != p.data.shape:
-                #     raise ValueError(f"Gradient shape {p.grad.data.shape} does not match parameter shape {p.data.shape}")
+                # if p.grad._array.shape != p._array.shape:
+                #     raise ValueError(f"Gradient shape {p.grad._array.shape} does not match parameter shape {p._array.shape}")
                 
-                grad = p.grad.data
+                grad = p.grad._array
                 
                 # 添加权重衰减
                 if weight_decay > 0:
-                    grad = grad + weight_decay * p.data
+                    grad = grad + weight_decay * p._array
                 
                 param_id = id(p)
                 
@@ -603,11 +603,11 @@ class Adam(Optimizer):
                 if param_id not in self.state:
                     self.state[param_id] = {
                         'step': 0,
-                        'exp_avg': arrlib.zeros_like(p.data),
-                        'exp_avg_sq': arrlib.zeros_like(p.data)
+                        'exp_avg': arrlib.zeros_like(p._array),
+                        'exp_avg_sq': arrlib.zeros_like(p._array)
                     }
                     if amsgrad:
-                        self.state[param_id]['max_exp_avg_sq'] = arrlib.zeros_like(p.data)
+                        self.state[param_id]['max_exp_avg_sq'] = arrlib.zeros_like(p._array)
                 
                 state = self.state[param_id]
                 state['step'] += 1  # 先递增步数
@@ -632,7 +632,7 @@ class Adam(Optimizer):
                 
                 # 计算更新量
                 step_size = lr * arrlib.sqrt(bias_correction2) / bias_correction1
-                p.data -= step_size * (state['exp_avg'] / denom)
+                p._array -= step_size * (state['exp_avg'] / denom)
 
 class AdamW(Optimizer):
     """
@@ -710,18 +710,18 @@ class AdamW(Optimizer):
                 if p.grad is None:
                     continue
                 
-                grad = p.grad.data
+                grad = p.grad._array
                 param_id = id(p)
                 
                 # 初始化状态
                 if param_id not in self.state:
                     self.state[param_id] = {
                         'step': 0,
-                        'exp_avg': arrlib.zeros_like(p.data),
-                        'exp_avg_sq': arrlib.zeros_like(p.data)
+                        'exp_avg': arrlib.zeros_like(p._array),
+                        'exp_avg_sq': arrlib.zeros_like(p._array)
                     }
                     if amsgrad:
-                        self.state[param_id]['max_exp_avg_sq'] = arrlib.zeros_like(p.data)
+                        self.state[param_id]['max_exp_avg_sq'] = arrlib.zeros_like(p._array)
                 
                 state = self.state[param_id]
                 state['step'] += 1  # 先递增步数
@@ -749,10 +749,10 @@ class AdamW(Optimizer):
                 
                 # 应用权重衰减（作为独立的L2正则化项）
                 if weight_decay > 0:
-                    p.data *= (1 - lr * weight_decay)
+                    p._array *= (1 - lr * weight_decay)
                 
                 # 根据Adam更新规则调整参数
-                p.data -= step_size * (state['exp_avg'] / denom)
+                p._array -= step_size * (state['exp_avg'] / denom)
 
 class RMSprop(Optimizer):
     """
@@ -829,11 +829,11 @@ class RMSprop(Optimizer):
                 if p.grad is None:
                     continue
                 
-                grad = p.grad.data
+                grad = p.grad._array
                 
                 # 应用权重衰减
                 if weight_decay > 0:
-                    grad = grad + weight_decay * p.data
+                    grad = grad + weight_decay * p._array
                 
                 param_id = id(p)
                 
@@ -841,12 +841,12 @@ class RMSprop(Optimizer):
                 if param_id not in self.state:
                     self.state[param_id] = {
                         'step': 0,
-                        'square_avg': arrlib.zeros_like(p.data)
+                        'square_avg': arrlib.zeros_like(p._array)
                     }
                     if momentum > 0:
-                        self.state[param_id]['momentum_buffer'] = arrlib.zeros_like(p.data)
+                        self.state[param_id]['momentum_buffer'] = arrlib.zeros_like(p._array)
                     if centered:
-                        self.state[param_id]['grad_avg'] = arrlib.zeros_like(p.data)
+                        self.state[param_id]['grad_avg'] = arrlib.zeros_like(p._array)
                 
                 state = self.state[param_id]
                 state['step'] += 1
@@ -870,10 +870,10 @@ class RMSprop(Optimizer):
                     momentum_buffer = state['momentum_buffer']
                     arrlib.multiply(momentum, momentum_buffer, out=momentum_buffer)
                     arrlib.add(momentum_buffer, lr * grad / denom, out=momentum_buffer)
-                    p.data -= momentum_buffer
+                    p._array -= momentum_buffer
                 else:
                     # 直接更新参数
-                    p.data -= lr * grad / denom
+                    p._array -= lr * grad / denom
 
 class Adagrad(Optimizer):
     """
@@ -953,15 +953,15 @@ class Adagrad(Optimizer):
                     continue
                 
                 # 验证梯度形状
-                # if p.grad.data.shape != p.data.shape:
-                #     raise ValueError(f"Gradient shape {p.grad.data.shape} does not match parameter shape {p.data.shape}")
+                # if p.grad._array.shape != p._array.shape:
+                #     raise ValueError(f"Gradient shape {p.grad._array.shape} does not match parameter shape {p._array.shape}")
                 
                 # 验证数据类型
-                # if p.grad.data.dtype != p.data.dtype:
-                #     raise TypeError(f"Gradient data type {p.grad.data.dtype} does not match parameter data type {p.data.dtype}")
+                # if p.grad._array.dtype != p._array.dtype:
+                #     raise TypeError(f"Gradient data type {p.grad._array.dtype} does not match parameter data type {p._array.dtype}")
                 
                 # 保存原始梯度值
-                grad_original = p.grad.data.copy()
+                grad_original = p.grad._array.copy()
                 grad = grad_original
                 param_id = id(p)
                 
@@ -969,7 +969,7 @@ class Adagrad(Optimizer):
                 if param_id not in self.state:
                     self.state[param_id] = {
                         'step': 0,
-                        'sum': arrlib.full_like(p.data, initial_accumulator_value)
+                        'sum': arrlib.full_like(p._array, initial_accumulator_value)
                     }
                 
                 state = self.state[param_id]
@@ -978,7 +978,7 @@ class Adagrad(Optimizer):
                 # 应用权重衰减
                 if weight_decay > 0:
                     # 使用原地操作减少内存分配
-                    arrlib.add(grad, weight_decay * p.data, out=grad)
+                    arrlib.add(grad, weight_decay * p._array, out=grad)
                 
                 # 计算梯度平方
                 grad_squared = arrlib.square(grad)
@@ -996,7 +996,7 @@ class Adagrad(Optimizer):
                 # 计算更新量并应用（使用原地操作减少内存分配）
                 # θ = θ - (lr_t / denom) * grad_original
                 update = lr_t * grad_original / denom
-                arrlib.subtract(p.data, update, out=p.data)
+                arrlib.subtract(p._array, update, out=p._array)
 
 class LBFGS(Optimizer):
     """
@@ -1092,10 +1092,10 @@ class LBFGS(Optimizer):
                 p = info['param']
                 offset = info['offset']
                 numel = info['numel']
-                if p.data.ndim == 0:  # 标量参数
+                if p._array.ndim == 0:  # 标量参数
                     vec[offset] = p.item()
                 else:
-                    vec[offset:offset + numel] = p.data.flatten()
+                    vec[offset:offset + numel] = p._array.flatten()
             return vec
         
         # 将向量值应用到参数列表
@@ -1107,9 +1107,9 @@ class LBFGS(Optimizer):
                 numel = info['numel']
                 shape = info['shape']
                 if len(shape) == 0:  # 标量参数
-                    p.data = vec[offset]
+                    p._array = vec[offset]
                 else:
-                    p.data = vec[offset:offset + numel].reshape(shape)
+                    p._array = vec[offset:offset + numel].reshape(shape)
         
         # 将梯度转换为单一向量
         def grads_to_vector():
@@ -1121,10 +1121,10 @@ class LBFGS(Optimizer):
                 numel = info['numel']
                 if p.grad is None:
                     continue
-                if p.grad.data.ndim == 0:  # 标量梯度
+                if p.grad._array.ndim == 0:  # 标量梯度
                     vec[offset] = p.grad.item()
                 else:
-                    vec[offset:offset + numel] = p.grad.data.flatten()
+                    vec[offset:offset + numel] = p.grad._array.flatten()
             return vec
             
         return params_to_vector, vector_to_params, grads_to_vector
