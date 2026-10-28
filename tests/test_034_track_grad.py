@@ -154,7 +154,7 @@ def compare_gradients(rm_tensor, torch_tensor, atol=1e-5, rtol=1e-5):
     if rm_tensor.grad is None or torch_tensor.grad is None:
         return False
     
-    rm_data = rm_tensor.grad.detach().numpy()
+    rm_data = rm_tensor.grad.detach().cpu().numpy()
     torch_data = torch_tensor.grad.detach().numpy()
     try:
         np.testing.assert_allclose(rm_data, torch_data, atol=atol, rtol=rtol)
@@ -175,7 +175,7 @@ def _sin_derivative(x):
 
 @track_grad(_sin_derivative)
 def mysin(x):
-    return rm.tensor(np.sin(x.detach().numpy()), device=x.device)
+    return rm.tensor(np.sin(x.detach().array()), device=x.device)
 
 
 # 2. 多输入函数 — 位置参数
@@ -184,7 +184,7 @@ def _add_derivative(x, y):
 
 @track_grad(_add_derivative)
 def myadd(x, y):
-    return rm.tensor(x.detach().numpy() + y.detach().numpy(), device=x.device)
+    return rm.tensor(x.detach().array() + y.detach().array(), device=x.device)
 
 
 # 3. 非 TN 参数在前
@@ -193,25 +193,24 @@ def _scale_derivative(scale, x):
 
 @track_grad(_scale_derivative)
 def myscale(scale, x):
-    return rm.tensor(scale * x.detach().numpy(), device=x.device)
-
-
+    return rm.tensor(scale * x.detach().array(), device=x.device)
+    
 # 4. TN 与非 TN 参数交替
 def _weighted_sum_derivative(a, weight1, b, weight2):
     return (rm.tensor(weight1, device=a.device), rm.tensor(weight2, device=b.device))
 
 @track_grad(_weighted_sum_derivative)
 def weighted_sum(a, weight1, b, weight2):
-    return rm.tensor(weight1 * a.detach().numpy() + weight2 * b.detach().numpy(), device=a.device)
+    return rm.tensor(weight1 * a.detach().array() + weight2 * b.detach().array(), device=a.device)
 
 
 # 5. 带默认参数
 def _pow_derivative(x, exponent=2.0):
-    return (rm.tensor(exponent * (x.detach().numpy() ** (exponent - 1)), device=x.device),)
+    return (rm.tensor(exponent * (x.detach().array() ** (exponent - 1)), device=x.device),)
 
 @track_grad(_pow_derivative)
 def mypow(x, exponent=2.0):
-    return rm.tensor(x.detach().numpy() ** exponent, device=x.device)
+    return rm.tensor(x.detach().array() ** exponent, device=x.device)
 
 
 # 6. 使用 *args 的 grad_func
@@ -220,7 +219,7 @@ def _sum_derivative(*args):
 
 @track_grad(_sum_derivative)
 def mysum(*xs):
-    return rm.tensor(sum(x.detach().numpy() for x in xs), device=xs[0].device)
+    return rm.tensor(sum(x.detach().array() for x in xs), device=xs[0].device)
 
 
 # 7. 使用 **kwargs 的 grad_func
@@ -231,7 +230,7 @@ def _sum_kwargs_derivative(**kwargs):
 @track_grad(_sum_kwargs_derivative)
 def mysum_kwargs(**kwargs):
     vals = list(kwargs.values())
-    return rm.tensor(sum(x.detach().numpy() for x in vals), device=vals[0].device)
+    return rm.tensor(sum(x.detach().array() for x in vals), device=vals[0].device)
 
 
 # ==================== 测试类 ====================
@@ -265,12 +264,12 @@ class TestTrackGrad(unittest.TestCase):
                 # 前向传播
                 rm_result = mysin(rm_x)
                 expected = np.sin(np_x)
-                forward_passed = np.allclose(rm_result.detach().numpy(), expected, atol=1e-5)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), expected, atol=1e-5)
 
                 # 反向传播
                 rm_result.sum().backward()
                 grad_expected = np.cos(np_x)
-                backward_passed = np.allclose(rm_x.grad.detach().numpy(), grad_expected, atol=1e-5)
+                backward_passed = np.allclose(rm_x.grad.detach().cpu().numpy(), grad_expected, atol=1e-5)
 
                 passed = forward_passed and backward_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -301,11 +300,11 @@ class TestTrackGrad(unittest.TestCase):
                 rm_b = rm.tensor(np_b, requires_grad=True, device=device)
 
                 rm_result = myadd(rm_a, rm_b)
-                forward_passed = np.allclose(rm_result.detach().numpy(), np_a + np_b)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), np_a + np_b)
 
                 rm_result.sum().backward()
-                grad_a_passed = np.allclose(rm_a.grad.detach().numpy(), np.ones_like(np_a))
-                grad_b_passed = np.allclose(rm_b.grad.detach().numpy(), np.ones_like(np_b))
+                grad_a_passed = np.allclose(rm_a.grad.detach().cpu().numpy(), np.ones_like(np_a))
+                grad_b_passed = np.allclose(rm_b.grad.detach().cpu().numpy(), np.ones_like(np_b))
 
                 passed = forward_passed and grad_a_passed and grad_b_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -336,11 +335,11 @@ class TestTrackGrad(unittest.TestCase):
                 rm_b = rm.tensor(np_b, requires_grad=True, device=device)
 
                 rm_result = myadd(x=rm_a, y=rm_b)
-                forward_passed = np.allclose(rm_result.detach().numpy(), np_a + np_b)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), np_a + np_b)
 
                 rm_result.sum().backward()
-                grad_a_passed = np.allclose(rm_a.grad.detach().numpy(), np.ones_like(np_a))
-                grad_b_passed = np.allclose(rm_b.grad.detach().numpy(), np.ones_like(np_b))
+                grad_a_passed = np.allclose(rm_a.grad.detach().cpu().numpy(), np.ones_like(np_a))
+                grad_b_passed = np.allclose(rm_b.grad.detach().cpu().numpy(), np.ones_like(np_b))
 
                 passed = forward_passed and grad_a_passed and grad_b_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -372,11 +371,11 @@ class TestTrackGrad(unittest.TestCase):
 
                 # 故意打乱关键字顺序: y 在前，x 在后
                 rm_result = myadd(y=rm_b, x=rm_a)
-                forward_passed = np.allclose(rm_result.detach().numpy(), np_a + np_b)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), np_a + np_b)
 
                 rm_result.sum().backward()
-                grad_a_passed = np.allclose(rm_a.grad.detach().numpy(), np.ones_like(np_a))
-                grad_b_passed = np.allclose(rm_b.grad.detach().numpy(), np.ones_like(np_b))
+                grad_a_passed = np.allclose(rm_a.grad.detach().cpu().numpy(), np.ones_like(np_a))
+                grad_b_passed = np.allclose(rm_b.grad.detach().cpu().numpy(), np.ones_like(np_b))
 
                 passed = forward_passed and grad_a_passed and grad_b_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -406,11 +405,11 @@ class TestTrackGrad(unittest.TestCase):
                 scale = 3.0
 
                 rm_result = myscale(scale, rm_x)
-                forward_passed = np.allclose(rm_result.detach().numpy(), scale * np_x)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), scale * np_x)
 
                 rm_result.sum().backward()
                 grad_expected = np.full_like(np_x, scale)
-                backward_passed = np.allclose(rm_x.grad.detach().numpy(), grad_expected)
+                backward_passed = np.allclose(rm_x.grad.detach().cpu().numpy(), grad_expected)
 
                 passed = forward_passed and backward_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -442,11 +441,11 @@ class TestTrackGrad(unittest.TestCase):
                 w1, w2 = 2.0, 3.0
 
                 rm_result = weighted_sum(rm_a, w1, rm_b, w2)
-                forward_passed = np.allclose(rm_result.detach().numpy(), w1 * np_a + w2 * np_b)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), w1 * np_a + w2 * np_b)
 
                 rm_result.sum().backward()
-                grad_a_passed = np.allclose(rm_a.grad.detach().numpy(), np.full_like(np_a, w1))
-                grad_b_passed = np.allclose(rm_b.grad.detach().numpy(), np.full_like(np_b, w2))
+                grad_a_passed = np.allclose(rm_a.grad.detach().cpu().numpy(), np.full_like(np_a, w1))
+                grad_b_passed = np.allclose(rm_b.grad.detach().cpu().numpy(), np.full_like(np_b, w2))
 
                 passed = forward_passed and grad_a_passed and grad_b_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -479,7 +478,7 @@ class TestTrackGrad(unittest.TestCase):
                 rm_result = myadd(rm_a, rm_b)
                 rm_result.sum().backward()
 
-                grad_a_passed = np.allclose(rm_a.grad.detach().numpy(), np.ones_like(np_a))
+                grad_a_passed = np.allclose(rm_a.grad.detach().cpu().numpy(), np.ones_like(np_a))
                 grad_b_none = rm_b.grad is None
 
                 passed = grad_a_passed and grad_b_none
@@ -510,11 +509,11 @@ class TestTrackGrad(unittest.TestCase):
 
                 # 使用默认值 exponent=2.0
                 rm_result = mypow(rm_x)
-                forward_passed = np.allclose(rm_result.detach().numpy(), np_x ** 2)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), np_x ** 2)
 
                 rm_result.sum().backward()
                 grad_expected = 2.0 * np_x
-                backward_passed = np.allclose(rm_x.grad.detach().numpy(), grad_expected)
+                backward_passed = np.allclose(rm_x.grad.detach().cpu().numpy(), grad_expected)
 
                 passed = forward_passed and backward_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -544,11 +543,11 @@ class TestTrackGrad(unittest.TestCase):
 
                 # 覆盖默认 exponent=2.0 为 3.0
                 rm_result = mypow(rm_x, exponent=3.0)
-                forward_passed = np.allclose(rm_result.detach().numpy(), np_x ** 3)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), np_x ** 3)
 
                 rm_result.sum().backward()
                 grad_expected = 3.0 * (np_x ** 2)
-                backward_passed = np.allclose(rm_x.grad.detach().numpy(), grad_expected)
+                backward_passed = np.allclose(rm_x.grad.detach().cpu().numpy(), grad_expected)
 
                 passed = forward_passed and backward_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -581,12 +580,12 @@ class TestTrackGrad(unittest.TestCase):
                 rm_c = rm.tensor(np_c, requires_grad=True, device=device)
 
                 rm_result = mysum(rm_a, rm_b, rm_c)
-                forward_passed = np.allclose(rm_result.detach().numpy(), np_a + np_b + np_c)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), np_a + np_b + np_c)
 
                 rm_result.sum().backward()
-                grad_a_passed = np.allclose(rm_a.grad.detach().numpy(), np.ones_like(np_a))
-                grad_b_passed = np.allclose(rm_b.grad.detach().numpy(), np.ones_like(np_b))
-                grad_c_passed = np.allclose(rm_c.grad.detach().numpy(), np.ones_like(np_c))
+                grad_a_passed = np.allclose(rm_a.grad.detach().cpu().numpy(), np.ones_like(np_a))
+                grad_b_passed = np.allclose(rm_b.grad.detach().cpu().numpy(), np.ones_like(np_b))
+                grad_c_passed = np.allclose(rm_c.grad.detach().cpu().numpy(), np.ones_like(np_c))
 
                 passed = forward_passed and grad_a_passed and grad_b_passed and grad_c_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -617,11 +616,11 @@ class TestTrackGrad(unittest.TestCase):
                 rm_b = rm.tensor(np_b, requires_grad=True, device=device)
 
                 rm_result = mysum_kwargs(a=rm_a, b=rm_b)
-                forward_passed = np.allclose(rm_result.detach().numpy(), np_a + np_b)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), np_a + np_b)
 
                 rm_result.sum().backward()
-                grad_a_passed = np.allclose(rm_a.grad.detach().numpy(), np.ones_like(np_a))
-                grad_b_passed = np.allclose(rm_b.grad.detach().numpy(), np.ones_like(np_b))
+                grad_a_passed = np.allclose(rm_a.grad.detach().cpu().numpy(), np.ones_like(np_a))
+                grad_b_passed = np.allclose(rm_b.grad.detach().cpu().numpy(), np.ones_like(np_b))
 
                 passed = forward_passed and grad_a_passed and grad_b_passed
                 if IS_RUNNING_AS_SCRIPT:
@@ -697,10 +696,10 @@ class TestTrackGrad(unittest.TestCase):
 
                 # scale 通过关键字传入
                 rm_result = myscale(scale=4.0, x=rm_x)
-                forward_passed = np.allclose(rm_result.detach().numpy(), 4.0 * np_x)
+                forward_passed = np.allclose(rm_result.detach().cpu().numpy(), 4.0 * np_x)
 
                 rm_result.sum().backward()
-                backward_passed = np.allclose(rm_x.grad.detach().numpy(), np.full_like(np_x, 4.0))
+                backward_passed = np.allclose(rm_x.grad.detach().cpu().numpy(), np.full_like(np_x, 4.0))
 
                 passed = forward_passed and backward_passed
                 if IS_RUNNING_AS_SCRIPT:

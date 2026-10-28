@@ -181,16 +181,9 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all(compare_values(r, t, atol, rtol) for r, t in zip(rm_result, torch_result))
     
     # 获取numpy数组
-    if hasattr(rm_result, 'numpy'):
-        rm_array = rm_result.detach().numpy() if hasattr(rm_result, 'detach') else rm_result.numpy()
-    else:
-        rm_array = np.array(rm_result)
-    
-    if hasattr(torch_result, 'numpy'):
-        torch_array = torch_result.detach().numpy()
-    else:
-        torch_array = np.array(torch_result)
-    
+    rm_array = rm_result.detach().cpu().numpy()
+    torch_array = torch_result.detach().numpy()
+        
     # 处理复数情况
     if np.iscomplexobj(rm_array) or np.iscomplexobj(torch_array):
         rm_real = np.real(rm_array)
@@ -217,8 +210,8 @@ def check_lu_reconstruction(A, P, L, U, atol=1e-6):
             reconstructed = PL @ U
         
         # 计算重构误差 - 对批量矩阵使用更高的容差
-        A_array = A.detach().numpy() if hasattr(A, 'detach') else A.numpy()
-        PLU_array = reconstructed.detach().numpy() if hasattr(reconstructed, 'detach') else reconstructed.numpy()
+        A_array = A.detach().numpy()
+        PLU_array = reconstructed.detach().numpy()
         
         # 根据矩阵维度和批次调整容差
         if len(A_array.shape) > 2:  # 批量矩阵
@@ -230,7 +223,7 @@ def check_lu_reconstruction(A, P, L, U, atol=1e-6):
         reconstruction_ok = error < current_atol
         
         # 检查L是否为单位下三角矩阵
-        L_array = L.detach().numpy() if hasattr(L, 'detach') else L.numpy()
+        L_array = L.detach().numpy()
         if len(L_array.shape) > 2:  # 批量处理
             # 对每个批次分别检查
             is_unit_lower = True
@@ -248,7 +241,7 @@ def check_lu_reconstruction(A, P, L, U, atol=1e-6):
             is_unit_lower = np.allclose(L_diag, np.ones(size))
         
         # 检查U是否为上三角矩阵
-        U_array = U.detach().numpy() if hasattr(U, 'detach') else U.numpy()
+        U_array = U.detach().numpy()
         if len(U_array.shape) > 2:  # 批量处理
             # 对每个批次分别检查
             is_upper = True
@@ -383,21 +376,15 @@ def gradient_for_decomp(A, decomp_func_name, case_name, pivot=True):
                         input_tensor = torch.tensor(tensor.detach().numpy(), requires_grad=True)
                     else:
                         # 对于rm张量，我们需要先获取其numpy值
-                        if hasattr(tensor, 'detach'):
-                            input_tensor = rm.tensor(tensor.detach().numpy(), requires_grad=True)
-                        else:
-                            input_tensor = rm.tensor(tensor.numpy(), requires_grad=True)
-                
+                        input_tensor = rm.tensor(tensor.detach().numpy(), requires_grad=True)
+                                        
                 # 进行LU分解
                 results = func(input_tensor, pivot=pivot)
                 component = results[i]
                 
                 # 计算标量值 - 对于复数张量，使用abs().sum()确保得到实数标量
-                if hasattr(component, 'abs'):
-                    scalar = component.abs().sum()
-                else:
-                    scalar = component.sum()
-                
+                scalar = component.abs().sum()
+                                
                 # 反向传播
                 scalar.backward()
                 
@@ -406,14 +393,11 @@ def gradient_for_decomp(A, decomp_func_name, case_name, pivot=True):
                     raise ValueError("梯度计算失败，tensor.grad为None")
                 
                 # 如果梯度在CUDA上，将其移动回CPU
-                if torch.cuda.is_available() and torch.cuda.device_count() > 0 and hasattr(input_tensor.grad, 'is_cuda') and input_tensor.grad.is_cuda:
+                if torch.cuda.is_available() and torch.cuda.device_count() > 0 and input_tensor.grad.is_cuda:
                     grad_cpu = input_tensor.grad.cpu().clone()
                 else:
-                    if hasattr(input_tensor.grad, 'clone'):
-                        grad_cpu = input_tensor.grad.clone()
-                    else:
-                        grad_cpu = input_tensor.grad
-                
+                    grad_cpu = input_tensor.grad.clone()
+                                    
                 # 存储梯度 - 确保保存副本而不是引用
                 gradients.append(grad_cpu)
             
@@ -451,16 +435,9 @@ def gradient_for_decomp(A, decomp_func_name, case_name, pivot=True):
             torch_grad_u = torch_grad_u.cpu()
         
         # 确保rm_grad_l和rm_grad_u是numpy数组
-        if hasattr(rm_grad_l, 'numpy'):
-            rm_grad_l_np = rm_grad_l.numpy()
-        else:
-            rm_grad_l_np = rm_grad_l
-        
-        if hasattr(rm_grad_u, 'numpy'):
-            rm_grad_u_np = rm_grad_u.numpy()
-        else:
-            rm_grad_u_np = rm_grad_u
-        
+        rm_grad_l_np = rm_grad_l.numpy()
+        rm_grad_u_np = rm_grad_u.numpy()
+                
         l_grad_close = np.allclose(rm_grad_l_np, torch_grad_l.numpy(), rtol=1e-3, atol=1e-3)
         u_grad_close = np.allclose(rm_grad_u_np, torch_grad_u.numpy(), rtol=1e-3, atol=1e-3)
         
@@ -655,11 +632,11 @@ class TestLinalgLUBasic(unittest.TestCase):
             case_name = f"批量复矩阵 {batch_shape}"
             self.assertTrue(self._test_lu_single_case(np_data, case_name, is_batch=True))
     
-    @unittest.skipIf(not (hasattr(rm, 'cuda') and rm.cuda.is_available()), "CUDA不可用，跳过pivot=False的测试用例")
+    @unittest.skipIf(not rm.cuda.is_available(), "CUDA不可用，跳过pivot=False的测试用例")
     def test_lu_pivot_false(self):
         """测试pivot=False的LU分解"""
         # 首先检查CUDA可用性
-        cuda_available = hasattr(rm, 'cuda') and rm.cuda.is_available()
+        cuda_available = rm.cuda.is_available()
         print(f"CUDA可用性: {cuda_available}")
         
         # 测试正常情况
@@ -840,11 +817,11 @@ class TestLinalgLUGradients(unittest.TestCase):
                     self.assertTrue(l_grad_ok)
                     self.assertTrue(u_grad_ok)
     
-    @unittest.skipIf(not (hasattr(rm, 'cuda') and rm.cuda.is_available()), "CUDA不可用，跳过pivot=False的梯度测试用例")
+    @unittest.skipIf(not rm.cuda.is_available(), "CUDA不可用，跳过pivot=False的梯度测试用例")
     def test_lu_gradients_pivot_false(self):
         """测试pivot=False的LU分解梯度，包括主元为0的边缘情况"""
         # 首先检查CUDA可用性
-        cuda_available = hasattr(rm, 'cuda') and rm.cuda.is_available()
+        cuda_available = rm.cuda.is_available()
         print(f"CUDA可用性: {cuda_available}")
         
         # 测试正常情况的实方阵

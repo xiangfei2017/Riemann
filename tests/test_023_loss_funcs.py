@@ -149,18 +149,10 @@ def compare_values(riemann_val, torch_val, atol=1e-3, rtol=1e-3):
     # 转换为numpy数组
     try:
         # 处理Riemann结果
-        if hasattr(riemann_val, 'is_cuda') and riemann_val.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            riemann_np = riemann_val.detach().cpu().numpy()
-        else:
-            riemann_np = riemann_val.detach().numpy()
+        riemann_np = riemann_val.detach().cpu().numpy()
         
         # 处理PyTorch结果
-        if hasattr(torch_val, 'is_cuda') and torch_val.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_np = torch_val.detach().cpu().numpy()
-        else:
-            torch_np = torch_val.detach().numpy()
+        torch_np = torch_val.detach().cpu().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False

@@ -131,7 +131,7 @@ class TN:
         封装了NumPy数组并支持自动微分功能。
         
         属性：
-            data (np.ndarray): 存储张量数据的NumPy数组
+            data (np.ndarray | cp.ndarray): 存储张量数据的NumPy或Cupy数组
             fromvars (tuple): 记录本张量是通过哪些张量计算得来的
             parms (tuple): 对张量进行函数运算时用到的参数，如sum函数的dim和keepdim参数
             gradfuncs (tuple): 张量运算时登记的梯度函数对象，在backward中将调用这些钩子函数
@@ -144,11 +144,11 @@ class TN:
             _module_input_of (Module|None): 记录该张量作为哪个模块的输入，用于反向传播钩子机制
         """
         #tensor函数构造对象时，data引用一个numpy或cupy数组
-        self.data: np.ndarray = None    # type: ignore
+        self.data:TN = None             #numpy数组或cupy数组
         self.fromvars = ()              #张量运算时，运算符函数中记录本张量是通过哪些张量计算得来的
         self.parms = ()                 #对张量进行函数运算时用到的参数，比如sum函数的dim和keepdim参数
         self.gradfuncs = ()             #张量运算时，运算符函数中登记梯度函数对象，在backward中将调用这些钩子函数
-        self.grad:TN = None             #与data的shape一致的numpy数组，用于存放梯度，
+        self.grad:TN = None             #与data的shape一致的张量对象，用于存放梯度，
                                         #初始化为None是为了节省空间，计算梯度时才分配空间
         self.requires_grad = False      #tensor默认不计算梯度，在tensor函数构建对象时指定是否需要计算梯度
         self.retains_grad = False
@@ -729,26 +729,28 @@ class TN:
         """
         return self.data.size
 
-    def type(self, dtype=None):
+    def type(self, dtype=None, non_blocking=False):
         """返回或转换张量的数据类型
         
         行为：
-        - 如果不传入参数，返回张量的数据类型
+        - 如果不传入参数，返回张量的数据类型字符串
         - 如果传入数据类型参数，返回一个转换为指定数据类型的新张量
         
         参数:
             dtype: 数据类型，可以是Python类型、NumPy dtype、字符串或Riemann dtype
                 如果为None，则返回当前张量的数据类型
+            non_blocking (bool): 如果为True且源在固定内存中，复制到GPU可与主机计算异步。
+                                默认为False。仅适用于CPU -> GPU的传输。
                 
         返回:
-            如果dtype为None，返回当前张量的数据类型
+            如果dtype为None，返回当前张量的数据类型字符串
             否则返回转换为指定数据类型的新张量
         """
-        # 如果不传入参数，返回张量的数据类型
+        # 如果不传入参数，返回张量的数据类型字符串
         if dtype is None:
             return self.dtype.name
         
-        return self.to(dtype=dtype,device=self.device)
+        return self.to(dtype=dtype, device=self.device, non_blocking=non_blocking)
 
     def bool(self):
         """
@@ -1859,6 +1861,52 @@ class TN:
         """
         if self.requires_grad:
             raise RuntimeError("Can't call numpy() on Tensor that requires grad. Use tensor.detach().numpy() instead.")
+        # 与 PyTorch 语义一致：CUDA tensor 的 .numpy() 抛 TypeError，
+        # 强制用户显式调用 .cpu().numpy() 执行 GPU→CPU 数据迁移。
+        if self.is_cuda:
+            raise TypeError(
+                "can't convert cuda device type tensor to numpy. "
+                "Use Tensor.cpu() to copy the tensor to host memory first."
+            )
+        # CPU tensor 直接返回底层 np.ndarray
+        return self.data
+    
+    def array(self):
+        """
+        返回张量底层的设备原生数组，零拷贝、与张量共享内存。
+
+        与 .numpy() 的区别：
+        - .numpy() 始终返回 np.ndarray，CUDA 张量会抛出 TypeError ；
+        - .array() 返回张量所在设备的原生数组类型：CPU 上是 np.ndarray，
+          CUDA 上是 cp.ndarray。不做任何设备迁移或数据拷贝，与张量共享底层存储。
+
+        典型用途：
+        - 验证 as_tensor / torch.from_dlpack 等操作的内存共享语义；
+        - 将 TN 张量零拷贝交给 CuPy / NumPy 原生函数处理。
+
+        Returns:
+            np.ndarray | cp.ndarray: 与张量共享内存的底层数组对象。
+            CPU 张量返回 np.ndarray，CUDA 张量返回 cp.ndarray。
+
+        Raises:
+            RuntimeError: 如果张量需要计算梯度。
+
+        Examples:
+            >>> cpu_t = rm.tensor([1.0, 2.0, 3.0])
+            >>> cpu_arr = cpu_t.array()   # np.ndarray, 与 cpu_t 共享内存
+            >>> cpu_arr[0] = 42.0
+            >>> cpu_t[0]                  # TN 也看到修改
+
+            >>> cuda_t = rm.tensor([1.0, 2.0], device='cuda')
+            >>> cuda_arr = cuda_t.array() # cp.ndarray, 与 cuda_t 共享内存
+            >>> type(cuda_arr)            # cupy.ndarray
+
+            >>> # 配合 .detach() 在需要梯度的张量上使用
+            >>> t = rm.tensor([1.0, 2.0], requires_grad=True)
+            >>> arr = t.detach().array()  # OK
+        """
+        if self.requires_grad:
+            raise RuntimeError("Can't call array() on Tensor that requires grad. Use tensor.detach().array() instead.")
         return self.data
         
     def tolist(self):
@@ -5050,7 +5098,14 @@ def _get_device_for_input(device:str|int|Device|None, data:any)->Device:
         # 显式指定的device参数优先
         return _get_device(device)
     
-    # 通过 __dlpack_device__ 获取 device（不导入任何框架）
+    # numpy 数组按约定视为"无源数据"，走默认设备解析链；
+    # 不能用 __dlpack_device__ 检测，因为 numpy 2.x 也实现了该协议（返回 kDLCPU），
+    # 会把 numpy 数组错误归类为 CPU 设备来源，导致无法利用默认设备/Device 上下文迁移到 CUDA。
+    if isinstance(data, np.ndarray):
+        return _get_device(None)
+    
+    # 对于TN/torch/Jax等张量或cupy数组等类型的“有源数据”，
+    # 通过 __dlpack_device__ 获取 device，该方法通用且不依赖任何框架库，就可以获得device
     if hasattr(data, '__dlpack_device__'):
         try:
             dev_type, dev_id = data.__dlpack_device__()
@@ -5062,6 +5117,7 @@ def _get_device_for_input(device:str|int|Device|None, data:any)->Device:
         except (TypeError, AttributeError, ValueError):
             pass  # __dlpack_device__ 签名异常或返回值非法
     
+    # 其他情况，device is None，_get_device(None)返回当前默认设备
     return _get_device(device)
 
 def _get_dtype(dtype:any)->np.dtype:
@@ -5339,6 +5395,91 @@ def from_numpy(arr: np.ndarray | cp.ndarray) -> TN:
     if not is_numeric_array(arr):
         raise TypeError("dtype of arr need to be numberic")
 
+    ret = TN()
+    ret.data = arr
+    return ret
+
+def from_dlpack(ext_tensor) -> TN:
+    """
+    通过 DLPack 协议从外部张量/数组创建 Riemann 张量，零拷贝、共享底层存储。
+
+    DLPack 是跨框架张量交换的通用协议，torch.Tensor、numpy.ndarray（2.x）、
+    cupy.ndarray、jax.Array、TVM / Paddle 等框架的张量/数组都实现了该协议
+    （通过 __dlpack__ 方法）。本函数利用协议把外部张量零拷贝地映射为 Riemann TN，
+    设备与 dtype 保持不变。
+
+    参数:
+        ext_tensor: 实现了 __dlpack__ 和 __dlpack_device__ 协议的对象，可以是张量
+            或数组（ndarray）。典型来源包括 torch.Tensor、numpy.ndarray、
+            cupy.ndarray、jax.Array 等。Riemann TN 自身也实现了该协议，可以互转。
+
+    返回值:
+        TN: 新创建的张量对象，与 ext_tensor 共享底层存储。
+            ext_tensor 在哪个设备上，返回的 TN 就在哪个设备上。
+
+    异常:
+        TypeError: 当输入不支持 DLPack 协议时抛出
+        RuntimeError: 当输入设备类型无法识别，或 CUDA 张量到达但 CUDA 不可用时抛出
+
+    示例:
+        >>> # 从 PyTorch CUDA 张量零拷贝创建 Riemann 张量
+        >>> import torch, riemann as rm
+        >>> t = torch.tensor([1.0, 2.0, 3.0], device='cuda')
+        >>> x = rm.from_dlpack(t)       # 在 cuda:0 上，零拷贝
+        >>> x.array()[0] = 42.0         # 修改 Riemann 张量
+        >>> t[0]                        # PyTorch 张量也看到修改
+
+        >>> # 从 NumPy / CuPy 数组
+        >>> import numpy as np, cupy as cp
+        >>> cpu_arr = np.array([1.0, 2.0])
+        >>> y = rm.from_dlpack(cpu_arr)  # CPU 上
+        >>> gpu_arr = cp.array([1.0, 2.0])
+        >>> z = rm.from_dlpack(gpu_arr)  # CUDA 上，type(z.array()) is cp.ndarray
+
+        >>> # 反向：把 Riemann 张量交给 PyTorch / CuPy / NumPy
+        >>> t = rm.tensor([1.0, 2.0], device='cuda')
+        >>> torch_t = torch.from_dlpack(t)   # PyTorch 零拷贝接入
+        >>> cupy_a  = cp.from_dlpack(t)     # CuPy 零拷贝接入
+
+    注意事项:
+        1. DLPack 零拷贝共享底层存储，修改一方会影响另一方
+        2. 跨设备（CPU↔CUDA）转换不属于 DLPack 的设计目标，
+           请使用 rm.tensor / rm.as_tensor 处理需要设备迁移的场景
+        3. 创建的张量默认 requires_grad=False，不追踪梯度
+    """
+    if not hasattr(ext_tensor, '__dlpack__'):
+        raise TypeError(
+            f"Object of type {type(ext_tensor).__name__} does not support "
+            "DLPack protocol (missing __dlpack__ method). "
+            "Use rm.tensor / rm.as_tensor for non-DLPack inputs."
+        )
+    
+    # 通过 __dlpack_device__ 判断设备类型（DLPack 标准约定）
+    # dev_type: 1=CPU (kDLCPU), 2=CUDA (kDLCUDA), 3=ROCM, 4=OpenCL, 5=Metal
+    try:
+        dev_type, dev_id = ext_tensor.__dlpack_device__()
+    except (AttributeError, TypeError, ValueError) as e:
+        raise RuntimeError(f"Failed to query DLPack device info: {e}") from e
+    
+    # 用 NumPy / CuPy 的 from_dlpack 标准 API 把 DLPack 张量转成原生 ndarray
+    # 两者内部会调用 ext_tensor.__dlpack__() 获取 DLPack capsule
+    if dev_type == 1:  # kDLCPU
+        arr = np.from_dlpack(ext_tensor)
+    elif dev_type == 2:  # kDLCUDA
+        if cp is None:
+            raise RuntimeError(
+                "CUDA is not available: received a DLPack tensor on CUDA device "
+                f"kDLCUDA={dev_id}, but Riemann has no CUDA support or no CUDA "
+                "device is visible. Install cupy-cuda12x / cupy-cuda13x "
+                "and ensure a CUDA device is attached."
+            )
+        arr = cp.from_dlpack(ext_tensor)
+    else:
+        raise RuntimeError(
+            f"Unsupported DLPack device type: {dev_type}. "
+            "Riemann currently supports CPU (kDLCPU=1) and CUDA (kDLCUDA=2)."
+        )
+    
     ret = TN()
     ret.data = arr
     return ret

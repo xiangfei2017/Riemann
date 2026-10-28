@@ -153,7 +153,7 @@ class TestLinalgCond(unittest.TestCase):
                 
                 # 对比结果 - 统一转换为numpy数组进行比较，使用更宽松的容差
                 np.testing.assert_allclose(
-                    riemann_result.detach().numpy(),
+                    riemann_result.detach().cpu().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-5,  # 稍微放宽相对误差
                     atol=1e-7,  # 稍微放宽绝对误差
@@ -213,7 +213,7 @@ class TestLinalgCond(unittest.TestCase):
                 
                 # 对比结果，使用更宽松的容差
                 np.testing.assert_allclose(
-                    riemann_result.detach().numpy(),
+                    riemann_result.detach().cpu().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-5,
                     atol=1e-7,
@@ -365,7 +365,7 @@ class TestLinalgCond(unittest.TestCase):
                 
                 # 对比结果，使用更宽松的容差
                 np.testing.assert_allclose(
-                    riemann_result.detach().numpy(),
+                    riemann_result.detach().cpu().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-5,
                     atol=1e-7,
@@ -380,7 +380,7 @@ class TestLinalgCond(unittest.TestCase):
                 self.assertEqual(riemann_type, torch_type)
                 
                 # 测试复数矩阵条件数应该是实数
-                self.assertFalse(np.iscomplexobj(riemann_result.detach().numpy()),
+                self.assertFalse(np.iscomplexobj(riemann_result.detach().cpu().numpy()),
                                 f"复数矩阵条件数应该是实数，实际类型: {riemann_result.detach().dtype}")
                 
                 if IS_RUNNING_AS_SCRIPT:

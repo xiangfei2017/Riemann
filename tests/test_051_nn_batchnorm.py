@@ -267,17 +267,11 @@ def copy_weights_torch_to_riemann(torch_layer, riemann_layer):
 def tensor_allclose(rm_tensor, torch_tensor, rtol=1e-4, atol=1e-6):
     """比较Riemann张量和PyTorch张量是否接近"""
     # 处理Riemann结果
-    if rm_tensor.is_cuda:
-        rm_data = rm_tensor.detach().cpu().numpy()
-    else:
-        rm_data = rm_tensor.detach().numpy()
+    rm_data = rm_tensor.detach().cpu().numpy()
     
     # 处理PyTorch结果
-    if torch_tensor.is_cuda:
-        torch_data = torch_tensor.detach().cpu().numpy()
-    else:
-        torch_data = torch_tensor.detach().numpy()
-    
+    torch_data = torch_tensor.detach().cpu().numpy()
+        
     return np.allclose(rm_data, torch_data, rtol=rtol, atol=atol)
 
 
@@ -299,10 +293,10 @@ def compare_gradients(torch_param, riemann_param, name="parameter"):
     if riemann_param.grad.is_cuda:
         riemann_grad = riemann_param.grad.detach().cpu().numpy()
     else:
-        riemann_grad = riemann_param.grad.detach().numpy()
+        riemann_grad = riemann_param.grad.detach().cpu().numpy()
     
     # 对于CUDA设备，增加容差阈值，因为不同实现之间可能存在细微差异
-    if torch_param.grad.is_cuda or hasattr(riemann_param.grad, 'is_cuda') and riemann_param.grad.is_cuda:
+    if torch_param.grad.is_cuda or riemann_param.grad.is_cuda:
         close_result = np.allclose(torch_grad, riemann_grad, rtol=1e-3, atol=1e-3)
     else:
         close_result = np.allclose(torch_grad, riemann_grad, rtol=1e-4, atol=1e-6)
@@ -485,7 +479,7 @@ def compare_rms_norm(rm_rn_class, torch_rn, input_data, test_name, stats, **rm_r
             gradient_tests_passed = 0
             gradient_tests_total = 0
 
-            if hasattr(rm_rn, 'weight') and rm_rn.weight is not None:
+            if rm_rn.weight is not None:
                 gradient_tests_total += 1
                 weight_close, weight_msg = compare_gradients(new_torch_rn.weight, rm_rn.weight, "weight")
                 stats.add_result(f"{device_test_name}-weight梯度", weight_close, weight_msg)
@@ -605,7 +599,7 @@ def compare_batch_norm(rm_bn_class, torch_bn, input_data, test_name, stats, mode
             gradient_tests_total = 0
             
             # 比较权重梯度
-            if hasattr(rm_bn, 'weight') and rm_bn.weight is not None:
+            if rm_bn.weight is not None:
                 gradient_tests_total += 1
                 weight_close, weight_msg = compare_gradients(new_torch_bn.weight, rm_bn.weight, "weight")
                 stats.add_result(f"{device_test_name}-weight梯度", weight_close, weight_msg)
@@ -613,7 +607,7 @@ def compare_batch_norm(rm_bn_class, torch_bn, input_data, test_name, stats, mode
                     gradient_tests_passed += 1
             
             # 比较偏置梯度
-            if hasattr(rm_bn, 'bias') and rm_bn.bias is not None:
+            if rm_bn.bias is not None:
                 gradient_tests_total += 1
                 bias_close, bias_msg = compare_gradients(new_torch_bn.bias, rm_bn.bias, "bias")
                 stats.add_result(f"{device_test_name}-bias梯度", bias_close, bias_msg)

@@ -186,7 +186,7 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return False
     
     # 转换为numpy数组
-    rm_data = rm_result.detach().numpy()
+    rm_data = rm_result.detach().cpu().numpy()
     torch_data = torch_result.detach().numpy()
     
     # 处理形状不匹配的情况

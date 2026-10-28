@@ -219,18 +219,10 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     # 转换为numpy数组
     try:
         # 处理Riemann结果
-        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            rm_data = rm_result.detach().cpu().numpy()
-        else:
-            rm_data = rm_result.detach().numpy()
+        rm_data = rm_result.detach().cpu().numpy()
         
         # 处理PyTorch结果
-        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_data = torch_result.detach().cpu().numpy()
-        else:
-            torch_data = torch_result.detach().numpy()
+        torch_data = torch_result.detach().cpu().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -782,7 +774,7 @@ class TestEmbedding(unittest.TestCase):
                 self.assertTrue(device in str(rm_embedding.weight.device))
                 
                 # 测试3: padding_idx的权重初始化
-                self.assertTrue(np.allclose(rm_embedding.weight.detach().numpy()[padding_idx], 0.0))
+                self.assertTrue(np.allclose(rm_embedding.weight.detach().cpu().numpy()[padding_idx], 0.0))
                 
                 # 测试4: 前向传播
                 input_data = np.array([0, 1, 2, 0, 3])

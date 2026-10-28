@@ -181,15 +181,9 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all(compare_values(r, t, atol, rtol) for r, t in zip(rm_result, torch_result))
     
     # 获取numpy数组
-    if hasattr(rm_result, 'numpy'):
-        rm_array = rm_result.detach().numpy() if hasattr(rm_result, 'detach') else rm_result.numpy()
-    else:
-        rm_array = np.array(rm_result)
+    rm_array = rm_result.detach().cpu().numpy()
     
-    if hasattr(torch_result, 'numpy'):
-        torch_array = torch_result.detach().numpy()
-    else:
-        torch_array = np.array(torch_result)
+    torch_array = torch_result.detach().cpu().numpy()
     
     # 处理复数情况
     if np.iscomplexobj(rm_array) or np.iscomplexobj(torch_array):
@@ -219,7 +213,7 @@ def check_qr_reconstruction(A, Q, R, atol=1e-6):
     """
     try:
         # 首先检查R是否为上三角矩阵（所有模式都需要检查）
-        R_array = R.detach().numpy() if hasattr(R, 'detach') else R.numpy()
+        R_array = R.detach().cpu().numpy()
         
         # 检查上三角性质（统一处理批量和单个矩阵）
         is_upper = True
@@ -232,7 +226,7 @@ def check_qr_reconstruction(A, Q, R, atol=1e-6):
             is_upper = np.allclose(R_lower, 0, atol=atol)
         
         # 检查Q是否为0维张量（mode='r'的情况）
-        if not hasattr(Q, 'shape') or len(Q.shape) == 0:
+        if len(Q.shape) == 0:
             # mode='r'时，只需要检查R是上三角矩阵
             return is_upper, (None if is_upper else "R矩阵不是上三角矩阵")
         
@@ -241,8 +235,8 @@ def check_qr_reconstruction(A, Q, R, atol=1e-6):
         QR = Q @ R
         
         # 计算重构误差
-        A_array = A.detach().numpy() if hasattr(A, 'detach') else A.numpy()
-        QR_array = QR.detach().numpy() if hasattr(QR, 'detach') else QR.numpy()
+        A_array = A.detach().cpu().numpy()
+        QR_array = QR.detach().cpu().numpy()
         
         # 对于批量矩阵使用更高的容差
         current_atol = max(atol, 1e-5) if len(A_array.shape) > 2 else atol
@@ -266,10 +260,10 @@ def check_qr_reconstruction(A, Q, R, atol=1e-6):
         # 批量处理或单个矩阵处理
         if len(QR_array.shape) > 2:  # 批量处理
             for i in range(QR_array.shape[0]):
-                batch_Q = Q[i].detach().numpy() if hasattr(Q[i], 'detach') else Q[i].numpy()
+                batch_Q = Q[i].detach().cpu().numpy()
                 is_orthonormal = is_orthonormal and check_single_orthonormal(batch_Q, current_atol)
         else:  # 单个矩阵
-            Q_array = Q.detach().numpy() if hasattr(Q, 'detach') else Q.numpy()
+            Q_array = Q.detach().cpu().numpy()
             is_orthonormal = check_single_orthonormal(Q_array, current_atol)
         
         # 综合所有检查结果
@@ -357,7 +351,7 @@ def gradient_for_decomp(A, decomp_func_name, case_name, mode='reduced'):
                     tensor.grad = None
                 
                 # 对于空张量或标量，跳过梯度计算
-                if component is None or (hasattr(component, 'shape') and len(component.shape) == 0):
+                if component is None or (len(component.shape) == 0):
                     gradients.append(None)
                     continue
                 
@@ -509,14 +503,14 @@ class TestLinalgQRBasic(unittest.TestCase):
             
             # 检查数据类型
             # 对于mode='r'，Q是0维张量，不需要检查其数据类型
-            if hasattr(rm_Q, 'shape') and len(rm_Q.shape) == 0:
+            if len(rm_Q.shape) == 0:
                 dtype_ok = True
             else:
                 # 确保Q不是0维张量再检查数据类型
                 if rm_Q is not None:
                     dtype_ok = (rm_Q.dtype == riemann_tensor.dtype)
                 # 检查R的数据类型
-                if rm_R is not None and not (hasattr(rm_R, 'shape') and (len(rm_R.shape) == 0 or rm_R.shape == ())):
+                if rm_R is not None and not (len(rm_R.shape) == 0 or rm_R.shape == ()):
                     dtype_ok = dtype_ok and (rm_R.dtype == riemann_tensor.dtype)
             
             # 与torch结果比较

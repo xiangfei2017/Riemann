@@ -189,15 +189,9 @@ def compare_values(rm_result, torch_result, atol=1e-4, rtol=1e-4):
         return False
     
     # 处理需要梯度的张量
-    if hasattr(rm_result, 'requires_grad') and rm_result.requires_grad:
-        rm_data = rm_result.detach().numpy()
-    else:
-        rm_data = rm_result.numpy()
+    rm_data = rm_result.detach().cpu().numpy()
     
-    if hasattr(torch_result, 'requires_grad') and torch_result.requires_grad:
-        torch_data = torch_result.detach().numpy()
-    else:
-        torch_data = torch_result.numpy()
+    torch_data = torch_result.detach().cpu().numpy()
     
     try:
         np.testing.assert_allclose(rm_data, torch_data, rtol=rtol, atol=atol)
@@ -502,7 +496,7 @@ class TestTransformerMHA(unittest.TestCase):
                 status_color = Colors.OKGREEN if passed else Colors.FAIL
                 print(f"测试用例: {case_name} - {status_color}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
                 if passed_output:
-                    rm_out_np = rm_output.detach().numpy() if rm_output.requires_grad else rm_output.numpy()
+                    rm_out_np = rm_output.detach().cpu().numpy() if rm_output.requires_grad else rm_output.numpy()
                     torch_out_np = torch_output.detach().numpy() if torch_output.requires_grad else torch_output.numpy()
                     print(f"  输出最大差异: {np.max(np.abs(rm_out_np - torch_out_np)):.2e}")
             
@@ -716,7 +710,7 @@ class TestTransformerMHA(unittest.TestCase):
         self.assertEqual(rm_weights.shape, (batch_size, num_heads, seq_len, seq_len))
         
         # 转换为numpy检查上三角是否为0（softmax后的权重）
-        weights_np = rm_weights.detach().numpy()
+        weights_np = rm_weights.detach().cpu().numpy()
         
         # 检查上三角（不包括对角线）是否接近0（被mask掉）
         all_masked = True
@@ -877,7 +871,7 @@ class TestTransformerMHA(unittest.TestCase):
             
             # 验证权重形状和上三角mask
             self.assertEqual(rm_weights.shape, (batch_size, num_heads, tgt_len, src_len))
-            weights_np = rm_weights.detach().numpy()
+            weights_np = rm_weights.detach().cpu().numpy()
             for b in range(batch_size):
                 for h in range(num_heads):
                     for i in range(tgt_len):

@@ -196,7 +196,7 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6, check_dtype=Tr
         return False
     
     # 比较形状
-    rm_shape = rm_result.shape if hasattr(rm_result, 'shape') else rm_result.shape
+    rm_shape = rm_result.shape
     torch_shape = torch_result.shape
     if rm_shape != torch_shape:
         return False
@@ -232,7 +232,7 @@ def compare_arg_results(rm_result, torch_result):
         return False
     
     # 比较形状
-    rm_shape = rm_result.shape if hasattr(rm_result, 'shape') else rm_result.shape
+    rm_shape = rm_result.shape
     torch_shape = torch_result.shape
     if rm_shape != torch_shape:
         return False
@@ -340,14 +340,10 @@ class TestMaxMinFunctions(unittest.TestCase):
                     passed_grad = True
                     grad_details = []
                     
-                    if not hasattr(rm_tensor_grad, 'grad') or rm_tensor_grad.grad is None:
+                    grad_shape = rm_tensor_grad.grad.shape
+                    if grad_shape != case["shape"]:
                         passed_grad = False
-                        grad_details.append("Riemann梯度未生成")
-                    else:
-                        grad_shape = rm_tensor_grad.grad.shape
-                        if grad_shape != case["shape"]:
-                            passed_grad = False
-                            grad_details.append(f"梯度形状不匹配: {grad_shape} vs {case['shape']}")
+                        grad_details.append(f"梯度形状不匹配: {grad_shape} vs {case['shape']}")
                     
                     if not passed_grad:
                         passed = False
@@ -513,7 +509,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     passed_grad = True
                     grad_details = []
                     
-                    if not hasattr(rm_tensor_grad, 'grad') or rm_tensor_grad.grad is None:
+                    if rm_tensor_grad.grad is None:
                         passed_grad = False
                         grad_details.append("Riemann梯度未生成")
                     
@@ -883,7 +879,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     passed_grad = True
                     grad_details = []
                     
-                    if not hasattr(rm_tensor_grad, 'grad') or rm_tensor_grad.grad is None:
+                    if rm_tensor_grad.grad is None:
                         passed_grad = False
                         grad_details.append("Riemann梯度未生成")
                     
@@ -1080,7 +1076,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     passed_grad = True
                     grad_details = []
                     
-                    if not hasattr(rm_tensor_grad, 'grad') or rm_tensor_grad.grad is None:
+                    if rm_tensor_grad.grad is None:
                         passed_grad = False
                         grad_details.append("Riemann梯度未生成")
                     
@@ -1312,7 +1308,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     passed_grad = True
                     grad_details = []
                     
-                    if not hasattr(rm_tensor_grad, 'grad') or rm_tensor_grad.grad is None:
+                    if rm_tensor_grad.grad is None:
                         passed_grad = False
                         grad_details.append("Riemann梯度未生成")
                     
@@ -1522,7 +1518,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     passed_grad = True
                     grad_details = []
                     
-                    if not hasattr(rm_tensor_grad, 'grad') or rm_tensor_grad.grad is None:
+                    if rm_tensor_grad.grad is None:
                         passed_grad = False
                         grad_details.append("Riemann梯度未生成")
                     
@@ -1742,7 +1738,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     passed_grad = True
                     grad_details = []
                     
-                    if not hasattr(rm_tensor_grad, 'grad') or rm_tensor_grad.grad is None:
+                    if rm_tensor_grad.grad is None:
                         passed_grad = False
                         grad_details.append("Riemann梯度未生成")
                     
@@ -1937,7 +1933,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                     passed_grad = True
                     grad_details = []
                     
-                    if not hasattr(rm_tensor_grad, 'grad') or rm_tensor_grad.grad is None:
+                    if rm_tensor_grad.grad is None:
                         passed_grad = False
                         grad_details.append("Riemann梯度未生成")
                     
@@ -2200,14 +2196,14 @@ class TestMaxMinFunctions(unittest.TestCase):
                             torch_loss.backward()
                         
                         # 检查梯度是否存在且形状正确
-                        if not hasattr(rm_tensor1_grad, 'grad') or rm_tensor1_grad.grad is None:
+                        if rm_tensor1_grad.grad is None:
                             passed_grad = False
                             grad_details.append("Riemann第一个输入梯度未生成")
                         elif rm_tensor1_grad.grad.shape != rm_tensor1_grad.shape:
                             passed_grad = False
                             grad_details.append(f"第一个输入梯度形状不匹配: 期望 {rm_tensor1_grad.shape}, 得到 {rm_tensor1_grad.grad.shape}")
                         
-                        if not hasattr(rm_tensor2_grad, 'grad') or rm_tensor2_grad.grad is None:
+                        if rm_tensor2_grad.grad is None:
                             passed_grad = False
                             grad_details.append("Riemann第二个输入梯度未生成")
                         elif rm_tensor2_grad.grad.shape != rm_tensor2_grad.shape:
@@ -2489,14 +2485,14 @@ class TestMaxMinFunctions(unittest.TestCase):
                             torch_loss.backward()
                         
                         # 检查梯度是否存在且形状正确
-                        if not hasattr(rm_tensor1_grad, 'grad') or rm_tensor1_grad.grad is None:
+                        if rm_tensor1_grad.grad is None:
                             passed_grad = False
                             grad_details.append("Riemann第一个输入梯度未生成")
                         elif rm_tensor1_grad.grad.shape != rm_tensor1_grad.shape:
                             passed_grad = False
                             grad_details.append(f"第一个输入梯度形状不匹配: 期望 {rm_tensor1_grad.shape}, 得到 {rm_tensor1_grad.grad.shape}")
                         
-                        if not hasattr(rm_tensor2_grad, 'grad') or rm_tensor2_grad.grad is None:
+                        if rm_tensor2_grad.grad is None:
                             passed_grad = False
                             grad_details.append("Riemann第二个输入梯度未生成")
                         elif rm_tensor2_grad.grad.shape != rm_tensor2_grad.shape:

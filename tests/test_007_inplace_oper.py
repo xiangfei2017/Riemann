@@ -229,15 +229,9 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return False
     
     # 处理Riemann结果
-    if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
-        rm_data = rm_result.detach().cpu().numpy()
-    else:
-        rm_data = rm_result.detach().numpy()
+    rm_data = rm_result.detach().cpu().numpy()
     # 处理PyTorch结果
-    if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
-        torch_data = torch_result.detach().cpu().numpy()
-    else:
-        torch_data = torch_result.detach().numpy()
+    torch_data = torch_result.detach().cpu().numpy()
     
     # 处理形状不匹配的情况
     try:
@@ -1543,7 +1537,7 @@ class TestInplaceOperations(unittest.TestCase):
                                 view_passed = abs(float(view2) - float(direct)) < 1e-10
                             else:
                                 # 使用allclose直接比较张量（rm_x 需梯度，须先 detach 再取 numpy）
-                                view_passed = np.allclose(view2.detach().numpy(), direct.detach().numpy(), rtol=1e-05, atol=1e-08)
+                                view_passed = np.allclose(view2.detach().cpu().numpy(), direct.detach().cpu().numpy(), rtol=1e-05, atol=1e-08)
                         except Exception as e:
                             view_passed = False
                     

@@ -368,22 +368,12 @@ def gradient_for_decomp(A, decomp_func_name, case_name, device='cpu'):
         torch_A = torch.tensor(A.copy(), requires_grad=True, device=torch_device)
         torch_grad_w, torch_grad_V = compute_gradients(torch_A, torch_func)
         
-        # 比较梯度，处理CUDA情况
-        if hasattr(rm_grad_w, 'get'):
-            # 如果是CUDA张量，先移动到CPU
-            rm_grad_w_np = rm_grad_w.get()
-            rm_grad_V_np = rm_grad_V.get()
-        else:
-            rm_grad_w_np = rm_grad_w.numpy()
-            rm_grad_V_np = rm_grad_V.numpy()
+        rm_grad_w_np = rm_grad_w.detach().cpu().numpy()
+        rm_grad_V_np = rm_grad_V.detach().cpu().numpy()
         
-        if hasattr(torch_grad_w, 'is_cuda') and torch_grad_w.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_grad_w_np = torch_grad_w.cpu().numpy()
-            torch_grad_V_np = torch_grad_V.cpu().numpy()
-        else:
-            torch_grad_w_np = torch_grad_w.numpy()
-            torch_grad_V_np = torch_grad_V.numpy()
+        # torch .cpu() 对 CPU tensor 就是 self-return，无脑调用
+        torch_grad_w_np = torch_grad_w.detach().cpu().numpy()
+        torch_grad_V_np = torch_grad_V.detach().cpu().numpy()
         
         w_grad_close = np.allclose(rm_grad_w_np, torch_grad_w_np, rtol=1e-3, atol=1e-3)
         v_grad_close = np.allclose(rm_grad_V_np, torch_grad_V_np, rtol=1e-3, atol=1e-3)

@@ -181,15 +181,8 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
         return all(compare_values(r, t, atol, rtol) for r, t in zip(rm_result, torch_result))
     
     # 获取numpy数组
-    if hasattr(rm_result, 'numpy'):
-        rm_array = rm_result.detach().numpy() if hasattr(rm_result, 'detach') else rm_result.numpy()
-    else:
-        rm_array = np.array(rm_result)
-    
-    if hasattr(torch_result, 'numpy'):
-        torch_array = torch_result.detach().numpy()
-    else:
-        torch_array = np.array(torch_result)
+    rm_array = rm_result.detach().cpu().numpy()    
+    torch_array = torch_result.detach().cpu().numpy()
     
     # 处理复数情况
     if np.iscomplexobj(rm_array) or np.iscomplexobj(torch_array):
@@ -216,14 +209,14 @@ def check_cholesky_reconstruction(A, L, upper=False, atol=1e-6):
             reconstructed = L @ L.mH
         
         # 计算重构误差
-        A_array = A.detach().numpy() if hasattr(A, 'detach') else A.numpy()
-        reconstructed_array = reconstructed.detach().numpy() if hasattr(reconstructed, 'detach') else reconstructed.numpy()
+        A_array = A.detach().cpu().numpy()
+        reconstructed_array = reconstructed.detach().cpu().numpy()
         
         error = np.linalg.norm(A_array - reconstructed_array)
         reconstruction_ok = error < atol
         
         # 检查L是否为三角矩阵
-        L_array = L.detach().numpy() if hasattr(L, 'detach') else L.numpy()
+        L_array = L.detach().numpy()
         
         if len(L_array.shape) > 2:  # 批量矩阵
             # 对每个批次分别检查
@@ -323,12 +316,8 @@ def gradient_for_cholesky(A, case_name, upper=False):
             loss_torch.backward()
             
             # 比较梯度
-            if hasattr(rm_A.grad, 'numpy'):
-                rm_grad_np = rm_A.grad.numpy()
-            else:
-                rm_grad_np = rm_A.grad
-            
-            torch_grad_np = torch_A.grad.numpy()
+            rm_grad_np = rm_A.grad.detach().numpy()            
+            torch_grad_np = torch_A.grad.detach().numpy()
             grad_close = np.allclose(rm_grad_np, torch_grad_np, rtol=1e-3, atol=1e-3)
             
             if not grad_close:

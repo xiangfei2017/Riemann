@@ -297,7 +297,7 @@ def test_parameters_management():
         # 测试4: get_parameter()
         print("测试 get_parameter()...")
         weight = module.get_parameter('linear.weight')
-        passed = weight is not None and hasattr(weight, 'data')
+        passed = weight is not None
         stats.add_result("get_parameter()获取", passed, f"成功获取linear.weight参数")
         
         # 测试5: get_parameter() 不存在的参数
@@ -368,7 +368,7 @@ def test_buffers_management():
         # 测试3: get_buffer()
         print("测试 get_buffer()...")
         running_mean = module.get_buffer('running_mean')
-        passed = running_mean is not None and hasattr(running_mean, 'data')
+        passed = running_mean is not None
         stats.add_result("get_buffer()获取", passed, f"成功获取running_mean缓冲区")
         
         # 测试4: set_buffer()
@@ -573,7 +573,7 @@ def test_gradient_management():
         module = CustomModule(10, 5)
         
         # 模拟有梯度的情况
-        if hasattr(module.linear.weight, 'grad') and module.linear.weight.grad is not None:
+        if module.linear.weight.grad is not None:
             initial_grad = module.linear.weight.grad.copy()
         else:
             # 手动设置梯度
@@ -583,7 +583,7 @@ def test_gradient_management():
         module.zero_grad()
         grad_after_zero = module.linear.weight.grad
         
-        passed = grad_after_zero is None or (hasattr(grad_after_zero, 'abs') and grad_after_zero.abs().max().item() == 0.0)
+        passed = grad_after_zero is None or (grad_after_zero.abs().max().item() == 0.0)
         stats.add_result("zero_grad()清零梯度", passed, "梯度已清零")
         
         # 测试2: zero_grad(set_to_none=True)
@@ -977,7 +977,7 @@ def test_to_method():
                 # 检查模型参数是否在CUDA上
                 params_on_cuda = True
                 for i, param in enumerate(cuda_module.parameters()):
-                    if not param.is_cuda():
+                    if not param.is_cuda:
                         params_on_cuda = False
                         break
                     # 检查device属性的字符串表示是否包含'cuda'
@@ -988,7 +988,7 @@ def test_to_method():
                 
                 buffers_on_cuda = True
                 for i, buffer in enumerate(cuda_module.buffers()):
-                    if not buffer.is_cuda():
+                    if not buffer.is_cuda:
                         buffers_on_cuda = False
                         break
                     # 检查device属性的字符串表示是否包含'cuda'
@@ -1015,13 +1015,13 @@ def test_to_method():
                 # 检查模型参数是否在CPU上
                 params_on_cpu = True
                 for param in cpu_module_back.parameters():
-                    if param.is_cuda():
+                    if param.is_cuda:
                         params_on_cpu = False
                         break
                 
                 buffers_on_cpu = True
                 for buffer in cpu_module_back.buffers():
-                    if buffer.is_cuda():
+                    if buffer.is_cuda:
                         buffers_on_cpu = False
                         break
                 

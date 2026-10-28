@@ -1084,7 +1084,7 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     # CUDA张量需要转换回CPU进行比较
                     rm_data = rm_tensor.to("cpu").detach().numpy()
                 else:
-                    rm_data = rm_tensor.detach().numpy()
+                    rm_data = rm_tensor.detach().cpu().numpy()
                 
                 if not np.array_equal(rm_data, expected_data):
                     passed = False
@@ -1166,7 +1166,7 @@ class TestTensorCreationFunctions(unittest.TestCase):
                 d = rm.tensor(c)
                 self.assertEqual(d.device.type, 'cuda', "tensor(TN)应沿用CUDA源设备")
                 self.assertEqual(d.device.index, 0)
-                self.assertIsNot(d.numpy(), c.numpy(), "tensor(TN)不应共享内存")
+                self.assertIsNot(d.array(), c.array(), "tensor(TN)不应共享内存")
                 self.assertTrue(np.allclose(d.to('cpu').numpy(), [3.0, 4.0]), "tensor(TN)值应与源一致")
             self._run_subcase(doc, "张量输入-沿用CUDA源设备", _tn_cuda_source)
 
@@ -1176,7 +1176,7 @@ class TestTensorCreationFunctions(unittest.TestCase):
                 t = rm.tensor(arr)
                 self.assertEqual(t.device.type, 'cuda', "tensor(cupy数组)应沿用其所在设备")
                 self.assertEqual(t.device.index, 0)
-                self.assertIsNot(t.numpy(), arr, "tensor(cupy数组)不应共享内存")
+                self.assertIsNot(t.array(), arr, "tensor(cupy数组)不应共享内存")
                 arr[0] = 42.0
                 self.assertEqual(float(t.to('cpu').numpy()[0]), 1.0, "tensor(cupy数组)应为独立拷贝")
             self._run_subcase(doc, "cupy数组输入-沿用所在设备且独立拷贝", _cupy_source)
@@ -1293,7 +1293,7 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     # CUDA张量需要转换回CPU进行比较
                     rm_data = rm_tensor.to("cpu").detach().numpy()
                 else:
-                    rm_data = rm_tensor.detach().numpy()
+                    rm_data = rm_tensor.detach().cpu().numpy()
 
                 if not np.array_equal(rm_data, expected_data):
                     passed = False
@@ -1323,20 +1323,21 @@ class TestTensorCreationFunctions(unittest.TestCase):
                     error_msg = f"requires_grad不匹配: 期望{requires_grad}, 得到{rm_tensor.requires_grad}"
 
                 # 检查内存共享语义
+                # 验证内存共享必须基于底层存储对象（.array() 返回设备原生数组，零拷贝），
+                # 不能用 .numpy() ——后者对 CUDA 张量会拉回 CPU 变成新 np.ndarray。
                 if "expect_shared" in case:
                     src = data
-                    t_data = rm_tensor.detach().numpy()
+                    t_array = rm_tensor.detach().array()
                     if isinstance(src, rm.TN):
-                        shared = t_data is src.detach().numpy()
+                        shared = t_array is src.detach().array()
                     elif rm.cuda.CUPY_AVAILABLE and isinstance(src, rm.cuda.cp.ndarray):
-                        shared = t_data is src
+                        shared = t_array is src
                     elif isinstance(src, np.ndarray):
-                        if rm.cuda.CUPY_AVAILABLE and isinstance(t_data, rm.cuda.cp.ndarray):
-                            # 张量在CUDA上而源在CPU，必然不共享（np.shares_memory
-                            # 在cupy数组输入时会走cupy分派并报TypeError，需先短路）
+                        if rm.cuda.CUPY_AVAILABLE and isinstance(t_array, rm.cuda.cp.ndarray):
+                            # 张量在CUDA上而源在CPU，必然不共享
                             shared = False
                         else:
-                            shared = t_data is src or np.shares_memory(t_data, src)
+                            shared = t_array is src or np.shares_memory(t_array, src)
                     else:
                         # 列表/标量等无内存语义的来源永不共享
                         shared = False
@@ -1401,7 +1402,7 @@ class TestTensorCreationFunctions(unittest.TestCase):
                 arr = cp.array([1.0, 2.0], dtype=cp.float32)
                 t = rm.as_tensor(arr)
                 self.assertEqual(t.device.type, 'cuda', "as_tensor(cupy数组)应沿用其所在设备")
-                self.assertIs(t.numpy(), arr, "同设备同dtype时as_tensor(cupy数组)应共享内存")
+                self.assertIs(t.array(), arr, "同设备同dtype时as_tensor(cupy数组)应共享内存")
             self._run_subcase(doc, "cupy数组输入-同设备共享内存", _cupy_shared)
 
             # 5. cupy数组输入：指定device迁移到CPU

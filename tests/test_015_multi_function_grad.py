@@ -378,7 +378,7 @@ class TestMultiFunctionGrad(unittest.TestCase):
                 return all_passed
             
             # 比较数值 - 使用detach和numpy方法获取数据
-            rm_data = rm_result.detach().numpy()
+            rm_data = rm_result.detach().cpu().numpy()
                         
             # 对于torch张量
             torch_data = torch_result.detach().numpy()

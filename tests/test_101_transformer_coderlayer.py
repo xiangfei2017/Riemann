@@ -188,16 +188,8 @@ def compare_values(rm_result, torch_result, atol=5e-4, rtol=2e-3):
     if rm_result.shape != torch_result.shape:
         return False
     
-    # 处理需要梯度的张量
-    if hasattr(rm_result, 'requires_grad') and rm_result.requires_grad:
-        rm_data = rm_result.detach().numpy()
-    else:
-        rm_data = rm_result.numpy()
-    
-    if hasattr(torch_result, 'requires_grad') and torch_result.requires_grad:
-        torch_data = torch_result.detach().numpy()
-    else:
-        torch_data = torch_result.numpy()
+    rm_data = rm_result.detach().cpu().numpy()    
+    torch_data = torch_result.detach().cpu().numpy()
     
     try:
         np.testing.assert_allclose(rm_data, torch_data, rtol=rtol, atol=atol)
@@ -402,7 +394,7 @@ class TestTransformerCoderLayer(unittest.TestCase):
                 status_color = Colors.OKGREEN if passed else Colors.FAIL
                 print(f"测试用例: {case_name} - {status_color}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
                 if passed_output:
-                    rm_out_np = rm_output.detach().numpy() if rm_output.requires_grad else rm_output.numpy()
+                    rm_out_np = rm_output.detach().cpu().numpy() if rm_output.requires_grad else rm_output.numpy()
                     torch_out_np = torch_output.detach().numpy() if torch_output.requires_grad else torch_output.numpy()
                     print(f"  输出最大差异: {np.max(np.abs(rm_out_np - torch_out_np)):.2e}")
             
@@ -566,7 +558,7 @@ class TestTransformerCoderLayer(unittest.TestCase):
                 status_color = Colors.OKGREEN if passed else Colors.FAIL
                 print(f"测试用例: {case_name} - {status_color}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
                 if passed_output:
-                    rm_out_np = rm_output.detach().numpy() if rm_output.requires_grad else rm_output.numpy()
+                    rm_out_np = rm_output.detach().cpu().numpy() if rm_output.requires_grad else rm_output.numpy()
                     torch_out_np = torch_output.detach().numpy() if torch_output.requires_grad else torch_output.numpy()
                     print(f"  输出最大差异: {np.max(np.abs(rm_out_np - torch_out_np)):.2e}")
             

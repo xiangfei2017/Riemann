@@ -313,7 +313,7 @@ class TestDataLoader(unittest.TestCase):
         # 验证最后批次的大小
         if keep_batches:
             batch_element = keep_batches[-1][0]
-            if hasattr(batch_element, 'shape') and len(batch_element.shape) > 0:
+            if len(batch_element.shape) > 0:
                 last_batch_size = batch_element.shape[0]
             elif isinstance(batch_element, (list, tuple)):
                 last_batch_size = len(batch_element)

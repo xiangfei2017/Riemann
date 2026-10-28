@@ -213,18 +213,10 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     # 转换为numpy数组
     try:
         # 处理Riemann结果
-        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            rm_data = rm_result.detach().cpu().numpy()
-        else:
-            rm_data = rm_result.detach().numpy()
+        rm_data = rm_result.detach().cpu().numpy()
         
         # 处理PyTorch结果
-        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_data = torch_result.detach().cpu().numpy()
-        else:
-            torch_data = torch_result.detach().numpy()
+        torch_data = torch_result.detach().cpu().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -515,8 +507,7 @@ class TestBackwardFunction(unittest.TestCase):
                         stats.add_result(case_name, False, [str(e)])
                         print(f"测试用例: {case_name} - {Colors.FAIL}错误{Colors.ENDC} ({time_taken:.4f}秒) - {str(e)}")
                     raise
-            if hasattr(rm_x, 'grad'):
-                rm_x.grad = None
+            rm_x.grad = None
 
     def test_backward_check_grad_graph_properties(self):
         """测试场景3: 检查grad_graph属性"""
@@ -547,7 +538,7 @@ class TestBackwardFunction(unittest.TestCase):
             rm_has_compute_graph_false = has_compute_graph(rm_grad1)
             rm_requires_grad_false = rm_grad1.requires_grad
             # 检查叶子节点属性
-            rm_is_leaf_false = getattr(rm_grad1, 'is_leaf', True)  # 默认假设是叶子节点
+            rm_is_leaf_false = rm_grad1.is_leaf
             
             # 2. 测试create_graph=True时的梯度属性
             # Riemann测试
@@ -559,7 +550,7 @@ class TestBackwardFunction(unittest.TestCase):
             rm_has_compute_graph_true = has_compute_graph(rm_grad2)
             rm_requires_grad_true = rm_grad2.requires_grad
             # 检查叶子节点属性
-            rm_is_leaf_true = getattr(rm_grad2, 'is_leaf', True)  # 默认假设是叶子节点
+            rm_is_leaf_true = rm_grad2.is_leaf
             
             # PyTorch部分测试
             if TORCH_AVAILABLE:
@@ -568,7 +559,7 @@ class TestBackwardFunction(unittest.TestCase):
                 torch_y1.backward(create_graph=False)
                 torch_grad1 = torch_x1.grad
                 
-                torch_has_grad_fn_false = hasattr(torch_grad1, 'grad_fn') and torch_grad1.grad_fn is not None
+                torch_has_grad_fn_false = torch_grad1.grad_fn is not None
                 torch_requires_grad_false = torch_grad1.requires_grad
                 # 检查叶子节点属性
                 torch_is_leaf_false = torch_grad1.is_leaf
@@ -577,7 +568,7 @@ class TestBackwardFunction(unittest.TestCase):
                 torch_y2 = torch_x2 ** 3.0
                 torch_grad2 = torch.autograd.grad(torch_y2, torch_x2, create_graph=True)[0]
                 
-                torch_has_grad_fn_true = hasattr(torch_grad2, 'grad_fn') and torch_grad2.grad_fn is not None
+                torch_has_grad_fn_true = torch_grad2.grad_fn is not None
                 torch_requires_grad_true = torch_grad2.requires_grad
                 # 检查叶子节点属性
                 torch_is_leaf_true = torch_grad2.is_leaf
@@ -626,30 +617,25 @@ class TestBackwardFunction(unittest.TestCase):
             # 检查叶子节点属性
             # 对于Riemann，如果支持is_leaf属性，检查其与PyTorch的一致性
             if TORCH_AVAILABLE:
-                if hasattr(rm_grad1, 'is_leaf') and hasattr(rm_grad2, 'is_leaf'):
-                    # 检查与PyTorch叶子节点属性的一致性
-                    if rm_is_leaf_false != torch_is_leaf_false:
-                        failed_reasons.append(f"Riemann和PyTorch在create_graph=False时的叶子节点属性不一致: Riemann={rm_is_leaf_false}, PyTorch={torch_is_leaf_false}")
-                        passed = False
-                    
-                    if rm_is_leaf_true != torch_is_leaf_true:
-                        failed_reasons.append(f"Riemann和PyTorch在create_graph=True时的叶子节点属性不一致: Riemann={rm_is_leaf_true}, PyTorch={torch_is_leaf_true}")
-                        passed = False
-                    
-                    # 检查逻辑一致性
-                    # create_graph=False时梯度应该是叶子节点
-                    if not rm_is_leaf_false:
-                        failed_reasons.append("Riemann create_graph=False时，梯度应是叶子节点")
-                        passed = False
-                    
-                    # create_graph=True时梯度不应是叶子节点
-                    if rm_is_leaf_true:
-                        failed_reasons.append("Riemann create_graph=True时，梯度不应是叶子节点")
-                        passed = False
+                # 检查与PyTorch叶子节点属性的一致性
+                if rm_is_leaf_false != torch_is_leaf_false:
+                    failed_reasons.append(f"Riemann和PyTorch在create_graph=False时的叶子节点属性不一致: Riemann={rm_is_leaf_false}, PyTorch={torch_is_leaf_false}")
+                    passed = False
                 
-                # 如果Riemann不支持is_leaf属性，记录信息
-                if not hasattr(rm_grad1, 'is_leaf') and not hasattr(rm_grad2, 'is_leaf'):
-                    print("注意: Riemann张量当前不支持is_leaf属性")
+                if rm_is_leaf_true != torch_is_leaf_true:
+                    failed_reasons.append(f"Riemann和PyTorch在create_graph=True时的叶子节点属性不一致: Riemann={rm_is_leaf_true}, PyTorch={torch_is_leaf_true}")
+                    passed = False
+                
+                # 检查逻辑一致性
+                # create_graph=False时梯度应该是叶子节点
+                if not rm_is_leaf_false:
+                    failed_reasons.append("Riemann create_graph=False时，梯度应是叶子节点")
+                    passed = False
+                
+                # create_graph=True时梯度不应是叶子节点
+                if rm_is_leaf_true:
+                    failed_reasons.append("Riemann create_graph=True时，梯度不应是叶子节点")
+                    passed = False                               
                 
         except Exception as e:
             passed = False

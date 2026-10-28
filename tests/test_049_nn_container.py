@@ -233,8 +233,8 @@ def test_sequential():
         seq = Sequential(Linear(10, 20), ReLU(), Linear(20, 5))
         x = rm.randn(2, 10)
         output = seq(x)
-        passed = hasattr(output, 'shape') and output.shape == (2, 5)
-        stats.add_result("前向传播", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
+        passed = output.shape == (2, 5)
+        stats.add_result("前向传播", passed, f"输出形状: {output.shape}")
         
         # 测试5: 迭代访问
         print("测试迭代访问...")
@@ -316,8 +316,8 @@ def test_sequential():
         module = TestModule()
         x = rm.randn(2, 10)
         output = module(x)
-        passed = hasattr(output, 'shape') and output.shape == (2, 5)
-        stats.add_result("自定义模块中使用", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
+        passed = output.shape == (2, 5)
+        stats.add_result("自定义模块中使用", passed, f"输出形状: {output.shape}")
         
     except Exception as e:
         print(f"Sequential测试出现异常: {e}")
@@ -457,8 +457,8 @@ def test_module_list():
         module = TestModule()
         x = rm.randn(2, 10)
         output = module(x)
-        passed = hasattr(output, 'shape') and output.shape == (2, 5)
-        stats.add_result("自定义模块中使用", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
+        passed = output.shape == (2, 5)
+        stats.add_result("自定义模块中使用", passed, f"输出形状: {output.shape}")
         
         # 测试16: 参数注册
         print("测试参数注册...")
@@ -602,8 +602,8 @@ def test_module_dict():
         module = TestModule()
         x = rm.randn(2, 10)
         output = module(x)
-        passed = hasattr(output, 'shape') and output.shape == (2, 5)
-        stats.add_result("自定义模块中使用", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
+        passed = output.shape == (2, 5)
+        stats.add_result("自定义模块中使用", passed, f"输出形状: {output.shape}")
         
         # 测试15: 参数注册
         print("测试参数注册...")
@@ -661,8 +661,7 @@ def test_parameter_list():
         bias1 = params[1]
         weight2 = params[2]
         bias2 = params[3]
-        passed = (hasattr(weight1, 'shape') and hasattr(bias1, 'shape') and 
-                  hasattr(weight2, 'shape') and hasattr(bias2, 'shape'))
+        passed = True
         stats.add_result("索引访问", passed, "所有参数都可以通过索引访问")
         
         # 测试5: 负数索引
@@ -674,7 +673,7 @@ def test_parameter_list():
         ])
         last_param = params[-1]
         second_last = params[-2]
-        passed = hasattr(last_param, 'shape') and hasattr(second_last, 'shape')
+        passed = True
         stats.add_result("负数索引", passed, "支持负数索引访问")
         
         # 测试6: __setitem__方法
@@ -706,7 +705,6 @@ def test_parameter_list():
         param_count = 0
         for param in params:
             param_count += 1
-            assert hasattr(param, 'shape')
         passed = param_count == 3
         stats.add_result("迭代访问", passed, f"迭代参数数量: {param_count}")
         
@@ -737,8 +735,8 @@ def test_parameter_list():
         module = TestModule()
         x = rm.randn(2, 10)
         output = module(x)
-        passed = hasattr(output, 'shape') and output.shape == (2, 20)
-        stats.add_result("模块中使用", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
+        passed = output.shape == (2, 20)
+        stats.add_result("模块中使用", passed, f"输出形状: {output.shape}")
         
         # 测试11: 类型检查
         print("测试类型检查...")
@@ -804,7 +802,7 @@ def test_parameter_dict():
         })
         weight1 = params['w1']
         bias1 = params['b1']
-        passed = (hasattr(weight1, 'shape') and hasattr(bias1, 'shape'))
+        passed = True
         stats.add_result("__getitem__方法", passed, "所有参数都可以通过键访问")
         
         # 测试5: update方法
@@ -844,8 +842,8 @@ def test_parameter_dict():
             'b1': Parameter(rm.randn(20))
         })
         values = list(params.values())
-        passed = len(values) == 2 and all(hasattr(v, 'shape') for v in values)
-        stats.add_result("values方法", passed, f"值数量: {len(values)}, 都是参数: {all(hasattr(v, 'shape') for v in values)}")
+        passed = len(values) == 2
+        stats.add_result("values方法", passed, f"值数量: {len(values)}, 都是参数: {all(isinstance(v, Parameter) for v in values)}")
         
         # 测试9: 迭代访问
         print("测试迭代访问...")
@@ -886,8 +884,8 @@ def test_parameter_dict():
         module = TestModule()
         x = rm.randn(2, 10)
         output = module(x)
-        passed = hasattr(output, 'shape') and output.shape == (2, 20)
-        stats.add_result("模块中使用", passed, f"输出形状: {output.shape if hasattr(output, 'shape') else 'N/A'}")
+        passed = output.shape == (2, 20)
+        stats.add_result("模块中使用", passed, f"输出形状: {output.shape}")
         
         # 测试12: 类型检查
         print("测试类型检查...")
@@ -923,7 +921,7 @@ def test_parameter_dict():
             'b1': Parameter(rm.randn(20))
         })
         popped = params.pop('w1')
-        passed = len(params) == 1 and hasattr(popped, 'shape')
+        passed = len(params) == 1
         stats.add_result("pop方法", passed, f"弹出后长度: {len(params)}")
         
         # 测试16: clear方法

@@ -153,7 +153,7 @@ class TestLinalgNorm(unittest.TestCase):
             # 对比结果 - 统一转换为numpy数组进行比较
             try:
                 np.testing.assert_allclose(
-                    riemann_result.detach().numpy(),
+                    riemann_result.detach().cpu().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-6,
                     atol=1e-8,
@@ -195,7 +195,7 @@ class TestLinalgNorm(unittest.TestCase):
             # 对比结果
             try:
                 np.testing.assert_allclose(
-                    riemann_result.detach().numpy(),
+                    riemann_result.detach().cpu().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-6,
                     atol=1e-8,
@@ -244,7 +244,7 @@ class TestLinalgNorm(unittest.TestCase):
                     # 对比结果
                     try:
                         np.testing.assert_allclose(
-                            riemann_result.detach().numpy(),
+                            riemann_result.detach().cpu().numpy(),
                             torch_result.detach().numpy(),
                             rtol=1e-6,
                             atol=1e-8,
@@ -294,7 +294,7 @@ class TestLinalgNorm(unittest.TestCase):
                     # 对比结果
                     try:
                         np.testing.assert_allclose(
-                            riemann_result.detach().numpy(),
+                            riemann_result.detach().cpu().numpy(),
                             torch_result.detach().numpy(),
                             rtol=1e-6,
                             atol=1e-8,
@@ -328,7 +328,7 @@ class TestLinalgNorm(unittest.TestCase):
             # 计算riemann的结果和梯度
             riemann_result = norm(riemann_tensor, ord=ord)
             riemann_result.backward()
-            riemann_grad = riemann_tensor.grad.detach().numpy()
+            riemann_grad = riemann_tensor.grad.detach().cpu().numpy()
             
             # 计算torch的结果和梯度
             torch_result = torch.linalg.norm(torch_tensor, ord=ord)
@@ -381,7 +381,7 @@ class TestLinalgNorm(unittest.TestCase):
             # 对比结果
             try:
                 np.testing.assert_allclose(
-                    riemann_result.detach().numpy(),
+                    riemann_result.detach().cpu().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-6,
                     atol=1e-8,
@@ -423,7 +423,7 @@ class TestLinalgNorm(unittest.TestCase):
         # 对比结果
         try:
             np.testing.assert_allclose(
-                riemann_result.detach().numpy(),
+                riemann_result.detach().cpu().numpy(),
                 torch_result.detach().numpy(),
                 rtol=1e-6,
                 atol=1e-8,
@@ -459,7 +459,7 @@ class TestLinalgNorm(unittest.TestCase):
                 torch_result = torch.linalg.norm(torch_zero_vector, ord=ord)
                 
                 np.testing.assert_allclose(
-                    riemann_result.detach().numpy(),
+                    riemann_result.detach().cpu().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-6,
                     atol=1e-8,
@@ -490,7 +490,7 @@ class TestLinalgNorm(unittest.TestCase):
                 torch_result = torch.linalg.norm(torch_zero_matrix, ord=ord)
                 
                 np.testing.assert_allclose(
-                    riemann_result.detach().numpy(),
+                    riemann_result.detach().cpu().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-6,
                     atol=1e-8,
@@ -518,7 +518,7 @@ class TestLinalgNorm(unittest.TestCase):
             torch_result = torch.linalg.norm(torch_identity, ord='fro')
             
             np.testing.assert_allclose(
-                riemann_result.detach().numpy(),
+                riemann_result.detach().cpu().numpy(),
                 torch_result.detach().numpy(),
                 rtol=1e-6,
                 atol=1e-8,
@@ -642,7 +642,7 @@ class TestLinalgNorm(unittest.TestCase):
                         
                         # 对比结果
                         np.testing.assert_allclose(
-                            riemann_result.detach().numpy(),
+                            riemann_result.detach().cpu().numpy(),
                             torch_result.detach().numpy(),
                             rtol=1e-6,
                             atol=1e-8,
@@ -697,7 +697,7 @@ class TestLinalgNorm(unittest.TestCase):
                     
                     # 验证结果
                     np.testing.assert_allclose(
-                        riemann_result.detach().numpy(),
+                        riemann_result.detach().cpu().numpy(),
                         torch_result.detach().numpy(),
                         rtol=1e-6,
                         atol=1e-8,
@@ -766,7 +766,7 @@ class TestLinalgNorm(unittest.TestCase):
                     
                     # 验证结果
                     np.testing.assert_allclose(
-                        riemann_result.detach().numpy(),
+                        riemann_result.detach().cpu().numpy(),
                         np_result,
                         rtol=1e-5,
                         atol=1e-7,
@@ -818,7 +818,7 @@ class TestLinalgNorm(unittest.TestCase):
                 atol = 1e-7 if ord in [-2, 'nuc'] else 1e-8
                 
                 np.testing.assert_allclose(
-                    riemann_tensor.grad.detach().numpy(),
+                    riemann_tensor.grad.detach().cpu().numpy(),
                     torch_tensor.grad.detach().numpy(),
                     rtol=rtol,
                     atol=atol,
@@ -869,7 +869,7 @@ class TestLinalgNorm(unittest.TestCase):
                 
                 # 对比结果
                 np.testing.assert_allclose(
-                    riemann_result.detach().numpy(),
+                    riemann_result.detach().cpu().numpy(),
                     torch_result.detach().numpy(),
                     rtol=1e-6,
                     atol=1e-8,
@@ -904,7 +904,7 @@ class TestLinalgNorm(unittest.TestCase):
             riemann_complex_vector = tensor(np_complex_vector, requires_grad=True)
             riemann_result = norm(riemann_complex_vector, ord=2)
             riemann_result.backward()
-            riemann_grad = riemann_complex_vector.grad.detach().numpy()
+            riemann_grad = riemann_complex_vector.grad.detach().cpu().numpy()
             
             # PyTorch梯度计算
             torch_complex_vector = torch.tensor(np_complex_vector, requires_grad=True)
@@ -945,7 +945,7 @@ class TestLinalgNorm(unittest.TestCase):
             riemann_complex_matrix = tensor(np_complex_matrix, requires_grad=True)
             riemann_result = norm(riemann_complex_matrix, ord='fro')
             riemann_result.backward()
-            riemann_grad = riemann_complex_matrix.grad.detach().numpy()
+            riemann_grad = riemann_complex_matrix.grad.detach().cpu().numpy()
             
             # PyTorch梯度计算
             torch_complex_matrix = torch.tensor(np_complex_matrix, requires_grad=True)
@@ -983,7 +983,7 @@ class TestLinalgNorm(unittest.TestCase):
             # 对每个元素求和再反向传播
             riemann_sum = riemann_col_norm.sum()
             riemann_sum.backward()
-            riemann_grad = riemann_complex_matrix.grad.detach().numpy()
+            riemann_grad = riemann_complex_matrix.grad.detach().cpu().numpy()
             
             # PyTorch梯度计算 - 沿列计算范数
             torch_complex_matrix = torch.tensor(np_complex_matrix, requires_grad=True)

@@ -206,18 +206,10 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     # 转换为numpy数组
     try:
         # 处理Riemann结果
-        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            rm_data = rm_result.detach().cpu().numpy()
-        else:
-            rm_data = rm_result.detach().numpy()
+        rm_data = rm_result.detach().cpu().numpy()
         
         # 处理PyTorch结果
-        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_data = torch_result.detach().cpu().numpy()
-        else:
-            torch_data = torch_result.detach().numpy()
+        torch_data = torch_result.detach().cpu().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -971,7 +963,7 @@ class TestJacobianFunctions(unittest.TestCase):
                     
                     # 验证一阶导数是否正确 (d/dx x^3 = 3x^2)
                     expected_jac1 = 3. * rm_x ** 2.
-                    jac1_correct = np.allclose(rm_jac1.detach().numpy(), expected_jac1.detach().numpy())
+                    jac1_correct = np.allclose(rm_jac1.detach().array(), expected_jac1.detach().array())
                     
                     # 尝试计算二阶导数
                     # 定义一个函数，该函数计算一阶导数
@@ -984,7 +976,7 @@ class TestJacobianFunctions(unittest.TestCase):
                     
                     # 验证二阶导数是否正确 (d²/dx² x^3 = 6x)
                     expected_jac2 = 6. * rm_x
-                    jac2_correct = np.allclose(rm_jac2.detach().numpy(), expected_jac2.detach().numpy())
+                    jac2_correct = np.allclose(rm_jac2.detach().array(), expected_jac2.detach().array())
                     
                     # 组合测试结果
                     passed = jac1_correct and jac2_correct
@@ -1051,10 +1043,10 @@ class TestJacobianFunctions(unittest.TestCase):
 
                 # jac_x = 2*diag(x) = diag(2, 4, 6)
                 expected_jac_x = np.diag([2.0, 4.0, 6.0])
-                x_correct = np.allclose(jac_x.numpy(), expected_jac_x)
+                x_correct = np.allclose(jac_x.array(), expected_jac_x)
 
                 # jac_y 应为全零
-                y_correct = np.allclose(jac_y.numpy(), 0.0)
+                y_correct = np.allclose(jac_y.detach().array(), 0.0)
 
                 passed = x_correct and y_correct
 
@@ -1093,7 +1085,7 @@ class TestJacobianFunctions(unittest.TestCase):
                 # 标量输出 → shape = (6,)，所有元素为 1（sum 的导数）
                 expected = np.ones(6)
                 shape_correct = rm_result.shape == (6,)
-                value_correct = np.allclose(rm_result.numpy(), expected)
+                value_correct = np.allclose(rm_result.detach().array(), expected)
 
                 # 注意：PyTorch 对 2D 输入返回 (2,3) 形状，Riemann 返回 (6,)，不直接比较
                 passed = shape_correct and value_correct
@@ -1122,7 +1114,7 @@ class TestJacobianFunctions(unittest.TestCase):
 
                 # 雅可比 = 2*diag(x) = diag(2, 4, 6)
                 expected = np.diag([2.0, 4.0, 6.0])
-                passed = np.allclose(rm_result.detach().numpy(), expected)
+                passed = np.allclose(rm_result.detach().array(), expected)
 
                 # 验证 requires_grad
                 has_grad = rm_result.requires_grad
@@ -1163,8 +1155,8 @@ class TestJacobianFunctions(unittest.TestCase):
                 jac_x = rm_result[0]
                 jac_y = rm_result[1]
 
-                x_correct = np.allclose(jac_x.detach().numpy(), [2.0, 4.0])
-                y_correct = np.allclose(jac_y.detach().numpy(), [27.0, 48.0])
+                x_correct = np.allclose(jac_x.detach().array(), [2.0, 4.0])
+                y_correct = np.allclose(jac_y.detach().array(), [27.0, 48.0])
                 has_grad = jac_x.requires_grad and jac_y.requires_grad
 
                 passed = x_correct and y_correct and has_grad
@@ -1212,8 +1204,8 @@ class TestJacobianFunctions(unittest.TestCase):
 
                 shape_0_correct = jac_0.shape == (3, 3)
                 shape_1_correct = jac_1.shape == (3,)
-                value_0_correct = np.allclose(jac_0.detach().numpy(), expected_0)
-                value_1_correct = np.allclose(jac_1.detach().numpy(), expected_1)
+                value_0_correct = np.allclose(jac_0.detach().array(), expected_0)
+                value_1_correct = np.allclose(jac_1.detach().array(), expected_1)
 
                 passed = shape_0_correct and shape_1_correct and value_0_correct and value_1_correct
 

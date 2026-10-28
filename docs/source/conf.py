@@ -22,7 +22,7 @@ copyright = '2025, Fei Xiang'
 author = 'Fei Xiang'
 
 # The full version, including alpha/beta/rc tags
-release = '0.5.2'
+release = '0.6.43'
 
 
 # -- General configuration ---------------------------------------------------
@@ -71,14 +71,6 @@ autodoc_member_order = 'bysource'
 
 # This value controls whether to document special members using autodoc.
 autodoc_special_members = '__init__'
-
-# -- Options for intersphinx extension --------------------------------------
-
-# Example configuration for intersphinx: refer to the Python standard library.
-intersphinx_mapping = {
-    'python': ('https://docs.python.org/3/', None),
-    'numpy': ('https://numpy.org/doc/stable/', None),
-}
 
 # -- Options for Napoleon extension ------------------------------------------
 

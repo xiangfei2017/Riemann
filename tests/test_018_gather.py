@@ -184,7 +184,7 @@ class TestGather(unittest.TestCase):
                          f"{test_name} - 数据类型不匹配: rm={rm_dtype}, pt={pt_dtype}")
         
         # 比较值
-        rm_data = rm_tensor.detach().numpy()
+        rm_data = rm_tensor.detach().cpu().numpy()
         pt_data = pt_tensor.detach().numpy()
         
         if rm_data.size == 0 and pt_data.size == 0:

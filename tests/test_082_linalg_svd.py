@@ -190,184 +190,75 @@ IS_RUNNING_AS_SCRIPT = False
 # 比较值的函数
 def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     """比较Riemann和PyTorch的SVD结果是否接近"""
-    # 处理None值的情况
     if not TORCH_AVAILABLE:
-        # 如果没有PyTorch，只检查riemann结果是否存在
         return rm_result is not None
-    
     if rm_result is None and torch_result is None:
         return True
     if rm_result is None or torch_result is None:
         return False
-    
-    # 处理元组的情况
-    if isinstance(rm_result, tuple) and isinstance(torch_result, tuple):
-        if len(rm_result) != len(torch_result):
-            return False
-        
-        # 检查是否在CUDA上运行
-        is_cuda = False
-        if rm_result and rm_result[0].is_cuda:
-            is_cuda = True
-        
-        # 在CUDA上使用更大的误差阈值
-        if is_cuda:
-            atol = max(atol, 1e-4)
-            rtol = max(rtol, 1e-4)
-        
-        all_passed = True
-        for i, (r, t) in enumerate(zip(rm_result, torch_result)):
-            # 对于奇异值，我们直接比较
-            if i == 1:  # S (奇异值)
-                try:
-                    # 确保在CPU上比较
-                    r_data = r.detach().numpy()
-                    # 检查是否是cupy数组
-                    if hasattr(r_data, 'get'):
-                        r_data = r_data.get()
-                    t_data = t.detach().cpu().numpy() if TORCH_CUDA_AVAILABLE else t.detach().numpy()
-                    np.testing.assert_allclose(r_data, t_data, rtol=rtol, atol=atol)
-                except AssertionError:
-                    all_passed = False
-                    break
-            else:  # U 和 Vh (奇异向量)
-                # 对于奇异向量，由于可能存在符号差异，我们检查它们是否张成相同的空间
-                # 通过检查重构误差来验证
-                if i == 0:  # U
-                    # 我们只比较前k列，其中k是奇异值的数量
-                    k = min(r.shape[-2], r.shape[-1])
-                    try:
-                        # 确保在CPU上比较
-                        r_data = r.detach().numpy()
-                        # 检查是否是cupy数组
-                        if hasattr(r_data, 'get'):
-                            r_data = r_data.get()
-                        t_data = t.detach().cpu().numpy() if TORCH_CUDA_AVAILABLE else t.detach().numpy()
-                        np.testing.assert_allclose(
-                            np.abs(r_data[..., :k]), 
-                            np.abs(t_data[..., :k]), 
-                            rtol=rtol, 
-                            atol=atol
-                        )
-                    except AssertionError:
-                        all_passed = False
-                        break
-                else:  # Vh
-                    # 对于Vh，我们比较前k行
-                    k = min(r.shape[-2], r.shape[-1])
-                    try:
-                        # 确保在CPU上比较
-                        r_data = r.detach().numpy()
-                        # 检查是否是cupy数组
-                        if hasattr(r_data, 'get'):
-                            r_data = r_data.get()
-                        t_data = t.detach().cpu().numpy() if TORCH_CUDA_AVAILABLE else t.detach().numpy()
-                        np.testing.assert_allclose(
-                            np.abs(r_data[:k]), 
-                            np.abs(t_data[:k]), 
-                            rtol=rtol, 
-                            atol=atol
-                        )
-                    except AssertionError:
-                        all_passed = False
-                        break
-        
-        return all_passed
-    
-    return False
+    if not (isinstance(rm_result, tuple) and isinstance(torch_result, tuple)):
+        return False
+    if len(rm_result) != len(torch_result):
+        return False
+
+    # CUDA 设备容差放宽
+    if rm_result and rm_result[0].is_cuda:
+        atol = max(atol, 1e-4)
+        rtol = max(rtol, 1e-4)
+
+    # .numpy() 已统一返回 np.ndarray（Riemann 自动拉回 CPU；torch CUDA 需显式 .cpu()）
+    for i, (r, t) in enumerate(zip(rm_result, torch_result)):
+        r_data = r.detach().cpu().numpy()
+        t_data = t.detach().cpu().numpy()
+        if i == 1:  # S (奇异值) 直接比较
+            try:
+                np.testing.assert_allclose(r_data, t_data, rtol=rtol, atol=atol)
+            except AssertionError:
+                return False
+        else:  # U / Vh (奇异向量) 符号可能翻转，按列/行比较绝对值
+            k = min(r.shape[-2], r.shape[-1])
+            try:
+                if i == 0:  # U: 比较前 k 列的绝对值
+                    np.testing.assert_allclose(np.abs(r_data[..., :k]), np.abs(t_data[..., :k]), rtol=rtol, atol=atol)
+                else:       # Vh: 比较前 k 行的绝对值
+                    np.testing.assert_allclose(np.abs(r_data[:k]), np.abs(t_data[:k]), rtol=rtol, atol=atol)
+            except AssertionError:
+                return False
+    return True
 
 # 检查重构误差
 def check_reconstruction(A, U, S, Vh, atol=1e-6):
     """检查使用SVD结果重构原始矩阵的误差"""
-    # 检查是否在CUDA上运行
-    is_cuda = False
-    if hasattr(S.data, 'get'):
-        is_cuda = True
-    
-    # 在CUDA上使用更大的误差阈值
-    if is_cuda:
-        atol = max(atol, 1.5e-6)
-    
-    # 对于不同维度情况进行处理
-    if U.ndim == 2 and S.ndim == 1 and Vh.ndim == 2:
-        # 2D矩阵情况
-        m, n = A.shape[-2], A.shape[-1]
-        k = min(m, n)
-        
-        # 获取U和Vh的实际形状，而不是假设完整矩阵
-        u_shape = U.shape[-1]  # U的最后一个维度大小
-        vh_shape = Vh.shape[0]  # Vh的第一个维度大小
-        
-        # 创建与U和Vh兼容的对角矩阵
-        sigma = np.zeros((u_shape, vh_shape))
-        # 只填充我们有的奇异值
-        actual_k = min(k, u_shape, vh_shape)
-        
-        # 确保在CPU上操作
-        S_data = S.detach().numpy()
-        # 检查是否是cupy数组
-        if hasattr(S_data, 'get'):
-            S_data = S_data.get()
-        sigma[:actual_k, :actual_k] = np.diag(S_data[:actual_k])
-        
-        # 重构矩阵
-        U_data = U.detach().numpy()
-        # 检查是否是cupy数组
-        if hasattr(U_data, 'get'):
-            U_data = U_data.get()
-        Vh_data = Vh.detach().numpy()
-        # 检查是否是cupy数组
-        if hasattr(Vh_data, 'get'):
-            Vh_data = Vh_data.get()
-        A_data = A.detach().numpy()
-        # 检查是否是cupy数组
-        if A.is_cuda:
-            A_data = A_data.get()
-        
+    # .numpy() 已统一返回 np.ndarray（对 CUDA 自动拉回 CPU），
+    # CUDA float32 的 SVD 重构误差天然比 CPU float64 大 1-2 个数量级
+    if A.is_cuda:
+        atol = max(atol, 1e-4)
+
+    # 取底层数据
+    A_data = A.detach().cpu().numpy()
+    U_data = U.detach().cpu().numpy() 
+    S_data = S.detach().cpu().numpy()
+    Vh_data = Vh.detach().cpu().numpy()
+
+    # full_matrices=True 时 U/Vh 是方阵，sigma 需要 (U_cols, Vh_rows) 形状
+    k = S.shape[-1]
+    u_cols = U_data.shape[-1]    # full_matrices: m, 否则: k
+    vh_rows = Vh_data.shape[-2]  # full_matrices: n, 否则: k
+    actual_k = min(k, u_cols, vh_rows)
+
+    if S.ndim == 1:
+        sigma = np.zeros((u_cols, vh_rows))
+        np.fill_diagonal(sigma[:actual_k, :actual_k], S_data[:actual_k])
         reconstructed = U_data @ sigma @ Vh_data
-        
-        # 计算重构误差
-        error = np.linalg.norm(A_data - reconstructed)
-        return error < atol
-    elif U.ndim > 2:
-        # 批处理情况
-        # 简化版：只检查第一个批次
-        m, n = A.shape[-2], A.shape[-1]
-        k = min(m, n)
-        
-        # 获取U和Vh的实际形状
-        u_shape = U.shape[-1]  # U的最后一个维度大小
-        vh_shape = Vh.shape[-2]  # Vh的倒数第二个维度大小
-        
-        # 对于第一个批次进行重构检查
-        sigma = np.zeros((u_shape, vh_shape))
-        actual_k = min(k, u_shape, vh_shape)
-        
-        # 确保在CPU上操作
-        S_data = S.detach().numpy()
-        # 检查是否是cupy数组
-        if hasattr(S_data, 'get'):
-            S_data = S_data.get()
-        sigma[:actual_k, :actual_k] = np.diag(S_data[0, :actual_k])
-        
-        U_data = U.detach().numpy()
-        # 检查是否是cupy数组
-        if hasattr(U_data, 'get'):
-            U_data = U_data.get()
-        Vh_data = Vh.detach().numpy()
-        # 检查是否是cupy数组
-        if hasattr(Vh_data, 'get'):
-            Vh_data = Vh_data.get()
-        A_data = A.detach().numpy()
-        # 检查是否是cupy数组
-        if hasattr(A_data, 'get'):
-            A_data = A_data.get()
-        
-        reconstructed = U_data[0] @ sigma @ Vh_data[0]
-        error = np.linalg.norm(A_data[0] - reconstructed)
-        return error < atol
-    
-    return False
+    else:
+        # 批量
+        B = S.shape[0]
+        sigma = np.zeros((B, u_cols, vh_rows))
+        for b in range(B):
+            np.fill_diagonal(sigma[b, :actual_k, :actual_k], S_data[b, :actual_k])
+        reconstructed = np.einsum('...ik,...kj,...jm->...im', U_data, sigma, Vh_data)
+
+    return np.linalg.norm(A_data - reconstructed) < atol
 
 class TestLinalgSVD(unittest.TestCase):
     def setUp(self):
@@ -631,12 +522,7 @@ class TestLinalgSVD(unittest.TestCase):
                         rm_U_sum = rm_U.abs().sum()
                         rm_U_sum.backward()
                         # 确保在CPU上比较
-                        rm_grad_u = riemann_tensor_u.grad.detach().numpy()
-                        # 检查是否是cupy数组
-                        if hasattr(rm_grad_u, 'get'):
-                            rm_grad_u = rm_grad_u.get()
-                        else:
-                            rm_grad_u = rm_grad_u.copy()
+                        rm_grad_u = riemann_tensor_u.grad.detach().cpu().numpy()
                         
                         # PyTorch计算
                         # 确保PyTorch也在相应设备上
@@ -684,12 +570,7 @@ class TestLinalgSVD(unittest.TestCase):
                         rm_S_sum = rm_S.sum()
                         rm_S_sum.backward()
                         # 确保在CPU上比较
-                        rm_grad_s = riemann_tensor_s.grad.detach().numpy()
-                        # 检查是否是cupy数组
-                        if hasattr(rm_grad_s, 'get'):
-                            rm_grad_s = rm_grad_s.get()
-                        else:
-                            rm_grad_s = rm_grad_s.copy()
+                        rm_grad_s = riemann_tensor_s.grad.detach().cpu().numpy()
                         
                         # PyTorch计算
                         torch_tensor_s = torch.tensor(np_data.copy(), requires_grad=True, device=torch_device)
@@ -735,12 +616,7 @@ class TestLinalgSVD(unittest.TestCase):
                         rm_Vh_sum = rm_Vh.abs().sum()
                         rm_Vh_sum.backward()
                         # 确保在CPU上比较
-                        rm_grad_vh = riemann_tensor_vh.grad.detach().numpy()
-                        # 检查是否是cupy数组
-                        if hasattr(rm_grad_vh, 'get'):
-                            rm_grad_vh = rm_grad_vh.get()
-                        else:
-                            rm_grad_vh = rm_grad_vh.copy()
+                        rm_grad_vh = riemann_tensor_vh.grad.detach().cpu().numpy()
                         
                         # PyTorch计算
                         torch_tensor_vh = torch.tensor(np_data.copy(), requires_grad=True, device=torch_device)

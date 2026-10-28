@@ -508,7 +508,7 @@ def copy_weights_torch_to_riemann(torch_layer, riemann_layer, device="cpu"):
 
 def tensor_allclose(rm_tensor, torch_tensor, rtol=1e-4, atol=1e-6):
     """比较Riemann张量和PyTorch张量是否接近"""
-    rm_data = rm_tensor.detach().numpy()
+    rm_data = rm_tensor.detach().cpu().numpy()
     torch_data = torch_tensor.detach().numpy()
     return np.allclose(rm_data, torch_data, rtol=rtol, atol=atol)
 
@@ -541,18 +541,10 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     # 转换为numpy数组
     try:
         # 处理Riemann结果
-        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            rm_data = rm_result.detach().cpu().numpy()
-        else:
-            rm_data = rm_result.detach().numpy()
+        rm_data = rm_result.detach().cpu().numpy()
         
         # 处理PyTorch结果
-        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_data = torch_result.detach().cpu().numpy()
-        else:
-            torch_data = torch_result.detach().numpy()
+        torch_data = torch_result.detach().cpu().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -579,16 +571,10 @@ def compare_gradients(torch_param, riemann_param, name="parameter"):
     else:
         riemann_grad = riemann_param.grad
     
-    # 处理CUDA张量
-    if hasattr(torch_param.grad, 'is_cuda') and torch_param.grad.is_cuda:
-        torch_grad = torch_param.grad.detach().cpu().numpy()
-    else:
-        torch_grad = torch_param.grad.detach().numpy()
+    # 处理CUDA张量 - torch .cpu() 对 CPU tensor 就是 self-return
+    torch_grad = torch_param.grad.detach().cpu().numpy()
     
-    if hasattr(riemann_grad, 'is_cuda') and riemann_grad.is_cuda:
-        riemann_grad_data = riemann_grad.detach().cpu().numpy()
-    else:
-        riemann_grad_data = riemann_grad.detach().numpy()
+    riemann_grad_data = riemann_grad.detach().cpu().numpy()
     
     # 确保riemann_grad_data是numpy数组
     if not isinstance(riemann_grad_data, np.ndarray):

@@ -512,11 +512,7 @@ class TestDiagonalFunctions(unittest.TestCase):
     
     def test_diag(self):
         """测试diag函数（1D和2D张量）"""
-        if not hasattr(rm, 'diag'):
-            # 如果函数不存在，标记为跳过
-            stats.add_result("diag函数（跳过）", True, "函数未实现")
-            self.skipTest("diag函数未实现")
-        
+                
         start_time = time.time()
         
         # 定义测试用例集合
@@ -620,10 +616,6 @@ class TestDiagonalFunctions(unittest.TestCase):
     
     def test_fill_diagonal(self):
         """测试fill_diagonal函数（各种填充值类型）"""
-        if not hasattr(rm, 'fill_diagonal'):
-            # 如果函数不存在，标记为跳过
-            stats.add_result("fill_diagonal函数（跳过）", True, "函数未实现")
-            self.skipTest("fill_diagonal函数未实现")
         
         start_time = time.time()
         
@@ -772,10 +764,6 @@ class TestDiagonalFunctions(unittest.TestCase):
     
     def test_fill_diagonal_grad(self):
         """测试fill_diagonal函数的梯度计算"""
-        if not hasattr(rm, 'fill_diagonal'):
-            # 如果函数不存在，标记为跳过
-            stats.add_result("fill_diagonal_grad函数（跳过）", True, "函数未实现")
-            self.skipTest("fill_diagonal函数未实现")
         
         try:
             # 测试1: 填充值的梯度计算
@@ -976,14 +964,14 @@ class TestDiagonalFunctions(unittest.TestCase):
                     torch_x = torch.tensor(np_x)
                     torch_output = torch.tril(torch_x, diagonal=diagonal)
                     
-                    if not np.allclose(rm_output.detach().numpy(), torch_output.numpy(), rtol=1e-5, atol=1e-5):
+                    if not np.allclose(rm_output.detach().cpu().numpy(), torch_output.numpy(), rtol=1e-5, atol=1e-5):
                         passed = False
-                        max_diff = np.max(np.abs(rm_output.detach().numpy() - torch_output.numpy()))
+                        max_diff = np.max(np.abs(rm_output.detach().cpu().numpy() - torch_output.numpy()))
                         details = f"函数值不匹配，最大差异: {max_diff}"
                 else:
                     # 直接与numpy结果对比
                     np_output = np.tril(np_x, k=diagonal)
-                    if not np.array_equal(rm_output.detach().numpy(), np_output):
+                    if not np.array_equal(rm_output.detach().cpu().numpy(), np_output):
                         passed = False
                         details = "函数值与numpy.tril结果不匹配"
                 
@@ -999,7 +987,7 @@ class TestDiagonalFunctions(unittest.TestCase):
                     rm_sum.backward()
                     
                     # 验证梯度存在
-                    if not hasattr(rm_x2, 'grad') or rm_x2.grad is None:
+                    if rm_x2.grad is None:
                         passed = False
                         details = "Riemann梯度未生成"
                     elif TORCH_AVAILABLE:
@@ -1012,7 +1000,7 @@ class TestDiagonalFunctions(unittest.TestCase):
                         torch_sum.backward()
                         
                         # 比较梯度
-                        rm_grad = rm_x2.grad.detach().numpy()
+                        rm_grad = rm_x2.grad.detach().cpu().numpy()
                         torch_grad = torch_x2.grad.detach().numpy()
                         
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):
@@ -1094,14 +1082,14 @@ class TestDiagonalFunctions(unittest.TestCase):
                     torch_x = torch.tensor(np_x)
                     torch_output = torch.triu(torch_x, diagonal=diagonal)
                     
-                    if not np.allclose(rm_output.detach().numpy(), torch_output.detach().numpy(), rtol=1e-5, atol=1e-5):
+                    if not np.allclose(rm_output.detach().cpu().numpy(), torch_output.detach().numpy(), rtol=1e-5, atol=1e-5):
                         passed = False
-                        max_diff = np.max(np.abs(rm_output.detach().numpy() - torch_output.detach().numpy()))
+                        max_diff = np.max(np.abs(rm_output.detach().cpu().numpy() - torch_output.detach().numpy()))
                         details = f"函数值不匹配，最大差异: {max_diff}"
                 else:
                     # 直接与numpy结果对比
                     np_output = np.triu(np_x, k=diagonal)
-                    if not np.array_equal(rm_output.detach().numpy(), np_output):
+                    if not np.array_equal(rm_output.detach().cpu().numpy(), np_output):
                         passed = False
                         details = "函数值与numpy.triu结果不匹配"
                 
@@ -1117,7 +1105,7 @@ class TestDiagonalFunctions(unittest.TestCase):
                     rm_sum.backward()
                     
                     # 验证梯度存在
-                    if not hasattr(rm_x_grad, 'grad') or rm_x_grad.grad is None:
+                    if rm_x_grad.grad is None:
                         passed = False
                         details = "Riemann梯度未生成"
                     elif TORCH_AVAILABLE:
@@ -1130,7 +1118,7 @@ class TestDiagonalFunctions(unittest.TestCase):
                         torch_sum.backward()
                         
                         # 比较梯度
-                        rm_grad = rm_x_grad.grad.detach().numpy()
+                        rm_grad = rm_x_grad.grad.detach().cpu().numpy()
                         torch_grad = torch_x.grad.detach().numpy()
                         
                         if not np.allclose(rm_grad, torch_grad, rtol=1e-5, atol=1e-5):

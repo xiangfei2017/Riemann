@@ -225,18 +225,10 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     # 转换为numpy数组
     try:
         # 处理Riemann结果
-        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            rm_data = rm_result.detach().cpu().numpy()
-        else:
-            rm_data = rm_result.detach().numpy()
+        rm_data = rm_result.detach().cpu().numpy()
         
         # 处理PyTorch结果
-        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_data = torch_result.detach().cpu().numpy()
-        else:
-            torch_data = torch_result.detach().numpy()
+        torch_data = torch_result.detach().cpu().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -669,8 +661,8 @@ class TestJvpVjpFunctions(unittest.TestCase):
                                 # 添加详细的调试输出
                                 print(f"\nVJP比较失败 - 输入索引 {i}:")
                                 # 处理CUDA张量的打印
-                                rm_data = rm_vjp[i].detach().cpu().numpy() if hasattr(rm_vjp[i], 'is_cuda') and rm_vjp[i].is_cuda else rm_vjp[i].detach().numpy()
-                                torch_data = torch_vjp_result[i].detach().cpu().numpy() if hasattr(torch_vjp_result[i], 'is_cuda') and torch_vjp_result[i].is_cuda else torch_vjp_result[i].detach().numpy()
+                                rm_data = rm_vjp[i].detach().cpu().numpy()
+                                torch_data = torch_vjp_result[i].detach().cpu().numpy()
                                 print(f"Riemann VJP结果: {rm_data}")
                                 print(f"PyTorch VJP结果: {torch_data}")
                     
@@ -721,7 +713,7 @@ class TestJvpVjpFunctions(unittest.TestCase):
                         rm_outputs, rm_jvp = jvp(f, rm_x, rm_v, create_graph=True)
                         
                         # 验证requires_grad
-                        passed = hasattr(rm_jvp, 'requires_grad') and rm_jvp.requires_grad
+                        passed = rm_jvp.requires_grad
                         return case["should_pass"] == passed
                         
                     elif case["param"] == "create_graph" and case["type"] == "vjp":
@@ -737,7 +729,7 @@ class TestJvpVjpFunctions(unittest.TestCase):
                         rm_outputs, rm_vjp = vjp(f, rm_x, rm_v, create_graph=True)
                         
                         # 验证requires_grad
-                        passed = hasattr(rm_vjp, 'requires_grad') and rm_vjp.requires_grad
+                        passed = rm_vjp.requires_grad
                         return case["should_pass"] == passed
                         
                     elif case["param"] == "strict" and case["type"] == "jvp":
@@ -861,11 +853,11 @@ class TestJvpVjpFunctions(unittest.TestCase):
 
                     # JVP: J@v = 3x^2 * v = 3*4*1 = 12
                     rm_out, rm_jvp_result = jvp(f, rm_x, rm_v)
-                    jvp_correct = np.allclose(rm_jvp_result.detach().numpy(), 12.0)
+                    jvp_correct = np.allclose(rm_jvp_result.detach().cpu().numpy(), 12.0)
 
                     # VJP: v^T@J = v * 3x^2 = 1 * 12 = 12
                     rm_out2, rm_vjp_result = vjp(f, rm_x, rm_v)
-                    vjp_correct = np.allclose(rm_vjp_result.detach().numpy(), 12.0)
+                    vjp_correct = np.allclose(rm_vjp_result.detach().cpu().numpy(), 12.0)
 
                     if TORCH_AVAILABLE:
                         torch_x = torch.tensor(2.0, requires_grad=True, device=device)
@@ -906,7 +898,7 @@ class TestJvpVjpFunctions(unittest.TestCase):
                     has_grad = rm_jvp_result.requires_grad
 
                     # JVP = grad·v = (2+4) + (27+48) = 81（标量输出）
-                    jvp_correct = np.allclose(rm_jvp_result.detach().numpy(), 81.0)
+                    jvp_correct = np.allclose(rm_jvp_result.detach().cpu().numpy(), 81.0)
 
                     return has_grad and jvp_correct
 
@@ -938,15 +930,15 @@ class TestJvpVjpFunctions(unittest.TestCase):
                     rm_out, rm_jvp_result = jvp(f, (rm_x, rm_y), (rm_vx, rm_vy), strict=False)
 
                     # JVP = grad·v = (2+4) + 0 = 6（标量输出）
-                    jvp_correct = np.allclose(rm_jvp_result.detach().numpy(), 6.0)
+                    jvp_correct = np.allclose(rm_jvp_result.detach().cpu().numpy(), 6.0)
 
                     # VJP strict=False，标量输出 v 为标量
                     rm_v_out = rm.tensor(1.0, device=device)
                     rm_out2, rm_vjp_result = vjp(f, (rm_x, rm_y), rm_v_out, strict=False)
 
                     # grad_x = 2*x = [2, 4], grad_y = [0, 0]
-                    vjp_x = np.allclose(rm_vjp_result[0].detach().numpy(), [2.0, 4.0])
-                    vjp_y = np.allclose(rm_vjp_result[1].detach().numpy(), [0.0, 0.0])
+                    vjp_x = np.allclose(rm_vjp_result[0].detach().cpu().numpy(), [2.0, 4.0])
+                    vjp_y = np.allclose(rm_vjp_result[1].detach().cpu().numpy(), [0.0, 0.0])
 
                     return jvp_correct and vjp_x and vjp_y
 

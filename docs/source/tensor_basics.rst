@@ -645,6 +645,342 @@ Tensors have various attributes and state detection functions for obtaining basi
     x_double = x.type(rm.float64)
     print("Type after conversion:", x_double.type())
 
+Interoperability with NumPy/CuPy/PyTorch Tensors
+------------------------------------------------
+
+Riemann's cross-framework conversion is built entirely on the array-exchange protocols of the Python ecosystem, rather than on a separate converter for each framework. Understanding these protocols tells you exactly when memory is shared and when data is copied.
+
+**Protocols Behind the Conversion**
+
+.. list-table:: Array-exchange protocols implemented by Riemann tensors
+  :widths: 26 26 48
+  :header-rows: 1
+
+  * - Protocol
+    - Triggered by
+    - Purpose and behavior
+  * - ``__array__``
+    - ``np.asarray(x)``, ``np.array(x)``
+    - NumPy array protocol, exposing the object as an ``ndarray``. For CPU tensors it returns the underlying array (zero copy); for CUDA tensors it fetches data back to host memory via ``cp.asnumpy``, so the result is always a copy.
+  * - ``__cuda_array_interface__``
+    - ``cp.asarray(x)``, ``cp.array(x)``, Numba and other GPU libraries
+    - CUDA Array Interface (CAI). A dict describing the device pointer, shape, strides and dtype, letting CuPy take over Riemann's device memory without copying. CPU tensors do not provide this attribute.
+  * - ``__dlpack__``
+    - ``torch.from_dlpack(x)``, ``cp.from_dlpack(x)``, ``np.from_dlpack(x)``
+    - DLPack cross-framework standard. A capsule carries "device + pointer + shape + strides + dtype" for both CPU and GPU, making it the universal zero-copy channel between torch, JAX, CuPy and NumPy.
+  * - ``__dlpack_device__``
+    - Companion query of ``__dlpack__``
+    - Returns ``(device_type, device_id)``, e.g. ``(1, 0)`` for CPU and ``(2, 0)`` for the first GPU. Consumers use it to locate the data and pick the right backend.
+  * - ``__buffer__``
+    - ``memoryview(x)``, ``bytes(x)``, ``np.frombuffer(...)``
+    - Native Python buffer protocol (PEP 688), exposing element format, shape, strides and writability. Buffers can only point at host memory, so a CUDA tensor yields a CPU copy.
+
+.. note::
+   Riemann uses only two storage backends: NumPy (CPU) and CuPy (GPU). ``__array__`` serves the CPU
+   direction, ``__cuda_array_interface__`` serves the GPU direction, and
+   ``__dlpack__``/``__dlpack_device__``/``__buffer__`` provide the generic cross-framework channel.
+   In addition, ``TN.array()`` returns the device-native array directly (``np.ndarray`` on CPU,
+   ``cp.ndarray`` on CUDA, zero copy), while ``TN.numpy()`` follows PyTorch semantics: CPU tensors
+   return the underlying array, CUDA tensors raise ``TypeError`` and require ``.cpu()`` first.
+
+**Case 1: NumPy array → Riemann tensor**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+
+    arr = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+
+    # tensor: always copies
+    t1 = rm.tensor(arr, device='cpu')
+    print(np.shares_memory(t1.array(), arr))          # False
+
+    # as_tensor: shares memory when dtype and device match
+    t2 = rm.as_tensor(arr, device='cpu')
+    print(np.shares_memory(t2.array(), arr))          # True
+    t2.array()[0] = 42.0
+    print(arr[0])                                     # 42.0, visible both ways
+
+    # as_tensor: copies when dtype differs
+    t3 = rm.as_tensor(arr, dtype=rm.float64)
+    print(np.shares_memory(t3.array(), arr))          # False
+
+    # from_dlpack: zero copy (NumPy 2.x implements DLPack too)
+    t4 = rm.from_dlpack(arr)
+    print(np.shares_memory(t4.array(), arr))          # True
+
+**Case 2: CuPy array → Riemann tensor**
+
+.. code-block:: python
+
+    import cupy as cp
+    import riemann as rm
+
+    garr = cp.array([1.0, 2.0, 3.0], dtype=cp.float32)
+
+    # tensor: copies, keeping the source device and dtype
+    t = rm.tensor(garr)
+    print(t.device, t.dtype)                          # cuda:0 float32
+    print(t.array().data.ptr == garr.data.ptr)        # False
+
+    # as_tensor: same device and dtype, shares device memory
+    s = rm.as_tensor(garr)
+    print(s.array().data.ptr == garr.data.ptr)        # True
+
+    # from_dlpack: zero copy
+    d = rm.from_dlpack(garr)
+    print(d.array().data.ptr == garr.data.ptr)        # True
+
+    # as_tensor: dtype differs, copies
+    c = rm.as_tensor(garr, dtype=rm.float64)
+    print(c.array().data.ptr == garr.data.ptr)        # False
+
+.. note::
+   Never use ``is`` to test device-memory sharing. Protocol round trips may return a new wrapper
+   object, but the device memory is the same; compare ``data.ptr`` (CuPy) or ``data_ptr()`` (PyTorch).
+
+**Case 3: PyTorch CPU tensor → Riemann tensor**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+    import torch
+
+    src = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+
+    # tensor: copies
+    t = rm.tensor(src, device='cpu')
+    print(np.shares_memory(t.array(), src.numpy()))   # False
+
+    # as_tensor: same dtype, shares memory
+    s = rm.as_tensor(src, device='cpu')
+    print(np.shares_memory(s.array(), src.numpy()))   # True
+    s.array()[0] = 42.0
+    print(float(src[0]))                              # 42.0
+
+    # from_dlpack: zero copy, dtype taken from the source
+    d = rm.from_dlpack(src)
+    print(d.dtype, np.shares_memory(d.array(), src.numpy()))   # float32 True
+
+**Case 4: PyTorch CUDA tensor → Riemann tensor**
+
+.. code-block:: python
+
+    import riemann as rm
+    import torch
+
+    src_gpu = torch.tensor([1.0, 2.0], dtype=torch.float32, device='cuda:0')
+
+    # tensor: copies, but keeps the source device
+    t = rm.tensor(src_gpu)
+    print(t.device)                                   # cuda:0
+    print(t.array().data.ptr == src_gpu.data_ptr())   # False
+
+    # as_tensor: shares device memory
+    s = rm.as_tensor(src_gpu)
+    print(s.array().data.ptr == src_gpu.data_ptr())   # True
+
+    # from_dlpack: zero copy
+    d = rm.from_dlpack(src_gpu)
+    print(d.device, d.dtype)                          # cuda:0 float32
+    print(d.array().data.ptr == src_gpu.data_ptr())   # True
+
+.. note::
+   When ``rm.from_dlpack`` receives CUDA data but CuPy is not installed or no CUDA device is
+   visible, it raises ``RuntimeError`` naming the device the source data lives on.
+
+**Case 5: Riemann tensor → NumPy array**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+
+    t = rm.tensor([1.0, 2.0], dtype=rm.float32)       # CPU tensor
+
+    # np.array: copies
+    a1 = np.array(t)
+    print(np.shares_memory(a1, t.array()))            # False
+
+    # np.asarray: zero-copy view
+    a2 = np.asarray(t)
+    print(np.shares_memory(a2, t.array()))            # True
+    a2[0] = 42.0
+    print(t.array()[0])                               # 42.0, visible both ways
+
+    # np.asarray with a different dtype: copies
+    a3 = np.asarray(t, dtype=np.float64)
+    print(np.shares_memory(a3, t.array()))            # False
+
+    # CUDA tensor: __array__ brings data back to host, returning an independent copy
+    g = rm.tensor([1.0, 2.0], dtype=rm.float32, device='cuda')
+    a4 = np.asarray(g)
+    print(a4.dtype, a4)                               # float32 [1. 2.]
+
+**Case 6: Riemann tensor → CuPy array**
+
+.. code-block:: python
+
+    import cupy as cp
+    import riemann as rm
+
+    g = rm.tensor([1.0, 2.0], dtype=rm.float32, device='cuda')
+
+    # cp.array: copies
+    c1 = cp.array(g)
+    print(c1.data.ptr == g.array().data.ptr)          # False
+
+    # cp.asarray: zero copy
+    c2 = cp.asarray(g)
+    print(c2.data.ptr == g.array().data.ptr)          # True
+    c2[0] = 42.0
+    print(float(g.array()[0]))                        # 42.0, visible both ways
+
+    # cp.asarray with a different dtype: copies
+    c3 = cp.asarray(g, dtype=cp.float64)
+    print(c3.data.ptr == g.array().data.ptr)          # False
+
+    # cp.from_dlpack: zero copy
+    c4 = cp.from_dlpack(g)
+    print(c4.data.ptr == g.array().data.ptr)          # True
+
+**Case 7: Riemann tensor → PyTorch tensor**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+    import torch
+
+    # CPU tensor
+    t = rm.tensor([1.0, 2.0], dtype=rm.float32)
+
+    p1 = torch.tensor(t)                              # copies
+    print(np.shares_memory(p1.numpy(), t.array()))    # False
+
+    p2 = torch.as_tensor(t)                           # same dtype, shares memory
+    print(np.shares_memory(p2.numpy(), t.array()))    # True
+
+    p3 = torch.from_dlpack(t)                         # zero copy
+    print(np.shares_memory(p3.numpy(), t.array()))    # True
+
+    # CUDA tensor
+    g = rm.tensor([1.0, 2.0], dtype=rm.float32, device='cuda')
+
+    p4 = torch.as_tensor(g)                           # shares device memory
+    print(p4.data_ptr() == g.array().data.ptr)        # True
+
+    p5 = torch.from_dlpack(g)                         # zero copy
+    print(p5.device, p5.dtype)                        # cuda:0 torch.float32
+
+.. note::
+   ``torch.as_tensor`` and ``torch.from_dlpack`` return tensors that share memory with the Riemann
+   tensor, so an in-place assignment on the PyTorch side (e.g. ``p2[0] = 42``) changes the Riemann
+   tensor's data directly.
+
+**Case 8: Buffer protocol (memoryview / bytes / np.frombuffer)**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+
+    t = rm.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=rm.float32)
+
+    mv = memoryview(t)
+    print(mv.format, mv.itemsize, mv.ndim, mv.shape, mv.readonly)
+    # 'f' 4 2 (2, 2) False
+
+    # A CPU tensor's buffer points at the tensor's memory, so writes take effect at once
+    mv[0, 0] = 42.0
+    print(t.array()[0, 0])                            # 42.0
+
+    # bytes: raw bytes in C order
+    print(len(bytes(t)), bytes(t) == t.array().tobytes())   # 16 True
+
+    # np.frombuffer: build a zero-copy NumPy view over the buffer
+    view = np.frombuffer(memoryview(t), dtype=np.float32)
+    print(np.shares_memory(view, t.array()))          # True
+    view[1] = 7.0
+    print(t.array()[0, 1])                            # 7.0
+
+    # Scalar tensor: zero-dimensional buffer
+    s = rm.tensor(3.5)
+    print(memoryview(s).ndim, memoryview(s).shape)    # 0 ()
+
+    # CUDA tensor: buffers can only live in host memory, so this is a CPU copy
+    g = rm.tensor([1.0, 2.0], dtype=rm.float32, device='cuda')
+    gmv = memoryview(g)
+    print(gmv.shape)                                  # (2,)
+    gmv[0] = 9.0
+    print(float(g.array()[0]))                        # 1.0, the write never reaches device memory
+
+**Zero-Copy Cheat Sheet**
+
+.. list-table:: External data → Riemann tensor
+  :widths: 22 22 22 34
+  :header-rows: 1
+
+  * - Conversion
+    - dtype/device match
+    - dtype mismatch
+    - Notes
+  * - ``rm.tensor``
+    - copy
+    - copy (with dtype cast)
+    - always copies; device and dtype follow the source
+  * - ``rm.as_tensor``
+    - shares memory
+    - copy
+    - sharing requires both dtype and device to match
+  * - ``rm.from_dlpack``
+    - shares memory
+    - dtype cannot be specified
+    - zero copy; dtype and device come from the source
+
+.. list-table:: Riemann tensor → external data
+  :widths: 20 26 26 28
+  :header-rows: 1
+
+  * - Target
+    - Call
+    - CPU tensor
+    - CUDA tensor
+  * - NumPy
+    - ``np.asarray``
+    - shares memory
+    - copy (brought back to host)
+  * - NumPy
+    - ``np.array``
+    - copy
+    - copy
+  * - CuPy
+    - ``cp.asarray``
+    - copy (moved to device)
+    - shares device memory
+  * - CuPy
+    - ``cp.array``
+    - copy
+    - copy
+  * - PyTorch
+    - ``torch.as_tensor``
+    - shares memory
+    - shares device memory
+  * - PyTorch
+    - ``torch.from_dlpack``
+    - shares memory
+    - shares device memory
+  * - PyTorch
+    - ``torch.tensor``
+    - copy
+    - copy
+  * - Buffer
+    - ``memoryview`` / ``bytes``
+    - shares memory (writable)
+    - host copy (writes are not propagated)
+
 Tensor Computations
 -------------------
 

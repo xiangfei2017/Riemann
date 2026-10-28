@@ -214,20 +214,27 @@ class TestRandomFunctions(unittest.TestCase):
             stats.end_function()
             print(f"{Colors.OKBLUE}测试完成: {self.current_test_name}{Colors.ENDC}")
     
+    @staticmethod
+    def _to_np(tensor):
+        """统一张量转 numpy 数组（Riemann 和 torch 都用 .cpu().numpy()，
+        因为两边 .cpu() 对 CPU tensor 都是 self-return，无脑调用安全）。"""
+        return tensor.detach().cpu().numpy()
+
     def compare_tensor_shapes_and_dtypes(self, rm_tensor, torch_tensor):
         """比较两个张量的形状和数据类型"""
         try:
             # 比较形状
-            rm_shape = rm_tensor.shape if hasattr(rm_tensor, 'shape') else rm_tensor.shape
+            rm_shape = rm_tensor.shape
             torch_shape = torch_tensor.shape
             if rm_shape != torch_shape:
                 return False, f"形状不匹配: Riemann={rm_shape}, PyTorch={torch_shape}"
             
-            # 比较数据类型
-            rm_dtype = rm_tensor.numpy().dtype
-            torch_dtype = torch_tensor.numpy().dtype
-            if rm_dtype != torch_dtype:
-                return False, f"数据类型不匹配: Riemann={rm_dtype}, PyTorch={torch_dtype}"
+            # 比较数据类型：Riemann 用 numpy dtype，torch 用 torch.dtype，
+            # 两边都转到字符串比较（float32 == float32）
+            rm_dtype_str = str(rm_tensor.dtype).replace('torch.', '')
+            torch_dtype_str = str(torch_tensor.dtype).replace('torch.', '')
+            if rm_dtype_str != torch_dtype_str:
+                return False, f"数据类型不匹配: Riemann={rm_tensor.dtype}, PyTorch={torch_tensor.dtype}"
             
             return True, None
         except Exception as e:
@@ -236,7 +243,7 @@ class TestRandomFunctions(unittest.TestCase):
     def check_rand_range(self, rm_tensor):
         """检查rand函数生成的随机数是否在[0,1)范围内"""
         try:
-            data = rm_tensor.numpy()
+            data = self._to_np(rm_tensor)
             min_val, max_val = np.min(data), np.max(data)
             if min_val < 0 or max_val >= 1:
                 return False, f"随机数范围超出[0,1): [{min_val}, {max_val}]"
@@ -247,7 +254,7 @@ class TestRandomFunctions(unittest.TestCase):
     def check_randint_range(self, rm_tensor, low, high):
         """检查randint函数生成的随机数是否在指定范围内"""
         try:
-            data = rm_tensor.numpy()
+            data = self._to_np(rm_tensor)
             min_val, max_val = np.min(data), np.max(data)
             if min_val < low or max_val >= high:
                 return False, f"随机数范围不在[{low}, {high})内: [{min_val}, {max_val}]"
@@ -258,7 +265,7 @@ class TestRandomFunctions(unittest.TestCase):
     def check_normal_stats(self, rm_tensor, mean, std, tolerance=0.5):
         """检查normal函数生成的随机数的统计特性是否接近预期"""
         try:
-            data = rm_tensor.numpy()
+            data = self._to_np(rm_tensor)
             actual_mean, actual_std = np.mean(data), np.std(data)
             
             # 由于是随机样本，允许一定的误差
@@ -271,7 +278,7 @@ class TestRandomFunctions(unittest.TestCase):
     def check_permutation(self, rm_tensor, n):
         """检查randperm函数生成的是否为有效的排列"""
         try:
-            data = rm_tensor.numpy()
+            data = self._to_np(rm_tensor)
             sorted_data = sorted(data)
             expected = list(range(n))
             if sorted_data != expected:
@@ -317,7 +324,7 @@ class TestRandomFunctions(unittest.TestCase):
                         
                         # 检查requires_grad参数
                         rm_result_grad = rm.rand(*shape, requires_grad=True, device=device)
-                        self.assertTrue(hasattr(rm_result_grad, 'requires_grad') and rm_result_grad.requires_grad, 
+                        self.assertTrue(rm_result_grad.requires_grad, 
                                        f"{case_name} requires_grad: requires_grad参数未正确设置")
                         
                         passed = True
@@ -367,7 +374,7 @@ class TestRandomFunctions(unittest.TestCase):
                         
                         # 检查requires_grad参数
                         rm_result_grad = rm.randn(*shape, requires_grad=True, device=device)
-                        self.assertTrue(hasattr(rm_result_grad, 'requires_grad') and rm_result_grad.requires_grad, 
+                        self.assertTrue(rm_result_grad.requires_grad, 
                                        f"{case_name} requires_grad: requires_grad参数未正确设置")
                         
                         passed = True
@@ -580,8 +587,7 @@ class TestRandomFunctions(unittest.TestCase):
                             torch_result = None
                         
                         # 比较形状
-                        rm_shape = (n,) if hasattr(rm_result, 'shape') and rm_result.shape == (n,) else \
-                                  (n,) if hasattr(rm_result, 'data') and rm_result.shape == (n,) else None
+                        rm_shape = rm_result.shape
                         
                         if TORCH_AVAILABLE:
                             torch_shape = torch_result.shape
@@ -691,8 +697,8 @@ class TestRandomFunctions(unittest.TestCase):
                             try:
                                 x = rm.tensor(xnp, device=device)
                                 vals, idx = rm.topk(x, k, dim=dim, largest=largest)
-                                vals_np = vals.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(vals)
-                                idx_np = idx.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(idx)
+                                vals_np = self._to_np(vals)
+                                idx_np = self._to_np(idx)
                                 # 设备匹配
                                 device_passed = check_device_match(vals, device) and check_device_match(idx, device)
                                 self.assertTrue(device_passed, f"{case_name} 设备不匹配")
@@ -721,9 +727,9 @@ class TestRandomFunctions(unittest.TestCase):
                                 # 与 PyTorch 对比（若可用）
                                 if TORCH_AVAILABLE:
                                     tv, ti = torch.topk(torch.tensor(xnp), k, dim=dim, largest=largest)
-                                    self.assertTrue(np.allclose(vals_np, tv.numpy()),
+                                    self.assertTrue(np.allclose(vals_np, self._to_np(tv)),
                                                     f"{case_name} 与PyTorch数值不一致")
-                                    self.assertTrue(np.array_equal(idx_np, ti.numpy()),
+                                    self.assertTrue(np.array_equal(idx_np, self._to_np(ti)),
                                                     f"{case_name} 与PyTorch索引不一致")
                                 passed = True
                                 time_taken = time.time() - start_time
@@ -767,7 +773,7 @@ class TestRandomFunctions(unittest.TestCase):
             try:
                 x = rm.tensor(x2d, device=device)
                 v_us, i_us = rm.topk(x, 3, sorted=False)
-                v_np = v_us.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(v_us)
+                v_np = self._to_np(v_us)
                 expected = np.sort(x2d, axis=-1)[:, -3:]
                 self.assertTrue(np.allclose(np.sort(v_np, axis=-1), expected),
                                 f"{case_name} sorted=False 成员集合不正确")
@@ -819,7 +825,7 @@ class TestRandomFunctions(unittest.TestCase):
                 vg.sum().backward()
                 expected_grad = np.zeros(7)
                 expected_grad[np.argsort(x1d)[-3:]] = 1.0
-                grad_np = xg.grad.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(xg.grad)
+                grad_np = self._to_np(xg.grad)
                 self.assertTrue(np.allclose(grad_np, expected_grad), f"{case_name} 梯度不匹配")
                 passed = True
                 time_taken = time.time() - start_time
@@ -842,7 +848,7 @@ class TestRandomFunctions(unittest.TestCase):
                 eg = np.zeros_like(x2d)
                 cols = np.argpartition(x2d, kth=1, axis=0)[:2]
                 np.put_along_axis(eg, cols, 1.0, axis=0)
-                grad_np = xg2.grad.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(xg2.grad)
+                grad_np = self._to_np(xg2.grad)
                 self.assertTrue(np.allclose(grad_np, eg), f"{case_name} 梯度不匹配")
                 passed = True
                 time_taken = time.time() - start_time
@@ -864,8 +870,8 @@ class TestRandomFunctions(unittest.TestCase):
                     xr = rm.tensor(x2d, requires_grad=True, device=device)
                     torch.topk(xt, 3, dim=-1).values.sum().backward()
                     rm.topk(xr, 3, dim=-1)[0].sum().backward()
-                    xr_grad = xr.grad.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(xr.grad)
-                    self.assertTrue(np.allclose(xt.grad.numpy(), xr_grad), f"{case_name} 梯度不匹配")
+                    xr_grad = self._to_np(xr.grad)
+                    self.assertTrue(np.allclose(self._to_np(xt.grad), xr_grad), f"{case_name} 梯度不匹配")
                     passed = True
                     time_taken = time.time() - start_time
                     if IS_RUNNING_AS_SCRIPT:
@@ -912,7 +918,7 @@ class TestRandomFunctions(unittest.TestCase):
             try:
                 t = rm.tensor(w1, device=device)
                 s = rm.multinomial(t, 5000, replacement=True)
-                s_np = s.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(s)
+                s_np = self._to_np(s)
                 self.assertEqual(s.shape, (5000,))
                 self.assertEqual(s.dtype, np.dtype('int64'))
                 self.assertTrue(set(np.unique(s_np)).issubset({1, 2, 4}))
@@ -936,7 +942,7 @@ class TestRandomFunctions(unittest.TestCase):
             try:
                 t = rm.tensor(w1, device=device)
                 s2 = rm.multinomial(t, 3, replacement=False)
-                s2_np = s2.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(s2)
+                s2_np = self._to_np(s2)
                 self.assertEqual(len(np.unique(s2_np)), 3)
                 self.assertTrue(set(s2_np).issubset({1, 2, 4}))
                 passed = True
@@ -956,7 +962,7 @@ class TestRandomFunctions(unittest.TestCase):
             try:
                 t2 = rm.tensor(w2, device=device)
                 s3 = rm.multinomial(t2, 4, replacement=True)
-                s3_np = s3.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(s3)
+                s3_np = self._to_np(s3)
                 self.assertEqual(s3_np.shape, (5, 4))
                 self.assertTrue(s3_np.min() >= 0 and s3_np.max() <= 7)
                 passed = True
@@ -976,7 +982,7 @@ class TestRandomFunctions(unittest.TestCase):
             try:
                 t2 = rm.tensor(w2, device=device)
                 s4 = rm.multinomial(t2, 8, replacement=False)
-                s4_np = s4.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(s4)
+                s4_np = self._to_np(s4)
                 self.assertTrue(all(len(np.unique(row)) == 8 for row in s4_np))
                 passed = True
                 time_taken = time.time() - start_time
@@ -994,7 +1000,7 @@ class TestRandomFunctions(unittest.TestCase):
             start_time = time.time()
             try:
                 si = rm.multinomial(rm.tensor([1, 0, 1, 0, 0], device=device), 100, replacement=True)
-                si_np = si.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(si)
+                si_np = self._to_np(si)
                 self.assertTrue(set(np.unique(si_np)).issubset({0, 2}))
                 passed = True
                 time_taken = time.time() - start_time
@@ -1012,7 +1018,7 @@ class TestRandomFunctions(unittest.TestCase):
             start_time = time.time()
             try:
                 sz = rm.multinomial(rm.tensor([0.0, 0.0, 0.0, 0.0], device=device), 200, replacement=True)
-                sz_np = sz.numpy() if device in (None, 'cpu') else rm.cuda.cp.asnumpy(sz)
+                sz_np = self._to_np(sz)
                 self.assertEqual(len(np.unique(sz_np)), 4)
                 passed = True
                 time_taken = time.time() - start_time

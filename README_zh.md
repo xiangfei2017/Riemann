@@ -42,6 +42,7 @@ Riemann库设计时注重与PyTorch接口的兼容性，同名的函数和类接
 - **优化器**：`optim`模块中的优化器（如SGD、Adam等）接口与PyTorch保持一致
 - **自动微分机制**：`requires_grad`、反向传播机制与PyTorch相似
 - **计算机视觉**：`vision`模块中的数据集和变换与torchvision保持接口兼容
+- **跨框架互操作**：Riemann 张量可与 NumPy 数组、CuPy 数组以及 PyTorch 等其它张量框架互相转换或共享数据，入口包括 `r.tensor()`、`r.as_tensor()`、`r.from_dlpack()`、`TN.array()`、`TN.numpy()`，底层依托 `__array__`、`__cuda_array_interface__`、`__dlpack__`、`__buffer__` 协议；设备与 dtype 一致时为零拷贝
 
 这种设计使得熟悉PyTorch的用户可以轻松迁移到Riemann库进行开发工作。
 

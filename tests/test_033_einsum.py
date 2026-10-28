@@ -232,18 +232,10 @@ def compare_values(rm_result, torch_result, atol=1e-5, rtol=1e-5):
     # 转换为numpy数组
     try:
         # 处理Riemann结果
-        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            rm_data = rm_result.detach().cpu().numpy()
-        else:
-            rm_data = rm_result.detach().numpy()
+        rm_data = rm_result.detach().cpu().numpy()
         
-        # 处理PyTorch结果
-        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_data = torch_result.detach().cpu().numpy()
-        else:
-            torch_data = torch_result.detach().cpu().numpy()
+        # 处理PyTorch结果 - torch .cpu() 对 CPU tensor 就是 self-return，无脑 .cpu().numpy()
+        torch_data = torch_result.detach().cpu().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -386,7 +378,7 @@ class TestEinsum(unittest.TestCase):
         # 隐式输出应与对应的显式输出完全一致
         if case.get('implicit'):
             explicit = rm.einsum(case['implicit'], *ops)
-            passed = passed and bool(np.allclose(result.detach().numpy(), explicit.detach().numpy(), atol=1e-6))
+            passed = passed and bool(np.allclose(result.detach().array(), explicit.detach().array(), atol=1e-6))
         # 输出 dtype 校验
         if case.get('check_dtype') is not None:
             passed = passed and result.dtype == case['check_dtype']

@@ -645,6 +645,340 @@ Riemann 提供了丰富的特殊张量创建函数，下表列出了所有支持
     x_double = x.type(rm.float64)
     print("转换为 float64 后的类型:", x_double.type())
 
+张量与NumPy/CuPy/PyTorch张量互转换
+----------------------------------
+
+Riemann 的跨框架互转能力全部建立在 Python 生态的数组交换协议之上，而不是为每个框架单独实现转换函数。理解这些协议，就能准确判断“何时零拷贝共享内存、何时发生复制”。
+
+**互转背后的接口协议**
+
+.. list-table:: Riemann 张量实现的数组交换协议
+  :widths: 24 28 48
+  :header-rows: 1
+
+  * - 协议
+    - 触发方式
+    - 作用与特性
+  * - ``__array__``
+    - ``np.asarray(x)``、``np.array(x)``
+    - NumPy 数组协议，把对象表示为 ``ndarray``。CPU 张量返回底层数组视图（可零拷贝）；CUDA 张量经 ``cp.asnumpy`` 拉回主机内存，必然是副本。
+  * - ``__cuda_array_interface__``
+    - ``cp.asarray(x)``、``cp.array(x)``、Numba 等 GPU 库
+    - CUDA 数组接口（CAI），以字典描述显存指针、形状、步长与 dtype，让 CuPy 零拷贝接管 Riemann 的显存。CPU 张量不提供该属性。
+  * - ``__dlpack__``
+    - ``torch.from_dlpack(x)``、``cp.from_dlpack(x)``、``np.from_dlpack(x)``
+    - DLPack 跨框架标准，用 capsule 传递“设备 + 指针 + 形状 + 步长 + dtype”，同时支持 CPU 与 GPU，是 torch、JAX、CuPy、NumPy 之间零拷贝互通的通用通道。
+  * - ``__dlpack_device__``
+    - ``__dlpack__`` 的配套查询
+    - 返回 ``(device_type, device_id)``，例如 CPU 为 ``(1, 0)``、第一块 GPU 为 ``(2, 0)``。消费方据此判断数据位置并选择承接后端。
+  * - ``__buffer__``
+    - ``memoryview(x)``、``bytes(x)``、``np.frombuffer(...)``
+    - Python 原生缓冲区协议（PEP 688），暴露元素类型、形状、步长与可写标志。缓冲区只能指向主机内存，因此 CUDA 张量返回 CPU 副本。
+
+.. note::
+   Riemann 内部只有 NumPy（CPU）与 CuPy（GPU）两种存储后端：``__array__`` 负责 CPU 方向，
+   ``__cuda_array_interface__`` 负责 GPU 方向，``__dlpack__``/``__dlpack_device__``/``__buffer__``
+   提供跨框架的通用通道。此外 ``TN.array()`` 直接返回设备原生数组（CPU 为 ``np.ndarray``、
+   CUDA 为 ``cp.ndarray``，零拷贝）；``TN.numpy()`` 与 PyTorch 语义一致：CPU 张量返回底层数组，
+   CUDA 张量抛 ``TypeError``，需要先 ``.cpu()``。
+
+**场景一：NumPy 数组 → Riemann 张量**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+
+    arr = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+
+    # tensor：始终复制
+    t1 = rm.tensor(arr, device='cpu')
+    print(np.shares_memory(t1.array(), arr))          # False
+
+    # as_tensor：dtype 与设备一致时共享内存
+    t2 = rm.as_tensor(arr, device='cpu')
+    print(np.shares_memory(t2.array(), arr))          # True
+    t2.array()[0] = 42.0
+    print(arr[0])                                     # 42.0，写入双向可见
+
+    # as_tensor：dtype 不一致时复制
+    t3 = rm.as_tensor(arr, dtype=rm.float64)
+    print(np.shares_memory(t3.array(), arr))          # False
+
+    # from_dlpack：零拷贝（NumPy 2.x 同样实现了 DLPack 协议）
+    t4 = rm.from_dlpack(arr)
+    print(np.shares_memory(t4.array(), arr))          # True
+
+**场景二：CuPy 数组 → Riemann 张量**
+
+.. code-block:: python
+
+    import cupy as cp
+    import riemann as rm
+
+    garr = cp.array([1.0, 2.0, 3.0], dtype=cp.float32)
+
+    # tensor：复制，设备与 dtype 沿用源数组
+    t = rm.tensor(garr)
+    print(t.device, t.dtype)                          # cuda:0 float32
+    print(t.array().data.ptr == garr.data.ptr)        # False
+
+    # as_tensor：同设备同 dtype，共享显存
+    s = rm.as_tensor(garr)
+    print(s.array().data.ptr == garr.data.ptr)        # True
+
+    # from_dlpack：零拷贝
+    d = rm.from_dlpack(garr)
+    print(d.array().data.ptr == garr.data.ptr)        # True
+
+    # as_tensor：dtype 不一致，复制
+    c = rm.as_tensor(garr, dtype=rm.float64)
+    print(c.array().data.ptr == garr.data.ptr)        # False
+
+.. note::
+   GPU 数据不能用 ``is`` 判断是否共享内存。协议往返中可能返回新的包装对象，但底层显存相同，
+   必须比较 ``data.ptr`` (CuPy) 或 ``data_ptr()`` (PyTorch)。
+
+**场景三：PyTorch CPU 张量 → Riemann 张量**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+    import torch
+
+    src = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+
+    # tensor：复制
+    t = rm.tensor(src, device='cpu')
+    print(np.shares_memory(t.array(), src.numpy()))   # False
+
+    # as_tensor：同 dtype，共享内存
+    s = rm.as_tensor(src, device='cpu')
+    print(np.shares_memory(s.array(), src.numpy()))   # True
+    s.array()[0] = 42.0
+    print(float(src[0]))                              # 42.0
+
+    # from_dlpack：零拷贝，dtype 完全沿用源张量
+    d = rm.from_dlpack(src)
+    print(d.dtype, np.shares_memory(d.array(), src.numpy()))   # float32 True
+
+**场景四：PyTorch CUDA 张量 → Riemann 张量**
+
+.. code-block:: python
+
+    import riemann as rm
+    import torch
+
+    src_gpu = torch.tensor([1.0, 2.0], dtype=torch.float32, device='cuda:0')
+
+    # tensor：复制，但设备沿用源张量
+    t = rm.tensor(src_gpu)
+    print(t.device)                                   # cuda:0
+    print(t.array().data.ptr == src_gpu.data_ptr())   # False
+
+    # as_tensor：共享显存
+    s = rm.as_tensor(src_gpu)
+    print(s.array().data.ptr == src_gpu.data_ptr())   # True
+
+    # from_dlpack：零拷贝
+    d = rm.from_dlpack(src_gpu)
+    print(d.device, d.dtype)                          # cuda:0 float32
+    print(d.array().data.ptr == src_gpu.data_ptr())   # True
+
+.. note::
+   ``rm.from_dlpack`` 收到 CUDA 数据但本机没有 CuPy 或没有可见 CUDA 设备时，会抛出
+   ``RuntimeError`` 并指明源数据所在的设备编号。
+
+**场景五：Riemann 张量 → NumPy 数组**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+
+    t = rm.tensor([1.0, 2.0], dtype=rm.float32)       # CPU 张量
+
+    # np.array：复制
+    a1 = np.array(t)
+    print(np.shares_memory(a1, t.array()))            # False
+
+    # np.asarray：零拷贝视图
+    a2 = np.asarray(t)
+    print(np.shares_memory(a2, t.array()))            # True
+    a2[0] = 42.0
+    print(t.array()[0])                               # 42.0，写入双向可见
+
+    # np.asarray 指定不同 dtype：复制
+    a3 = np.asarray(t, dtype=np.float64)
+    print(np.shares_memory(a3, t.array()))            # False
+
+    # CUDA 张量：__array__ 显式拉回主机内存，得到独立副本
+    g = rm.tensor([1.0, 2.0], dtype=rm.float32, device='cuda')
+    a4 = np.asarray(g)
+    print(a4.dtype, a4)                               # float32 [1. 2.]
+
+**场景六：Riemann 张量 → CuPy 数组**
+
+.. code-block:: python
+
+    import cupy as cp
+    import riemann as rm
+
+    g = rm.tensor([1.0, 2.0], dtype=rm.float32, device='cuda')
+
+    # cp.array：复制
+    c1 = cp.array(g)
+    print(c1.data.ptr == g.array().data.ptr)          # False
+
+    # cp.asarray：零拷贝
+    c2 = cp.asarray(g)
+    print(c2.data.ptr == g.array().data.ptr)          # True
+    c2[0] = 42.0
+    print(float(g.array()[0]))                        # 42.0，写入双向可见
+
+    # cp.asarray 指定不同 dtype：复制
+    c3 = cp.asarray(g, dtype=cp.float64)
+    print(c3.data.ptr == g.array().data.ptr)          # False
+
+    # cp.from_dlpack：零拷贝
+    c4 = cp.from_dlpack(g)
+    print(c4.data.ptr == g.array().data.ptr)          # True
+
+**场景七：Riemann 张量 → PyTorch 张量**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+    import torch
+
+    # CPU 张量
+    t = rm.tensor([1.0, 2.0], dtype=rm.float32)
+
+    p1 = torch.tensor(t)                              # 复制
+    print(np.shares_memory(p1.numpy(), t.array()))    # False
+
+    p2 = torch.as_tensor(t)                           # 同 dtype，共享内存
+    print(np.shares_memory(p2.numpy(), t.array()))    # True
+
+    p3 = torch.from_dlpack(t)                         # 零拷贝
+    print(np.shares_memory(p3.numpy(), t.array()))    # True
+
+    # CUDA 张量
+    g = rm.tensor([1.0, 2.0], dtype=rm.float32, device='cuda')
+
+    p4 = torch.as_tensor(g)                           # 共享显存
+    print(p4.data_ptr() == g.array().data.ptr)        # True
+
+    p5 = torch.from_dlpack(g)                         # 零拷贝
+    print(p5.device, p5.dtype)                        # cuda:0 torch.float32
+
+.. note::
+   ``torch.as_tensor`` 与 ``torch.from_dlpack`` 得到的结果与 Riemann 张量共享内存，因此在
+   PyTorch 侧就地修改（如 ``p2[0] = 42``）会直接改变 Riemann 张量的数据。
+
+**场景八：Buffer 协议（memoryview / bytes / np.frombuffer）**
+
+.. code-block:: python
+
+    import numpy as np
+    import riemann as rm
+
+    t = rm.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=rm.float32)
+
+    mv = memoryview(t)
+    print(mv.format, mv.itemsize, mv.ndim, mv.shape, mv.readonly)
+    # 'f' 4 2 (2, 2) False
+
+    # CPU 张量的缓冲区直接指向张量内存，写入立刻生效
+    mv[0, 0] = 42.0
+    print(t.array()[0, 0])                            # 42.0
+
+    # bytes：按 C 顺序导出原始字节
+    print(len(bytes(t)), bytes(t) == t.array().tobytes())   # 16 True
+
+    # np.frombuffer：在缓冲区上零拷贝地建立 NumPy 视图
+    view = np.frombuffer(memoryview(t), dtype=np.float32)
+    print(np.shares_memory(view, t.array()))          # True
+    view[1] = 7.0
+    print(t.array()[0, 1])                            # 7.0
+
+    # 标量张量：0 维缓冲区
+    s = rm.tensor(3.5)
+    print(memoryview(s).ndim, memoryview(s).shape)    # 0 ()
+
+    # CUDA 张量：缓冲区只能位于主机内存，得到的是 CPU 副本
+    g = rm.tensor([1.0, 2.0], dtype=rm.float32, device='cuda')
+    gmv = memoryview(g)
+    print(gmv.shape)                                  # (2,)
+    gmv[0] = 9.0
+    print(float(g.array()[0]))                        # 1.0，写入不回传到显存
+
+**零拷贝判定速查**
+
+.. list-table:: 外部数据 → Riemann 张量
+  :widths: 22 22 22 34
+  :header-rows: 1
+
+  * - 转换方式
+    - dtype/设备一致
+    - dtype 不一致
+    - 说明
+  * - ``rm.tensor``
+    - 复制
+    - 复制（并转换 dtype）
+    - 始终复制，设备与 dtype 沿用源数据
+  * - ``rm.as_tensor``
+    - 共享内存
+    - 复制
+    - 共享的前提是 dtype 与设备都相同
+  * - ``rm.from_dlpack``
+    - 共享内存
+    - 不支持指定 dtype
+    - 零拷贝，dtype/设备完全由源数据决定
+
+.. list-table:: Riemann 张量 → 外部数据
+  :widths: 20 26 26 28
+  :header-rows: 1
+
+  * - 目标
+    - 方式
+    - CPU 张量
+    - CUDA 张量
+  * - NumPy
+    - ``np.asarray``
+    - 共享内存
+    - 副本（自动拉回主机）
+  * - NumPy
+    - ``np.array``
+    - 复制
+    - 副本
+  * - CuPy
+    - ``cp.asarray``
+    - 副本（搬到显存）
+    - 共享显存
+  * - CuPy
+    - ``cp.array``
+    - 复制
+    - 复制
+  * - PyTorch
+    - ``torch.as_tensor``
+    - 共享内存
+    - 共享显存
+  * - PyTorch
+    - ``torch.from_dlpack``
+    - 共享内存
+    - 共享显存
+  * - PyTorch
+    - ``torch.tensor``
+    - 复制
+    - 复制
+  * - Buffer
+    - ``memoryview`` / ``bytes``
+    - 共享内存（可写）
+    - 主机副本（写入不回传）
+
 张量运算
 --------
 

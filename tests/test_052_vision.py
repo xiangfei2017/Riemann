@@ -43,6 +43,7 @@ from riemann.vision.transforms import (
     Brightness, Contrast, Saturation, Hue
 )
 
+import torch as t
 from torchvision import transforms as torch_transforms
 from torchvision.datasets import MNIST as TorchMNIST, CIFAR10 as TorchCIFAR10
 
@@ -260,7 +261,7 @@ def create_test_image(size=(32, 32), mode='RGB'):
 
 def tensor_allclose(rm_tensor, torch_tensor, rtol=1e-4, atol=1e-6):
     """比较Riemann张量和PyTorch张量是否接近"""
-    rm_data = rm_tensor.detach().numpy()
+    rm_data = rm_tensor.detach().cpu().numpy()
     torch_data = torch_tensor.detach().numpy()
     return np.allclose(rm_data, torch_data, rtol=rtol, atol=atol)
 
@@ -294,7 +295,7 @@ def compare_transforms(rm_transform, torch_transform, test_image, test_name, sta
                                 f"形状不匹配: Riemann {rm_array.shape}, PyTorch {torch_array.shape}")
         
         # 如果结果是张量，直接比较
-        elif hasattr(rm_result, 'data') and hasattr(torch_result, 'data'):
+        elif isinstance(rm_result, rm.TN) and isinstance(torch_result, t.Tensor):
             tensor_match = tensor_allclose(rm_result, torch_result)
             stats.add_result(f"{test_name}-张量值", tensor_match,
                             f"张量形状: Riemann {rm_result.shape}, PyTorch {torch_result.shape}")
@@ -391,13 +392,13 @@ def test_mnist_dataset(stats=None):
         
         # 测试数据获取
         img, label = rm_easymnist_train[0]
-        stats.add_result("EasyMNIST数据获取-图像类型", hasattr(img, 'data'),
+        stats.add_result("EasyMNIST数据获取-图像类型", isinstance(img, rm.TN),
                         f"图像类型: {type(img)}")
         stats.add_result("EasyMNIST数据获取-图像形状", img.shape == (784,),
                         f"图像形状: {img.shape}")
         
         img, label = rm_easymnist_test[0]
-        stats.add_result("EasyMNIST测试数据获取-标签类型", hasattr(label, 'data'),
+        stats.add_result("EasyMNIST测试数据获取-标签类型", isinstance(label, rm.TN),
                         f"标签类型: {type(label)}")
         stats.add_result("EasyMNIST测试数据获取-标签形状", label.shape == (),
                         f"标签形状: {label.shape}")
@@ -558,7 +559,7 @@ def test_transforms(stats=None):
                             f"Riemann: {rm_result.shape}, PyTorch: {torch_result.shape}")
             
             # 比较张量值
-            rm_data = rm_result.detach().numpy()
+            rm_data = rm_result.detach().cpu().numpy()
             torch_data = torch_result.detach().numpy()
             value_match = np.allclose(rm_data, torch_data, rtol=1e-5, atol=1e-5)
             stats.add_result("Normalize-RGB-张量值", value_match,
@@ -970,7 +971,7 @@ def test_transforms(stats=None):
                             f"类型: {type(rm_result)}")
             
             # 擦除后的张量应该与原始张量不同
-            is_different = not np.allclose(rm_result.detach().numpy(), test_tensor.detach().numpy())
+            is_different = not np.allclose(rm_result.detach().cpu().numpy(), test_tensor.detach().numpy())
             stats.add_result("RandomErasing-张量变化", is_different, "擦除后张量应该与原始张量不同")
         except Exception as e:
             stats.add_result("RandomErasing", False, f"测试异常: {str(e)}")
@@ -1500,7 +1501,7 @@ def test_imagefolder(stats: StatisticsCollector):
                 transform = ToTensor()
                 dataset_with_transform = ImageFolder(tmpdir, transform=transform)
                 img, label = dataset_with_transform[0]
-                stats.add_result("transform功能", hasattr(img, 'shape'),
+                stats.add_result("transform功能", isinstance(img, rm.TN),
                                 f"变换后类型: {type(img)}")
             except Exception as e:
                 stats.add_result("transform功能", False, f"异常: {str(e)}")

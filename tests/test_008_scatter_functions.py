@@ -207,18 +207,14 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     # 转换为numpy数组
     try:
         # 处理Riemann结果
-        if hasattr(rm_result, 'is_cuda') and rm_result.is_cuda:
+        if rm_result.is_cuda:
             # 如果是CUDA张量，先移动到CPU
             rm_data = rm_result.detach().cpu().numpy()
         else:
-            rm_data = rm_result.detach().numpy()
+            rm_data = rm_result.detach().cpu().numpy()
         
         # 处理PyTorch结果
-        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_data = torch_result.detach().cpu().numpy()
-        else:
-            torch_data = torch_result.detach().numpy()
+        torch_data = torch_result.detach().cpu().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -892,7 +888,7 @@ class TestScatterFunctions(unittest.TestCase):
                     # 验证结果
                     expected_result = np.array([[1, 1], [1, 1]]).astype(np.float32)
                     # 对于CUDA张量，我们需要先将其移动到CPU
-                    rm_result_data = rm_result.detach().cpu().numpy() if rm_result.is_cuda else rm_result.detach().numpy()
+                    rm_result_data = rm_result.detach().cpu().numpy()
                     self.assertTrue(np.allclose(rm_result_data, expected_result), "结果验证失败")
                     
                     if IS_RUNNING_AS_SCRIPT:

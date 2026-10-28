@@ -199,7 +199,7 @@ def compare_values(riemann_val, torch_val, rtol=1e-3, atol=1e-3):
         return False
     
     # 转换为numpy数组
-    riemann_np = riemann_val.detach().numpy()        
+    riemann_np = riemann_val.detach().cpu().numpy()        
     torch_np = torch_val.detach().cpu().numpy()
         
     # 处理形状不匹配的情况

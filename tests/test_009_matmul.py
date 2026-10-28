@@ -228,32 +228,10 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     # 处理CUDA张量，先移动到CPU再转换为numpy数组
     try:
         # 处理Riemann结果
-        if hasattr(rm_result, 'device'):
-            # 检查是否为CUDA设备
-            is_cuda = False
-            try:
-                device = rm_result.device
-                if isinstance(device, str) and 'cuda' in device.lower():
-                    is_cuda = True
-                elif hasattr(device, 'type') and device.type == 'cuda':
-                    is_cuda = True
-            except Exception:
-                pass
-            
-            if is_cuda:
-                # 如果是CUDA张量，先移动到CPU
-                rm_data = rm_result.cpu().detach().numpy()
-            else:
-                rm_data = rm_result.detach().numpy()
-        else:
-            rm_data = rm_result.detach().numpy()
+        rm_data = rm_result.detach().cpu().numpy()
         
         # 处理PyTorch结果
-        if hasattr(torch_result, 'is_cuda') and torch_result.is_cuda:
-            # 如果是CUDA张量，先移动到CPU
-            torch_data = torch_result.detach().cpu().numpy()
-        else:
-            torch_data = torch_result.detach().numpy()
+        torch_data = torch_result.detach().cpu().numpy()
     except Exception as e:
         print(f"比较值转换错误: {e}")
         return False
@@ -461,14 +439,11 @@ class TestMatmulFunctions(unittest.TestCase):
                                 print(f"    y梯度比较: 失败")
                     
                     # 重置梯度
-                    if hasattr(rm_x, 'grad'):
-                        rm_x.grad = None
-                    if hasattr(rm_y, 'grad'):
-                        rm_y.grad = None
+                    rm_x.grad = None
+                    rm_y.grad = None
                     
-                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                    if TORCH_AVAILABLE:
                         torch_x.grad = None
-                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
                         torch_y.grad = None
                 
                 # 记录设备测试结果
@@ -591,14 +566,11 @@ class TestMatmulFunctions(unittest.TestCase):
                         continue
                     
                     # 重置梯度
-                    if hasattr(rm_x, 'grad'):
-                        rm_x.grad = None
-                    if hasattr(rm_y, 'grad'):
-                        rm_y.grad = None
+                    rm_x.grad = None
+                    rm_y.grad = None
                     
-                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                    if TORCH_AVAILABLE:
                         torch_x.grad = None
-                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
                         torch_y.grad = None
                 
                 # 记录设备测试结果
@@ -719,14 +691,11 @@ class TestMatmulFunctions(unittest.TestCase):
                         continue
                     
                     # 重置梯度
-                    if hasattr(rm_x, 'grad'):
-                        rm_x.grad = None
-                    if hasattr(rm_y, 'grad'):
-                        rm_y.grad = None
+                    rm_x.grad = None
+                    rm_y.grad = None
                     
-                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                    if TORCH_AVAILABLE:
                         torch_x.grad = None
-                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
                         torch_y.grad = None
                 
                 # 记录设备测试结果
@@ -860,14 +829,11 @@ class TestMatmulFunctions(unittest.TestCase):
                         continue
                     
                     # 重置梯度
-                    if hasattr(rm_x, 'grad'):
-                        rm_x.grad = None
-                    if hasattr(rm_y, 'grad'):
-                        rm_y.grad = None
+                    rm_x.grad = None
+                    rm_y.grad = None
                     
-                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                    if TORCH_AVAILABLE:
                         torch_x.grad = None
-                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
                         torch_y.grad = None
                 
                 # 记录设备测试结果
@@ -999,14 +965,11 @@ class TestMatmulFunctions(unittest.TestCase):
                         continue
                     
                     # 重置梯度
-                    if hasattr(rm_x, 'grad'):
-                        rm_x.grad = None
-                    if hasattr(rm_y, 'grad'):
-                        rm_y.grad = None
+                    rm_x.grad = None
+                    rm_y.grad = None
                     
-                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                    if TORCH_AVAILABLE:
                         torch_x.grad = None
-                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
                         torch_y.grad = None
                 
                 # 记录设备测试结果
@@ -1140,14 +1103,11 @@ class TestMatmulFunctions(unittest.TestCase):
                         continue
                     
                     # 重置梯度
-                    if hasattr(rm_x, 'grad'):
-                        rm_x.grad = None
-                    if hasattr(rm_y, 'grad'):
-                        rm_y.grad = None
+                    rm_x.grad = None
+                    rm_y.grad = None
                     
-                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                    if TORCH_AVAILABLE:
                         torch_x.grad = None
-                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
                         torch_y.grad = None
                 
                 # 记录设备测试结果
@@ -1280,14 +1240,11 @@ class TestMatmulFunctions(unittest.TestCase):
                                 print(f"  子用例: {full_sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
                     
                     # 重置梯度
-                    if hasattr(rm_x, 'grad'):
-                        rm_x.grad = None
-                    if hasattr(rm_y, 'grad'):
-                        rm_y.grad = None
+                    rm_x.grad = None
+                    rm_y.grad = None
                     
-                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                    if TORCH_AVAILABLE:
                         torch_x.grad = None
-                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
                         torch_y.grad = None
                 
                 # 记录设备测试结果
@@ -1417,14 +1374,11 @@ class TestMatmulFunctions(unittest.TestCase):
                                 print(f"  子用例: {full_sub_case_name} - {Colors.FAIL}错误{Colors.ENDC} - {str(e)}")
                     
                     # 重置梯度
-                    if hasattr(rm_x, 'grad'):
-                        rm_x.grad = None
-                    if hasattr(rm_y, 'grad'):
-                        rm_y.grad = None
+                    rm_x.grad = None
+                    rm_y.grad = None
                     
-                    if TORCH_AVAILABLE and hasattr(torch_x, 'grad'):
+                    if TORCH_AVAILABLE:
                         torch_x.grad = None
-                    if TORCH_AVAILABLE and hasattr(torch_y, 'grad'):
                         torch_y.grad = None
                 
                 # 记录设备测试结果

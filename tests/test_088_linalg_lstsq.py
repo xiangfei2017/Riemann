@@ -208,13 +208,8 @@ def compare_values(rm_result, torch_result, atol=1e-4, rtol=1e-4):
 # 检查残差误差
 def check_residual_error(A, B, solution, atol=1e-4):
     """检查最小二乘解的残差误差"""
-    # 检查是否在CUDA上运行
-    is_cuda = False
-    if hasattr(A.data, 'get'):
-        is_cuda = True
-    
     # 在CUDA上使用更大的误差阈值
-    if is_cuda:
+    if A.is_cuda:
         atol = max(atol, 1e-3)
     
     # 计算残差

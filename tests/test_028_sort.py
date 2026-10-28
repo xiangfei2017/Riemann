@@ -205,7 +205,7 @@ def compare_values(rm_result, torch_result, atol=1e-6, rtol=1e-6):
     
     # 转换为numpy数组
     if isinstance(rm_result, rm.TN):
-        rm_np = rm_result.detach().numpy()
+        rm_np = rm_result.detach().cpu().numpy()
     elif isinstance(rm_result, np.ndarray):
         rm_np = rm_result
     else:

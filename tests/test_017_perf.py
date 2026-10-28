@@ -135,7 +135,7 @@ def count_graph_nodes(root_tensor):
         count += 1
         
         # 遍历梯度函数的输入变量
-        if hasattr(tensor, 'fromvars') and tensor.fromvars:
+        if tensor.fromvars:
             for var in tensor.fromvars:
                 if var not in visited:
                     queue.append(var)

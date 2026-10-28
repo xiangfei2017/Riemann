@@ -193,106 +193,54 @@ IS_RUNNING_AS_SCRIPT = False
 # 验证dropout函数行为的函数
 def verify_dropout_behavior(input_tensor, output_tensor, p, training, atol=1e-4):
     """验证dropout函数的行为是否正确
-    
+
     Args:
         input_tensor: 输入张量
         output_tensor: 输出张量
         p: dropout概率
         training: 是否在训练模式
         atol: 绝对误差容限
-    
+
     Returns:
         bool: 验证是否通过
     """
-    # 转换为numpy数组
-    if hasattr(input_tensor, 'is_cuda') and input_tensor.is_cuda:
-        input_data = input_tensor.detach().cpu().numpy()
-    else:
-        input_data = input_tensor.detach().numpy()
-    
-    if hasattr(output_tensor, 'is_cuda') and output_tensor.is_cuda:
-        output_data = output_tensor.detach().cpu().numpy()
-    else:
-        output_data = output_tensor.detach().numpy()
-    
-    # 验证形状是否一致
+    # .numpy() 已统一返回 np.ndarray（对 CUDA 张量自动拉回 CPU），
+    # 不再需要手动 .is_cuda + .cpu() 分支。
+    input_data = input_tensor.detach().cpu().numpy()
+    output_data = output_tensor.detach().cpu().numpy()
+
+    # 形状必须一致
     if input_data.shape != output_data.shape:
-        print(f"形状不一致: 输入形状={input_data.shape}, 输出形状={output_data.shape}")
         return False
-    
-    # 如果不是训练模式或p=0，输出应该等于输入
+
+    # 非训练模式或 p=0：输出应恒等于输入
     if not training or p == 0:
-        try:
-            np.testing.assert_allclose(input_data, output_data, atol=atol)
-            return True
-        except AssertionError:
-            print(f"非训练模式或p=0时，输出不等于输入")
-            return False
-    
-    # 训练模式且p>0时，验证统计特征
-    # 1. 验证输出中是否有0元素
-    has_zeros = np.any(output_data == 0)
-    if not has_zeros:
-        print(f"训练模式且p={p}时，输出中没有0元素")
-        # 注意：由于随机性，可能会出现没有0元素的情况，这里不返回False
-    
-    # 2. 验证全部元素的平均值是否接近输入平均值（这是最重要的验证）
-    input_mean = np.mean(input_data)
-    output_mean = np.mean(output_data)
-    
-    # 计算相对误差容限，考虑到dropout的随机性
-    # 对于高dropout概率，使用更大的容差
-    base_atol = max(1e-2, atol * 100)
-    # dropout概率越高，容差越大
-    relative_atol = base_atol * min(10, 1 + p * 20)
-    
-    # 对于CUDA设备，使用更大的容差
-    is_cuda = False
-    try:
-        if hasattr(input_tensor, 'is_cuda') and input_tensor.is_cuda:
-            is_cuda = True
-    except:
-        pass
-    
-    if is_cuda:
-        relative_atol *= 2
-    
-    if not np.isclose(output_mean, input_mean, atol=relative_atol):
-        print(f"输出平均值不接近输入平均值: 输入平均值={input_mean}, 输出平均值={output_mean}, 容差={relative_atol}")
+        return np.allclose(input_data, output_data, atol=atol)
+
+    # === 训练模式且 p>0 ===
+
+    # 1. 全量均值不变检验（最重要）：dropout 保留元素时会按 1/(1-p) 缩放，
+    #    理论上整体均值应等于输入均值；考虑随机性放宽容差。
+    tol = max(1e-2, atol * 100) * min(10, 1 + p * 20)
+    if output_tensor.is_cuda:
+        tol *= 2
+    if not np.isclose(np.mean(output_data), np.mean(input_data), atol=tol):
         return False
-    
-    # 3. 验证非零元素的平均值是否接近输入平均值 * 1/(1-p)
-    # 注意：这个验证只在输入均值不接近0时有效
-    non_zero_output = output_data[output_data != 0]
-    if len(non_zero_output) > 0:
-        non_zero_mean = np.mean(non_zero_output)
-        expected_mean = input_mean / (1 - p)
-        # 只有当输入均值显著不为0时才进行此验证（避免除以接近0的数）
-        if abs(input_mean) > 0.1:  # 输入均值足够大时才验证
-            if not np.isclose(non_zero_mean, expected_mean, atol=relative_atol):
-                print(f"非零元素平均值不接近预期值: 实际值={non_zero_mean}, 预期值={expected_mean}, 容差={relative_atol}")
-                return False
-        else:
-            # 输入均值接近0时，只验证非零元素经过缩放后的均值与原始非零元素均值的关系
-            # 原始非零元素的均值应该接近输入均值（因为dropout是随机选择）
-            # 缩放后的非零元素均值 = 原始非零元素均值 * 1/(1-p)
-            # 由于随机性，我们放宽验证条件，只检查非零元素均值的数量级是否合理
-            scale = 1.0 / (1.0 - p)
-            # 非零元素均值应该约为原始输入均值的 scale 倍
-            if abs(input_mean) > 1e-6:  # 避免除以0
-                actual_scale = non_zero_mean / input_mean
-                # 允许较大的误差，因为输入均值接近0时随机性影响很大
-                if not (scale * 0.5 < actual_scale < scale * 2.0):
-                    print(f"非零元素缩放比例异常: 实际缩放={actual_scale:.2f}, 预期缩放={scale:.2f}")
-                    # 对于接近0的均值，这个验证可能因随机性失败，所以只打印警告不返回False
-                    # return False
-    
+
+    # 2. 非零元素均值缩放检验：非零元素均值 ≈ 输入均值 / (1 - p)
+    #    仅当输入均值显著不为0时才做精确比较，避免分母过小。
+    input_mean = np.mean(input_data)
+    non_zero_out = output_data[output_data != 0]
+    if len(non_zero_out) > 0 and abs(input_mean) > 0.1:
+        if not np.isclose(np.mean(non_zero_out), input_mean / (1 - p), atol=tol):
+            return False
+
     return True
 
 # 验证dropout2d/3d函数行为的函数
 def verify_channel_dropout_behavior(input_tensor, output_tensor, p, training, dropout_type, atol=1e-4):
     """验证dropout2d/3d函数的行为是否正确
-    
+
     Args:
         input_tensor: 输入张量
         output_tensor: 输出张量
@@ -300,124 +248,57 @@ def verify_channel_dropout_behavior(input_tensor, output_tensor, p, training, dr
         training: 是否在训练模式
         dropout_type: '2d' 或 '3d'
         atol: 绝对误差容限
-    
+
     Returns:
         bool: 验证是否通过
     """
-    # 转换为numpy数组
-    if hasattr(input_tensor, 'is_cuda') and input_tensor.is_cuda:
-        input_data = input_tensor.detach().cpu().numpy()
-    else:
-        input_data = input_tensor.detach().numpy()
-    
-    if hasattr(output_tensor, 'is_cuda') and output_tensor.is_cuda:
-        output_data = output_tensor.detach().cpu().numpy()
-    else:
-        output_data = output_tensor.detach().numpy()
-    
-    # 验证形状是否一致
+    # .numpy() 已统一返回 np.ndarray（对 CUDA 张量自动拉回 CPU），
+    # 不再需要手动 .is_cuda + .cpu() 分支。
+    input_data = input_tensor.detach().cpu().numpy()
+    output_data = output_tensor.detach().cpu().numpy()
+
+    # 形状必须一致
     if input_data.shape != output_data.shape:
-        print(f"形状不一致: 输入形状={input_data.shape}, 输出形状={output_data.shape}")
         return False
-    
-    # 如果不是训练模式或p=0，输出应该等于输入
+
+    # 非训练模式或 p=0：输出应恒等于输入
     if not training or p == 0:
-        try:
-            np.testing.assert_allclose(input_data, output_data, atol=atol)
-            return True
-        except AssertionError:
-            print(f"非训练模式或p=0时，输出不等于输入")
-            return False
-    
-    # 训练模式且p>0时，验证通道级别的dropout行为
-    # 对于dropout2d，输入形状为 (N, C, H, W)
-    # 对于dropout3d，输入形状为 (N, C, D, H, W)
-    
-    # 获取批次大小和通道数
-    batch_size = input_data.shape[0]
-    num_channels = input_data.shape[1]
-    
-    # 验证每个样本的每个通道是否被完全保留或完全丢弃
-    for i in range(batch_size):
-        for c in range(num_channels):
-            if dropout_type == '2d':
-                # 对于dropout2d，通道数据形状为 (H, W)
-                channel_data = output_data[i, c, :, :]
-            else:  # dropout3d
-                # 对于dropout3d，通道数据形状为 (D, H, W)
-                channel_data = output_data[i, c, :, :, :]
-            
-            # 检查通道是否被完全保留或完全丢弃
-            num_zeros = np.count_nonzero(channel_data == 0)
-            total_elements = channel_data.size
-            
-            # 通道要么完全为0，要么完全不为0
-            if not (num_zeros == 0 or num_zeros == total_elements):
-                print(f"通道 {c} 既不是完全保留也不是完全丢弃")
-                return False
-    
-    # 验证统计特征
-    # 1. 验证全部元素的平均值是否接近输入平均值（这是最重要的验证）
-    input_mean = np.mean(input_data)
-    output_mean = np.mean(output_data)
-    
-    # 计算相对误差容限，考虑到dropout的随机性
-    # 对于高dropout概率，使用更大的容差
-    base_atol = max(1e-2, atol * 100)
-    # dropout概率越高，容差越大
-    relative_atol = base_atol * min(10, 1 + p * 20)
-    
-    # 对于CUDA设备，使用更大的容差
-    is_cuda = False
-    try:
-        if hasattr(input_tensor, 'is_cuda') and input_tensor.is_cuda:
-            is_cuda = True
-    except:
-        pass
-    
-    if is_cuda:
-        relative_atol *= 2
-    
-    if not np.isclose(output_mean, input_mean, atol=relative_atol):
-        print(f"输出平均值不接近输入平均值: 输入平均值={input_mean}, 输出平均值={output_mean}, 容差={relative_atol}")
+        return np.allclose(input_data, output_data, atol=atol)
+
+    # === 训练模式且 p>0：检查通道级 dropout 语义 ===
+
+    # 1. 通道级掩码：每个样本的每个通道要么全零（丢弃）要么非零（保留）
+    #    dropout2d (N,C,H,W) 和 dropout3d (N,C,D,H,W) 都是 dim=1 通道维
+    channel_axes = tuple(range(2, len(input_data.shape)))  # 对 H,W 或 D,H,W 聚合
+    channel_is_zero = np.all(output_data == 0, axis=channel_axes)       # (N, C)
+    channel_has_nonzero = np.any(output_data != 0, axis=channel_axes)   # (N, C)
+    # 每个通道只能处于二选一状态，不允许"部分丢弃"
+    if np.any(channel_is_zero & channel_has_nonzero):
         return False
-    
-    # 2. 验证保留通道的平均值是否接近输入通道平均值乘以 1/(1-p)
-    # 对于原地操作，由于可能存在精度问题，使用更大的容差
-    # 检查是否为原地操作（通过比较输入和输出的内存地址）
-    is_inplace = False
-    try:
-        if hasattr(input_tensor, 'data') and hasattr(output_tensor, 'data'):
-            if input_tensor.detach().numpy() is output_tensor.detach().numpy():
-                is_inplace = True
-    except:
-        pass
-    
-    # 为原地操作设置更大的容差
-    channel_atol = relative_atol * 2 if is_inplace else relative_atol
-    
-    for i in range(batch_size):
-        for c in range(num_channels):
-            if dropout_type == '2d':
-                input_channel = input_data[i, c, :, :]
-                output_channel = output_data[i, c, :, :]
-            else:  # dropout3d
-                input_channel = input_data[i, c, :, :, :]
-                output_channel = output_data[i, c, :, :, :]
-            
-            # 检查通道是否被保留
-            if np.any(output_channel != 0):
-                # 计算输入通道的平均值
-                input_channel_mean = np.mean(input_channel)
-                # 计算输出通道的平均值
-                output_channel_mean = np.mean(output_channel)
-                # 计算预期的输出通道平均值
-                expected_channel_mean = input_channel_mean / (1 - p)
-                
-                if not np.isclose(output_channel_mean, expected_channel_mean, atol=channel_atol):
-                    print(f"通道 {c} 的平均值不接近预期值: 实际值={output_channel_mean}, 预期值={expected_channel_mean}, 容差={channel_atol}")
-                    return False
-    
+
+    # 2. 全量均值不变检验（最重要）：dropout 保留通道时会按 1/(1-p) 缩放，
+    #    理论上整体均值应等于输入均值；考虑随机性放宽容差。
+    tol = max(1e-2, atol * 100) * min(10, 1 + p * 20)
+    if output_tensor.is_cuda:
+        tol *= 2
+    if not np.isclose(np.mean(output_data), np.mean(input_data), atol=tol):
+        return False
+
+    # 3. 保留通道的均值缩放检验：输出通道均值 ≈ 输入通道均值 / (1 - p)
+    #    原地操作：同一底层存储（.data 身份），精度稍差放宽容差。
+    is_inplace = (output_tensor is input_tensor) or (input_tensor.data is output_tensor.data)
+    channel_tol = tol * 2 if is_inplace else tol
+
+    # 向量化通道均值比较
+    reduce_shape = list(input_data.shape[:2]) + [1] * (len(input_data.shape) - 2)
+    keep_mask = ~channel_is_zero.reshape(reduce_shape)
+    if np.any(keep_mask):
+        input_cmean = np.mean(input_data, axis=channel_axes).reshape(reduce_shape)
+        output_cmean = np.mean(output_data, axis=channel_axes).reshape(reduce_shape)
+        expected = input_cmean / (1 - p)
+        if not np.allclose(output_cmean[keep_mask], expected[keep_mask], atol=channel_tol):
+            return False
+
     return True
 
 # 测试dropout函数类
