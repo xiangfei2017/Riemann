@@ -3393,7 +3393,7 @@ class Linear(Module):
         # 先初始化权重张量为 (in_features, out_features) 形状，再转置为 (out_features, in_features) 形状的参数
         # 在forward里前向计算时，权重会再次转置为连续内存布局，这样前向计算性能会提升
         # 这么处理的目的是在与PyTorch保持一致的权重形状的前提下，提升前向计算的性能
-        stdv = 1.0 / sqrt(in_features)
+        stdv = 1.0 / (in_features ** 0.5)  # 标量运算，避免走 riemann.sqrt（其入参会经 _as_tn 转为张量）
         w_para = randn(in_features, out_features, dtype=dt, device=device) * stdv
         self.weight = Parameter(w_para.mT)
         

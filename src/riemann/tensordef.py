@@ -379,6 +379,13 @@ class TN:
         # astype 对 copy=None 的解析不保证零拷贝，归一为 bool 保持语义明确
         return arr.astype(dtype, copy=bool(copy))
 
+    # 显式退出 ufunc 分派（NEP 13）：numpy/cupy 以 TN 为操作数调用 ufunc（如 np.sin(a)、
+    # np.multiply(a, b)）时直接报 TypeError，而不是静默经 __array__ 转成裸数组再计算
+    # （静默降级会丢失 requires_grad、改变返回类型与 dtype，不符合用户预期）。
+    # 运算符（a_n * a_r 等）不受影响：numpy 会让位，回落到 TN 的 __rxxx__ 得到 TN；
+    # 转换接口（np.asarray(a)、np.array(a)）也不受影响，仍走 __array__/__buffer__。
+    __array_ufunc__ = None
+
     def __buffer__(self, flags):
         """供 memoryview(obj)/bytes(obj) 及 numpy缓冲区转换调用；GPU数据先经__array__拉回CPU"""
         return memoryview(self.__array__())
@@ -1887,9 +1894,6 @@ class TN:
             np.ndarray | cp.ndarray: 与张量共享内存的底层数组对象。
             CPU 张量返回 np.ndarray，CUDA 张量返回 cp.ndarray。
 
-        Raises:
-            RuntimeError: 如果张量需要计算梯度。
-
         Examples:
             >>> cpu_t = rm.tensor([1.0, 2.0, 3.0])
             >>> cpu_arr = cpu_t.array()   # np.ndarray, 与 cpu_t 共享内存
@@ -1904,8 +1908,6 @@ class TN:
             >>> t = rm.tensor([1.0, 2.0], requires_grad=True)
             >>> arr = t.detach().array()  # OK
         """
-        if self.requires_grad:
-            raise RuntimeError("Can't call array() on Tensor that requires grad. Use tensor.detach().array() instead.")
         return self._array
         
     def tolist(self):
@@ -2359,8 +2361,16 @@ class TN:
         # 获取self的设备
         dev = self.device
 
-        #如右值是非TN对象，转化为TN对象，以便让后续处理一至
-        right_tensor = right_obj if isinstance(right_obj,TN) else as_tensor(right_obj,dtype=infer_dtype_in_binoper(right_obj,self.dtype),device=dev)
+        #如右值是非TN对象，转化为TN对象，以便让后续处理一至        
+        if isinstance(right_obj,TN):
+            right_tensor = right_obj 
+        else:
+            right_tensor = as_tensor(
+                right_obj,
+                dtype = infer_dtype_in_binoper(right_obj,self.dtype),
+                device = dev
+            )
+        
         if dev != right_tensor.device:
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {dev} and {right_tensor.device}!')
 
@@ -2383,8 +2393,8 @@ class TN:
             #如左值是非TN对象，转化为TN对象
             left_tensor=as_tensor(
                 left_obj,
-                dtype=infer_dtype_in_binoper(left_obj,self.dtype),
-                device=self.device
+                dtype = infer_dtype_in_binoper(left_obj,self.dtype),
+                device = dev
             )
         return left_tensor.__matmul__(self) #归一到左值'@'函数
     
@@ -5277,6 +5287,9 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
             # 列表/元组/标量/range/numpy数组：np.array 直接构造或拷贝，无协议探测路径
             arr = np.array(data, dtype=dtype)
 
+    if not is_numeric_array(arr):
+        raise TypeError(f"cannot create a TN tensor with dtype {arr.dtype}; only numeric or boolean dtypes are supported")
+
     tsobj = TN()
     tsobj._array = arr
     tsobj.requires_grad = bool(requires_grad)
@@ -5370,6 +5383,9 @@ def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = Non
         else:
             arr = np.asarray(data, dtype=dtype)
 
+    if not is_numeric_array(arr):
+        raise TypeError(f"cannot create a TN tensor with dtype {arr.dtype}; only numeric or boolean dtypes are supported")
+
     tsobj = TN()
     tsobj._array = arr
     tsobj.requires_grad = bool(requires_grad)
@@ -5377,6 +5393,20 @@ def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = Non
         if not is_float_or_complex(tsobj._array.dtype):
             raise RuntimeError('Only floating point tensors can require gradients')
     return tsobj
+
+def _as_tn(x):
+    """Convert the input of a unary math function to TN via as_tensor
+    (TN inputs are returned directly as a fast path; numpy/cupy/torch
+    and other convertible objects are converted; dtype validity is checked
+    inside as_tensor), raising a TypeError if the conversion fails."""
+    if isinstance(x, TN):
+        return x
+    try:
+        return as_tensor(x)
+    except Exception as e:
+        raise TypeError(
+            f"cannot convert input of type {type(x).__name__} to a TN tensor"
+        ) from e
 
 def from_numpy(arr: np.ndarray | cp.ndarray) -> TN:
     """
@@ -6292,13 +6322,10 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
                 if isinstance(param, TN):
                     tn_params.append(param)
 
-            if not tn_params:
-                raise ValueError("forward_func must contain at least one TN parameter")
-
             # 如果返回值不是TN类型，将其转换为TN类型
             if not isinstance(ret_val, TN):
-                # 找到第一个TN类型的参数，获取其device属性
-                device = tn_params[0].device
+                # 找到第一个TN类型的参数，获取其device属性；无 TN 参数时用默认设备
+                device = tn_params[0].device if tn_params else None
                 ret = as_tensor(ret_val, device=device)
             else:
                 ret = ret_val
@@ -7614,6 +7641,7 @@ def abs(x:TN)->TN:
         >>> b = tensor([[-1.5, 2.5], [3.0, -4.0]])
         >>> abs(b)  # 返回[[1.5, 2.5], [3.0, 4.0]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     value = arrlib.abs(x._array)
     ret = _wrap_tensor_from_numpy(value, requires_grad = (is_grad_enabled() and x.requires_grad))
@@ -7643,6 +7671,7 @@ def sqrt(x:TN)->TN:
         >>> b = tensor([[4.0, 9.0], [16.0, 25.0]])
         >>> sqrt(b)  # 返回[[2.0, 3.0], [4.0, 5.0]]
     """
+    x = _as_tn(x)
     return x ** 0.5
 
 def square(x:TN)->TN:
@@ -7664,6 +7693,7 @@ def square(x:TN)->TN:
         >>> b = tensor([[1, 2, 3], [4, 5, 6]])
         >>> square(b)  # 返回[[1, 4, 9], [16, 25, 36]]
     """
+    x = _as_tn(x)
     return x ** 2.0
 
 def _create_maxmin_mask(arr, dim:int|tuple|None=None, *, indices=None, maxmin_val=None):
@@ -8300,8 +8330,7 @@ def _pow_grad_left(result_tensor:TN, i:int)->TN:
     left_var_shape = left_tensor.shape
     result_shape = result_tensor.shape
 
-    # right_value 可能是numpy scalar,为了避免numpy的乘运算符优先TN的右乘运算符，
-    # 将right_value放在乘法运算的右边，确保TN乘法运算符被调用
+    # 将right_value放在乘法运算的右边，确保TN乘法运算符被优先调用,避免numpy的乘运算符优先TN的右乘运算符
     d = (left_tensor ** (right_value - 1.0)) * right_value  
     left_grad = result_tensor.grad_value * d.conj()
 
@@ -8342,7 +8371,88 @@ def _pow_grad_right(result_tensor:TN, i:int)->TN:
 def pow(input, exponent)->TN|float:
     return input ** exponent
 
+def add(x, y)->TN:
+    """
+    逐元素加法，等价于 x + y。
+
+    左值统一经 as_tensor 转换为 TN（TN 入参原样返回）后经运算符函数完成计算，
+    右值支持 TN、numpy/cupy 数组、list、tuple、整数或浮点数。
+
+    Args:
+        x: 加数（左值）
+        y: 加数（右值）
+
+    Returns:
+        TN: 两输入逐元素相加的结果
+    """
+    return as_tensor(x) + y
+
+def sub(x, y)->TN:
+    """
+    逐元素减法，等价于 x - y。
+
+    左值统一经 as_tensor 转换为 TN（TN 入参原样返回）后经运算符函数完成计算，
+    右值支持 TN、numpy/cupy 数组、list、tuple、整数或浮点数。
+
+    Args:
+        x: 被减数（左值）
+        y: 减数（右值）
+
+    Returns:
+        TN: 两输入逐元素相减的结果
+    """
+    return as_tensor(x) - y
+
+def mul(x, y)->TN:
+    """
+    逐元素乘法，等价于 x * y。
+
+    左值统一经 as_tensor 转换为 TN（TN 入参原样返回）后经运算符函数完成计算，
+    右值支持 TN、numpy/cupy 数组、list、tuple、整数或浮点数。
+
+    Args:
+        x: 乘数（左值）
+        y: 乘数（右值）
+
+    Returns:
+        TN: 两输入逐元素相乘的结果
+    """
+    return as_tensor(x) * y
+
+def div(x, y)->TN:
+    """
+    逐元素除法（真除法），等价于 x / y。
+
+    左值统一经 as_tensor 转换为 TN（TN 入参原样返回）后经运算符函数完成计算，
+    右值支持 TN、numpy/cupy 数组、list、tuple、整数或浮点数。
+
+    Args:
+        x: 被除数（左值）
+        y: 除数（右值）
+
+    Returns:
+        TN: 两输入逐元素相除的结果
+    """
+    return as_tensor(x) / y
+
+def matmul(x, y)->TN:
+    """
+    矩阵乘法，等价于 x @ y。
+
+    左值统一经 as_tensor 转换为 TN（TN 入参原样返回）后经运算符函数完成计算，
+    右值支持 TN、numpy/cupy 数组、list、tuple。
+
+    Args:
+        x: 左矩阵（左值）
+        y: 右矩阵（右值）
+
+    Returns:
+        TN: 两输入矩阵相乘的结果
+    """
+    return as_tensor(x) @ y
+
 def exp2(x:TN)->TN:
+    x = _as_tn(x)
     return 2.0 ** x
 
 def _log_grad(result_tensor:TN, i:int)->TN:
@@ -8368,6 +8478,7 @@ def log(x:TN)->TN:
         >>> b = tensor([[1.0, 2.718], [7.389, 20.086]])
         >>> log(b)  # 返回[[0.0, 1.0], [2.0, 3.0]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     result_data = arrlib.log(x._array)
     requires_grad = (is_grad_enabled() and x.requires_grad)
@@ -8451,6 +8562,7 @@ def exp(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
         >>> exp(b)  # 返回[[1.0, 2.718], [7.389, 20.086]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     ret = _wrap_tensor_from_numpy(arrlib.exp(x._array), is_grad_enabled() and x.requires_grad)
     
@@ -8483,6 +8595,7 @@ def sin(x:TN)->TN:
         >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
         >>> sin(b)  # 返回[[0.0, 0.707], [1.0, 0.707]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     ret = _wrap_tensor_from_numpy(arrlib.sin(x._array), is_grad_enabled() and x.requires_grad)
         
@@ -8515,6 +8628,7 @@ def cos(x:TN)->TN:
         >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
         >>> cos(b)  # 返回[[1.0, 0.707], [0.0, -0.707]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     ret = _wrap_tensor_from_numpy(arrlib.cos(x._array), is_grad_enabled() and x.requires_grad)
     
@@ -8547,6 +8661,7 @@ def tan(x:TN)->TN:
         >>> b = tensor([[0.0, pi/6], [pi/3, pi/4]])
         >>> tan(b)  # 返回[[0.0, 0.577], [1.732, 1.0]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     ret = _wrap_tensor_from_numpy(arrlib.tan(x._array), is_grad_enabled() and x.requires_grad)
     
@@ -8588,6 +8703,7 @@ def _arcsin_derivative(x:TN)->tuple[TN]:
 
 @track_grad(_arcsin_derivative)
 def arcsin(x:TN)->TN:
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arcsin(x._array))
 
@@ -8596,6 +8712,7 @@ def _arccos_derivative(x:TN)->tuple[TN]:
 
 @track_grad(_arccos_derivative)
 def arccos(x:TN)->TN:
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arccos(x._array))
 
@@ -8604,6 +8721,7 @@ def _arctan_derivative(x:TN)->tuple[TN]:
 
 @track_grad(_arctan_derivative)
 def arctan(x:TN)->TN:
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arctan(x._array))
 
@@ -8630,6 +8748,7 @@ def sinh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> sinh(b)  # 返回[[0.0, 1.175], [3.627, -1.175]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.sinh(x._array))
 
@@ -8656,6 +8775,7 @@ def cosh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> cosh(b)  # 返回[[1.0, 1.543], [3.762, 1.543]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.cosh(x._array))
 
@@ -8682,6 +8802,7 @@ def tanh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> tanh(b)  # 返回[[0.0, 0.762], [0.964, -0.762]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.tanh(x._array))
 
@@ -8771,6 +8892,7 @@ def arcsinh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> arcsinh(b)  # 返回[[0.0, 0.881], [1.444, -0.881]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arcsinh(x._array))
 
@@ -8797,6 +8919,7 @@ def arccosh(x:TN)->TN:
         >>> b = tensor([[1.0, 2.0], [3.0, 4.0]])
         >>> arccosh(b)  # 返回[[0.0, 1.317], [1.763, 2.063]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arccosh(x._array))
 
@@ -8823,6 +8946,7 @@ def arctanh(x:TN)->TN:
         >>> b = tensor([[0.0, 0.5], [0.8, -0.8]])
         >>> arctanh(b)  # 返回[[0.0, 0.549], [1.099, -1.099]]
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arctanh(x._array))
 
@@ -8842,6 +8966,7 @@ def sign(x:TN)->TN:
     
     该函数支持实数和复数张量，并正确处理反向传播。
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.sign(x._array))
 
@@ -10789,9 +10914,9 @@ def ceil(x:TN)->TN:
     返回:
         包含输入张量上取整的新张量
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
-    ret = as_tensor(arrlib.ceil(x._array),device=x.device)
-    return ret
+    return as_tensor(arrlib.ceil(x._array),device=x.device)
 
 def floor(x:TN)->TN:
     """
@@ -10800,9 +10925,9 @@ def floor(x:TN)->TN:
     返回:
         包含输入张量下取整的新张量
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
-    ret = as_tensor(arrlib.floor(x._array),device=x.device)
-    return ret
+    return as_tensor(arrlib.floor(x._array),device=x.device)
 
 def round(x:TN)->TN:
     """
@@ -10811,9 +10936,8 @@ def round(x:TN)->TN:
     返回:
         包含输入张量四舍五入取整的新张量
     """
-    arrlib = x._get_array_lib()
-    ret = as_tensor(arrlib.round(x._array),device=x.device)
-    return ret
+    x = _as_tn(x)
+    return as_tensor(x._array.round(),device=x.device)
 
 def trunc(x:TN)->TN:
     """
@@ -10822,9 +10946,9 @@ def trunc(x:TN)->TN:
     返回:
         包含输入张量截断取整的新张量
     """
+    x = _as_tn(x)
     arrlib = x._get_array_lib()
-    ret = as_tensor(arrlib.trunc(x._array),device=x.device)
-    return ret
+    return as_tensor(arrlib.trunc(x._array),device=x.device)
 
 def fwbw_all_zero(x:TN)->TN:
     """

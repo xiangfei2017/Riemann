@@ -782,7 +782,7 @@ def _gelu_backward(result_tensor: TN, i: int) -> TN:
     """GELU导数计算，使用与PyTorch兼容的实现"""
     x = result_tensor.fromvars[0]
     
-    c = sqrt(2. / pi)
+    c = (2. / pi) ** 0.5  # 标量运算，避免走 riemann.sqrt（其入参会经 _as_tn 转为张量）
     tanh_term = tanh(c * (x + 0.044715 * x**3.))
     grad = 0.5 * (1. + tanh_term) + 0.5 * x * (1. - tanh_term**2.) * c * (1. + 0.134145*(x**2.))
     return result_tensor.grad_value * grad

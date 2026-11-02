@@ -996,7 +996,33 @@ Tensor Computations
 Basic Arithmetic
 ~~~~~~~~~~~~~~~~
 
-Tensors support standard arithmetic operations:
+Tensors support standard arithmetic operations, each with a corresponding functional form:
+
+.. list-table:: Basic Arithmetic Operations
+  :widths: 20 25 55
+  :header-rows: 1
+
+  * - Operator
+    - Function
+    - Description
+  * - ``x + y``
+    - ``rm.add(x, y)``
+    - Element-wise addition
+  * - ``x - y``
+    - ``rm.sub(x, y)``
+    - Element-wise subtraction
+  * - ``x * y``
+    - ``rm.mul(x, y)``
+    - Element-wise multiplication
+  * - ``x / y``
+    - ``rm.div(x, y)``
+    - Element-wise true division
+  * - ``x ** y``
+    - ``rm.pow(x, y)``
+    - Element-wise power
+  * - ``x @ y``
+    - ``rm.matmul(x, y)``
+    - Matrix multiplication
 
 .. code-block:: python
 
@@ -1205,6 +1231,9 @@ Riemann provides a wide range of mathematical functions. Here are the commonly u
   * - ``square``
     - Compute square
     - ``rm.square(x)``
+  * - ``pow``
+    - Compute power of each element
+    - ``rm.pow(x, y)``
   * - ``exp``
     - Compute exponential function
     - ``rm.exp(x)``
