@@ -2763,20 +2763,28 @@ Gradient Computation
    This decorator factory receives a gradient function and returns a decorator that can convert ordinary tensor operation functions
    into functions that support automatic differentiation. It automatically creates backpropagation functions and manages gradient computation graph construction.
 
-   :param grad_func: Gradient computation function that receives the same input parameters as the forward function,
-                    returns a tuple containing gradients (partial derivatives) for each input tensor.
-                    Elements in the tuple must correspond one-to-one with the input tensors of the forward function. For tensors that don't require gradients, the corresponding gradient value should be None.
+   :param grad_func: Gradient computation function with signature ``grad_func(result, *args, **kwargs)``:
+                    the first parameter ``result`` is the output tensor of the forward function, and the remaining
+                    parameters match the forward function. It returns a tuple containing gradients for each input
+                    tensor, already including the upstream gradient from the chain rule (accessible via
+                    ``result.grad_value``). Tuple elements follow the ``grad_func`` signature order; non-TN
+                    parameters do not occupy a position, and tensors that don't require gradients should have
+                    ``None`` at their position. Keyword argument order at call time does not affect gradient
+                    alignment.
    :type grad_func: callable
    :return: A decorator function for wrapping forward computation functions to support automatic differentiation
    :rtype: callable
+
+   For more scenarios (named parameters, defaults, ``*args/**kwargs``, matrix multiplication, etc.),
+   see :doc:`autograd_basics`.
 
    Example:
    
    .. code-block:: python
       
       # Define single-input derivative function (d/dx log(x) = 1/x)
-      def _log_derivative(x):
-          return (1. / x.conj(),)
+      def _log_derivative(result, x):
+          return (result.grad_value * (1. / x.conj()),)
       
       # Use track_grad decorator to create automatic differentiation-supported log function
       @track_grad(_log_derivative)
@@ -2790,8 +2798,8 @@ Gradient Computation
       print(f'x.grad = {x.grad}')  # Output: x.grad = 0.5
       
       # Define multi-input derivative function (d/dx (x + y) = 1, d/dy (x + y) = 1)
-      def _add_derivative(x, y):
-          return (tensor(1.), tensor(1.))
+      def _add_derivative(result, x, y):
+          return (result.grad_value, result.grad_value)
       
       # Use track_grad decorator to create automatic differentiation-supported addition function
       @track_grad(_add_derivative)

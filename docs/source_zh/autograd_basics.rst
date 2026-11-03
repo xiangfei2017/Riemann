@@ -851,29 +851,33 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
 
    **梯度函数接口要求：**
 
-   传递给 ``track_grad`` 的梯度函数必须遵循以下接口要求：
+   传递给 ``track_grad`` 的梯度函数签名固定为 ``grad_func(result, *args, **kwargs)``：
 
-   - **参数**：必须接受与前向函数相同的参数（相同的名称和顺序）
-   - **返回值**：必须返回一个 tuple（元组），包含每个输入张量的梯度（偏导数）
-   - **元组元素**：每个元素对应相应输入张量的梯度。对于不需要梯度的张量，该位置返回 ``None``
-   - **梯度计算**：梯度应计算为输出对每个输入的偏导数
+   - **参数**：第一个参数 ``result`` 是前向函数的输出张量；其后参数必须与前向函数的输入参数同名同序
+   - **返回值**：返回一个 tuple，按 ``grad_func`` 签名中的 TN 参数顺序给出每个输入张量的梯度
+   - **元组元素**：只有 TN 参数占位，非 TN 参数（标量、布尔值等）不占位；
+     不需要梯度的 TN 参数对应位置返回 ``None``
+   - **链式法则**：返回值必须已包含上游梯度，可通过 ``result.grad_value`` 获取；
+     同时可以读取 ``result`` 的其他属性（shape、dtype、device 等）
+   - **调用顺序无关**：内部通过 ``inspect.signature`` 建立“参数名 → 实参值”的映射，
+     因此调用时关键字参数顺序、位置参数与关键字参数混用都不会影响梯度对应关系
 
-   **单输入示例：**
+   **场景 1：单输入函数**
 
    .. code-block:: python
 
        import riemann as rm
        import numpy as np
        
-       def sigmoid_derivative(x):
+       def sigmoid_derivative(result, x):
            """sigmoid 函数的梯度：返回包含一个元素的元组"""
-           sig = 1. / (1. + np.exp(-x.detach().array()))
-           return (rm.tensor(sig * (1. - sig)),)  # 注意：必须返回元组
+           # result 即 sigmoid 输出，直接复用可省去重复计算
+           return (result.grad_value * result * (1. - result),)
        
        @rm.track_grad(sigmoid_derivative)
        def custom_sigmoid(x):
            """带梯度支持的自定义 sigmoid 函数"""
-           return rm.tensor(1. / (1. + np.exp(-x.detach().array())))
+           return rm.tensor(1. / (1. + np.exp(-x.array())))
        
        # 测试自定义 sigmoid 函数的梯度
        x = rm.tensor(0.0, requires_grad=True)
@@ -882,29 +886,148 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        print(f"Sigmoid 输出: {y}")  # 应为 0.5
        print(f"Sigmoid 梯度: {x.grad}")  # 应为 0.25
 
-   **多输入示例：**
+   **场景 2：多输入函数（关键字参数顺序打乱）**
+
+   ``grad_func`` 的返回值按函数签名顺序排列，与调用时传参顺序无关。
 
    .. code-block:: python
 
        import riemann as rm
        
-       def multiply_derivative(x, y):
-           """乘法函数的梯度：d(xy)/dx = y, d(xy)/dy = x"""
-           return (y, x)  # 返回包含每个输入梯度的元组
+       def divide_derivative(result, x, y):
+           """除法梯度：d(x/y)/dx = 1/y, d(x/y)/dy = -x/y²"""
+           return (
+               result.grad_value / y,
+               result.grad_value * (-x / y**2.),
+           )
        
-       @rm.track_grad(multiply_derivative)
-       def custom_multiply(x, y):
-           """带梯度支持的自定义乘法函数"""
-           return x * y
+       @rm.track_grad(divide_derivative)
+       def custom_divide(x, y):
+           return x / y
        
-       # 使用多个输入进行测试
-       x = rm.tensor(2.0, requires_grad=True)
-       y = rm.tensor(3.0, requires_grad=True)
-       z = custom_multiply(x, y)
+       x = rm.tensor(5.0, requires_grad=True)
+       y = rm.tensor(2.0, requires_grad=True)
+       # 关键字顺序与签名 (x, y) 相反，梯度仍能正确对应
+       z = custom_divide(y=y, x=x)
        z.backward()
-       print(f"z = {z}")  # 应为 6.0
-       print(f"dz/dx = {x.grad}")  # 应为 3.0 (y)
-       print(f"dz/dy = {y.grad}")  # 应为 2.0 (x)
+       print(f"z = {z}")        # 2.5
+       print(f"dz/dx = {x.grad}")  # 0.5
+       print(f"dz/dy = {y.grad}")  # -1.25
+
+   **场景 3：TN 与非 TN 参数混合、带默认参数**
+
+   非 TN 参数不占用梯度元组的位置；默认参数在未显式传入时同样按签名参与映射。
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       def scaled_pow_derivative(result, x, scale=1.0, exponent=2.0):
+           """d(scale * x^n)/dx = scale * n * x^(n-1)"""
+           local = exponent * x ** (exponent - 1.)
+           return (result.grad_value * scale * local,)
+       
+       @rm.track_grad(scaled_pow_derivative)
+       def scaled_pow(x, scale=1.0, exponent=2.0):
+           return scale * x ** exponent
+       
+       x = rm.tensor(2.0, requires_grad=True)
+       y = scaled_pow(x, exponent=3.0)   # scale 使用默认值 1.0
+       y.backward()
+       print(f"y = {y}")        # 8.0
+       print(f"dy/dx = {x.grad}")  # 12.0 (3 * 2²)
+
+   **场景 4：变长参数（*args 与 **kwargs）**
+
+   当 ``grad_func`` 使用 ``*args`` / ``**kwargs`` 时，返回的梯度元组按签名顺序依次展平。
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       # *args：每个输入的梯度都是上游梯度
+       def sum_derivative(result, *args):
+           return tuple(result.grad_value for _ in args)
+       
+       @rm.track_grad(sum_derivative)
+       def custom_sum(*xs):
+           return rm.tensor(sum(x.array() for x in xs))
+       
+       a = rm.tensor(1.0, requires_grad=True)
+       b = rm.tensor(2.0, requires_grad=True)
+       s = custom_sum(a, b)
+       s.backward()
+       print(f"da = {a.grad}, db = {b.grad}")  # 1.0, 1.0
+       
+       # **kwargs：按参数名取对应权重
+       WEIGHTS = {"a": 2.0, "b": 3.0}
+       
+       def weighted_sum_derivative(result, **kwargs):
+           return tuple(result.grad_value * WEIGHTS[name] for name in kwargs)
+       
+       @rm.track_grad(weighted_sum_derivative)
+       def custom_weighted_sum(**kwargs):
+           return rm.tensor(sum(WEIGHTS[name] * v.array() for name, v in kwargs.items()))
+       
+       va = rm.tensor(1.0, requires_grad=True)
+       vb = rm.tensor(1.0, requires_grad=True)
+       w = custom_weighted_sum(a=va, b=vb)
+       w.backward()
+       print(f"dva = {va.grad}, dvb = {vb.grad}")  # 2.0, 3.0
+
+   **场景 5：部分输入不需要梯度**
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       def add_derivative(result, x, y):
+           return (result.grad_value, result.grad_value)
+       
+       @rm.track_grad(add_derivative)
+       def custom_add(x, y):
+           return x + y
+       
+       x = rm.tensor(2.0, requires_grad=True)
+       y = rm.tensor(3.0, requires_grad=False)  # 不需要梯度
+       z = custom_add(x, y)
+       z.backward()
+       print(f"dz/dx = {x.grad}")  # 1.0
+       print(f"dz/dy = {y.grad}")  # None
+
+   **场景 6：矩阵乘法（自定义链式法则）**
+
+   这是 ``track_grad`` 的核心优势：反向传播中可以直接使用矩阵乘 ``@``、转置等运算，
+   而不是被限制为“上游梯度逐元素相乘”。
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       def matmul_derivative(result, x, y):
+           """矩阵乘反向：dL/dx = dL/dY @ Yᵀ, dL/dY = Xᵀ @ dL/dY"""
+           g = result.grad_value
+           return (g @ y.T, x.T @ g)
+       
+       @rm.track_grad(matmul_derivative)
+       def custom_matmul(x, y):
+           return rm.matmul(x, y)
+       
+       x = rm.tensor([[1., 2.], [3., 4.]], requires_grad=True)
+       y = rm.tensor([[5., 6.], [7., 8.]], requires_grad=True)
+       z = custom_matmul(x, y)
+       z.sum().backward()
+       print(f"dx = {x.grad}")  # [[11., 15.], [11., 15.]]
+       print(f"dy = {y.grad}")  # [[4., 4.], [6., 6.]]
+
+   **注意事项：**
+
+   - 梯度函数返回的是“已经乘以上游梯度的最终梯度”，漏乘 ``result.grad_value`` 会丢失链式法则的上游部分
+   - 元组顺序只由 ``grad_func`` 签名决定，与调用时的传参顺序无关；非 TN 参数不占位
+   - ``backward`` 每次调用都会按当前上游梯度重新计算 ``grad_func``，
+     因此支持 ``retain_graph=True`` 下的重复反向传播
+   - 若前向函数完全由 Riemann 张量算子构成（已自动求导），通常无需使用 ``track_grad``；
+     它主要用于包装外部算子或手动定义前向/反向的计算
 
 3. **使用 Function 类**
    对于更复杂的情况，你可以继承 ``Function`` 类并实现 ``forward`` 和 ``backward`` 静态方法。

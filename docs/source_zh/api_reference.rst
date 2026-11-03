@@ -2867,20 +2867,26 @@ CUDA支持
    这个装饰器工厂接收一个梯度函数，返回一个修饰器，该修饰器可以将普通的张量运算函数
    转换为支持自动微分的函数。它会自动创建反向传播函数，并管理梯度计算图的构建。
 
-   :param grad_func: 梯度计算函数，接收与前向函数相同的输入参数，
-                    返回一个元组，包含每个输入张量对应的梯度（偏导数）
-                    元组内元素需要与前向函数的输入张量一一对应，对于不需要梯度的张量，对应的梯度值应为None
+   :param grad_func: 梯度计算函数，签名为 ``grad_func(result, *args, **kwargs)``：
+                    第一个参数 result 为前向函数的输出张量，其后参数与前向函数一致；
+                    返回一个元组，包含每个输入张量对应的梯度（已包含链式法则的上游梯度，
+                    可通过 result.grad_value 获取）。元组内元素按 grad_func 的参数签名顺序排列，
+                    非 TN 参数不占用位置，对于不需要梯度的张量，对应的梯度值应为 None；
+                    调用时关键字参数的顺序不影响梯度对应关系
    :type grad_func: callable
    :return: 一个修饰器函数，用于包装前向计算函数，使其支持自动微分
    :rtype: callable
+
+   更多场景示例（命名参数、默认参数、*args/**kwargs、矩阵乘等）参见
+   :doc:`autograd_basics`。
 
    示例：
    
    .. code-block:: python
       
       # 定义单输入导数函数（d/dx log(x) = 1/x）
-      def _log_derivative(x):
-          return (1. / x.conj(),)
+      def _log_derivative(result, x):
+          return (result.grad_value * (1. / x.conj()),)
       
       # 使用track_grad修饰器创建支持自动微分的对数函数
       @track_grad(_log_derivative)
@@ -2894,8 +2900,8 @@ CUDA支持
       print(f'x.grad = {x.grad}')  # 输出: x.grad = 0.5
       
       # 定义多输入导数函数（d/dx (x + y) = 1, d/dy (x + y) = 1）
-      def _add_derivative(x, y):
-          return (tensor(1.), tensor(1.))
+      def _add_derivative(result, x, y):
+          return (result.grad_value, result.grad_value)
       
       # 使用track_grad修饰器创建支持自动微分的加法函数
       @track_grad(_add_derivative)

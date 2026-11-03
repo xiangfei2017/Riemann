@@ -2960,6 +2960,123 @@ class TestMaxMinFunctions(unittest.TestCase):
                 print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
             raise
         
+        # 测试11: 广播场景的梯度数值正确性（非均匀上游梯度）
+        print("\n测试11: 广播场景的梯度数值正确性")
+        start_time = time.time()
+        try:
+            a_scalar = rm.tensor(1.0, requires_grad=True)                      # shape ()
+            b_vector = rm.tensor([2.0, 3.0], requires_grad=True)               # shape (2,)
+            c_matrix = rm.tensor([[4.0, 5.0], [6.0, 7.0]], requires_grad=True) # shape (2,2)
+            result = rm.sumall(a_scalar, b_vector, c_matrix)                   # shape (2,2)
+
+            # 使用非均匀上游梯度，验证梯度归约后的数值
+            upstream = rm.tensor([[1.0, 2.0], [3.0, 4.0]])
+            result.backward(gradient=upstream)
+
+            np.testing.assert_allclose(a_scalar.grad.numpy(), 10.0)
+            np.testing.assert_allclose(b_vector.grad.numpy(), np.array([4.0, 6.0]))
+            np.testing.assert_allclose(c_matrix.grad.numpy(), np.array([[1.0, 2.0], [3.0, 4.0]]))
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("广播场景梯度数值", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("广播场景梯度数值", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
+        # 测试12: 部分张量不需要梯度
+        print("\n测试12: 部分张量不需要梯度")
+        start_time = time.time()
+        try:
+            x = rm.tensor([1.0, 2.0], requires_grad=True)
+            y = rm.tensor([3.0, 4.0], requires_grad=False)
+            z = rm.sumall(x, y)
+            self.assertTrue(z.requires_grad, "存在需要梯度的张量时结果应requires_grad")
+            z.sum().backward()
+            np.testing.assert_allclose(x.grad.numpy(), np.array([1.0, 1.0]))
+            self.assertIsNone(y.grad, "不需要梯度的张量不应产生梯度")
+
+            # 所有张量都不需要梯度时，结果不参与计算图
+            t1 = rm.tensor([1.0, 2.0], requires_grad=False)
+            t2 = rm.tensor([3.0, 4.0], requires_grad=False)
+            z2 = rm.sumall(t1, t2)
+            self.assertFalse(z2.requires_grad, "全部张量不需要梯度时结果不应requires_grad")
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("部分张量不需要梯度", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("部分张量不需要梯度", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
+        # 测试13: 同一张量重复传入
+        print("\n测试13: 同一张量重复传入")
+        start_time = time.time()
+        try:
+            x = rm.tensor([1.0, 2.0], requires_grad=True)
+            z = rm.sumall(x, x)
+            np.testing.assert_allclose(z.detach().numpy(), np.array([2.0, 4.0]))
+            z.sum().backward()
+            # 两个输入边指向同一张量，梯度应累加
+            np.testing.assert_allclose(x.grad.numpy(), np.array([2.0, 2.0]))
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("同一张量重复传入", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("同一张量重复传入", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
+        # 测试14: 边界场景（空参数 / 纯非张量参数）
+        print("\n测试14: 边界场景（空参数 / 纯非张量参数）")
+        start_time = time.time()
+        try:
+            with self.assertRaises(ValueError):
+                rm.sumall()
+
+            result = rm.sumall(np.array([1.0, 2.0], dtype=np.float32), 3.0)
+            self.assertIsInstance(result, rm.TN)
+            self.assertFalse(result.requires_grad, "纯非张量参数的结果不应requires_grad")
+            np.testing.assert_allclose(result.numpy(), np.array([4.0, 5.0]))
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("边界场景", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("边界场景", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
+        # 测试15: 张量与numpy数组的非对称广播
+        print("\n测试15: 张量与numpy数组的非对称广播")
+        start_time = time.time()
+        try:
+            x = rm.tensor([[1.0], [2.0]], requires_grad=True)              # shape (2,1)
+            numpy_arr = np.array([[10.0, 20.0, 30.0]], dtype=np.float32)   # shape (1,3)
+            z = rm.sumall(x, numpy_arr)                                    # shape (2,3)
+            self.assertEqual(z.shape, (2, 3))
+            np.testing.assert_allclose(z.detach().numpy(), np.array([[11.0, 21.0, 31.0], [12.0, 22.0, 32.0]]))
+
+            z.sum().backward()
+            # 上游全 1 时，x 的梯度沿被广播的维度求和：每行 3 个元素
+            np.testing.assert_allclose(x.grad.numpy(), np.array([[3.0], [3.0]]))
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("非对称广播", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("非对称广播", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
         if IS_RUNNING_AS_SCRIPT:
             stats.end_function()
         

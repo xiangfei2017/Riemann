@@ -852,29 +852,33 @@ Riemann provides three ways to implement custom functions with gradient tracking
 
    **Gradient Function Interface Requirements:**
 
-   The gradient function passed to ``track_grad`` must follow these interface requirements:
+   The gradient function passed to ``track_grad`` has the fixed signature ``grad_func(result, *args, **kwargs)``:
 
-   - **Parameters**: Must accept the same parameters as the forward function (same names and order)
-   - **Return Value**: Must return a ``tuple`` containing the gradient (partial derivative) for each input tensor
-   - **Tuple Elements**: Each element corresponds to the gradient of the respective input tensor. For tensors that don't require gradients, return ``None`` for that position
-   - **Gradient Calculation**: The gradient should be computed as the partial derivative of the output with respect to each input
+   - **Parameters**: The first parameter ``result`` is the output tensor of the forward function; the remaining parameters must match the forward function (same names and order)
+   - **Return Value**: Must return a ``tuple`` containing the gradient for each input tensor, ordered by the TN parameters in the ``grad_func`` signature
+   - **Tuple Elements**: Only TN parameters occupy a position; non-TN parameters (scalars, booleans, etc.) do not.
+     For TN tensors that don't require gradients, return ``None`` for that position
+   - **Chain Rule**: Returned gradients must already include the upstream gradient from the chain rule, available via ``result.grad_value``.
+     Other attributes of ``result`` (shape, dtype, device, etc.) can also be used
+   - **Call Order Independent**: The decorator builds a "parameter name → argument value" mapping via ``inspect.signature``,
+     so keyword argument order and mixing positional/keyword arguments do not affect gradient alignment
 
-   **Example for single input:**
+   **Scenario 1: Single-input function**
 
    .. code-block:: python
 
        import riemann as rm
        import numpy as np
        
-       def sigmoid_derivative(x):
+       def sigmoid_derivative(result, x):
            """Gradient function for sigmoid: returns tuple with one element"""
-           sig = 1. / (1. + np.exp(-x.detach().array()))
-           return (rm.tensor(sig * (1. - sig)),)  # Note: must return a tuple
+           # result is the sigmoid output; reuse it to avoid recomputation
+           return (result.grad_value * result * (1. - result),)
        
        @rm.track_grad(sigmoid_derivative)
        def custom_sigmoid(x):
            """Custom sigmoid function with gradient support"""
-           return rm.tensor(1. / (1. + np.exp(-x.detach().array())))
+           return rm.tensor(1. / (1. + np.exp(-x.array())))
        
        # Test custom sigmoid with gradient
        x = rm.tensor(0.0, requires_grad=True)
@@ -883,29 +887,154 @@ Riemann provides three ways to implement custom functions with gradient tracking
        print(f"Sigmoid output: {y}")  # Should be 0.5
        print(f"Sigmoid gradient: {x.grad}")  # Should be 0.25
 
-   **Example for multiple inputs:**
+   **Scenario 2: Multiple inputs (keyword order shuffled)**
+
+   The ``grad_func`` return tuple follows the function signature order, independent of call order.
 
    .. code-block:: python
 
        import riemann as rm
        
-       def multiply_derivative(x, y):
-           """Gradient function for multiplication: d(xy)/dx = y, d(xy)/dy = x"""
-           return (y, x)  # Returns tuple with gradient for each input
+       def divide_derivative(result, x, y):
+           """Division gradients: d(x/y)/dx = 1/y, d(x/y)/dy = -x/y²"""
+           return (
+               result.grad_value / y,
+               result.grad_value * (-x / y**2.),
+           )
        
-       @rm.track_grad(multiply_derivative)
-       def custom_multiply(x, y):
-           """Custom multiplication function with gradient support"""
-           return x * y
+       @rm.track_grad(divide_derivative)
+       def custom_divide(x, y):
+           return x / y
        
-       # Test with multiple inputs
-       x = rm.tensor(2.0, requires_grad=True)
-       y = rm.tensor(3.0, requires_grad=True)
-       z = custom_multiply(x, y)
+       x = rm.tensor(5.0, requires_grad=True)
+       y = rm.tensor(2.0, requires_grad=True)
+       # Keyword order is the reverse of the (x, y) signature; gradients still align
+       z = custom_divide(y=y, x=x)
        z.backward()
-       print(f"z = {z}")  # Should be 6.0
-       print(f"dz/dx = {x.grad}")  # Should be 3.0 (y)
-       print(f"dz/dy = {y.grad}")  # Should be 2.0 (x)
+       print(f"z = {z}")           # 2.5
+       print(f"dz/dx = {x.grad}")  # 0.5
+       print(f"dz/dy = {y.grad}")  # -1.25
+
+   **Scenario 3: Mixed TN and non-TN parameters, with defaults**
+
+   Non-TN parameters do not occupy gradient tuple positions; defaults are included in the
+   signature mapping when not explicitly passed.
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       def scaled_pow_derivative(result, x, scale=1.0, exponent=2.0):
+           """d(scale * x^n)/dx = scale * n * x^(n-1)"""
+           local = exponent * x ** (exponent - 1.)
+           return (result.grad_value * scale * local,)
+       
+       @rm.track_grad(scaled_pow_derivative)
+       def scaled_pow(x, scale=1.0, exponent=2.0):
+           return scale * x ** exponent
+       
+       x = rm.tensor(2.0, requires_grad=True)
+       y = scaled_pow(x, exponent=3.0)   # scale uses default 1.0
+       y.backward()
+       print(f"y = {y}")           # 8.0
+       print(f"dy/dx = {x.grad}")  # 12.0 (3 * 2²)
+
+   **Scenario 4: Variable-length arguments (*args and **kwargs)**
+
+   When ``grad_func`` uses ``*args`` / ``**kwargs``, the returned gradient tuple is flattened
+   in signature order.
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       # *args: every input gets the upstream gradient
+       def sum_derivative(result, *args):
+           return tuple(result.grad_value for _ in args)
+       
+       @rm.track_grad(sum_derivative)
+       def custom_sum(*xs):
+           return rm.tensor(sum(x.array() for x in xs))
+       
+       a = rm.tensor(1.0, requires_grad=True)
+       b = rm.tensor(2.0, requires_grad=True)
+       s = custom_sum(a, b)
+       s.backward()
+       print(f"da = {a.grad}, db = {b.grad}")  # 1.0, 1.0
+       
+       # **kwargs: look up the weight by parameter name
+       WEIGHTS = {"a": 2.0, "b": 3.0}
+       
+       def weighted_sum_derivative(result, **kwargs):
+           return tuple(result.grad_value * WEIGHTS[name] for name in kwargs)
+       
+       @rm.track_grad(weighted_sum_derivative)
+       def custom_weighted_sum(**kwargs):
+           return rm.tensor(sum(WEIGHTS[name] * v.array() for name, v in kwargs.items()))
+       
+       va = rm.tensor(1.0, requires_grad=True)
+       vb = rm.tensor(1.0, requires_grad=True)
+       w = custom_weighted_sum(a=va, b=vb)
+       w.backward()
+       print(f"dva = {va.grad}, dvb = {vb.grad}")  # 2.0, 3.0
+
+   **Scenario 5: Some inputs do not require gradients**
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       def add_derivative(result, x, y):
+           return (result.grad_value, result.grad_value)
+       
+       @rm.track_grad(add_derivative)
+       def custom_add(x, y):
+           return x + y
+       
+       x = rm.tensor(2.0, requires_grad=True)
+       y = rm.tensor(3.0, requires_grad=False)  # no gradient needed
+       z = custom_add(x, y)
+       z.backward()
+       print(f"dz/dx = {x.grad}")  # 1.0
+       print(f"dz/dy = {y.grad}")  # None
+
+   **Scenario 6: Matrix multiplication (custom chain rule)**
+
+   This is the key advantage of ``track_grad``: backward computation may directly use matrix
+   multiplication ``@``, transpose, and other operations instead of being limited to
+   element-wise multiplication with the upstream gradient.
+
+   .. code-block:: python
+
+       import riemann as rm
+       
+       def matmul_derivative(result, x, y):
+           """Matrix multiplication backward: dL/dX = dL/dY @ Yᵀ, dL/dY = Xᵀ @ dL/dY"""
+           g = result.grad_value
+           return (g @ y.T, x.T @ g)
+       
+       @rm.track_grad(matmul_derivative)
+       def custom_matmul(x, y):
+           return rm.matmul(x, y)
+       
+       x = rm.tensor([[1., 2.], [3., 4.]], requires_grad=True)
+       y = rm.tensor([[5., 6.], [7., 8.]], requires_grad=True)
+       z = custom_matmul(x, y)
+       z.sum().backward()
+       print(f"dx = {x.grad}")  # [[11., 15.], [11., 15.]]
+       print(f"dy = {y.grad}")  # [[4., 4.], [6., 6.]]
+
+   **Notes:**
+
+   - The gradient function must return the final gradient *including* the upstream gradient;
+     omitting ``result.grad_value`` loses the upstream part of the chain rule
+   - Tuple order is determined solely by the ``grad_func`` signature, never by call order;
+     non-TN parameters do not occupy a position
+   - Each ``backward`` call recomputes ``grad_func`` with the current upstream gradient,
+     so repeated backward calls with ``retain_graph=True`` are supported
+   - If the forward function is composed entirely of Riemann tensor operators (already differentiable),
+     ``track_grad`` is usually unnecessary; it is intended for wrapping external operators
+     or manually defined forward/backward computations
 
 3. **Using Function Class**
    For more complex cases, you can subclass ``Function`` and implement both ``forward`` and ``backward`` static methods.

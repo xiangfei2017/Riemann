@@ -14,25 +14,26 @@ Riemann 自动微分自定义梯度示例
 import riemann as rm
 import numpy as np
 
-def sigmoid_derivative(x: rm.TN) -> tuple[rm.TN]:
+def sigmoid_derivative(result: rm.TN, x: rm.TN) -> tuple[rm.TN]:
     """
     Sigmoid函数的导数函数，用于自定义梯度计算。
     公式：d/dx (sigmoid(x)) = sigmoid(x) * (1 - sigmoid(x))
     
     Args:
+        result: 前向函数的输出张量，其 grad_value 为上游梯度
         x: 输入张量
         
     Returns:
-        tuple[rm.TN]: 包含单个元素的元组，表示输入x的梯度
+        tuple[rm.TN]: 包含单个元素的元组，表示输入x的梯度（已乘以上游梯度）
     """
     # 计算sigmoid值
     exp_val = rm.exp(-x)
     sig = 1.0 / (1.0 + exp_val)
     
-    # 计算导数
+    # 计算导数，并按链式法则乘以上游梯度 result.grad_value
     derivative = sig * (1. - sig)
     
-    return (derivative,)
+    return (result.grad_value * derivative,)
 
 @rm.track_grad(sigmoid_derivative)
 def custom_sigmoid(x: rm.TN) -> rm.TN:

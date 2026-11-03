@@ -6218,7 +6218,7 @@ def linspace(start: float, end: float, steps: int = 100, endpoint: bool = True, 
 
 # 定义函数类型别名
 ForwardFunc: TypeAlias = Callable[..., Any]  # 前向函数类型：输入任意数量的参数，返回任意类型
-GradFunc: TypeAlias = Callable[..., tuple[TN, ...]]  # 梯度函数类型：输入任意数量的参数，返回包含每个输入梯度的元组
+GradFunc: TypeAlias = Callable[..., tuple[TN | None, ...]]  # 梯度函数类型：首参为结果张量，后续为前向输入，返回包含每个输入梯度的元组
 BackwardFunc: TypeAlias = Callable[[TN, int], TN]  # 反向函数类型：输入一个TN和一个int，返回一个TN
 DecoratorFunc: TypeAlias = Callable[[Callable[..., Any]], Callable[..., TN]]  # 修饰器类型：输入一个返回任意类型的函数，返回一个返回TN的函数
 
@@ -6230,8 +6230,9 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
     转换为支持自动微分的函数。它会自动创建反向传播函数，并管理梯度计算图的构建。
 
     Args:
-        grad_func (GradFunc): 梯度计算函数，接收与前向函数相同的输入参数，
-            返回一个元组，包含每个 TN 类型输入参数对应的梯度（偏导数）。
+        grad_func (GradFunc): 梯度计算函数，签名固定为 ``grad_func(result, *args, **kwargs)``：
+            第一个参数 result 是前向函数的返回张量，后续参数与前向函数保持相同的输入参数。
+            返回值是一个元组，包含每个 TN 类型输入参数对应的对最终标量的梯度。
             元组内元素按 TN 参数出现顺序一一对应（仅包含 TN 参数，不包含非 TN 参数）；
             对于不需要梯度的 TN 参数，对应位置可为 None。
 
@@ -6239,11 +6240,25 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         DecoratorFunc: 一个修饰器函数，用于包装
             前向计算函数，使其支持自动微分
 
+    梯度计算方式：
+        grad_func 内部如何计算梯度完全由用户决定，result 及后续各参数都可能用到：
+        - ``result.grad_value`` 是上游梯度（损失对该输出的梯度），按链式法则计算各输入
+          梯度时必须使用它；
+        - ``result`` 本身也可参与计算，例如直接用前向结果替代重新计算中间量，有时能显著
+          减小计算量；
+        - 其余 TN / 非 TN 参数同样可自由使用。
+        因此梯度运算不受形式限制，矩阵乘 @、转置等任意运算均可直接使用。
+
+    注意：
+        若前向函数内部使用了可微算子，其返回张量已有的计算图会被本修饰器建立的
+        计算图覆盖，因此 grad_func 必须给出完整梯度；若前向返回需要梯度的张量而所有
+        形参都不需要梯度，原有梯度路径会被丢弃并发出警告。
+
     Examples:
         >>> # ========== 示例 1：单输入函数 ==========
         >>> # 定义导数函数：d/dx log(x) = 1/x
-        >>> def _log_derivative(x: TN) -> tuple[TN]:
-        ...     return (1. / x.conj(),)
+        >>> def _log_derivative(result: TN, x: TN) -> tuple[TN]:
+        ...     return (result.grad_value * (1. / x.conj()),)
         >>>
         >>> @track_grad(_log_derivative)
         ... def mylog(x: TN) -> TN:
@@ -6257,8 +6272,8 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         >>> # ========== 示例 2：多输入函数（关键字参数顺序无关） ==========
         >>> # track_grad 内部通过参数签名建立映射，因此无论关键字参数以何种顺序传入，
         >>> # 梯度都能正确匹配到对应的张量。
-        >>> def _mul_derivative(x: TN, y: TN) -> tuple[TN, TN]:
-        ...     return (y.conj(), x.conj())
+        >>> def _mul_derivative(result: TN, x: TN, y: TN) -> tuple[TN, TN]:
+        ...     return (result.grad_value * y.conj(), result.grad_value * x.conj())
         >>>
         >>> @track_grad(_mul_derivative)
         ... def mymul(x: TN, y: TN) -> TN:
@@ -6274,8 +6289,8 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
 
         >>> # ========== 示例 3：混合 TN 与非 TN 参数 ==========
         >>> # grad_func 的返回值只包含 TN 类型参数的梯度，非 TN 参数（如标量）被忽略。
-        >>> def _pow_derivative(x: TN, exponent: float) -> tuple[TN]:
-        ...     return (exponent * (x ** (exponent - 1)).conj(),)
+        >>> def _pow_derivative(result: TN, x: TN, exponent: float) -> tuple[TN]:
+        ...     return (result.grad_value * exponent * (x ** (exponent - 1)).conj(),)
         >>>
         >>> @track_grad(_pow_derivative)
         ... def mypow(x: TN, exponent: float) -> TN:
@@ -6288,8 +6303,8 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
 
         >>> # ========== 示例 4：部分输入不需要梯度 ==========
         >>> # 不需要梯度的输入不会出现在 fromvars 中，对应的梯度位置可为 None。
-        >>> def _add_derivative(x: TN, y: TN) -> tuple[TN, TN]:
-        ...     return (tensor(1.), tensor(1.))
+        >>> def _add_derivative(result: TN, x: TN, y: TN) -> tuple[TN, TN]:
+        ...     return (result.grad_value, result.grad_value)
         >>>
         >>> @track_grad(_add_derivative)
         ... def myadd(x: TN, y: TN) -> TN:
@@ -6302,154 +6317,127 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         >>> print(f'x.grad = {x.grad}')  # 输出: x.grad = 1.0
         >>> print(f'y.grad = {y.grad}')  # 输出: y.grad = None
 
+        >>> # ========== 示例 5：矩阵乘法（上游梯度需参与矩阵运算） ==========
+        >>> # 矩阵乘反向：dL/dx = dL/dz @ y^T，dL/dy = x^T @ dL/dz。
+        >>> # grad_func 通过 result.grad_value 直接完成矩阵乘法，无需求助逐元素乘法。
+        >>> def _matmul_derivative(result: TN, x: TN, y: TN):
+        ...     g = result.grad_value
+        ...     return (g @ y.detach().T, x.detach().T @ g)
+        >>>
+        >>> @track_grad(_matmul_derivative)
+        ... def mymatmul(x: TN, y: TN) -> TN:
+        ...     return tensor(x._array @ y._array)
+        >>>
+        >>> x = tensor([[1., 2.], [3., 4.]], requires_grad=True)
+        >>> y = tensor([[5., 6.], [7., 8.]], requires_grad=True)
+        >>> z = mymatmul(x, y)
+        >>> z.sum().backward()
+
     工作原理：
-        1. 接收一个前向计算函数forward_func，包装它为支持梯度跟踪的函数
-        2. 自动创建反向传播函数，用于计算梯度值（利用链式法则：grad = result.grad_value * grad_func(x)）
-        3. 包装后的函数会管理梯度计算所需的元数据（requires_grad, is_leaf, fromvars, gradfuncs）
-        4. 当进行反向传播时，会自动调用backward_func计算梯度
+        1. 包装后的函数先执行前向计算，并根据“梯度模式是否开启、任一输入是否需要梯度”
+           决定结果张量是否参与梯度跟踪
+        2. 若需要跟踪，则按 grad_func 的签名顺序展平本次实参，并仅为 requires_grad=True
+           的 TN 输入登记图节点（fromvars / gradfuncs）
+        3. 反向传播时，每个需要梯度的输入各触发一次 grad_func 调用，按索引取出
+           对应输入的梯度返回，因此 grad_func 应保持无副作用；链式法则完全由
+           grad_func 借助 result 自行完成
     """
+    # grad_func 在装饰阶段固定，预先解析签名，避免每次前向调用重复解析
+    grad_sig = inspect.signature(grad_func)
+    grad_params = grad_sig.parameters
+    if not grad_params:
+        raise TypeError("grad_func must accept 'result' as its first parameter")
+    first_param = next(iter(grad_params.values()))
+    if first_param.kind is inspect.Parameter.VAR_KEYWORD:
+        raise TypeError("grad_func's first parameter cannot be **kwargs")
+    first_param_name = first_param.name
+
     def decorator(forward_func:ForwardFunc)->ForwardFunc:
         def wrapper(*xs, **kwargs)->TN:
-            # 调用前向函数
             ret_val = forward_func(*xs, **kwargs)
 
-            # 合并所有参数
+            # 前向返回值可能不是 TN（如 numpy 数组），此时用首个 TN 输入的 device 转换
             all_params = list(xs) + list(kwargs.values())
-
-            # 筛选出所有TN类型的参数（保持出现顺序）
-            tn_params = []
-            for param in all_params:
-                if isinstance(param, TN):
-                    tn_params.append(param)
-
-            # 如果返回值不是TN类型，将其转换为TN类型
-            if not isinstance(ret_val, TN):
-                # 找到第一个TN类型的参数，获取其device属性；无 TN 参数时用默认设备
-                device = tn_params[0].device if tn_params else None
-                ret = as_tensor(ret_val, device=device)
-            else:
+            tn_params = [p for p in all_params if isinstance(p, TN)]
+            # 梯度模式关闭或所有输入都不需要梯度时，结果张量不参与计算图
+            track = is_grad_enabled() and any(p.requires_grad for p in tn_params)
+            if isinstance(ret_val, TN):
                 ret = ret_val
+                # 前向若使用了可微算子，其内部计算图会被下面的 fromvars/gradfuncs 覆盖
+                if is_grad_enabled() and ret.requires_grad and not track:
+                    warnings.warn(
+                        f"track_grad: forward result of "
+                        f"'{getattr(forward_func, '__name__', forward_func)}' requires grad, "
+                        f"but none of its TN arguments do; the existing gradient path is discarded"
+                    )
+            else:
+                ret = as_tensor(ret_val, device=tn_params[0].device if tn_params else None)
 
-            # 设置梯度跟踪标志
-            ret.requires_grad = (is_grad_enabled() and any(x.requires_grad for x in tn_params))
+            ret.requires_grad = track
 
-            if ret.requires_grad:
-                # ------------------------------------------------------------------
-                # 解决参数顺序问题：grad_func 返回值与 TN 参数的映射
-                # ------------------------------------------------------------------
-                # 问题背景：
-                #   grad_func 返回的梯度元组是按【函数签名参数名】顺序排列的。
-                #   例如 grad_func(x, y, z) 返回 (gx, gy, gz)，其中 gx 对应参数 x。
-                #   但调用时可能使用关键字参数改变顺序，如 myadd(x, z=tz, y=ty)。
-                #   此时 all_params = [x, tz, ty]，而 grad_func 仍按签名返回 (gx, gy, gz)。
-                #   若直接用 all_params 的索引去取 grad_values，会导致 tz 取到 gy、ty 取到 gz，
-                #   即梯度错位。
-                #
-                # 解决思路：
-                #   1. 获取 grad_func 的参数签名 (inspect.signature)。
-                #   2. 用 sig.bind(*xs, **kwargs) 建立【参数名 → 实际传入对象】的映射。
-                #   3. 按参数签名顺序遍历，收集其中的 TN 参数及其在 grad_values 中的索引。
-                #   这样无论关键字参数以何种顺序传入，梯度都能正确匹配到对应张量。
-                # ------------------------------------------------------------------
-                sig = inspect.signature(grad_func)
-                # VAR_POSITIONAL: *args; VAR_KEYWORD: **kwargs
-                has_var_positional = any(
-                    p.kind == inspect.Parameter.VAR_POSITIONAL for p in sig.parameters.values()
-                )
-                has_var_keyword = any(
-                    p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-                )
+            if track:
+                # grad_func 返回的梯度元组按“签名参数顺序”排列（result 除外），而调用时
+                # 关键字参数顺序可能不同。用 sig.bind 建立“参数名 → 实参值”的映射，
+                # 再按签名顺序展平，使梯度元组与 TN 参数一一对应。
+                bound = grad_sig.bind(ret, *xs, **kwargs)
+                bound.apply_defaults()
+                ordered_args = []
+                for name, value in bound.arguments.items():
+                    kind = grad_params[name].kind
+                    if name == first_param_name:
+                        # 首参 result 本身没有梯度；裸 *args 签名中 args[0] 即 result
+                        if kind is inspect.Parameter.VAR_POSITIONAL:
+                            ordered_args.extend(value[1:])
+                        continue
+                    if kind is inspect.Parameter.VAR_POSITIONAL:
+                        ordered_args.extend(value)            # *args 展平为多个输入
+                    elif kind is inspect.Parameter.VAR_KEYWORD:
+                        ordered_args.extend(value.values())   # **kwargs 展平为多个输入
+                    else:
+                        ordered_args.append(value)
 
-                if has_var_positional or has_var_keyword:
-                    # grad_func 使用了 *args 或 **kwargs（变长参数）。
-                    # 此时无法通过参数名建立稳定映射，假设返回值与 all_params 传入顺序一致。
-                    #
-                    # 举例：
-                    #   def _sum_derivative(*args):
-                    #       return tuple(tensor(1.) for _ in args)
-                    #   @track_grad(_sum_derivative)
-                    #   def mysum(*xs):
-                    #       return tensor(sum(x._array for x in xs))
-                    #   # 调用 mysum(a, b, c) 时，all_params = [a, b, c]
-                    #   # grad_values 按 (a, b, c) 顺序返回，与 all_params 一致。
-                    tn_params_in_sig_order = []
-                    tn_grad_indices = []
-                    for i, p in enumerate(all_params):
-                        if isinstance(p, TN):
-                            tn_params_in_sig_order.append(p)
-                            # grad_values 只包含 TN 参数的梯度，索引按 TN 出现顺序递增
-                            tn_grad_indices.append(len(tn_params_in_sig_order) - 1)
-                else:
-                    # 正常情况：grad_func 使用具名参数（如 def f(x, y):），不含 *args/**kwargs。
-                    # bound.arguments 是按签名顺序的 OrderedDict，键为参数名，值为实际传入对象。
-                    bound = sig.bind(*xs, **kwargs)
-                    bound.apply_defaults()
-                    tn_params_in_sig_order = []
-                    tn_grad_indices = []
-                    for name, param in bound.arguments.items():
-                        if isinstance(param, TN):
-                            tn_params_in_sig_order.append(param)
-                            # grad_values 只包含 TN 参数的梯度，索引按 TN 出现顺序递增
-                            tn_grad_indices.append(len(tn_params_in_sig_order) - 1)
-
-                # 只保留 requires_grad=True 的 TN 参数，构建反向传播图节点
-                grad_required_tn_indices = [i for i, x in enumerate(tn_params_in_sig_order) if x.requires_grad]
-                fromvars = tuple(tn_params_in_sig_order[i] for i in grad_required_tn_indices)
-
-                # ------------------------------------------------------------------
-                # 解决重复调用性能问题：缓存 grad_func 的计算结果
-                # ------------------------------------------------------------------
-                # 问题背景：
-                #   每个 fromvar 都有一个独立的 backward_func，它们都调用 grad_func 计算梯度。
-                #   如果有 N 个输入需要梯度，grad_func 会被调用 N 次，但其中大部分计算是重复的。
-                #
-                # 解决思路：
-                #   使用可变列表 _cached_grads 作为闭包缓存，第一次调用时计算并保存结果，
-                #   后续所有 backward_func 直接从缓存中读取，保证 grad_func 只执行一次。
-                #
-                # 为什么用单元素列表 [None] 而不是普通变量 None？
-                #   Python 闭包中，若直接对外层不可变变量赋值（如 _cached_grads = (...)），
-                #   Python 会将其视为内层函数的局部变量，导致 UnboundLocalError。
-                #   使用可变列表，通过修改 _cached_grads[0] 而非重新绑定变量本身，
-                #   可避开此限制，无需 nonlocal 声明即可在内层函数中更新缓存。
-                # ------------------------------------------------------------------
-                _cached_grads = [None]
-                def _get_grads():
-                    if _cached_grads[0] is None:
-                        gv = grad_func(*xs, **kwargs)
-                        # 若返回值不是元组（如单输入函数返回单个梯度），包装为元组
-                        _cached_grads[0] = (gv,) if not isinstance(gv, tuple) else gv
-                    return _cached_grads[0]
-
-                # 为每个需要梯度的输入创建反向传播函数
-                def create_backward_func(index_in_fromvars: int):
+                # 每个需要梯度的输入对应一个反向函数，各自调用一次 grad_func。
+                # 注意：多输入函数中 grad_func 会被调用多次，因此其实现应保持无副作用。
+                def _make_backward_func(grad_index: int):
+                    # backward 机制要求签名为 (result_tensor, index)，但取哪个梯度
+                    # 已由闭包 grad_index 固定，因此不使用 index 参数。
                     def backward_func(result_tensor: TN, _index: int) -> TN:
-                        # _index 由 backward 机制传入，与 index_in_fromvars 相同。
-                        # 这里使用闭包捕获的 index_in_fromvars，避免依赖运行时传入的 _index。
-                        grad_values = _get_grads()
-                        # tn_index: 该输入在 tn_params_in_sig_order 中的位置
-                        tn_index = grad_required_tn_indices[index_in_fromvars]
-                        # grad_index: 该输入的梯度在 grad_values 元组中的索引
-                        grad_index = tn_grad_indices[tn_index]
-                        grad = grad_values[grad_index]
+                        grads = grad_func(result_tensor, *xs, **kwargs)
+                        # 兼容单输入函数直接返回单个梯度（非元组）的写法
+                        if not isinstance(grads, tuple):
+                            grads = (grads,)
+                        if grad_index >= len(grads):
+                            raise ValueError(
+                                f"grad_func returned {len(grads)} gradients, "
+                                f"but TN parameter at index {grad_index} needs one"
+                            )
+                        grad = grads[grad_index]
                         if grad is None:
                             raise ValueError(
                                 f"Gradient for TN parameter at index {grad_index} is None, "
                                 f"but requires_grad is True"
                             )
-                        # 链式法则：上游梯度 × 局部梯度
-                        return result_tensor.grad_value * grad
+                        return grad
                     return backward_func
 
-                gradfuncs = tuple(
-                    create_backward_func(i) for i in range(len(grad_required_tn_indices))
-                )
-                ret.fromvars = fromvars
-                ret.gradfuncs = gradfuncs
+                # 按实参顺序为所有 TN 参数编号，并只为 requires_grad=True 的参数登记图节点。
+                # grad_index 对“所有 TN 参数”递增（与 grad_func 返回的梯度元组对齐），
+                # 而 fromvars/gradfuncs 只含需要梯度的参数，两者序号不可混用。
+                fromvars = []
+                gradfuncs = []
+                grad_index = 0
+                for param in ordered_args:
+                    if isinstance(param, TN):
+                        if param.requires_grad:
+                            fromvars.append(param)
+                            gradfuncs.append(_make_backward_func(grad_index))
+                        grad_index += 1
+
+                ret.fromvars = tuple(fromvars)
+                ret.gradfuncs = tuple(gradfuncs)
             return ret
         return wrapper
     return decorator
-# end of track_grad
 
 def broadcast_to(input: TN, size: tuple[int, ...]) -> TN:
     """
@@ -8698,8 +8686,8 @@ def sec(x:TN)->TN:
 def csc(x:TN)->TN:
     return 1./sin(x)
 
-def _arcsin_derivative(x:TN)->tuple[TN]:
-    return (1./sqrt(1. - x**2.).conj(),)
+def _arcsin_derivative(result:TN, x:TN)->tuple[TN]:
+    return (result.grad_value * (1./sqrt(1. - x**2.).conj()),)
 
 @track_grad(_arcsin_derivative)
 def arcsin(x:TN)->TN:
@@ -8707,8 +8695,8 @@ def arcsin(x:TN)->TN:
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arcsin(x._array))
 
-def _arccos_derivative(x:TN)->tuple[TN]:
-    return (-1.0/sqrt(1. - x**2.).conj(),)
+def _arccos_derivative(result:TN, x:TN)->tuple[TN]:
+    return (result.grad_value * (-1.0/sqrt(1. - x**2.).conj()),)
 
 @track_grad(_arccos_derivative)
 def arccos(x:TN)->TN:
@@ -8716,8 +8704,8 @@ def arccos(x:TN)->TN:
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arccos(x._array))
 
-def _arctan_derivative(x:TN)->tuple[TN]:
-    return (1./(1. + x**2.).conj(),)
+def _arctan_derivative(result:TN, x:TN)->tuple[TN]:
+    return (result.grad_value * (1./(1. + x**2.).conj()),)
 
 @track_grad(_arctan_derivative)
 def arctan(x:TN)->TN:
@@ -8725,8 +8713,8 @@ def arctan(x:TN)->TN:
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arctan(x._array))
 
-def _sinh_derivative(x:TN)->tuple[TN]:
-    return (cosh(x).conj(),)
+def _sinh_derivative(result:TN, x:TN)->tuple[TN]:
+    return (result.grad_value * cosh(x).conj(),)
 
 @track_grad(_sinh_derivative)
 def sinh(x:TN)->TN:
@@ -8752,8 +8740,8 @@ def sinh(x:TN)->TN:
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.sinh(x._array))
 
-def _cosh_derivative(x:TN)->tuple[TN]:
-    return (sinh(x).conj(),)
+def _cosh_derivative(result:TN, x:TN)->tuple[TN]:
+    return (result.grad_value * sinh(x).conj(),)
 
 @track_grad(_cosh_derivative)
 def cosh(x:TN)->TN:
@@ -8779,8 +8767,8 @@ def cosh(x:TN)->TN:
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.cosh(x._array))
 
-def _tanh_derivative(x:TN)->tuple[TN]:
-    return ((1.0 - tanh(x)**2.0).conj(),)
+def _tanh_derivative(result:TN, x:TN)->tuple[TN]:
+    return (result.grad_value * (1.0 - tanh(x)**2.0).conj(),)
 
 @track_grad(_tanh_derivative)
 def tanh(x:TN)->TN:
@@ -8869,8 +8857,8 @@ def csch(x:TN)->TN:
     """
     return 1.0 / sinh(x)
 
-def _arcsinh_derivative(x:TN)->tuple[TN]:
-    return (1. / sqrt(x**2. + 1.).conj(),)
+def _arcsinh_derivative(result:TN, x:TN)->tuple[TN]:
+    return (result.grad_value * (1. / sqrt(x**2. + 1.).conj()),)
     
 @track_grad(_arcsinh_derivative)
 def arcsinh(x:TN)->TN:
@@ -8896,8 +8884,8 @@ def arcsinh(x:TN)->TN:
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arcsinh(x._array))
 
-def _arccosh_derivative(x:TN)->tuple[TN]:
-    return (1. / sqrt(x**2. - 1.).conj(),)
+def _arccosh_derivative(result:TN, x:TN)->tuple[TN]:
+    return (result.grad_value * (1. / sqrt(x**2. - 1.).conj()),)
 
 @track_grad(_arccosh_derivative)
 def arccosh(x:TN)->TN:
@@ -8923,8 +8911,8 @@ def arccosh(x:TN)->TN:
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arccosh(x._array))
 
-def _arctanh_derivative(x:TN)->tuple[TN]:
-    return (1. / (1. - x**2.0).conj(),)
+def _arctanh_derivative(result:TN, x:TN)->tuple[TN]:
+    return (result.grad_value * (1. / (1. - x**2.0).conj()),)
 
 @track_grad(_arctanh_derivative)
 def arctanh(x:TN)->TN:
@@ -8950,11 +8938,10 @@ def arctanh(x:TN)->TN:
     arrlib = x._get_array_lib()
     return _wrap_tensor_from_numpy(arrlib.arctanh(x._array))
 
-def _sign_derivative(x:TN)->tuple[TN]:
+def _sign_derivative(result:TN, x:TN)->tuple[TN]:
     # sign函数在x=0处不可导，在其他点处梯度为0
-    # 创建一个与输入相同形状的零张量作为梯度
-    grad = zeros_like(x)
-    return (grad,)
+    # 梯度为零，与上游梯度相乘后仍为零
+    return (result.grad_value * zeros_like(x),)
 
 @track_grad(_sign_derivative)
 def sign(x:TN)->TN:
@@ -10806,31 +10793,38 @@ def _triu_backward(result_tensor: TN, i: int) -> TN:
     return triu(result_tensor.grad_value, diagonal)
 
 
-def _sumall_backward(result_tensor: TN, i: int) -> TN:
+def _sumall_derivative(result: TN, *args) -> tuple:
     """
-    计算sumall()函数的梯度
-    参考_add_grad_left函数的实现
-    
+    计算 sumall() 的梯度。
+
+    对每个输入，按其与结果的广播关系对上游梯度求和，恢复到输入形状。
+    非 TN 参数不占梯度元组的位置；不需要梯度的 TN 参数返回 None。
+
     Args:
-        result_tensor: 结果张量
-        i: 输入参数在fromvars中的索引
-        
+        result: sumall() 的输出张量，可通过 result.grad_value 获取上游梯度
+        *args: sumall() 的全部输入参数
+
     Returns:
-        TN: 对应输入参数的梯度
+        tuple: 每个 TN 输入对应的梯度（按参数出现顺序）
     """
-    input_tensor = result_tensor.fromvars[i]
-    input_shape = input_tensor.shape
-    result_shape = result_tensor.shape
+    grads = []
+    for arg in args:
+        if not isinstance(arg, TN):
+            continue
+        if not arg.requires_grad:
+            grads.append(None)
+            continue
 
-    # 形状相同时，直接返回grad_value
-    if input_shape == result_shape:
-        grad = result_tensor.grad_value
-    else:
-        # 计算广播轴并对grad_value进行求和
-        broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
-        grad = sum(result_tensor.grad_value, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
-    return grad
+        input_shape = arg.shape
+        if input_shape == result.shape:
+            grads.append(result.grad_value)
+        else:
+            # 计算广播轴并对grad_value进行求和
+            broadcast_axes = _get_broadcast_axis(result.shape, input_shape)
+            grads.append(sum(result.grad_value, dim=broadcast_axes, keepdim=False)._reshape(input_shape))
+    return tuple(grads)
 
+@track_grad(_sumall_derivative)
 def sumall(*args) -> TN:
     """
     将多个张量或非张量相加，返回和
@@ -10843,69 +10837,35 @@ def sumall(*args) -> TN:
     """
     if not args:
         raise ValueError("sumall() must have at least one argument")
-    
-    # 收集所有张量参数，确定计算设备
-    tensor_args = [arg for arg in args if isinstance(arg, TN)]
-    
-    # 确定计算设备：如果有张量参数，使用第一个张量的设备；否则使用CPU
-    if tensor_args:
-        # 使用第一个张量的设备作为目标设备
-        first_tensor = tensor_args[0]
-        target_device = first_tensor.device
-        # 确保所有张量都在同一设备上
-        for arg in tensor_args[1:]:
-            if arg.device != target_device:
-                raise ValueError(f"All tensor arguments must be on the same device, but found {arg.device} and {target_device}")
-        # 确定使用的数组库        
-        arrlib = np if isinstance(first_tensor._array, np.ndarray) else cp
-    else:
-        # 没有张量参数，使用默认设备和对应数组库
-        target_device = _get_device(None)
-        arrlib = np if target_device.type =='cpu' else cp
-    
-    # 初始化和为0
-    sum_data = 0.0
-    arr_type = (np.ndarray, cp.ndarray) if cp else (np.ndarray,)
 
-    # 遍历所有参数进行累加
-    for arg in args:
+    # 设备：优先使用首个张量的设备，否则使用默认设备
+    tensor_args = [arg for arg in args if isinstance(arg, TN)]
+    target_device = tensor_args[0].device if tensor_args else _get_device(None)
+
+    # 所有张量必须在同一设备上
+    bad_arg = next((arg for arg in tensor_args if arg.device != target_device), None)
+    if bad_arg is not None:
+        raise ValueError(
+            f"All tensor arguments must be on the same device, "
+            f"but found {bad_arg.device} and {target_device}"
+        )
+
+    arrlib = np if target_device.type == 'cpu' else cp
+
+    def _align(arg):
+        """将参数统一到 target_device 对应的数组库"""
         if isinstance(arg, TN):
-            # 如果是张量，获取其数据
-            processed_arg = arg._array        
-        else:
-            # 如果是非张量，处理不同类型
-            if not isinstance(arg, arr_type):
-                # 其他类型（python值），保持不变
-                processed_arg = arg
-            else:
-                if arrlib is np and not isinstance(arg, np.ndarray):
-                    # 从GPU转换到CPU
-                    processed_arg = cp.asnumpy(arg)
-                elif arrlib is cp and isinstance(arg, np.ndarray):
-                    # 从CPU转换到GPU（确保在目标设备上创建，而非当前活动设备）
-                    with cp.cuda.Device(target_device.index):
-                        processed_arg = cp.asarray(arg)
-                else:
-                    # 类型匹配，直接使用
-                    processed_arg = arg
-            
-        # 执行累加
-        sum_data = sum_data + processed_arg
-        
-    # 创建结果张量
-    result = as_tensor(sum_data, device=target_device)
-    
-    # 手动设置梯度函数，参考_add_grad_left的实现
-    if is_grad_enabled() and tensor_args and any(arg.requires_grad for arg in tensor_args):
-        # 只保留需要梯度的张量参数
-        grad_required_tensors = [arg for arg in tensor_args if arg.requires_grad]
-        if grad_required_tensors:
-            result.requires_grad = True
-            result.fromvars = tuple(grad_required_tensors)
-            # 为每个需要梯度的参数设置梯度函数
-            result.gradfuncs = tuple(_sumall_backward for _ in grad_required_tensors)
-    
-    return result
+            return arg._array
+        if cp is not None and arrlib is np and isinstance(arg, cp.ndarray):
+            return cp.asnumpy(arg)                  # GPU → CPU
+        if arrlib is cp and isinstance(arg, np.ndarray):
+            with cp.cuda.Device(target_device.index):
+                return cp.asarray(arg)              # CPU → GPU
+        return arg                                  # python 值 / 同库数组
+
+    # 累加；计算图由 track_grad 装饰器自动建立
+    # 注意：模块内定义了名为 sum 的算子，此处必须用 builtins.sum 调用内置实现
+    return as_tensor(builtins.sum(_align(arg) for arg in args), device=target_device)
 
 def ceil(x:TN)->TN:
     """
