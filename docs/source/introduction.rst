@@ -35,6 +35,7 @@ Automatic Differentiation
 
 - **backward method**: Triggers backpropagation to compute gradients
 - **grad function**: Computes gradients of functions with respect to inputs
+- **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``vjp``, ``jacrev``, ``jacfwd``, ``hessian``, ``hvp``, ``vmap``, ``functional_call``, suitable for chained higher-order derivatives
 - **track_grad decorator**: Use ``@track_grad`` decorator to customize gradient tracking functions (Riemann-specific)
 - **Function class**: Customize forward and backward propagation by inheriting from Function class (Riemann-specific)
 - **Jacobian and Hessian Matrices**: Supports Jacobian matrix computation for multi-input multi-output functions, and Hessian matrix computation for multi-input functions
@@ -94,6 +95,7 @@ Riemann Package Module Structure
     riemann                  # Main package
     ├── autograd             # Automatic differentiation module
     │   └── functional       # Automatic differentiation functional interface
+    ├── func                 # torch.func-style functional autodiff API
     ├── linalg               # Linear algebra module
     ├── nn                   # Neural network module
     │   └── functional       # Neural network functions
@@ -135,6 +137,10 @@ Module Import Examples
     from riemann.autograd import grad, backward
     from riemann.autograd.functional import jacobian, hessian
 
+    # Import functional autodiff API (torch.func-style, curried, supports higher-order)
+    from riemann import func
+    from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
+
     # Import linear algebra functionality
     from riemann import linalg
     from riemann.linalg import svd, det, inv
@@ -175,6 +181,7 @@ Compatible Features
 - **Neural Network Components**: Layers, activation functions, and loss functions in the ``nn`` module maintain interface compatibility with PyTorch
 - **Optimizers**: Optimizers in the ``optim`` module (such as SGD, Adam, etc.) maintain consistent interfaces with PyTorch
 - **Automatic Differentiation Mechanism**: ``requires_grad`` and backpropagation mechanisms are similar to PyTorch
+- **torch.func Compatibility**: Top-level ``func`` module mirrors ``torch.func`` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``hessian``, ``hvp``, ``vmap``, ``functional_call``
 - **Computer Vision**: Datasets and transforms in the ``vision`` module maintain interface compatibility with torchvision
 
 PyTorch Features Not Supported by Riemann

@@ -29,7 +29,7 @@ Riemann是一个类似PyTorch的神经网络编程框架，支持张量计算中
 - **深度学习研究**：自定义模型和算法开发
 - **科学计算**：复杂数学模型的梯度计算
 - **优化问题求解**：梯度下降和Adam等优化算法
-- **计算机视觉**：图像分类、目标检测等视觉任务
+- **计算机视觉**：图像分类等视觉任务
 - **教育教学**：自动微分和深度学习原理学习
 
 
@@ -41,6 +41,7 @@ Riemann库设计时注重与PyTorch接口的兼容性，同名的函数和类接
 - **神经网络组件**：`nn`模块中的层、激活函数和损失函数与PyTorch保持接口兼容
 - **优化器**：`optim`模块中的优化器（如SGD、Adam等）接口与PyTorch保持一致
 - **自动微分机制**：`requires_grad`、反向传播机制与PyTorch相似
+- **torch.func兼容**：顶层 ``func`` 模块对齐 `torch.func` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``hessian``、``hvp``、``vmap``、``functional_call``
 - **计算机视觉**：`vision`模块中的数据集和变换与torchvision保持接口兼容
 - **跨框架互操作**：Riemann 张量可与 NumPy 数组、CuPy 数组以及 PyTorch 等其它张量框架互相转换或共享数据，入口包括 `r.tensor()`、`r.as_tensor()`、`r.from_dlpack()`、`TN.array()`、`TN.numpy()`，底层依托 `__array__`、`__cuda_array_interface__`、`__dlpack__`、`__buffer__` 协议；设备与 dtype 一致时为零拷贝
 
@@ -59,7 +60,9 @@ Riemann/
 │       ├── utils/            # 工具函数
 │       ├── vision/           # 计算机视觉模块
 │       ├── __init__.py       # 包配置文件
+│       ├── cuda.py           # CUDA/GPU 支持
 │       ├── dtype.py          # 数据类型定义
+│       ├── func.py           # 函数式自动微分接口
 │       ├── gradmode.py       # 梯度模式控制
 │       ├── linalg.py         # 线性代数函数
 │       ├── serialization.py  # 对象保存与加载
@@ -90,7 +93,8 @@ Riemann/
 - **optim/**: 优化器模块，如SGD、Adam等优化器，以及学习率调度器
 - **utils/**: 工具函数，包括数据集Dataset类和数据加载器Dataloader类等
 - **vision/**: 计算机视觉相关功能，包括数据集和图像变换
-- **核心文件**: 如 `tensordef.py`（张量定义）、`linalg.py`（线性代数）等
+- **`func`**: 函数式自动微分接口，参考 torch.func 设计。提供柯里化的纯函数式 API，如 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``hvp``、``vmap``、``functional_call``，适合链式高阶求导
+- **核心文件**: 如 `tensordef.py`（张量定义）、`linalg.py`（线性代数）、`dtype.py`（数据类型）、`cuda.py`（GPU 支持）等
 
 ### tests目录
 
@@ -261,7 +265,28 @@ Riemann的详细使用指南已在线发布：
 - **中文文档**: https://riemann-zh.readthedocs.io/zh-cn/latest/
 - **英文文档**: https://riemann-en.readthedocs.io/en/latest/
 
-文档源文件位于`docs`目录，采用reStructuredText格式编写。你也可以阅读`docs`中README.md和README_en.md中的说明，在本地手工构建出html格式的文档
+文档源文件位于`docs`目录，采用reStructuredText格式编写。本地构建 HTML 文档：
+
+**Windows：**
+
+```batch
+cd docs
+make.bat html-all     REM 同时构建英文和中文
+make.bat html-en      REM 仅构建英文
+make.bat html-zh      REM 仅构建中文
+make.bat clean-all    REM 清理构建产物
+```
+
+**Linux / macOS：**
+
+```bash
+cd docs
+chmod +x make.sh      # 首次使用需赋予执行权限
+./make.sh html-all    # 同时构建英文和中文
+./make.sh html-en     # 仅构建英文
+./make.sh html-zh     # 仅构建中文
+./make.sh clean-all   # 清理构建产物
+```
 
 ### riemann包的模块结构
 
@@ -269,6 +294,7 @@ Riemann的详细使用指南已在线发布：
 riemann                  # 主包
 ├── autograd             # 自动微分模块
 │   └── functional       # 自动微分函数式接口
+├── func                 # torch.func 风格函数式自动微分 API
 ├── linalg               # 线性代数模块
 ├── nn                   # 神经网络模块
 │   └── functional       # 神经网络函数
@@ -308,6 +334,10 @@ from riemann import tensor, zeros, ones, randn
 # 导入自动微分功能
 from riemann.autograd import grad, backward
 from riemann.autograd.functional import jacobian, hessian
+
+# 导入函数式自动微分 API（torch.func 风格，柯里化，支持高阶求导）
+from riemann import func
+from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
 
 # 导入线性代数功能
 from riemann import linalg

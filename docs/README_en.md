@@ -11,35 +11,37 @@ docs/
 │   ├── index.rst     # English documentation homepage
 │   └── ...
 ├── source_zh/        # Chinese documentation source files
-│   ├── conf_zh.py    # Chinese documentation configuration
+│   ├── conf.py       # Chinese documentation configuration (language = 'zh_CN')
 │   ├── index.rst     # Chinese documentation homepage
 │   └── ...
 ├── build/
 │   ├── html/         # English documentation build output
 │   └── html_zh/      # Chinese documentation build output
-├── Makefile          # Linux/Mac build scripts
-└── make.bat          # Windows build scripts
+├── make.sh           # Linux/macOS build script (bash)
+└── make.bat          # Windows build script
 ```
 
 ## Build Commands
 
-### Using Makefile (Linux/Mac)
+### Using make.sh (Linux/macOS)
+
+First-time only: `chmod +x make.sh`
 
 ```bash
 # Build English documentation
-make html-en
+./make.sh html-en
 
 # Build Chinese documentation
-make html-zh
+./make.sh html-zh
 
 # Build all language documentation
-make html-all
+./make.sh html-all
 
 # Clean all build files
-make clean-all
+./make.sh clean-all
 ```
 
-### Using Batch Files (Windows)
+### Using make.bat (Windows)
 
 ```cmd
 # Build English documentation

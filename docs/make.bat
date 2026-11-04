@@ -5,7 +5,7 @@ pushd %~dp0
 REM Command file for Sphinx documentation (with multi-language support)
 
 if "%SPHINXBUILD%" == "" (
-	set SPHINXBUILD=sphinx-build
+	set SPHINXBUILD=python -m sphinx
 )
 set SOURCEDIR_EN=source
 set SOURCEDIR_ZH=source_zh

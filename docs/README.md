@@ -11,35 +11,37 @@ docs/
 │   ├── index.rst     # 英文文档首页
 │   └── ...
 ├── source_zh/        # 中文文档源文件
-│   ├── conf_zh.py    # 中文文档配置
+│   ├── conf.py       # 中文文档配置 (language = 'zh_CN')
 │   ├── index.rst     # 中文文档首页
 │   └── ...
 ├── build/
 │   ├── html/         # 英文文档构建输出
 │   └── html_zh/      # 中文文档构建输出
-├── Makefile          # Linux/Mac 构建脚本
+├── make.sh           # Linux/macOS 构建脚本 (bash)
 └── make.bat          # Windows 构建脚本
 ```
 
 ## 构建命令
 
-### 使用 Makefile (Linux/Mac)
+### 使用 make.sh (Linux/macOS)
+
+首次使用需赋予执行权限：`chmod +x make.sh`
 
 ```bash
 # 构建英文文档
-make html-en
+./make.sh html-en
 
 # 构建中文文档
-make html-zh
+./make.sh html-zh
 
 # 构建所有语言文档
-make html-all
+./make.sh html-all
 
 # 清理所有构建文件
-make clean-all
+./make.sh clean-all
 ```
 
-### 使用批处理文件 (Windows)
+### 使用 make.bat (Windows)
 
 ```cmd
 # 构建英文文档

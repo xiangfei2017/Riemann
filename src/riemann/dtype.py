@@ -116,24 +116,25 @@ def get_default_complex():
         raise TypeError(f'Invalid default type of float:{default_float}')
     return default_complex
 
+# 预定义 kind 集合，避免每次函数调用重建 set
+_NUMERIC_KINDS = frozenset({'i', 'u', 'f', 'c', 'b'})
+_FLOAT_COMPLEX_KINDS = frozenset({'f', 'c'})
+
 def is_numeric_array(numpy_arr):
-    return numpy_arr.dtype.kind in {'i', 'u', 'f', 'c', 'b'}
+    return numpy_arr.dtype.kind in _NUMERIC_KINDS
 
 def is_number(v):
     return isinstance(v,(int,float,complex,bool,np.bool_,
                          np.integer,np.floating,np.complexfloating))
 
 def is_float_or_complex(dtype:np.dtype):
-    if np.issubdtype(dtype, np.floating) or \
-       np.issubdtype(dtype, np.complexfloating):
-        return True
-    return False
+    return dtype.kind in _FLOAT_COMPLEX_KINDS
 
 def is_float(dtype:np.dtype):
-    return np.issubdtype(dtype, np.floating)
+    return dtype.kind == 'f'
 
 def is_complex(dtype:np.dtype):
-    return np.issubdtype(dtype, np.complexfloating)
+    return dtype.kind == 'c'
 
 # 预定义类型值映射，避免在每次函数调用时重新创建字典
 type_value_dict = { np.dtype('bool'):(1,0),

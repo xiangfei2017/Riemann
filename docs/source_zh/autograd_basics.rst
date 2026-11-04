@@ -5,25 +5,25 @@ Riemann 的自动微分引擎能够自动记录张量计算的过程，形成计
 
 **核心概念**
 
-- **计算图（Computation Graph）**：Riemann 在后台自动构建的有向图，记录了张量之间的运算关系。每个节点代表一个张量，边代表运算操作。
+- 计算图：Riemann 在后台自动构建的有向图，记录了张量之间的运算关系。每个节点代表一个张量，边代表运算操作。
 
-- **前向计算（Forward Pass）**：从输入张量开始，沿着计算图执行运算，最终得到输出结果的过程。
+- 前向计算：从输入张量开始，沿着计算图执行运算，最终得到输出结果的过程。
 
-- **反向传播（Backward Propagation）**：从输出张量开始，沿着计算图的反方向传播梯度，计算每个输入张量的导数。
+- 反向传播：从输出张量开始，沿着计算图的反方向传播梯度，计算每个输入张量的导数。
 
-- **梯度（Gradient）**：标量张量对其他张量的偏导数，表示输出相对于输入的变化率。
+- 梯度：标量张量对其他张量的偏导数，表示输出相对于输入的变化率。
 
-- **叶子节点张量（Leaf Node Tensor）**：用户直接创建的张量（例如通过 ``rm.tensor()``），且 ``requires_grad=True``。这些通常是模型参数。
+- 叶子节点张量：用户直接创建的张量（例如通过 ``rm.tensor()``），且 ``requires_grad=True``。这些通常是模型参数。
 
-- **中间节点张量（Intermediate Node Tensor）**：通过对其他张量进行运算而创建的张量。默认情况下，不会保留中间节点的梯度。
+- 中间节点张量：通过对其他张量进行运算而创建的张量。默认情况下，不会保留中间节点的梯度。
 
 **梯度计算方法**
 
 Riemann 提供了两种计算梯度的方法：
 
-1. **backward() 方法**：适合一次求出多个张量的梯度。调用后，所有参与计算的叶子节点张量的梯度会被计算并存储在各自的 ``grad`` 属性中。
+1. **backward() 方法**: 适合一次求出多个张量的梯度。调用后，所有参与计算的叶子节点张量的梯度会被计算并存储在各自的 ``grad`` 属性中。
 
-2. **grad() 函数**：适合对指定的张量求导。可以精确控制需要计算哪些张量的梯度，返回一个包含梯度的元组，不会修改张量的 ``grad`` 属性。
+2. **grad() 函数**: 适合对指定的张量求导。可以精确控制需要计算哪些张量的梯度，返回一个包含梯度的元组，不会修改张量的 ``grad`` 属性。
 
 梯度跟踪开关
 ------------
@@ -71,9 +71,9 @@ Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()
 
 **参数说明**
 
-- **gradient** （可选）：当输出张量不是标量时，需要提供一个与输出张量形状相同的梯度张量。对于标量输出，可以省略此参数，默认为 ``None`` （相当于传入标量 1）。
-- **retain_graph** （可选）：是否保留计算图。默认为 ``False`` ，表示反向传播后释放计算图。如果需要多次调用 ``backward()`` ，应设置为 ``True`` 。
-- **create_graph** （可选）：是否记录梯度的计算图，以便后续计算高阶导数，默认为 ``False`` 。
+- gradient （可选）：当输出张量不是标量时，需要提供一个与输出张量形状相同的梯度张量。对于标量输出，可以省略此参数，默认为 ``None`` （相当于传入标量 1）。
+- retain_graph （可选）：是否保留计算图。默认为 ``False`` ，表示反向传播后释放计算图。如果需要多次调用 ``backward()`` ，应设置为 ``True`` 。
+- create_graph （可选）：是否记录梯度的计算图，以便后续计算高阶导数，默认为 ``False`` 。
 
 **使用场景**
 
@@ -84,7 +84,7 @@ Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()
 **注意事项**
 
 - 只有 ``requires_grad=True`` 的 **叶子节点张量** 才会被计算梯度
-- **中间节点张量** 默认不会保留梯度，如果需要计算中间节点的梯度，需要调用 ``retain_grad()`` 方法
+- 中间节点张量 默认不会保留梯度，如果需要计算中间节点的梯度，需要调用 ``retain_grad()`` 方法
 - 梯度会累积到 ``grad`` 属性中，多次调用 ``backward()`` 前需要手动清零梯度
 
 **示例 1：标量输出的梯度计算**
@@ -157,12 +157,12 @@ Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()
 
 **参数说明**
 
-- **outputs** ：输出张量（标量或张量），用于计算梯度的起点
-- **inputs** ：输入张量或张量元组，指定需要计算梯度的张量
-- **grad_outputs** （可选）：当 ``outputs`` 不是标量时，需要提供梯度张量
-- **retain_graph** （可选）：是否保留计算图，默认为 ``False``
-- **create_graph** （可选）：是否记录梯度的计算图，以便后续计算高阶导数，默认为 ``False``
-- **allow_unused** （可选）：是否允许某些输入张量未被使用，默认为 ``False``
+- outputs ：输出张量（标量或张量），用于计算梯度的起点
+- inputs ：输入张量或张量元组，指定需要计算梯度的张量
+- grad_outputs （可选）：当 ``outputs`` 不是标量时，需要提供梯度张量
+- retain_graph （可选）：是否保留计算图，默认为 ``False``
+- create_graph （可选）：是否记录梯度的计算图，以便后续计算高阶导数，默认为 ``False``
+- allow_unused （可选）：是否允许某些输入张量未被使用，默认为 ``False``
 
 **使用场景**
 
@@ -174,7 +174,7 @@ Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()
 
 - 梯度以 **元组形式返回** ，顺序与 ``inputs`` 参数的顺序一致
 - 只有 ``inputs`` 中指定的张量才会计算梯度
-- **不会修改** 输入张量的 ``grad`` 属性
+- 不会修改 输入张量的 ``grad`` 属性
 - 中间节点即使调用了 ``retain_grad()`` ，也不会在 ``grad()`` 中自动计算梯度，必须显式指定
 
 **示例 1：计算指定张量的梯度**
@@ -332,7 +332,7 @@ set_grad_enabled() 上下文管理器/装饰器
 
 **参数：**
 
-- **mode** (bool): ``True`` 启用梯度计算，``False`` 禁用梯度计算
+- mode (bool): ``True`` 启用梯度计算，``False`` 禁用梯度计算
 
 **作为上下文管理器使用：**
 
@@ -403,7 +403,7 @@ Riemann 提供了多种张量方法用于打断计算图依赖和复制张量数
 
 以下是这些关键方法的单独说明和示例：
 
-1. **detach()**：创建一个与原张量共享数据但从计算图中分离的新张量
+1. **detach()**: 创建一个与原张量共享数据但从计算图中分离的新张量
 
 detach() 方法返回一个新的张量对象，它与原张量共享相同的数据内存，但已从计算图中断开连接。这意味着：
 
@@ -424,9 +424,9 @@ detach() 方法返回一个新的张量对象，它与原张量共享相同的�
     print(f"detached_y.requires_grad: {detached_y.requires_grad}")
     print(f"修改 detached_y 会修改 y: {detached_y.array().ctypes.data == y.detach().array().ctypes.data}")
 
-**特点**：创建新张量对象，与原张量共享内存，禁用梯度跟踪
+**特点**: 创建新张量对象，与原张量共享内存，禁用梯度跟踪
 
-2. **detach_()**：原地操作，将当前张量从计算图中分离
+2. **detach_()**: 原地操作，将当前张量从计算图中分离
 
 detach_() 是 detach() 的原地版本。它不会创建新张量，而是直接修改当前张量，使其与计算图断开连接。
 
@@ -441,9 +441,9 @@ detach_() 是 detach() 的原地版本。它不会创建新张量，而是直接
     y.detach_()  # 原地操作
     print(f"detach_() 后: y.requires_grad = {y.requires_grad}")
 
-**特点**：原地修改张量（不创建新对象），与原张量共享内存（同一张量），禁用梯度跟踪
+**特点**: 原地修改张量（不创建新对象），与原张量共享内存（同一张量），禁用梯度跟踪
 
-3. **clone()**：创建一个数据复制的新张量，保持计算图依赖关系
+3. **clone()**: 创建一个数据复制的新张量，保持计算图依赖关系
 
 clone() 方法创建一个完全独立的新张量对象，拥有自己的数据内存，但保留了原张量的计算图依赖关系。这意味着对克隆张量的操作可以反向传播梯度到原始张量。
 
@@ -465,9 +465,9 @@ clone() 方法创建一个完全独立的新张量对象，拥有自己的数据
     loss.backward()
     print(f"x.grad after backward(): {x.grad}")  # 梯度从克隆张量传递到了 x
 
-**特点**：创建新张量对象，复制数据（不共享内存），保留梯度跟踪
+**特点**: 创建新张量对象，复制数据（不共享内存），保留梯度跟踪
 
-4. **copy()**：创建一个数据复制的新张量，与计算图完全分离
+4. **copy()**: 创建一个数据复制的新张量，与计算图完全分离
 
 copy() 方法创建一个新的张量对象，拥有自己的数据内存，并且与计算图完全分离。这相当于调用 clone().detach_()，适用于创建独立的、不跟踪梯度的张量副本。
 
@@ -484,23 +484,36 @@ copy() 方法创建一个新的张量对象，拥有自己的数据内存，并�
     print(f"copied_y.requires_grad: {copied_y.requires_grad}")
     print(f"修改 copied_y 不会修改 y: {copied_y.detach().array().ctypes.data != y.detach().array().ctypes.data}")
 
-**特点**：创建新张量对象，复制数据（不共享内存），禁用梯度跟踪
+**特点**: 创建新张量对象，复制数据（不共享内存），禁用梯度跟踪
 
 5. 各方法关键差异对比
 
 下表总结了这四个方法的关键差异：
 
-+----------------+----------------------+------------------------+-------------------------------+
-| 方法           | 是否创建新对象？     | 是否与原张量共享内存？ | 是否支持梯度跟踪？            |
-+================+======================+========================+===============================+
-| detach()       | 是                   | 是                     | 否                            |
-+----------------+----------------------+------------------------+-------------------------------+
-| detach_()      | 否                   | 不适用，同一张量       | 否                            |
-+----------------+----------------------+------------------------+-------------------------------+
-| clone()        | 是                   | 否                     | 是                            |
-+----------------+----------------------+------------------------+-------------------------------+
-| copy()         | 是                   | 否                     | 否                            |
-+----------------+----------------------+------------------------+-------------------------------+
+.. list-table::
+   :header-rows: 1
+   :widths: auto
+
+   * - 方法
+     - 是否创建新对象？
+     - 是否与原张量共享内存？
+     - 是否支持梯度跟踪？
+   * - detach()
+     - 是
+     - 是
+     - 否
+   * - detach_()
+     - 否
+     - 不适用，同一张量
+     - 否
+   * - clone()
+     - 是
+     - 否
+     - 是
+   * - copy()
+     - 是
+     - 否
+     - 否
 
 .. code-block:: python
 
@@ -528,18 +541,18 @@ copy() 方法创建一个新的张量对象，拥有自己的数据内存，并�
 
 这些方法的主要区别：
 
-- **数据共享**: detach() 与原始张量共享数据，而 clone() 和 copy() 创建新的数据副本
-- **原地操作**: detach_() 是原地操作，直接修改原张量，其他方法创建新张量
-- **梯度跟踪**: clone() 保持梯度跟踪（如果原张量需要梯度），其他方法禁用梯度跟踪
-- **独立副本**: copy() 创建一个完全独立的新张量对象，不与原张量共享数据，也不保留计算图依赖关系
+- 数据共享: detach() 与原始张量共享数据，而 clone() 和 copy() 创建新的数据副本
+- 原地操作: detach_() 是原地操作，直接修改原张量，其他方法创建新张量
+- 梯度跟踪: clone() 保持梯度跟踪（如果原张量需要梯度），其他方法禁用梯度跟踪
+- 独立副本: copy() 创建一个完全独立的新张量对象，不与原张量共享数据，也不保留计算图依赖关系
 
 原地操作和梯度
 --------------
 
 原地操作可能会影响梯度计算。以下是重要的注意事项：
 
-1. **带梯度跟踪的叶子节点张量**：不允许对需要梯度跟踪的叶子节点张量执行原地操作，这会破坏反向传播所需的计算图
-2. **带梯度跟踪的非叶子节点张量**：允许对需要梯度跟踪的非叶子节点张量（中间结果）执行原地操作
+1. **带梯度跟踪的叶子节点张量**: 不允许对需要梯度跟踪的叶子节点张量执行原地操作，这会破坏反向传播所需的计算图
+2. **带梯度跟踪的非叶子节点张量**: 允许对需要梯度跟踪的非叶子节点张量（中间结果）执行原地操作
 
 示例：
 
@@ -604,86 +617,364 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 .. code-block:: python
 
     import riemann as rm
-    
+
     # 创建支持梯度跟踪的张量
     x = rm.tensor(2.0, requires_grad=True)
-    
+
     # 一阶计算
     y = x ** 3.
-    
+
     # 使用图创建计算一阶梯度
     dy_dx = rm.autograd.grad(y, x, create_graph=True)[0]
     print(dy_dx)  # 12
-    
+
     # 计算二阶梯度
     d2y_dx2 = rm.autograd.grad(dy_dx, x)[0]
     print(d2y_dx2)  # 12
 
-此外，Riemann 还提供了两个便捷的高阶导数计算工具：`d()` 方法和 `higher_order_grad()` 函数。
+此外，Riemann 还提供了两种更便捷的高阶导数计算方式：``TN.d()`` 方法和 ``func.grad`` 函数链式调用。
 
-``d()`` 方法
-~~~~~~~~~~~~
+``TN.d()`` 方法
+~~~~~~~~~~~~~~~~
 
-张量对象的 ``d()`` 方法用于计算当前标量张量对指定多个标量张量的混合偏导数。它可以方便地计算多阶混合导数。
+张量对象的 ``d()`` 方法是计算高阶混合偏导数最方便的接口。它将对多个变量的各阶求导自然地串在一起：
+
+**功能用途**
+
+- 计算当前标量张量对指定变量的**任意阶数偏导数**或**混合偏导数**
+- 变量可以是**任意形状**（标量、向量、矩阵），不限于 0-d 标量
+- 同一变量多次出现时**阶数自动累加**
+- 显式阶数规格：``(var, k)`` 形式直接指定对该变量求 k 阶
+
+**接口签名**
+
+``current_scalar.d(*args, create_graph=False)``
+
+参数:
+    - ``*args``: 求导规格，两种形式可混用
+        - ``TN`` — 对该变量求一阶
+        - ``(TN, k)`` — 对该变量求 **k** 阶 (k ≥ 1)
+    - ``create_graph``: ``bool``, 默认 ``False``。是否追踪结果计算图，以支持继续高阶微分。
+
+返回值:
+    - ``TN``，形状为各变量形状的扁平拼接：``shape = ⊕ shape(var_i) × order_i``
+
+**示例代码**
 
 .. code-block:: python
 
     import riemann as rm
-    
-    # 创建支持梯度跟踪的张量
+    import numpy as np
+
+    # === 标量变量（兼容旧版） ===
     x = rm.tensor(2.0, requires_grad=True)
     y = rm.tensor(3.0, requires_grad=True)
-    
-    # 定义函数 f = x^3 * y^2
-    f = x ** 3. * y ** 2.
-    
-    # 计算混合偏导数 d²f/dxdy
-    d2f_dxdy = f.d(x, y)
-    print(d2f_dxdy)  # 72.0
-    
-    # 计算三阶混合偏导数 d³f/dx²dy
-    d3f_dx2dy = f.d(x, x, y)
-    print(d3f_dx2dy)  # 72.0
+    f = x ** 3 * y ** 2
 
-``higher_order_grad()`` 函数
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    f.d(x)                 # 一阶 df/dx = 3x²y² = 108
+    f.d(x, y)              # 混合偏导 d²f/dxdy = 6x²y = 72
+    f.d((x, 2))            # 显式二阶 d²f/dx² = 6xy² = 108
+    f.d(x, x)              # 同变量重复 = f.d((x, 2)) — 6xy² = 108
+    f.d((x, 2), y)         # 显式多阶 d³f/∂x²∂y = 12xy = 72
 
-`higher_order_grad()` 函数用于计算标量张量输出相对于输入张量的 n 阶导数。它提供了一种便捷的方式来直接计算指定阶数的导数。
+    # === 向量变量（核心能力） ===
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    f = (x ** 3).sum()
+
+    f.d(x)                 # 梯度向量 [3, 12, 27]
+    f.d(x, x)              # Hessian 矩阵 diag([6, 12, 18])
+    f.d((x, 3))            # 三阶张量 shape=(3,3,3)，对角线 [24, 48, 72]
+
+    # === 多向量混合偏导 ===
+    x = rm.tensor([1., 2.], requires_grad=True)
+    y = rm.tensor([3., 4.], requires_grad=True)
+    f = (x * y).sum() ** 2
+
+    f.d(x, y)              # (2, 2) 交叉偏导矩阵 [[28, 12], [8, 38]]
+
+    # === 标量 + 向量 ===
+    x = rm.tensor(2.0, requires_grad=True)
+    y = rm.tensor([1., 2., 3.], requires_grad=True)
+    f = x * (y ** 2).sum()
+
+    f.d(x, y)              # d²f/∂x∂y = [2, 4, 6], shape=(3,)
+
+**注意事项**
+
+1. ``self`` 必须是**标量张量**（``ndim == 0``）且 ``requires_grad=True``
+2. 所有求导变量必须 ``requires_grad=True``
+3. ``args`` 至少要有一个，否则抛 ``ValueError``
+4. ``(var, k)`` 形式的 k 必须 ≥ 1
+5. 结果形状 = 各变量形状按 args 顺序拼接，如 ``f.d(x, y)`` 其中 x∈Rⁿ、y∈Rᵐ → shape=(n, m)
+6. ``create_graph=True`` 保留计算图，可继续链式高阶微分；注意内存开销随阶数指数增长
+7. 当对**张量**（ndim>0）做高阶偏导时，内部会逐元素标量 grad 再 stack 拼回形状
+
+使用 ``func`` 模块函数计算高阶导数
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``func`` 模块的柯里化设计（多数函数返回 Callable）天然适合链式嵌套，
+以函数式方式灵活组合 ``grad``、``jacrev``、``jacfwd``、``hessian``、``hvp`` 等函数，
+表达任意阶的高阶导数。以下展示几种最典型的场景，数值均已验证。
+
+**示例 1: 向量输入 → 向量输出的 Jacobian 与二阶张量**
+
+``func.jacrev`` / ``func.jacfwd`` 直接对向量输出函数求导，
+天然处理向量输入 → 向量输出的高阶导数场景。
+将 ``jacrev`` 再次嵌套自身，即可得到 Jacobian 的 Jacobian —— 三阶张量。
 
 .. code-block:: python
 
     import riemann as rm
-    
-    # 创建支持梯度跟踪的张量
+    from riemann import func
+
+    # f(x) = [x₀³, x₁³, x₂³]，逐元素三次方，向量输入/向量输出
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    f = lambda xv: xv ** 3   # shape: (3,) → (3,)
+
+    # ===== 一阶: Jacobian 矩阵 =====
+    # J_{ij} = ∂f_i/∂x_j = 3x_i² · δ_{ij} （对角矩阵）
+    J = func.jacrev(f)(x)
+    # J.shape = (3, 3)
+    # J = diag([3·1², 3·2², 3·3²]) = diag([3, 12, 27])
+
+    # jacfwd 等价（前向模式，对这类小向量效率相近）
+    J_fwd = func.jacfwd(f)(x)
+    # → 与 J 完全相同
+
+    # ===== 二阶: Jacobian 的 Jacobian —— 三阶张量 =====
+    # T_{ijk} = ∂²f_i/∂x_j∂x_k
+    # 对 f_i = x_i³: 仅当 i=j=k 时 T_{ijk} = 6x_i，其余为 0
+    T = func.jacrev(lambda xv: func.jacrev(f, create_graph=True)(xv))(x)
+    # T.shape = (3, 3, 3)
+    # T[0,0,0] = 6·1 = 6,  T[1,1,1] = 6·2 = 12,  T[2,2,2] = 6·3 = 18
+    # 所有其他元素 = 0
+
+**示例 2: 向量输入 → 标量输出的 Hessian 与 hvp**
+
+这是优化问题中最常见的高阶场景——目标函数是向量输入的标量值，
+需要 Hessian 矩阵或 Hessian-向量乘积（hvp）。
+用 ``func.jacrev(func.grad(f))`` 嵌套一步构造 Hessian，
+用 ``func.hvp`` 则无需显式构造矩阵即可算出 Hessian-向量积。
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    # 最小二乘 f(x) = ||A·x - b||², x ∈ R², A ∈ R^{3×2}, b ∈ R³
+    A = rm.tensor([[1., 2.], [3., 4.], [5., 6.]], requires_grad=False)
+    b = rm.tensor([1., 2., 3.], requires_grad=False)
+    x = rm.tensor([1., 2.], requires_grad=True)
+
+    def f_least_squares(xv):
+        residual = A @ xv - b        # shape (3,)
+        return (residual ** 2).sum() # 标量输出
+
+    # ===== Hessian 矩阵 =====
+    # 最小二乘的 Hessian 恒等于 2·AᵀA（与 x 无关！）
+    H = func.jacrev(func.grad(f_least_squares, create_graph=True))(x)
+    # H.shape = (2, 2)
+    # H = 2·AᵀA = [[70, 88], [88, 112]]
+
+    # ===== Hessian-向量乘积 hvp =====
+    # 给定方向向量 v，计算 H·v —— 无需显式构造 H，节省 O(n²) 内存
+    v = rm.tensor([1., 0.], requires_grad=False)
+    grad_fn, hvp_fn = func.hvp(f_least_squares, x, v)()
+    # 返回 tuple: (gradient_estimator, hvp_result)
+    # hvp_result = H·v = [70, 88]
+
+**示例 3: 多输入函数的各输入独立高阶 —— ``f(x, y) = x³y⁴``**
+
+通过 ``argnums`` 指定对哪个输入位置求导，再嵌套 ``func.grad`` 实现高阶：
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
     x = rm.tensor(2.0, requires_grad=True)
-    
-    # 定义函数 y = x^3
-    y = x ** 3.
-    
-    # 计算二阶导数
-    d2y_dx2 = rm.autograd.higher_order_grad(y, x, 2)[0]
-    print(d2y_dx2)  # 12.0
-    
-    # 计算三阶导数
-    d3y_dx3 = rm.autograd.higher_order_grad(y, x, 3)[0]
-    print(d3y_dx3)  # 6.0
-    
-    # 多个输入的情况
-    x1 = rm.tensor(1.0, requires_grad=True)
-    x2 = rm.tensor(2.0, requires_grad=True)
-    z = x1 ** 2. + x2 ** 3.
-    grads = rm.autograd.higher_order_grad(z, [x1, x2], 2)
-    print(grads)  # (2.0, 12.0)
+    y = rm.tensor(3.0, requires_grad=True)
 
-求导功能函数 (Functional API)
-------------------------------
+    f = lambda xv, yv: xv ** 3 * yv ** 4
 
-Riemann 还在 `riemann.autograd.functional` 模块中提供了一系列功能函数，用于计算更高级的导数结构，如雅可比矩阵、Hessian 矩阵、雅可比向量积等。
+    # 对 x 二阶: ∂²f/∂x² = 6xy⁴ = 6·2·81 = 972
+    d2x = func.grad(
+        lambda xv, yv: func.grad(f, argnums=0, create_graph=True)(xv, yv),
+        argnums=0
+    )(x, y)   # → 972.0
+
+    # 对 y 二阶: ∂²f/∂y² = 12x³y² = 12·8·9 = 864
+    d2y = func.grad(
+        lambda xv, yv: func.grad(f, argnums=1, create_graph=True)(xv, yv),
+        argnums=1
+    )(x, y)   # → 864.0
+
+    # 同时对两个输入求一阶（argnums 为 tuple）
+    dx, dy = func.grad(f, argnums=(0, 1), create_graph=True)(x, y)
+    # dx = 3x²y⁴ = 972.0,  dy = x³·4y³ = 864.0
+
+**示例 4: ``func.grad`` + ``has_aux`` 传递辅助值 + 继续高阶**
+
+当 ``f`` 返回 ``(value, aux)`` 二元组时，``has_aux=True`` 让 ``func.grad``
+只对 ``value`` 求导，同时把 ``aux`` 原样传回：
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+    from riemann.autograd import grad
+
+    x = rm.tensor(2.0, requires_grad=True)
+
+    # f(x) = log(x), 辅助值是 1.0
+    def f_with_aux(xv):
+        return rm.log(xv), rm.tensor(1.0)   # (value, aux)
+
+    # 构建带 has_aux 的高阶梯度函数
+    grad_fn = func.grad(f_with_aux, has_aux=True, create_graph=True)
+    g1, aux = grad_fn(x)
+    # g1 = 1/x = 0.5,  aux = 1.0（原样返回）
+
+    # g1 带着计算图，可以继续对它求导
+    g2 = grad(g1, x, allow_unused=True)[0]
+    # g2 = -1/x² = -0.25
+
+**示例 5: ``jacrev(grad(f))`` — 一次性构造 Hessian 矩阵**
+
+对向量变量的二阶导数，可以用 ``func.jacrev(func.grad(f))`` 一步算出
+完整的 Hessian 矩阵，比手动两次 ``func.grad`` 更高效：
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    # f(x) = ||x||⁴ = Σ x_i⁴,  x ∈ R³
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    f = lambda xv: (xv ** 4).sum()
+
+    # 梯度函数 g = ∇f
+    # Hessian = Jacobian_of_forward(∇f)
+    H = func.jacrev(func.grad(f, create_graph=True))(x)
+
+    # H.shape = (3, 3)
+    # H 是对角矩阵，对角元 12·x_i² = [12, 48, 108]
+    #
+    # 数学原理: H_ij = ∂²f/∂x_i∂x_j = ∂(∇f)_i/∂x_j = Jac(∇f)_{ij}
+
+前向模式（``jacfwd``）对同一个问题结果相同：
+
+.. code-block:: python
+
+    H_fwd = func.jacfwd(func.grad(f, create_graph=True))(x)
+    # → 与 H 完全相同
+
+**示例 6: 批量高阶 —— ``func.vmap`` 包高阶函数**
+
+对一批输入同时求高阶导数，用 ``func.vmap`` 将标量高阶函数向量化后批量执行：
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+    from riemann.autograd import grad
+
+    xs = rm.tensor([1., 2., 3., 4.], requires_grad=True)
+
+    # 标量版本的二阶导数函数: x → f''(x) = 12x²
+    def scalar_second(xv):
+        f = xv ** 4
+        g1 = grad(f, xv, create_graph=True, allow_unused=True)[0]
+        g2 = grad(g1, xv, allow_unused=True)[0]
+        return g2
+
+    # vmap 批量应用
+    batch_f2 = func.vmap(scalar_second)(xs)
+    # → [12·1², 12·2², 12·3², 12·4²] = [12, 48, 108, 192]
+
+或者先对批量求和转标量再反向（需要手动传 ``grad_outputs`` 给第二次 ``grad``）：
+
+.. code-block:: python
+
+    f_sum = (xs ** 4).sum()
+    g1 = grad(f_sum, xs, create_graph=True, allow_unused=True)[0]
+    g2 = grad(g1, xs, allow_unused=True,
+              grad_outputs=rm.ones_like(g1))[0]   # 必须传 grad_outputs！
+    # → 同样 [12, 48, 108, 192]
+
+**示例 7: ``TN.d()`` 与 ``func.grad`` 高阶链式等价性**
+
+两种方式对同一计算求导结果完全一致：
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    x = rm.tensor(2.0, requires_grad=True)
+    y = rm.tensor(3.0, requires_grad=True)
+    f = x ** 3 * y ** 2
+
+    # 方式 A: TN.d() —— 最简洁
+    d_x2 = f.d(x, x)
+    # → 6xy² = 6·2·9 = 108.0
+
+    # 方式 B: func.grad 函数式高阶链
+    f_fn = lambda xv, yv: xv ** 3 * yv ** 2
+    gf = func.grad(f_fn, argnums=0, create_graph=True)
+    ggf = func.grad(lambda xv, yv: gf(xv, yv), argnums=0)
+    fg_x2 = ggf(x, y)
+    # → 也是 108.0
+
+.. list-table::
+   :header-rows: 1
+   :widths: auto
+
+   * - 场景
+     - 推荐方式
+     - 理由
+   * - 标量计算图上的纯高阶导数
+     - ``f.d((x, n))``
+     - 一行搞定，内部自动管理 create_graph 链
+   * - 多变量混合偏导
+     - ``f.d(x, y, z)``
+     - 自动管理顺序和阶数累加
+   * - 有显式 fn 的函数式编程
+     - ``func.grad`` 链式
+     - 与其他 func 原语（vmap, jacrev, jvp）自由组合
+   * - 向量输入到向量输出 Jacobian
+     - ``func.jacrev(f)`` / ``func.jacfwd(f)``
+     - grad 只支持标量输出，向量输出必须用 jacrev/jacfwd
+   * - 向量输入到向量输出二阶张量
+     - ``func.jacrev(func.jacrev(f))``
+     - Jacobian 的 Jacobian = 二阶偏导张量，一次算出
+   * - 向量输入到标量输出 Hessian
+     - ``func.jacrev(func.grad(fn))``
+     - 结构化、一次算出、比手动两次 grad 高效
+   * - Hessian-向量乘积 (hvp)
+     - ``func.hvp(fn, x, v)()``
+     - 优化中极常见；无需显式构造 Hessian，节省 O(n²) 内存
+   * - 批量高阶导数
+     - ``func.vmap(scalar_high_order)``
+     - 批量处理自然，无需手动管理 batch 维
+   * - 需要辅助值传递
+     - ``func.grad(fn, has_aux=True)``
+     - 求导同时透传非梯度信息
+   * - 复杂控制流中的高阶
+     - 直接 ``autograd.grad`` 循环
+     - 最底层、最灵活，想插什么逻辑都可以
+
+autograd.functional 模块求导函数
+---------------------------------
+
+Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功能函数，
+用于计算更高级的导数结构，如雅可比矩阵、Hessian 矩阵、雅可比向量积等。
+这些函数接收**具体的输入张量**和**前向函数**，直接返回导数结果。
 
 ``jacobian()`` 函数
 ~~~~~~~~~~~~~~~~~~~~
 
-`jacobian()` 函数用于计算函数从输入到输出的雅可比矩阵 (Jacobian matrix)，展示了函数输出对输入的所有一阶偏导数。
+``jacobian()`` 函数用于计算函数从输入到输出的雅可比矩阵 (Jacobian matrix)，展示了函数输出对输入的所有一阶偏导数。
 
 .. code-block:: python
 
@@ -777,7 +1068,7 @@ Riemann 还在 `riemann.autograd.functional` 模块中提供了一系列功能�
 ``vjp()`` (向量雅可比积) 函数
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-`vjp()` 函数用于计算给定向量与雅可比矩阵的乘积 (Vector-Jacobian Product)。
+``vjp()`` 函数用于计算给定向量与雅可比矩阵的乘积 (Vector-Jacobian Product)。
 
 .. code-block:: python
 
@@ -800,7 +1091,7 @@ Riemann 还在 `riemann.autograd.functional` 模块中提供了一系列功能�
 ``hvp()`` (Hessian-向量积) 和 ``vhp()`` 函数
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-`hvp()` 和 `vhp()` 函数分别用于计算 Hessian-向量积 (Hessian-Vector Product) 和向量-Hessian-积 (Vector-Hessian Product)。由于 Hessian 矩阵是对称的，`hvp()` 和 `vhp()` 实际上是相同的。
+``hvp()`` 和 ``vhp()`` 函数分别用于计算 Hessian-向量积 (Hessian-Vector Product) 和向量-Hessian-积 (Vector-Hessian Product)。由于 Hessian 矩阵是对称的，``hvp()`` 和 ``vhp()`` 实际上是相同的。
 
 .. code-block:: python
 
@@ -823,6 +1114,549 @@ Riemann 还在 `riemann.autograd.functional` 模块中提供了一系列功能�
     # vhp 的计算方式与 hvp 相同
     f_x, vhp_val = rm.autograd.functional.vhp(f, x, v)
     print(vhp_val)
+
+func 模块求导函数
+------------------
+
+``riemann.func`` 模块提供了一套**函数式自动微分原语**，接口设计参考了 PyTorch 的 ``torch.func``。
+与底层的 ``autograd.functional`` 相比，``func`` 模块采用更现代的 **柯里化（curry）风格**: 
+先传入函数和参数配置，返回一个**包裹函数**；调用包裹函数时才真正执行前向和反向计算。
+
+这种风格的优势在于：返回的包裹函数本身也是可组合的，可以与 ``vmap``、高阶 ``grad`` 等原语自由嵌套，
+构建出 ``vmap(jacrev(grad(f)))`` 这样的复合变换。
+
+.. list-table::
+   :header-rows: 1
+   :widths: auto
+
+   * - 特性
+     - autograd.functional
+     - func
+   * - 调用风格
+     - ``fn(f, *inputs)`` 传入具体输入
+     - ``fn(f, ...)(*inputs)`` 返回包裹函数
+   * - argnums 支持
+     - 部分函数支持多输入位置 tuple
+     - 全面支持，返回值按 argnums 过滤
+   * - has_aux
+     - 不支持
+     - grad / grad_and_value 支持
+   * - create_graph
+     - 部分函数支持
+     - 所有函数统一支持
+   * - 组合能力
+     - 不易与 vmap 等复合
+     - 返回 Callable，可自由嵌套
+   * - 默认 cotangents=None
+     - 向量输出会报错
+     - 自动填全 1，对齐 torch.func.vjp
+   * - 非 leaf 输入
+     - 需张量为 leaf 且 requires_grad=True
+     - 自动 detach().requires_grad_(True) 处理
+
+**导入方式**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+    # 或简写
+    from riemann.func import grad, jvp, vjp, jacrev, jacfwd, vmap, functional_call
+
+``grad()`` — 标量值函数的梯度
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``func.grad`` 返回一个包裹函数，计算标量值函数在指定参数位置的梯度。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.grad(func, argnums=0, has_aux=False, create_graph=False) -> Callable
+
+**参数**: 
+
+- func：可微函数，输出必须是标量张量
+- argnums：需要求导的参数位置，默认 ``0``
+- has_aux：如果为 ``True``，``func`` 可以返回 ``(value, aux)`` 二元组；包裹函数也会额外返回 ``aux`` 而不对其求导
+- create_graph：如果为 ``True``，梯度张量会被追踪，可用于高阶微分
+
+**返回**: 包裹函数，输入为 ``func`` 的参数，返回梯度；若 ``has_aux=True`` 则返回 ``(grad, aux)``
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    # 基本用法
+    def f(x, y):
+        return (x ** 2).sum() + x @ y  # 标量输出
+
+    g = func.grad(f, argnums=0)      # 只对 x 求导
+    grad_x = g(rm.tensor([1., 2.], requires_grad=True),
+               rm.tensor([3., 4.]))
+    print(grad_x)  # 2*x + y = [2+3, 4+4] = [5, 8]
+
+    # 多输入求导
+    g_both = func.grad(f, argnums=(0, 1))
+    gx, gy = g_both(x, y)
+
+    # has_aux：同时返回辅助数据
+    def f_with_aux(x):
+        return (x ** 3).sum(), {"x_norm": float(np.linalg.norm(x._array))}
+
+    g_aux = func.grad(f_with_aux, has_aux=True)
+    grad, aux = g_aux(rm.tensor([1., 2., 3.], requires_grad=True))
+    print(grad)  # [3., 12., 27.]
+    print(aux)   # {'x_norm': ...}
+
+    # create_graph=True 支持高阶导
+    g_higher = func.grad(func.grad(lambda x: (x ** 4).sum(), create_graph=True))
+    h = g_higher(rm.tensor([1., 2., 3.], requires_grad=True))
+    print(h)  # 二阶导 12*x² = [12., 48., 108.]
+
+**注意事项**: 
+
+- func 输出必须是**标量**（``ndim == 0``），否则抛出 ``RuntimeError``
+- 单 ``argnums`` 时返回单个张量；多 ``argnums`` 时返回元组
+
+``grad_and_value()`` — 同时返回梯度和函数值
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+比分开调用 ``grad`` + 前向更高效：内部只做一次前向 + 一次反向。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.grad_and_value(func, argnums=0, has_aux=False, create_graph=False) -> Callable
+
+**返回**: 包裹函数返回 ``(grad, value)`` 或 ``(grad, value, aux)``（``has_aux=True`` 时）
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    def loss(params):
+        return (params ** 2).sum()
+
+    gav = func.grad_and_value(loss)
+    grad, val = gav(rm.tensor([1., 2., 3.], requires_grad=True))
+    # grad = [2., 4., 6.], val = 14.0
+
+``jvp()`` — Jacobian-vector 积
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+计算 Jacobian 矩阵与给定向量的乘积。通过一次前向 + 一次反向完成，
+比显式构造完整 Jacobian 再乘向量更高效（尤其当 Jacobian 矩阵很大时）。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False) -> (output, jvp_result)
+
+**参数**: 
+
+- func：可微函数
+- primals：函数输入（单个张量或元组/list）
+- tangents：与 primals 形状相同的切向量
+- create_graph（bool）：是否追踪 JVP 结果，支持高阶微分
+- strict（bool）：严格模式，cross-JVP 非零时报错
+
+**返回**: ``(output, jvp_result)`` — 输出值和 JVP 结果（单输入为单个张量，多输入为元组）
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    def f(x):
+        return x ** 3  # f: R^n -> R^n, 向量输出
+
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    v = rm.tensor([0.5, 1., 0.5], requires_grad=False)
+
+    out, jvp_val = func.jvp(f, x, v)
+    print(out)      # [1., 8., 27.]
+    print(jvp_val)  # 3*x^2 * v = [3*0.5, 12*1, 27*0.5] = [1.5, 12., 13.5]
+
+    # 多输入
+    def g(x, y):
+        return (x * y).sum()
+
+    out2, jvp2 = func.jvp(g,
+                          (rm.tensor([1., 2.], requires_grad=True),
+                           rm.tensor([3., 4.], requires_grad=True)),
+                          (rm.tensor([1., 0.], requires_grad=False),
+                           rm.tensor([0., 1.], requires_grad=False)))
+    print(jvp2)  # 1*3 + 2*1 = 5.0  (∂g/∂x·vx + ∂g/∂y·vy)
+
+``vjp()`` — vector-Jacobian 积
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+计算给定向量与 Jacobian 矩阵的乘积（JVP 的反向对偶）。
+对于标量输出 ``f: R^n -> R``，``vjp(f, x)`` 等价于 ``grad(f)(x)`` （默认 cotangent 为全 1）。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.vjp(func, primals, cotangents=None, create_graph=False, strict=False) -> (output, vjp_result)
+
+**参数**: 
+
+- cotangents（可选）：输出空间的向量。为 ``None`` 时自动填全 1（对齐 torch.func.vjp 行为）
+
+**返回**: ``(output, vjp_result)``
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    def f(x):
+        return (x ** 2).sum() + x.sum()   # 标量输出
+
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+
+    # 默认 cotangent=None 等价于 [1., 1., 1.]
+    out, vjp_val = func.vjp(f, x)
+    print(vjp_val)  # 2x + 1 = [3., 5., 7.]
+
+    # 自定义 cotangent（相当于把函数输出按 cotangent 加权求和）
+    out2, vjp_val2 = func.vjp(f, x, rm.tensor([2.0]))
+    print(vjp_val2)  # [6., 10., 14.]
+
+    # 向量输出也支持默认 cotangent
+    def g(x):
+        return x ** 2   # R^3 -> R^3, 向量输出
+
+    out3, vjp_val3 = func.vjp(g, x)     # cotangent=None 自动填全1
+    print(vjp_val3)  # J^T @ ones = [2., 4., 6.]
+
+``jacrev()`` / ``jacfwd()`` / ``jacobian()`` — Jacobian 矩阵
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+三种方式计算 Jacobian 矩阵：
+
+- jacrev：反向模式自动微分。对 m 维输出做 m 次反向传播，适合输入维度小、输出维度大的场景
+- jacfwd：正向模式。通过 vmap+jvp 实现（Riemann 当前没有前向 autodiff），对 n 维输入做 n 次 JVP，适合输入维度大、输出维度小的场景
+- jacobian(func, mode="reverse")：统一入口，``mode`` 选择具体算法
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.jacrev(func, argnums=0, create_graph=False, strict=True) -> Callable
+    riemann.func.jacfwd(func, argnums=0, create_graph=False) -> Callable
+    riemann.func.jacobian(func, argnums=0, create_graph=False, strict=True, mode="reverse") -> Callable
+
+**返回形状**: 对于输出形状 ``(y1, y2, ...)`` 和输入形状 ``(x1, x2, ...)``，
+Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    # 标量输出 f: R^3 -> R，Jacobian 形状为 (1, 3) — 等价于梯度
+    f = lambda x: (x ** 3).sum()
+    jac = func.jacrev(f)(rm.tensor([1., 2., 3.], requires_grad=True))
+    print(jac.shape)  # (3,) —— 单元素输入被 unwrap
+    print(jac)        # [3., 12., 27.]
+
+    # 向量输出 f: R^3 -> R^2，Jacobian 形状为 (2, 3)
+    g = lambda x: rm.stack([x.sum(), (x ** 2).sum()])
+    jac_g = func.jacrev(g)(rm.tensor([1., 2., 3.], requires_grad=True))
+    print(jac_g.shape)  # (2, 3)
+
+    # jacobian 统一入口
+    jac_fwd = func.jacobian(f, mode="forward")(x)
+    jac_rev = func.jacobian(f, mode="reverse")(x)
+    # jac_fwd ≈ jac_rev
+
+**注意事项**: 
+
+- jacfwd 在 Riemann 中通过多次 ``jvp`` 实现，时间复杂度正比于输入维度；若输出维度远大于输入维度，建议使用 ``jacrev``
+- 多输入场景（``argnums=(0, 1)``）下，返回值为元组，每个元素对应一个输入的 Jacobian
+
+``hessian()`` — Hessian 矩阵
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+计算标量值函数的 Hessian 矩阵（二阶偏导数）。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.hessian(func, argnums=0, create_graph=False, strict=True) -> Callable
+
+**返回形状**: 对于形状 ``(n,)`` 的输入，Hessian 形状为 ``(n, n)``。
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    f = lambda x: (x ** 4).sum()
+    h = func.hessian(f)(rm.tensor([1., 2., 3.], requires_grad=True))
+    print(h.shape)  # (3, 3)
+    # f''(x) = diag(12 * x^2) = diag([12, 48, 108])
+
+**注意事项**: 
+
+- 仅支持标量值函数，向量输出会抛错
+- 当 ``argnums`` 不是全部参数位置时，内部自动放宽严格模式（cross-Hessian 零值不再报错）
+
+``hvp()`` — Hessian-vector 积
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+计算 Hessian 矩阵与给定向量的乘积。比显式构造 Hessian 再乘向量高效得多
+（在高维空间中尤其重要，Hessian 显式构造的内存代价是 O(n²)）。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.hvp(func, argnums=0, create_graph=False, strict=False) -> Callable
+
+包裹函数签名：``(inputs, v) -> (output, hvp_result)``
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    f = lambda x: (x ** 3).sum()
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    v = rm.tensor([1., 1., 1.])
+
+    hvp_fn = func.hvp(f)
+    out, hvp_val = hvp_fn(x, v)
+    # f''(x) = diag(6x) = diag([6, 12, 18])
+    # hvp = [6, 12, 18] @ [1, 1, 1] = [6, 12, 18]
+
+``vmap()`` — 向量化映射
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+将原本作用于**单个样本**的函数扩展到**批次维度**上执行。
+底层通过循环 + 堆叠实现，接口对齐 ``torch.func.vmap``，方便与 ``jacrev`` 等函数式原语组合。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.vmap(func, in_dims=0, out_dims=0) -> Callable
+
+**参数**: 
+
+- in_dims：每个输入的批次维度。
+  - ``int``：所有输入共用该维度位置
+  - ``tuple[int|None, ...]``：每个输入各自的维度位置；``None`` 表示该输入不批处理（直接透传，适合模型参数等共享量）
+- out_dims：每个输出的批次维度，语义同 ``in_dims``
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    # 基本用法：标量输出的批处理
+    f = lambda x: (x ** 2).sum()
+    x_batch = rm.tensor([[1., 2., 3.], [4., 5., 6.]], requires_grad=True)
+    batched_f = func.vmap(f)
+    result = batched_f(x_batch)
+    print(result)  # [14., 77.]
+
+    # 多输入 + 不同 in_dims
+    def g(x, y):
+        return (x * y).sum()
+
+    x_batch = rm.tensor([[1., 2.], [3., 4.]], requires_grad=True)
+    y_batch = rm.tensor([[10., 20.], [30., 40.]], requires_grad=True)
+    batched_g = func.vmap(g, in_dims=(0, 0))
+    print(batched_g(x_batch, y_batch))  # [50., 250.]
+
+    # 多输入 + in_dims=None 某输入不批处理（广播语义）
+    y_single = rm.tensor([10., 20.], requires_grad=True)
+    batched_g2 = func.vmap(g, in_dims=(0, None))
+    print(batched_g2(x_batch, y_single))  # [30., 110.] —— y_single 被每个样本共享
+
+    # 与 jacrev 组合：批量求 Jacobian
+    def scalar_fn(x):
+        return (x ** 2).sum()
+
+    batched_jac = func.vmap(func.jacrev(scalar_fn))
+    jac_batch = batched_jac(x_batch)
+    print(jac_batch.shape)  # (2, 3) —— 每个样本的 ∇f = 2x
+
+**注意事项**: 
+
+- vmap 内部是**顺序循环** + 堆叠，并非 GPU 上真正的 SIMT 并行；
+  但与 ``jacrev`` / ``hessian`` 等组合时能正确追踪梯度
+- 批次维通常是 ``dim=0``；若指定负维度（如 ``dim=-1``），会自动规范化
+- 返回 tuple 输出的函数也支持 vmap，每个输出沿 ``out_dims`` 独立堆叠
+
+``functional_call()`` — 无状态 Module 调用
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+以**自定义参数值**调用 Module 的 ``forward`` 方法，不修改 Module 自身的参数属性。
+这在需要对 Module 参数本身求导（如 hypernetworks、meta-learning）时至关重要——
+常规 ``module(x)`` 调用会在 forward 内部引用 ``self.weight`` 等属性，
+而 ``functional_call`` 允许你传入一组替代参数值。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.functional_call(module, parameter_values, args, kwargs=None) -> Any
+
+**参数**: 
+
+- module：带有 ``forward`` 和 ``named_parameters`` 方法的对象（通常是 ``riemann.nn.Module``）
+- parameter_values：与 ``module.named_parameters()`` 顺序一致的参数值（list/tuple/TN）
+- args / **kwargs**: ``forward`` 的位置参数和关键字参数
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    # 定义一个简单的线性层
+    class Linear(rm.nn.Module):
+        def __init__(self, in_features, out_features):
+            super().__init__()
+            self.weight = rm.tensor(
+                np.random.randn(out_features, in_features), requires_grad=True)
+            self.bias = rm.tensor(np.zeros(out_features), requires_grad=True)
+
+        def forward(self, x):
+            return x @ self.weight.T + self.bias
+
+    layer = Linear(3, 2)
+    x = rm.tensor([[1., 2., 3.], [4., 5., 6.]], requires_grad=False)
+
+    # 用自定义参数调用（不修改 layer.weight 和 layer.bias）
+    alt_weight = rm.tensor([[1., 0., 0.], [0., 0., 1.]], requires_grad=True)
+    alt_bias = rm.tensor([0.5, -0.5], requires_grad=True)
+
+    out = func.functional_call(layer, [alt_weight, alt_bias], x)
+    print(out)
+    # layer.weight 和 layer.bias 仍是原值
+
+    # 与 grad 组合：对替代参数求梯度
+    loss = func.grad_and_value(lambda *params:
+        (func.functional_call(layer, params, x) ** 2).sum()
+    )
+    g, v = loss(alt_weight, alt_bias)
+
+**注意事项**: 
+
+- parameter_values 的长度必须与 ``module.named_parameters()`` 返回的参数数量一致
+- 调用结束后 Module 参数会**自动恢复原值**（内部使用 try-finally）
+- 对于没有参数的 Module，``parameter_values=None`` 时退化为普通 ``forward`` 调用
+
+组合使用与高阶模式
+~~~~~~~~~~~~~~~~~~
+
+``func`` 模块的核心优势是**所有函数都返回 Callable**，这使得它们可以自由组合。
+下面是几个常见的高阶用法模式：
+
+**模式 1：vmap + jacrev — 批量求导**
+
+.. code-block:: python
+
+    def loss(x):
+        return (x ** 2).sum()
+
+    # 对批次中的每个样本独立计算梯度
+    grads = func.vmap(func.jacrev(loss))(x_batch)
+    # grads.shape == (batch_size, input_dim)
+
+**模式 2：jacrev(jacrev(f)) — 通过 jacrev 构造 Hessian**
+
+.. code-block:: python
+
+    def f(x):
+        return (x ** 4).sum()
+
+    # 对梯度再求 Jacobian，得到 Hessian
+    h_via_jac = func.jacrev(func.jacrev(f, create_graph=True))(x)
+
+**模式 3：vmap + hvp — 批量 Hessian-向量积**
+
+.. code-block:: python
+
+    hvp_fn = func.hvp(f)  # 返回 (inputs, v) -> (output, hvp_result)
+    batched_hvp = func.vmap(hvp_fn, in_dims=(0, 0))
+    # 注意：hvp_fn 的第一个参数是 inputs，第二个是 v
+
+**模式 4：functional_call + grad — 对 Module 参数求梯度**
+
+.. code-block:: python
+
+    def param_loss(weight, bias):
+        y = func.functional_call(layer, [weight, bias], x)
+        return (y ** 2).sum()
+
+    g_w, g_b = func.grad(param_loss, argnums=(0, 1))(
+        alt_weight, alt_bias)
+
+**模式 5：create_graph 链 — 高阶微分**
+
+.. code-block:: python
+
+    # 一阶
+    g = func.grad(f, create_graph=True)
+    # 二阶：对梯度再求 grad
+    h = func.grad(lambda a: g(a).sum())
+    # 三阶：继续叠加
+    third = func.grad(lambda a: h(a).sum())(x)
+
+.. list-table::
+   :header-rows: 1
+   :widths: auto
+
+   * - 场景
+     - 推荐
+     - 理由
+   * - 只想快速算一次 jacobian/hessian
+     - ``autograd.functional``
+     - 直接传入输入，少一层包裹
+   * - 需要与 vmap 组合、批量求导
+     - ``func``
+     - 返回 Callable 可嵌套
+   * - 需要 has_aux / argnums 多输入
+     - ``func``
+     - ``autograd.functional`` 不支持
+   * - 需要对 Module 参数求梯度
+     - ``func.functional_call``
+     - 底层模块无此功能
+   * - 向量输出 vjp 默认 cotangent
+     - ``func.vjp``
+     - 自动填全 1，更安全
+   * - create_graph 高阶微分
+     - ``func``
+     - 所有函数统一支持
 
 自定义梯度函数
 -------------------------
@@ -853,13 +1687,13 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
 
    传递给 ``track_grad`` 的梯度函数签名固定为 ``grad_func(result, *args, **kwargs)``：
 
-   - **参数**：第一个参数 ``result`` 是前向函数的输出张量；其后参数必须与前向函数的输入参数同名同序
-   - **返回值**：返回一个 tuple，按 ``grad_func`` 签名中的 TN 参数顺序给出每个输入张量的梯度
-   - **元组元素**：只有 TN 参数占位，非 TN 参数（标量、布尔值等）不占位；
+   - **参数**: 第一个参数 ``result`` 是前向函数的输出张量；其后参数必须与前向函数的输入参数同名同序
+   - **返回值**: 返回一个 tuple，按 ``grad_func`` 签名中的 TN 参数顺序给出每个输入张量的梯度
+   - **元组元素**: 只有 TN 参数占位，非 TN 参数（标量、布尔值等）不占位；
      不需要梯度的 TN 参数对应位置返回 ``None``
-   - **链式法则**：返回值必须已包含上游梯度，可通过 ``result.grad_value`` 获取；
+   - **链式法则**: 返回值必须已包含上游梯度，可通过 ``result.grad_value`` 获取；
      同时可以读取 ``result`` 的其他属性（shape、dtype、device 等）
-   - **调用顺序无关**：内部通过 ``inspect.signature`` 建立“参数名 → 实参值”的映射，
+   - **调用顺序无关**: 内部通过 ``inspect.signature`` 建立“参数名 → 实参值”的映射，
      因此调用时关键字参数顺序、位置参数与关键字参数混用都不会影响梯度对应关系
 
    **场景 1：单输入函数**
@@ -937,7 +1771,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        print(f"y = {y}")        # 8.0
        print(f"dy/dx = {x.grad}")  # 12.0 (3 * 2²)
 
-   **场景 4：变长参数（*args 与 **kwargs）**
+   **场景 4：变长参数（\*args 与 \*\*kwargs）**
 
    当 ``grad_func`` 使用 ``*args`` / ``**kwargs`` 时，返回的梯度元组按签名顺序依次展平。
 
@@ -1036,25 +1870,25 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
 
    要使用 ``Function`` 类创建自定义函数，必须实现两个静态方法：
 
-   **forward(ctx, *inputs)**
+   **forward(ctx, \*inputs)**
 
-   - **用途**：执行前向计算
-   - **参数**：
+   - **用途**: 执行前向计算
+   - **参数**: 
 
      - ``ctx``：上下文对象，用于保存反向传播所需的信息。使用 ``ctx.save_for_backward()`` 保存反向传播需要的张量
      - ``*inputs``：输入张量（可变数量的参数）
-   - **返回**：前向计算的输出张量
-   - **用法**：在此实现自定义计算逻辑，并使用 ``ctx.save_for_backward()`` 保存梯度计算所需的任何张量
+   - **返回**: 前向计算的输出张量
+   - **用法**: 在此实现自定义计算逻辑，并使用 ``ctx.save_for_backward()`` 保存梯度计算所需的任何张量
 
    **backward(ctx, grad_output)**
 
-   - **用途**：执行反向（梯度）计算
-   - **参数**：
+   - **用途**: 执行反向（梯度）计算
+   - **参数**: 
 
      - ``ctx``：上下文对象，包含前向传播期间保存的信息。通过 ``ctx.saved_tensors`` 访问保存的张量
      - ``grad_output``：输出张量的梯度（来自计算图中后续层）
-   - **返回**：梯度元组，每个输入张量对应一个梯度。每个梯度应为 ``grad_output`` 与局部梯度（偏导数）的乘积
-   - **用法**：使用链式法则计算梯度：``grad_input = grad_output * local_gradient``
+   - **返回**: 梯度元组，每个输入张量对应一个梯度。每个梯度应为 ``grad_output`` 与局部梯度（偏导数）的乘积
+   - **用法**: 使用链式法则计算梯度：``grad_input = grad_output * local_gradient``
 
    **示例：**
 
@@ -1131,14 +1965,14 @@ share_grad_map 函数
 
 **参数：**
 
-- ``tensors``：要连接的张量元组或列表。必须是元组或列表（不是集合）以保持顺序。
+- tensors：要连接的张量元组或列表。必须是元组或列表（不是集合）以保持顺序。
 
 **返回：**
 具有相同值但连接到共享计算图的张量元组或列表。注意：``requires_grad=True`` 的张量会被克隆（不会被原地修改）。
 
 **行为：**
 
-- ``requires_grad=True`` 的张量会被克隆，并将所有其他张量作为零梯度来源依附到克隆张量
+- requires_grad=True 的张量会被克隆，并将所有其他张量作为零梯度来源依附到克隆张量
 - 不需要梯度的张量或非 TN 对象保持不变
 - 所有连接的张量互相接收零梯度
 
@@ -1179,13 +2013,13 @@ share_grad_map 函数
 
 **典型使用场景：**
 
-1. **模块钩子处理**：在 Riemann 的模块钩子机制中，``share_grad_map`` 用于产生新的模块输出张量，接替模块原有的输出张量。当模块只有部分张量参与或贡献损失函数计算时，``share_grad_map`` 产生模块新的输出，不改变前向计算和反向梯度计算的数值，但可以确保原来不参与损失函数计算的输出张量现在可以接收到零梯度了，从而依赖该输出的模块输入张量也会收到零梯度。
+1. **模块钩子处理**: 在 Riemann 的模块钩子机制中，``share_grad_map`` 用于产生新的模块输出张量，接替模块原有的输出张量。当模块只有部分张量参与或贡献损失函数计算时，``share_grad_map`` 产生模块新的输出，不改变前向计算和反向梯度计算的数值，但可以确保原来不参与损失函数计算的输出张量现在可以接收到零梯度了，从而依赖该输出的模块输入张量也会收到零梯度。
 
-2. **多任务学习**：当某些参数不参与特定任务的损失计算，但你希望它们收到零梯度而不是 None，以便进行梯度累积。
+2. **多任务学习**: 当某些参数不参与特定任务的损失计算，但你希望它们收到零梯度而不是 None，以便进行梯度累积。
 
-3. **条件计算**：当某些张量在条件判断下被使用，但你希望无论条件如何都有一致的梯度行为。
+3. **条件计算**: 当某些张量在条件判断下被使用，但你希望无论条件如何都有一致的梯度行为。
 
-4. **梯度监控**：当你想要监控组中所有参数的梯度，即使那些不直接参与特定计算的参数。
+4. **梯度监控**: 当你想要监控组中所有参数的梯度，即使那些不直接参与特定计算的参数。
 
 **注意：** 这是一个用于手动构建计算图的底层函数。大多数用户应该依赖 Riemann 的自动图构建，而不是直接使用此函数。
 
@@ -1225,18 +2059,18 @@ Gradcheck 通过比较解析梯度和有限差分法计算的数值梯度来验�
 梯度计算技巧
 -------------------------
 
-1. **内存管理**：梯度计算使用内存来存储计算图。当你不需要梯度时，使用 ``no_grad()`` 或 ``detach()`` 来节省内存。
+1. **内存管理**: 梯度计算使用内存来存储计算图。当你不需要梯度时，使用 ``no_grad()`` 或 ``detach()`` 来节省内存。
 
 常见错误
 --------
 
-1. **原地操作**：避免对需要梯度跟踪的叶子节点张量进行原地操作。
+1. **原地操作**: 避免对需要梯度跟踪的叶子节点张量进行原地操作。
 
-2. **清除张量的计算依赖**：detach后的张量会失去计算图依赖关系，无法进行反向传播梯度计算。
+2. **清除张量的计算依赖**: detach后的张量会失去计算图依赖关系，无法进行反向传播梯度计算。
 
-3. **非标量输出**：在非标量输出上调用 ``backward()`` 时，记得提供梯度参数。
+3. **非标量输出**: 在非标量输出上调用 ``backward()`` 时，记得提供梯度参数。
 
-4. **内存泄漏**：长时间运行带梯度跟踪的计算可能会消耗大量内存。
+4. **内存泄漏**: 长时间运行带梯度跟踪的计算可能会消耗大量内存。
 
 示例
 ----

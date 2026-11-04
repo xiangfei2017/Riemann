@@ -30,7 +30,7 @@ Riemann is a neural network programming framework similar to PyTorch. It support
 - **Deep learning research**: Custom model and algorithm development
 - **Scientific computing**: Gradient calculation for complex mathematical models
 - **Optimization problem solving**: Gradient descent and Adam optimization algorithms
-- **Computer vision**: Image classification, object detection and other vision tasks
+- **Computer vision**: Image classification and other vision tasks
 - **Education and teaching**: Learning automatic differentiation and deep learning principles
 
 
@@ -42,6 +42,7 @@ Riemann library is designed with a focus on compatibility with PyTorch interface
 - **Neural network components**: Layers, activation functions and loss functions in the `nn` module are interface-compatible with PyTorch
 - **Optimizers**: Optimizers (such as SGD, Adam, etc.) in the `optim` module have consistent interfaces with PyTorch
 - **Automatic differentiation mechanism**: `requires_grad` and backpropagation mechanism are similar to PyTorch
+- **torch.func compatibility**: The top-level ``func`` module mirrors `torch.func` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``hessian``, ``hvp``, ``vmap``, ``functional_call``
 - **Computer vision**: Datasets and transforms in the `vision` module are interface-compatible with torchvision
 - **Cross-framework interoperability**: Riemann tensors can be converted to and from NumPy arrays, CuPy arrays and other tensor frameworks such as PyTorch, or share data with them, through `r.tensor()`, `r.as_tensor()`, `r.from_dlpack()`, `TN.array()` and `TN.numpy()`, built on the `__array__`, `__cuda_array_interface__`, `__dlpack__` and `__buffer__` protocols. Conversion is zero-copy when device and dtype match
 
@@ -60,7 +61,9 @@ Riemann/
 │       ├── utils/            # Utility functions
 │       ├── vision/           # Computer vision modules
 │       ├── __init__.py       # Package configuration file
+│       ├── cuda.py           # CUDA/GPU support
 │       ├── dtype.py          # Data type definitions
+│       ├── func.py           # Functional autodiff API
 │       ├── gradmode.py       # Gradient mode control
 │       ├── linalg.py         # Linear algebra functions
 │       ├── serialization.py  # Object saving and loading
@@ -91,7 +94,8 @@ The code directory `src/riemann/` is the location of Riemann library's core sour
 - **optim/**: Optimizers, such as SGD, Adam, etc., and learning rate schedulers
 - **utils/**: Utility functions, including Dataset class and Dataloader class for data loading, etc.
 - **vision/**: Computer vision-related functionality, including datasets and image transforms
-- **Core files**: Such as `tensordef.py` (tensor definition), `linalg.py` (linear algebra), etc.
+- **`func`**: Functional-style autodiff interface, reference `torch.func`. Provides curried, pure-function APIs such as ``grad``, ``jvp``, ``vjp``, ``jacrev``, ``jacfwd``, ``hessian``, ``hvp``, ``vmap``, ``functional_call`` — suitable for chained higher-order derivatives
+- **Core files**: Such as `tensordef.py` (tensor definition), `linalg.py` (linear algebra), `dtype.py` (data type), `cuda.py` (GPU support), etc.
 
 ### tests Directory
 
@@ -264,7 +268,28 @@ Riemann's detailed usage guide is available online:
 - **English documentation**: https://riemann-en.readthedocs.io/en/latest/
 - **Chinese documentation**: https://riemann-zh.readthedocs.io/zh-cn/latest/
 
-The documentation source files are located in the `docs` directory, written in reStructuredText format. You can also read the instructions in README.md and README_en.md in the docs directory to manually build the documentation in HTML format locally.
+The documentation source files are located in the `docs` directory, written in reStructuredText format. To build HTML docs locally:
+
+**Windows:**
+
+```batch
+cd docs
+make.bat html-all     REM build both English and Chinese
+make.bat html-en      REM English only
+make.bat html-zh      REM Chinese only
+make.bat clean-all    REM clean build artifacts
+```
+
+**Linux / macOS:**
+
+```bash
+cd docs
+chmod +x make.sh      # first-time only
+./make.sh html-all    # build both English and Chinese
+./make.sh html-en     # English only
+./make.sh html-zh     # Chinese only
+./make.sh clean-all   # clean build artifacts
+```
 
 ### Riemann Package Module Structure
 
@@ -272,6 +297,7 @@ The documentation source files are located in the `docs` directory, written in r
 riemann                  # Main package
 ├── autograd             # Automatic differentiation module
 │   └── functional       # Automatic differentiation functional interface
+├── func                 # torch.func-style functional autodiff API
 ├── linalg               # Linear algebra module
 ├── nn                   # Neural network module
 │   └── functional       # Neural network functions
@@ -311,6 +337,10 @@ from riemann import tensor, zeros, ones, randn
 # Import automatic differentiation functionality
 from riemann.autograd import grad, backward
 from riemann.autograd.functional import jacobian, hessian
+
+# Import functional autodiff API (torch.func-style, curried, supports higher-order)
+from riemann import func
+from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
 
 # Import linear algebra functionality
 from riemann import linalg

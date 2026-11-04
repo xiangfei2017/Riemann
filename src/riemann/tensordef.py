@@ -4023,28 +4023,31 @@ class TN:
         return need_hook_processing
 
     def _clear_calc_graph_cache(self):
-        '''请理以self为根的计算图
-           将所有节点的梯度置None、初始化各节点应收到反向传播梯度的次数
+        '''清理以self为根的计算图中的临时梯度状态
+
+        将所有节点的 rcv_grad_count 置 0、grad_value 置 None。
+        与 _init_calc_graph 的区别：
+          - _init_calc_graph 会重新累加 rcv_grad_count（从子节点数推导正确值）
+          - _clear_calc_graph_cache 仅将 rcv_grad_count 置 0，不做重新累加
+        因此前者可独立完成初始化，后者仅作为辅助清理工具保留。
         '''
 
-        stack = [self]  #初始化一个栈
-        
+        stack = [self]
+
         while stack:
             item:TN = stack.pop(-1)
             item.rcv_grad_count = 0
             item.grad_value = None  # type: ignore
 
-            # 叶子节点不要再往下遍历
-            if item.is_leaf: 
+            if item.is_leaf:
                 continue
 
-            varlist = item.fromvars
-            for var in varlist:
+            for var in item.fromvars:
                 if var.requires_grad:
                     stack.append(var)
         
         return
-    
+
     def _save_grad(self:TN):
         '''将self的grad_value保存到self的grad中，返回是否是叶子节点
         
@@ -4277,55 +4280,150 @@ class TN:
 
         return
     
-    def d(self,*vars,create_graph = False):
-        """
-        计算当前标量张量对指定多个标量张量的混合偏导数。
-        
-        参数:
-            *vars: 一个或多个张量，用于计算当前张量对其的混合偏导数
-        
-        返回值:
-            TN: 计算得到的混合偏导数标量张量
-        
-        异常:
-            ValueError: 当指定的变量中包含非张量元素、不是标量张量或未提供任何变量时抛出
-        """
+    def d(self, *args, create_graph=False):
+        r"""
+        计算当前标量张量对指定变量的高阶偏导数或混合偏导数。
 
-        from .autograd import grad
-        
-        if self.ndim > 0 or self.requires_grad == False:
-            raise ValueError("self must be a scalar tensor requires grad")
-        
-        if not vars:
-            raise ValueError("At least one variable must be provided to compute derivatives")
-                
-        all_0d = True
-        for var in vars:
-            if not isinstance(var, TN):
-                raise ValueError(f"Input variable must be TN type, got {type(var)}")
-            if var.ndim > 0:
-                all_0d = False
-        if not all_0d:
-            raise ValueError("All input variables must be 0-dimensional tensors")
-        
-        current_grad = self
-        
-        for i, var in enumerate(vars):
-            is_last = (i == len(vars) - 1)
-                        
-            next_grad = grad(current_grad, var, 
-                             create_graph=not is_last or create_graph,
-                             allow_unused=True)[0]
-            
-            if next_grad is None:
-                return zeros_like(self)
-            
-            current_grad = next_grad
-        
-        if current_grad is None:
-            return zeros_like(self)
-        
-        return current_grad
+        变量可以是任意形状（标量、向量、矩阵等）。同一变量可以多次出现，
+        阶数自动累加。按 args 顺序逐变量求导，输出形状 = 各变量形状按顺序扁平拼接。
+
+        参数:
+            *args: 导数规格，两种形式可混用:
+                - TN                对该变量求一阶
+                - (TN, k)           对该变量求 k 阶 (k >= 1)
+                例如 ``f.d(x)``、``f.d(x, x)``、``f.d((x, 3))``、``f.d((x, 2), y)``
+            create_graph: 是否追踪结果计算图以支持继续高阶微分。默认 False。
+
+        返回值:
+            张量，形状为各变量形状的扁平拼接。
+            例：``f.d(x, y)`` 其中 x:(2,) y:(3,) → 输出 shape=(2, 3) 交叉偏导矩阵
+
+        异常:
+            ValueError  当 self 非标量或无梯度；args 含非法项
+
+        示例:
+            # 标量变量（与旧版完全兼容）
+            >>> x, y = tensor(2.0, rg=True), tensor(3.0, rg=True)
+            >>> f = x**3 * y**2
+            >>> f.d(x)          # 3*x^2*y^2 = 108
+            >>> f.d(x, y)       # 6*x^2*y = 72   混合偏导
+            >>> f.d((x, 2))     # 6*x*y^2 = 108  显式二阶
+
+            # 向量变量（新增能力）
+            >>> x = tensor([1., 2., 3.], rg=True)
+            >>> f = (x**3).sum()
+            >>> f.d(x)          # [3, 12, 27]     梯度向量
+            >>> f.d(x, x)       # diag([6,12,18]) Hessian
+            >>> f.d((x, 2))     # 同上
+
+            # 多向量混合偏导
+            >>> x = tensor([1., 2.], rg=True)
+            >>> y = tensor([3., 4.], rg=True)
+            >>> f = (x * y).sum() ** 2
+            >>> f.d(x, y)       # (2, 2) 矩阵
+
+        算法说明:
+            1. 解析 args 为 [(var, k), ...]，同变量阶数累加
+            2. 顺序执行 total_steps = Σk 次 grad:
+               - current 是标量 → 直接对 var 一次 grad，返回同形状梯度
+               - current 是张量 → 对其每个元素（标量）单独 grad，再 stack + reshape
+                 (autograd.grad 只接受标量 outputs，所以必须逐元素)
+            3. reshape 回 shape = ⊕ shape(vi) × ki
+        """
+        from .autograd import grad as _grad
+        from . import stack as _rstack
+
+        # ---- 1. 前置校验 ----
+        if self.ndim > 0 or not self.requires_grad:
+            raise ValueError("self must be a scalar tensor with requires_grad=True")
+        if not args:
+            raise ValueError("At least one variable must be provided")
+
+        # ---- 2. 解析 args → [(var, 总阶数), ...] ----
+        # 先累加同一变量的阶数，再从 dict 构造 specs
+        vid_to_order: dict[int, int] = {}   # id(var) → 累计阶数
+        var_order: list[TN] = []             # 保持首次出现的顺序
+
+        for item in args:
+            if isinstance(item, TN):
+                var, k = item, 1
+            elif isinstance(item, (tuple, list)) and len(item) == 2 \
+                    and isinstance(item[0], TN) and isinstance(item[1], int):
+                var, k = item
+            else:
+                raise ValueError(
+                    f"Each arg must be a TN or (TN, int), got {type(item).__name__}"
+                )
+            if k < 1:
+                raise ValueError(f"Derivative order k must be >= 1, got {k}")
+            if not var.requires_grad:
+                raise ValueError("Variable must have requires_grad=True")
+
+            vid = id(var)
+            if vid in vid_to_order:
+                vid_to_order[vid] += k
+            else:
+                vid_to_order[vid] = k
+                var_order.append(var)
+
+        specs: list[tuple[TN, int]] = [(var, vid_to_order[id(var)]) for var in var_order]
+
+        # ---- 3. 预计算 ----
+        total_steps = 0
+        for _, k in specs:
+            total_steps += k
+        final_shape: tuple[int, ...] = ()
+        for var, k in specs:
+            final_shape += var.shape * k
+
+        # ---- 4. 核心: total_steps 次顺序 grad ----
+        # 局部 helper: 对单个标量 outputs 求一次 grad
+        def _grad_once(scalar_out: TN, var_in: TN,
+                       need_graph: bool, retain_graph: bool) -> TN | None:
+            return _grad(scalar_out, var_in,
+                         create_graph=need_graph,
+                         allow_unused=True,
+                         retain_graph=retain_graph)[0]
+
+        current: TN = self
+        step = 0
+
+        for var, order in specs:
+            for _ in range(order):
+                is_last = (step == total_steps - 1)
+                need_graph = create_graph if is_last else True  # 中间步骤必须追踪图
+                retain_graph = not is_last
+
+                if current.ndim == 0:
+                    # 标量 → 一次 grad
+                    g = _grad_once(current, var, need_graph, retain_graph)
+                    if g is None:
+                        return zeros_like(self, requires_grad=False)
+                    current = g
+                else:
+                    # 张量 → 逐元素标量 grad，再 stack 保持计算图
+                    # 注：autograd.grad outputs 必须是标量，所以对张量 outputs
+                    #     必须逐个元素求导再拼回形状
+                    flat = current.reshape(-1)
+                    elem_grads: list[TN] = []
+                    for ei in range(flat.shape[0]):
+                        g_elem = _grad_once(flat[ei], var, need_graph, retain_graph)
+                        if g_elem is None:
+                            elem_grads.append(zeros_like(var, requires_grad=False))
+                        else:
+                            elem_grads.append(g_elem)
+
+                    stacked = _rstack(elem_grads, dim=0)
+                    target_shape = current.shape + var.shape
+                    current = stacked if stacked.shape == target_shape \
+                        else stacked.reshape(*target_shape)
+
+                step += 1
+
+        # ---- 5. reshape 回最终形状 ----
+        if current.shape != final_shape:
+            current = current.reshape(*final_shape)
+        return current
 
     def attach_zero_grad_sources(self:TN, sources:tuple|list):
         return attach_zero_grad_sources(self,sources)

@@ -38,7 +38,7 @@ if 'com.termux' in sys.prefix or 'ANDROID_DATA' in os.environ:
     os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
     os.environ.setdefault('OMP_NUM_THREADS', '1')
 
-__version__ = "0.6.51"        # 包版本
+__version__ = "0.6.55"        # 包版本
 
 # 定义当使用 `from riemann import *` 时要导出的内容
 # __all__ = [] 
@@ -46,6 +46,7 @@ __version__ = "0.6.51"        # 包版本
 from .tensordef import *
 
 from . import autograd
+from . import func
 from . import linalg
 from . import nn
 from . import optim

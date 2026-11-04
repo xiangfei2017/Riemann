@@ -35,6 +35,7 @@ Riemann 的核心价值在于其**简洁性**和**可学习性**——代码结�
 
 - **backward 方法**：触发反向传播计算梯度
 - **grad 函数**：计算函数相对于输入的梯度
+- **func 模块**：torch.func 风格的函数式自动微分 API，提供柯里化的 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``hvp``、``vmap``、``functional_call`` 等函数，适合链式高阶求导
 - **track_grad 装饰器**：使用 ``@track_grad`` 装饰器自定义梯度跟踪函数（Riemann 特有）
 - **Function 类**：通过继承 Function 类自定义前向和反向传播（Riemann 特有）
 - **雅可比矩阵和海森矩阵**：支持多输入多输出函数的雅可比矩阵计算，支持多输入函数的海森矩阵计算
@@ -94,6 +95,7 @@ riemann包的模块结构
     riemann                  # 主包
     ├── autograd             # 自动微分模块
     │   └── functional       # 自动微分函数式接口
+    ├── func                 # torch.func 风格函数式自动微分 API
     ├── linalg               # 线性代数模块
     ├── nn                   # 神经网络模块
     │   └── functional       # 神经网络函数
@@ -135,6 +137,10 @@ riemann包的模块结构
     from riemann.autograd import grad, backward
     from riemann.autograd.functional import jacobian, hessian
 
+    # 导入函数式自动微分 API（torch.func 风格，柯里化，支持高阶求导）
+    from riemann import func
+    from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
+
     # 导入线性代数功能
     from riemann import linalg
     from riemann.linalg import svd, det, inv
@@ -175,6 +181,7 @@ Riemann 设计时注重与 PyTorch 接口的兼容性，同名的函数和类保
 - **神经网络组件**：``nn`` 模块中的层、激活函数和损失函数与 PyTorch 保持接口兼容
 - **优化器**：``optim`` 模块中的优化器（如 SGD、Adam 等）接口与 PyTorch 保持一致
 - **自动微分机制**：``requires_grad``、反向传播机制与 PyTorch 相似
+- **torch.func 兼容**：顶层 ``func`` 模块对齐 ``torch.func`` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``hessian``、``hvp``、``vmap``、``functional_call``
 - **计算机视觉**：``vision`` 模块中的数据集和变换与 torchvision 保持接口兼容
 
 Riemann 不支持的 PyTorch 特性

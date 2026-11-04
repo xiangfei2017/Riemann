@@ -57,6 +57,24 @@ import builtins
 from ..tensordef import *
 from .grad import *
 
+def _ensure_traceable(tensors):
+    """确保每个张量 has requires_grad=True，返回处理后的新列表。
+
+    对 rg=False 的张量（无论 leaf 与否）统一 detach 成 leaf 后打开 requires_grad。
+    对 rg=True 的张量直接透传——autograd.grad 不在乎是否 leaf。
+
+    无需调用者配合 restore 循环：
+    - rg=True 的输入：未被修改
+    - rg=False 的输入：detach 产生新 tensor，原 tensor 不受影响
+    """
+    result = []
+    for t in tensors:
+        if not t.requires_grad:
+            t = t.detach().requires_grad_(True)
+        result.append(t)
+    return result
+
+
 def _split_jac_by_inputs(jac: TN, output_shape: tuple, input_sizes: list[int], input_shapes: list[tuple]) -> tuple[TN, ...]:
     """将雅可比矩阵沿输入维度按各输入尺寸切分并重塑形状"""
     result = []
@@ -97,8 +115,7 @@ def jacobian(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
         if not isinstance(inp, TN):
             raise RuntimeError(f"Input {i} must be a tensor")
 
-    bak_requires_grad = [inp.requires_grad for inp in inputs]
-    inputs = [inp.requires_grad_(True) for inp in inputs]
+    inputs = _ensure_traceable(inputs)
 
     outputs = func(*inputs)
 
@@ -147,8 +164,6 @@ def jacobian(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
 
         jacobian_results.append(jac_tensor)
 
-    for inp, req_grad in zip(inputs, bak_requires_grad):
-        inp.requires_grad_(req_grad)
 
     # 返回结构：
     # - 单输出单输入 → TN
@@ -287,8 +302,7 @@ def jvp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
         if inp.shape != vec.shape:
             raise RuntimeError(f"Shapes of input {i} and v[{i}] do not match: {inp.shape} vs {vec.shape}")
 
-    bak_requires_grad = [inp.requires_grad for inp in inputs]
-    inputs = [inp.requires_grad_(True) for inp in inputs]
+    inputs = _ensure_traceable(inputs)
 
     outputs = func(*inputs)
 
@@ -350,8 +364,6 @@ def jvp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
 
         jvp_results.append(jvp_val)
 
-    for inp, req_grad in zip(inputs, bak_requires_grad):
-        inp.requires_grad_(req_grad)
 
     if is_single_output:
         return outputs[0], jvp_results[0]
@@ -396,8 +408,7 @@ def vjp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
         if not isinstance(inp, TN):
             raise RuntimeError(f"Input {i} must be a tensor")
 
-    bak_requires_grad = [inp.requires_grad for inp in inputs]
-    inputs = [inp.requires_grad_(True) for inp in inputs]
+    inputs = _ensure_traceable(inputs)
 
     outputs = func(*inputs)
 
@@ -413,10 +424,9 @@ def vjp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
 
     # 处理v参数
     if v is None:
-        if is_single_output and outputs[0].ndim == 0:  # type: ignore
-            v = [tensor(1.0, dtype=outputs[0].dtype, device=outputs[0].device, requires_grad=create_graph)]  # type: ignore
-        else:
-            raise RuntimeError("v must be provided when the output of func does not contain a single element")
+        # 对齐 torch.func.vjp: v=None 时对所有输出自动填全 1 cotangent
+        # 标量输出 → 标量 1；向量/多输出 → 同形状全 1
+        v = [ones_like(out, requires_grad=create_graph) for out in outputs]
     else:
         is_single_v = not isinstance(v, (list, tuple))
         if is_single_v:
@@ -450,8 +460,6 @@ def vjp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
             if grads[j] is not None:
                 vjp_results[j] = vjp_results[j] + grads[j]
 
-    for inp, req_grad in zip(inputs, bak_requires_grad):
-        inp.requires_grad_(req_grad)
 
     if is_single_input:
         vjp_result = vjp_results[0]
@@ -497,8 +505,7 @@ def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | list[T
         if inp.shape != vec.shape:
             raise RuntimeError(f"Shapes of input {i} and v[{i}] do not match: {inp.shape} vs {vec.shape}")
 
-    bak_requires_grad = [inp.requires_grad for inp in inputs]
-    inputs = [inp.requires_grad_(True) for inp in inputs]
+    inputs = _ensure_traceable(inputs)
 
     func_output = func(*inputs)
     if not isinstance(func_output, TN) or func_output.ndim != 0:
@@ -529,8 +536,6 @@ def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | list[T
     # 对齐 PyTorch 的 _fill_in_zeros 语义：strict=False 时未使用输入的 HVP 返回零张量而非 None
     hessian_vec_product = [zeros_like(inp) if out is None else out for inp, out in zip(inputs, hessian_vec_product)]
 
-    for inp, req_grad in zip(inputs, bak_requires_grad):
-        inp.requires_grad_(req_grad)
 
     if is_single_input:
         hessian_vec_product = hessian_vec_product[0]  # type: ignore

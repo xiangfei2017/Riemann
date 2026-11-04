@@ -36,9 +36,10 @@ This module provides core gradient computation functionality for tensor differen
 including backpropagation implementation and gradient calculation utilities.
 
 Core components:
-- `backward`: Performs reverse-mode automatic differentiation (backpropagation)
-- `grad`: Computes gradients of outputs with respect to inputs
-- `_save_grad_and_check_if_grads_are_completed`: Internal utility for gradient management
+- `backward`: Wrapper method that delegates to TN.backward() for reverse-mode autodiff
+- `grad`: Computes gradients of outputs w.r.t. inputs, returning gradient tuples directly
+- `gradcheck`: Numerical gradient verification via finite differences
+- `Function`: Base class for custom autograd.Function-style forward/backward definitions
 
 All functions support Riemann Tensor (TN) type and automatic differentiation.
 """
@@ -46,6 +47,7 @@ All functions support Riemann Tensor (TN) type and automatic differentiation.
 from typing import Callable, Any
 import numpy as np
 from ..tensordef import *
+from ..gradmode import set_grad_enabled
 
 
 def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, create_graph: bool = False):
@@ -72,30 +74,6 @@ def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, crea
         """
         return self.backward(gradient=gradient, create_graph=create_graph)
 
-def _save_grad_and_check_if_grads_are_completed(grad_completed_var, input_tensor_list, grad_list,create_graph):
-    """保存计算出的梯度并检查所有需要的梯度是否已完成计算。
-    
-    这个内部工具函数检查所有指定输入张量的梯度是否已计算完毕
-    并存储在提供的梯度列表中。
-    
-    参数：
-        grad_completed_var: 梯度计算已完成的变量
-        input_tensor_list: 正在计算梯度的输入张量列表
-        grad_list: 梯度结果存储列表，与input_tensor_list顺序相同
-    
-    返回：
-        bool: 如果grad_list中的所有梯度都已计算（不为None），返回True，否则返回False
-    """
-    for i, var in enumerate(input_tensor_list):
-        if var is grad_completed_var:
-            if create_graph:
-                grad = var.grad_value
-            else:
-                grad = var.grad_value.detach()
-            grad_list[i] = grad
-
-    return all(grad is not None for grad in grad_list)
-
 def grad(outputs:TN,
          inputs:TN|list[TN]|tuple[TN],
          retain_graph: bool = False,
@@ -107,23 +85,26 @@ def grad(outputs:TN,
     
     这是Riemann框架中的核心梯度计算函数。与backward()方法类似，
     但它直接返回计算出的梯度张量，而不是将它们存储在输入张量的.grad属性中。
-    这使其更适合于高级梯度计算场景，如计算雅可比矩阵、
-    海森矩阵等。
+    这使其更适合于高级梯度计算场景，如计算雅可比矩阵、海森矩阵等。
     
     工作原理：
-        1. 初始化计算图状态
-        2. 设置输出梯度（默认为标量1.0或用户提供的梯度）
-        3. 使用栈结构对计算图进行深度优先遍历
-        4. 对于每个节点，调用相应的梯度函数计算输入节点的梯度
-        5. 当节点收集完所有梯度时，将其加入栈中继续传播
-        6. 一旦所有输入张量的梯度计算完毕，立即停止计算并返回结果
-        7. 清理中间缓存
+        1. 验证 outputs/inputs 参数合法性，初始化计算图（_init_calc_graph）
+        2. 设置初始输出梯度（标量隐式 1.0 或用户提供的 grad_outputs）
+        3. 使用 list 作为栈（pop(-1) O(1)）对计算图进行 DFS 反向遍历
+        4. 在 with set_grad_enabled(create_graph) 上下文中执行梯度传播，
+           确保 create_graph 参数能正确控制中间张量的 autograd 追踪
+        5. 复用 TN._propagate_grad_to_sources 向来源节点传播梯度，
+           与 TN._backward_without_hooks 使用完全相同的传播逻辑
+        6. 节点出栈时先检查是否是 inputs 之一，若是则保存梯度到返回列表；
+           所有 inputs 的梯度一旦全部收集（O(1) 计数器检测），立即 break 提前退出
+        7. 遍历结束后不再显式清理计算图缓存：下次 grad/backward 的 _init_calc_graph
+           会重新遍历整张图覆盖所有节点的 grad_value 和 rcv_grad_count，完全避免残留状态
     
     与backward()方法的区别：
         1. backward(): 将梯度存储在张量的.grad属性中，适合参数更新
         2. grad(): 返回梯度张量而不修改原始张量，适合高级梯度计算
-        3. grad() 在计算完所需梯度后立即停止，而backward()遍历整个计算图
-        4. grad() 不累积梯度，每次调用都重新计算
+        3. grad() 在计算完所需梯度后立即停止（lazy evaluation），而backward()遍历整个计算图
+        4. grad() 不累积梯度，每次调用都重新计算；backward() 的 .grad 会累加
     
     参数：
         outputs (TN): 需要计算梯度的输出张量
@@ -149,8 +130,8 @@ def grad(outputs:TN,
     异常：
         RuntimeError: 在以下情况下抛出：
             1. 输入张量不是TN类型或requires_grad=False
-            2. 输出张量是叶子节点
-            3. 当未提供grad_outputs时，输出不是标量
+            2. 当未提供grad_outputs时，输出不是标量
+            3. 当未提供grad_outputs时，输出是复标量
             4. 提供的grad_outputs张量形状与输出张量形状不匹配
             5. 在strict=True模式下，当检测到输出与某个输入无关时
     
@@ -181,6 +162,7 @@ def grad(outputs:TN,
         2. 设置create_graph=True会创建额外的计算图，可能会增加内存使用
         3. 对于大型计算图，grad()可能比backward()更高效，因为它在计算完所需梯度后立即停止
         4. 如果只需要计算特定输入的梯度，使用grad()比backward()更节省内存
+        5. 可安全地与backward()交错调用，两者各自独立初始化/重置计算图状态
     """
     if not outputs.requires_grad:
         raise RuntimeError('Only a tensor require grad can call grad()')
@@ -197,15 +179,12 @@ def grad(outputs:TN,
             raise RuntimeError(f"Input {i} must be a tensor that requires grad")
 
     if grad_outputs is None:
-        # if outputs.is_leaf:
-        #     raise RuntimeError('Only non-leaf variables can call grad()')        
         if outputs._array.ndim > 0:
             raise RuntimeError('Only a scalar can call grad() without argument grad_outputs')
         
         if outputs.is_complex():
             raise RuntimeError(f'grad can be implicitly created only for real scalar outputs but got {outputs.dtype}')
         
-        # 使用原始output作为反向传播的起点
         outputs._init_calc_graph()
         outputs.grad_value = tensor(1.0,
                                     dtype=outputs.dtype,
@@ -214,7 +193,6 @@ def grad(outputs:TN,
     
     elif isinstance(grad_outputs,TN):
         if grad_outputs._array.shape == outputs._array.shape:
-            # 直接使用原始outputs，设置其grad_value为grad_outputs
             outputs._init_calc_graph()
             outputs.grad_value = grad_outputs.to(outputs.device).detach().requires_grad_(create_graph)
         else:
@@ -222,47 +200,39 @@ def grad(outputs:TN,
     else:
         raise TypeError(f'grad_outputs can be either tensor or None, but got {type(grad_outputs)}')
         
-    grad_list = [None] * len(inputs)  # 初始化用于返回梯度的列表，与inputs里的张量一一对应
-    q = []  #初始化用于存放收集完梯度的节点的队列
-    q.append(outputs)
+    grad_list = [None] * len(inputs)      # 与 inputs 一一对应的返回梯度列表
+    saved_flags = [False] * len(inputs)   # 标记 inputs[i] 是否已收集完梯度
+    saved_count = 0                       # saved_flags[i]==True 的个数，O(1) 检测完成
+    q = [outputs]                         # list 作为栈：存放 rcv_grad_count==0 的节点
     
-    while q:  #对队列循环处理直至为空
-        item:TN = q.pop(-1)   #pop(-1)效率o(1),表示从队尾弹出，这时q实际为栈
-        
-        # 当前节点已收集完梯度，保存当前节点的grad到grad_list中
-        # 如grad_list已收集全了inputs中张量的梯度，及时跳出循环，提高效率
-        if _save_grad_and_check_if_grads_are_completed(item, inputs, grad_list,create_graph):
-            break
+    with set_grad_enabled(create_graph):
+        while q:
+            item: TN = q.pop(-1)  # O(1) 队尾弹出
 
-        fromvars = item.fromvars  #取出当前节点依赖的来源tensor节点列表
-        gradfuncs = item.gradfuncs
+            # 节点是 inputs 之一 → 保存梯度到返回列表
+            for i, var in enumerate(inputs):
+                if not saved_flags[i] and var is item:
+                    saved_flags[i] = True
+                    saved_count += 1
+                    grad_list[i] = var.grad_value if create_graph else var.grad_value.detach()
+                    break  # 一个 item 不可能同时匹配 inputs 多个元素
 
-        # 向所有来源子节点传播梯度
-        # fromvars和gradfuncs是等长并元素一一对应的，所以可以在一个循环中处理
-        for i,(var,fn) in enumerate(zip(fromvars,gradfuncs)):            
-        # for i in range(len(fromvars)):
-        #     var:TN = fromvars[i]
-        #     fn = gradfuncs[i]
-            if var.requires_grad == True:            
-                #调用来源节点对应的梯度函数，向该节点传播梯度值,每接收一次梯度传递，计数减1
-                tobe_add_grad:TN = fn(item,i)
-                var._add_received_grad_value(tobe_add_grad)
-                var.rcv_grad_count -= 1
-                
-                # 如果节点var的梯度已收集完毕，将该节点加入队列q，以便后续继续反向传播梯度
-                # 队列中永远只存放收集完梯度的节点
-                if var.rcv_grad_count == 0:
-                    q.append(var) 
-        
-        #当前节点反向传播完梯度后，节点的grad_value清空，节省空间
-        item.grad_value = None  # type: ignore
-    #end of while
+            # 所有 inputs 的梯度已收集 → 立即退出（grad 的 lazy evaluation 核心优化）
+            if saved_count == len(inputs):
+                break
+
+            # 向 fromvars 传播梯度，rcv_grad_count==0 的来源节点加入 vars_received_grad
+            vars_received_grad = set()
+            item._propagate_grad_to_sources(vars_received_grad)
+            item.grad_value = None
+            q.extend(vars_received_grad)
+        # end of while
+    # end of with
     
-    # 与backward函数不同，grad函数不会遍历计算图里所有节点，inputs里张量的梯度一旦计算完毕就会结束
-    # 所以outputs的计算图缓存要集中清除
-    outputs._clear_calc_graph_cache()
+    # 遍历结束后不再显式清理计算图缓存：下次 grad/backward 的 _init_calc_graph
+    # 会重新遍历整张图，完全覆盖节点状态。Benchmark 已验证交错调用的正确性。
 
-    # 不允许对不依赖变量求导时，在返回前要检查
+    # strict 模式：不允许对不参与计算的 inputs 求导
     if not allow_unused:
         for i, grad_val in enumerate(grad_list):
             if grad_val is None:
@@ -271,122 +241,6 @@ def grad(outputs:TN,
     return tuple(grad_list)  # type: ignore
 #end of grad
 
-def higher_order_grad(outputs: TN,
-                     inputs: TN | list[TN] | tuple[TN],
-                     n: int,
-                     create_graph: bool = False) -> tuple[TN, ...]:
-    """
-    计算标量张量输出相对于inputs中每个张量的n阶导数。
-    
-    该函数通过递归调用grad()函数来计算高阶导数。对于每个输入张量，
-    它会计算n阶导数，并返回与输入列表对应的导数元组。
-    
-    工作原理：
-        1. 验证输入参数的有效性
-        2. 对于每个输入张量，递归计算n阶导数
-        3. 每次递归调用都使用create_graph参数来控制是否创建计算图
-        4. 收集所有导数结果并返回
-    
-    注意：
-        - 该函数要求输出必须是标量张量
-        - 当n=1时，等同于调用grad()函数
-        - 高阶导数计算可能会消耗大量内存，特别是当create_graph=True时
-    参数：
-        outputs (TN): 需要计算梯度的标量输出张量
-        inputs (TN | list[TN] | tuple[TN]): 需要计算高阶导数的输入张量或张量列表
-        n (int): 导数的阶数，必须大于或等于0
-        create_graph (bool, 可选): 是否在梯度计算过程中创建计算图，默认为False
-
-    返回：
-        tuple[TN, ...]: 与inputs对应的高阶导数张量元组
-         
-    异常：
-        ValueError: 当参数不符合要求时抛出
-        RuntimeError: 当梯度计算失败时抛出
-         
-    示例：
-        >>> # 计算二阶导数
-        >>> x = tensor(2.0, requires_grad=True)
-        >>> y = x * x * x  # y = x^3
-        >>> d2y_dx2 = higher_order_grad(y, x, 2, create_graph=True)[0]
-        >>> print(d2y_dx2)  # 输出: 12.0
-         
-        >>> # 计算多个输入的二阶导数
-        >>> x1 = tensor(1.0, requires_grad=True)
-        >>> x2 = tensor(2.0, requires_grad=True)
-        >>> y = x1 * x1 + x2 * x2
-        >>> grads = higher_order_grad(y, [x1, x2], 2, create_graph=True)
-        >>> print(grads[0])  # 输出: 2.0
-        >>> print(grads[1])  # 输出: 2.0
-    """
-    # 检查n是否为非负整数
-    if not isinstance(n, int) or n < 0:
-        raise ValueError("n must be a non-negative integer")
-    
-    # 检查outputs是否为标量张量
-    if not isinstance(outputs, TN):
-        raise ValueError("outputs must be a TN type tensor")
-    
-    if outputs._array.ndim > 0 and outputs.requires_grad == False:
-        raise ValueError("outputs must be a scalar tensor require grad")
-    
-    # 检查inputs格式并转换为列表
-    if not isinstance(inputs, (list, tuple)):
-        inputs = [inputs]
-    else:
-        inputs = list(inputs)
-    
-    # 检查每个输入张量是否需要梯度
-    for i, inp in enumerate(inputs):
-        if not isinstance(inp, TN) or not inp.requires_grad:
-            raise ValueError(f"Input {i} must be a differentiable TN type tensor")
-    
-    # 2. 处理n=0的特殊情况
-    if n == 0:
-        # 返回与对应输入相同数据类型的零张量元组
-        result = []
-        for inp in inputs:
-            # 创建与输入相同形状和数据类型的零张量
-            zero_grad = zeros_like(inp, dtype=inp.dtype)
-            result.append(zero_grad)
-        return tuple(result)
-    
-    # 3. 为每个输入独立计算n阶导数
-    result = []
-    
-    # 为每个输入分别计算高阶导数
-    for i, target_input in enumerate(inputs):
-        try:
-            # 从原始输出开始，为每个输入独立计算高阶导数
-            current_grad = outputs
-            is_none = False
-            
-            # 迭代计算各阶导数
-            for order in range(n):
-                # 确定是否需要创建计算图
-                need_create_graph = create_graph or (order < n - 1)
-                
-                # 计算当前阶数的梯度，只针对目标输入
-                grad_result = grad(current_grad, target_input, create_graph=need_create_graph, allow_unused=True)[0]
-                
-                if grad_result is None:
-                    is_none = True
-                    break
-                
-                current_grad = grad_result
-            
-            # 如果计算过程中出现None或最终结果为None，则转换为零张量
-            if is_none or current_grad is None:
-                zero_grad = zeros_like(target_input, dtype=target_input.dtype)
-                result.append(zero_grad)
-            else:
-                result.append(current_grad)
-        except Exception as e:
-            # 如果计算失败，返回零张量
-            zero_grad = zeros_like(target_input, dtype=target_input.dtype)
-            result.append(zero_grad)
-    
-    return tuple(result)
 
 def _sum_all(tensors):
     """辅助函数：累加多个TN张量"""

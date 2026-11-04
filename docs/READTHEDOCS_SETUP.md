@@ -13,8 +13,8 @@ docs/
 │   ├── conf.py     # 中文 Sphinx 配置 (language = 'zh_CN')
 │   └── *.rst       # 中文文档页面
 ├── requirements.txt # 文档构建依赖
-├── Makefile
-└── make.bat
+├── make.sh          # Linux/macOS 构建脚本
+└── make.bat         # Windows 构建脚本
 ```
 
 ## 配置文件
@@ -73,18 +73,52 @@ docs/
 
 ### 构建英文文档
 
+**Windows:**
+
+```cmd
+cd docs
+make.bat html-en
+REM 输出在 build\html\
+```
+
+**Linux / macOS:**
+
 ```bash
 cd docs
-make html
+./make.sh html-en   # 首次使用: chmod +x make.sh
 # 输出在 build/html/
 ```
 
 ### 构建中文文档
 
+**Windows:**
+
+```cmd
+cd docs
+make.bat html-zh
+REM 输出在 build\html_zh\
+```
+
+**Linux / macOS:**
+
 ```bash
 cd docs
-sphinx-build -b html source_zh build/html_zh
+./make.sh html-zh
 # 输出在 build/html_zh/
+```
+
+### 同时构建中英文
+
+**Windows:**
+
+```cmd
+make.bat html-all
+```
+
+**Linux / macOS:**
+
+```bash
+./make.sh html-all
 ```
 
 ## 自动构建

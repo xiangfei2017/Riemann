@@ -2877,7 +2877,7 @@ CUDA支持
    :return: 一个修饰器函数，用于包装前向计算函数，使其支持自动微分
    :rtype: callable
 
-   更多场景示例（命名参数、默认参数、*args/**kwargs、矩阵乘等）参见
+   更多场景示例（命名参数、默认参数、\*args/\*\*kwargs、矩阵乘等）参见
    :doc:`autograd_basics`。
 
    示例：
