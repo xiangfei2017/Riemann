@@ -513,6 +513,13 @@ def functional_call(module: Any,
     if kwargs is None:
         kwargs = {}
 
+    # 归一化 args 为 tuple，避免单个 TN 被解包
+    if isinstance(args, TN):
+        args = (args,)
+    elif isinstance(args, list):
+        args = tuple(args)
+    # args 已经是 tuple 时保持不变
+
     # 解析 module 的参数
     if hasattr(module, "named_parameters"):
         module_params = list(module.named_parameters())
@@ -541,14 +548,29 @@ def functional_call(module: Any,
             f"{len(parameter_values)} values in parameter_values"
         )
 
-    # 临时替换 module 的参数属性，调用 forward，然后恢复
+    # 临时替换 module 的参数值，调用 forward，然后恢复。
+    # 注意：不能用 setattr 替换普通 TN，因为 Module.__setattr__ 会把
+    # 普通 TN 注册到 _buffers，而 Module.__getattr__ 查找顺序是
+    # _parameters → _buffers → _modules，最终仍取到旧的 Parameter。
+    # 直接操作 _parameters 字典才能让 self.weight 读到新值。
     orig_values = []
+    _params = getattr(module, "_parameters", None)
     try:
-        for (name, orig), new_val in zip(module_params, parameter_values):
-            orig_values.append(orig)
-            setattr(module, name, new_val)
+        if _params is not None:
+            for (name, orig), new_val in zip(module_params, parameter_values):
+                orig_values.append(_params.get(name))
+                _params[name] = new_val
+        # 回退：没有 _parameters 字典的 module，退回到 setattr
+        if _params is None:
+            for (name, orig), new_val in zip(module_params, parameter_values):
+                orig_values.append(orig)
+                setattr(module, name, new_val)
         forward = getattr(module, "forward", None) or module
         return forward(*args, **kwargs)
     finally:
-        for (name, _), orig in zip(module_params, orig_values):
-            setattr(module, name, orig)
+        if _params is not None:
+            for (name, _), orig in zip(module_params, orig_values):
+                _params[name] = orig
+        else:
+            for (name, _), orig in zip(module_params, orig_values):
+                setattr(module, name, orig)

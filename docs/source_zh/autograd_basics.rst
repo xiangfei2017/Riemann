@@ -671,33 +671,33 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     y = rm.tensor(3.0, requires_grad=True)
     f = x ** 3 * y ** 2
 
-    f.d(x)                 # 一阶 df/dx = 3x²y² = 108
-    f.d(x, y)              # 混合偏导 d²f/dxdy = 6x²y = 72
-    f.d((x, 2))            # 显式二阶 d²f/dx² = 6xy² = 108
-    f.d(x, x)              # 同变量重复 = f.d((x, 2)) — 6xy² = 108
-    f.d((x, 2), y)         # 显式多阶 d³f/∂x²∂y = 12xy = 72
+    print(f.d(x))                 # 一阶 df/dx = 3x²y² = 108
+    print(f.d(x, y))              # 混合偏导 d²f/dxdy = 6x²y = 72
+    print(f.d((x, 2)))            # 显式二阶 d²f/dx² = 6xy² = 108
+    print(f.d(x, x))              # 同变量重复 = f.d((x, 2)) — 6xy² = 108
+    print(f.d((x, 2), y))         # 显式多阶 d³f/∂x²∂y = 12xy = 72
 
     # === 向量变量（核心能力） ===
     x = rm.tensor([1., 2., 3.], requires_grad=True)
     f = (x ** 3).sum()
 
-    f.d(x)                 # 梯度向量 [3, 12, 27]
-    f.d(x, x)              # Hessian 矩阵 diag([6, 12, 18])
-    f.d((x, 3))            # 三阶张量 shape=(3,3,3)，对角线 [24, 48, 72]
+    print(f.d(x))                 # 梯度向量 [3, 12, 27]
+    print(f.d(x, x))              # Hessian 矩阵 diag([6, 12, 18])
+    print(f.d((x, 3)))            # 三阶张量 shape=(3,3,3)，对角线 [24, 48, 72]
 
     # === 多向量混合偏导 ===
     x = rm.tensor([1., 2.], requires_grad=True)
     y = rm.tensor([3., 4.], requires_grad=True)
     f = (x * y).sum() ** 2
 
-    f.d(x, y)              # (2, 2) 交叉偏导矩阵 [[28, 12], [8, 38]]
+    print(f.d(x, y))              # (2, 2) 交叉偏导矩阵 [[28, 12], [8, 38]]
 
     # === 标量 + 向量 ===
     x = rm.tensor(2.0, requires_grad=True)
     y = rm.tensor([1., 2., 3.], requires_grad=True)
     f = x * (y ** 2).sum()
 
-    f.d(x, y)              # d²f/∂x∂y = [2, 4, 6], shape=(3,)
+    print(f.d(x, y))              # d²f/∂x∂y = [2, 4, 6], shape=(3,)
 
 **注意事项**
 
@@ -729,22 +729,26 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
     # f(x) = [x₀³, x₁³, x₂³]，逐元素三次方，向量输入/向量输出
     x = rm.tensor([1., 2., 3.], requires_grad=True)
+    print(x)
     f = lambda xv: xv ** 3   # shape: (3,) → (3,)
 
     # ===== 一阶: Jacobian 矩阵 =====
     # J_{ij} = ∂f_i/∂x_j = 3x_i² · δ_{ij} （对角矩阵）
     J = func.jacrev(f)(x)
+    print(J)
     # J.shape = (3, 3)
     # J = diag([3·1², 3·2², 3·3²]) = diag([3, 12, 27])
 
     # jacfwd 等价（前向模式，对这类小向量效率相近）
     J_fwd = func.jacfwd(f)(x)
+    print(J_fwd)
     # → 与 J 完全相同
 
     # ===== 二阶: Jacobian 的 Jacobian —— 三阶张量 =====
     # T_{ijk} = ∂²f_i/∂x_j∂x_k
     # 对 f_i = x_i³: 仅当 i=j=k 时 T_{ijk} = 6x_i，其余为 0
     T = func.jacrev(lambda xv: func.jacrev(f, create_graph=True)(xv))(x)
+    print(T)
     # T.shape = (3, 3, 3)
     # T[0,0,0] = 6·1 = 6,  T[1,1,1] = 6·2 = 12,  T[2,2,2] = 6·3 = 18
     # 所有其他元素 = 0
@@ -779,8 +783,9 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     # ===== Hessian-向量乘积 hvp =====
     # 给定方向向量 v，计算 H·v —— 无需显式构造 H，节省 O(n²) 内存
     v = rm.tensor([1., 0.], requires_grad=False)
-    grad_fn, hvp_fn = func.hvp(f_least_squares, x, v)()
-    # 返回 tuple: (gradient_estimator, hvp_result)
+    hvp_fn = func.hvp(f_least_squares)          # 返回包裹函数
+    out_val, hvp_result = hvp_fn(x, v)          # 传入 inputs 和 v
+    print(hvp_result)
     # hvp_result = H·v = [70, 88]
 
 **示例 3: 多输入函数的各输入独立高阶 —— ``f(x, y) = x³y⁴``**
@@ -793,7 +798,9 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     from riemann import func
 
     x = rm.tensor(2.0, requires_grad=True)
+    print(x)
     y = rm.tensor(3.0, requires_grad=True)
+    print(y)
 
     f = lambda xv, yv: xv ** 3 * yv ** 4
 
@@ -802,15 +809,18 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
         lambda xv, yv: func.grad(f, argnums=0, create_graph=True)(xv, yv),
         argnums=0
     )(x, y)   # → 972.0
+    print(d2x)
 
     # 对 y 二阶: ∂²f/∂y² = 12x³y² = 12·8·9 = 864
     d2y = func.grad(
         lambda xv, yv: func.grad(f, argnums=1, create_graph=True)(xv, yv),
         argnums=1
     )(x, y)   # → 864.0
+    print(d2y)
 
     # 同时对两个输入求一阶（argnums 为 tuple）
     dx, dy = func.grad(f, argnums=(0, 1), create_graph=True)(x, y)
+    print(dx, dy)
     # dx = 3x²y⁴ = 972.0,  dy = x³·4y³ = 864.0
 
 **示例 4: ``func.grad`` + ``has_aux`` 传递辅助值 + 继续高阶**
@@ -825,6 +835,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     from riemann.autograd import grad
 
     x = rm.tensor(2.0, requires_grad=True)
+    print(x)
 
     # f(x) = log(x), 辅助值是 1.0
     def f_with_aux(xv):
@@ -833,10 +844,12 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     # 构建带 has_aux 的高阶梯度函数
     grad_fn = func.grad(f_with_aux, has_aux=True, create_graph=True)
     g1, aux = grad_fn(x)
+    print(g1, aux)
     # g1 = 1/x = 0.5,  aux = 1.0（原样返回）
 
     # g1 带着计算图，可以继续对它求导
     g2 = grad(g1, x, allow_unused=True)[0]
+    print(g2)
     # g2 = -1/x² = -0.25
 
 **示例 5: ``jacrev(grad(f))`` — 一次性构造 Hessian 矩阵**
@@ -856,6 +869,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     # 梯度函数 g = ∇f
     # Hessian = Jacobian_of_forward(∇f)
     H = func.jacrev(func.grad(f, create_graph=True))(x)
+    print(H)
 
     # H.shape = (3, 3)
     # H 是对角矩阵，对角元 12·x_i² = [12, 48, 108]
@@ -866,7 +880,13 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
 .. code-block:: python
 
+    import riemann as rm
+    from riemann import func
+
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    f = lambda xv: (xv ** 4).sum()
     H_fwd = func.jacfwd(func.grad(f, create_graph=True))(x)
+    print(H_fwd)
     # → 与 H 完全相同
 
 **示例 6: 批量高阶 —— ``func.vmap`` 包高阶函数**
@@ -880,6 +900,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     from riemann.autograd import grad
 
     xs = rm.tensor([1., 2., 3., 4.], requires_grad=True)
+    print(xs)
 
     # 标量版本的二阶导数函数: x → f''(x) = 12x²
     def scalar_second(xv):
@@ -890,16 +911,22 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
     # vmap 批量应用
     batch_f2 = func.vmap(scalar_second)(xs)
+    print(batch_f2)
     # → [12·1², 12·2², 12·3², 12·4²] = [12, 48, 108, 192]
 
 或者先对批量求和转标量再反向（需要手动传 ``grad_outputs`` 给第二次 ``grad``）：
 
 .. code-block:: python
 
+    import riemann as rm
+    from riemann.autograd import grad
+
+    xs = rm.tensor([1., 2., 3., 4.], requires_grad=True)
     f_sum = (xs ** 4).sum()
     g1 = grad(f_sum, xs, create_graph=True, allow_unused=True)[0]
     g2 = grad(g1, xs, allow_unused=True,
               grad_outputs=rm.ones_like(g1))[0]   # 必须传 grad_outputs！
+    print(g2)
     # → 同样 [12, 48, 108, 192]
 
 **示例 7: ``TN.d()`` 与 ``func.grad`` 高阶链式等价性**
@@ -917,6 +944,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
     # 方式 A: TN.d() —— 最简洁
     d_x2 = f.d(x, x)
+    print(d_x2)
     # → 6xy² = 6·2·9 = 108.0
 
     # 方式 B: func.grad 函数式高阶链
@@ -924,6 +952,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     gf = func.grad(f_fn, argnums=0, create_graph=True)
     ggf = func.grad(lambda xv, yv: gf(xv, yv), argnums=0)
     fg_x2 = ggf(x, y)
+    print(fg_x2)
     # → 也是 108.0
 
 .. list-table::
@@ -952,7 +981,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
      - ``func.jacrev(func.grad(fn))``
      - 结构化、一次算出、比手动两次 grad 高效
    * - Hessian-向量乘积 (hvp)
-     - ``func.hvp(fn, x, v)()``
+     - ``func.hvp(fn)(x, v)``
      - 优化中极常见；无需显式构造 Hessian，节省 O(n²) 内存
    * - 批量高阶导数
      - ``func.vmap(scalar_high_order)``
@@ -990,7 +1019,7 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     # 计算雅可比矩阵
     jac = rm.autograd.functional.jacobian(f, x)
     print(jac)
-    print(jac.shape)  # (3, 3)  # 对于向量输入，结果形状为 (n_inputs, n_outputs)
+    print(jac.shape)  # (3, 3)  # 对于向量输入/向量输出，结果形状为 (n_outputs, n_inputs)
 
 ``hessian()`` 函数
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -1011,7 +1040,7 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     # 计算 Hessian 矩阵
     hess = rm.autograd.functional.hessian(f, x)
     print(hess)
-    print(hess.shape)  # (1, 1)  # 对于标量输入，形状为 (输入大小, 输入大小)
+    print(hess.shape)  # ()  # 标量输入返回标量二阶导
 
 ``derivative()`` 函数
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1031,7 +1060,7 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     
     # 测试导函数
     x = rm.tensor(2.0, requires_grad=True)
-    print(df(x))  # 应返回 tensor(4.0)
+    print(df(x))  # 返回 (tensor(4.),)  — derivative 返回 tuple
     
     # 多输入示例
     def g(x, y):
@@ -1194,26 +1223,32 @@ func 模块求导函数
     def f(x, y):
         return (x ** 2).sum() + x @ y  # 标量输出
 
+    x = rm.tensor([1., 2.], requires_grad=True)
+    y = rm.tensor([3., 4.], requires_grad=True)
+
     g = func.grad(f, argnums=0)      # 只对 x 求导
-    grad_x = g(rm.tensor([1., 2.], requires_grad=True),
-               rm.tensor([3., 4.]))
+    grad_x = g(x, y)
     print(grad_x)  # 2*x + y = [2+3, 4+4] = [5, 8]
 
-    # 多输入求导
+    # 多输入求导：argnums=(0, 1) 同时对两个参数求梯度
     g_both = func.grad(f, argnums=(0, 1))
     gx, gy = g_both(x, y)
+    print(gx)  # 同 grad_x
+    print(gy)  # x = [1., 2.]
 
     # has_aux：同时返回辅助数据
     def f_with_aux(x):
-        return (x ** 3).sum(), {"x_norm": float(np.linalg.norm(x._array))}
+        return (x ** 3).sum(), float((x ** 2).sum() ** 0.5)
 
     g_aux = func.grad(f_with_aux, has_aux=True)
     grad, aux = g_aux(rm.tensor([1., 2., 3.], requires_grad=True))
     print(grad)  # [3., 12., 27.]
-    print(aux)   # {'x_norm': ...}
+    print(aux)   # sqrt(1+4+9) ≈ 3.7417
 
-    # create_graph=True 支持高阶导
-    g_higher = func.grad(func.grad(lambda x: (x ** 4).sum(), create_graph=True))
+    # create_graph=True 支持高阶导：内层 grad 返回带计算图的梯度，
+    # 外层 grad 需要标量输出，因此对梯度做 .sum() 标量化
+    grad_fn = func.grad(lambda x: (x ** 4).sum(), create_graph=True)
+    g_higher = func.grad(lambda x: grad_fn(x).sum())
     h = g_higher(rm.tensor([1., 2., 3.], requires_grad=True))
     print(h)  # 二阶导 12*x² = [12., 48., 108.]
 
@@ -1333,9 +1368,9 @@ func 模块求导函数
     out, vjp_val = func.vjp(f, x)
     print(vjp_val)  # 2x + 1 = [3., 5., 7.]
 
-    # 自定义 cotangent（相当于把函数输出按 cotangent 加权求和）
-    out2, vjp_val2 = func.vjp(f, x, rm.tensor([2.0]))
-    print(vjp_val2)  # [6., 10., 14.]
+    # 自定义 cotangent（标量输出对应标量 cotangent，相当于把函数输出加权求和）
+    out2, vjp_val2 = func.vjp(f, x, rm.tensor(2.0))
+    print(vjp_val2)  # 2 * (2x + 1) = [6., 10., 14.]
 
     # 向量输出也支持默认 cotangent
     def g(x):
@@ -1382,10 +1417,13 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     jac_g = func.jacrev(g)(rm.tensor([1., 2., 3.], requires_grad=True))
     print(jac_g.shape)  # (2, 3)
 
-    # jacobian 统一入口
-    jac_fwd = func.jacobian(f, mode="forward")(x)
-    jac_rev = func.jacobian(f, mode="reverse")(x)
+    # jacobian 统一入口（使用前面的 f 和同一输入）
+    x_in = rm.tensor([1., 2., 3.], requires_grad=True)
+    jac_fwd = func.jacobian(f, mode="forward")(x_in)
+    jac_rev = func.jacobian(f, mode="reverse")(x_in)
     # jac_fwd ≈ jac_rev
+    print(jac_fwd)
+    print(jac_rev)
 
 **注意事项**: 
 
@@ -1445,10 +1483,14 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
     f = lambda x: (x ** 3).sum()
     x = rm.tensor([1., 2., 3.], requires_grad=True)
+    print(x)
     v = rm.tensor([1., 1., 1.])
+    print(v)
 
     hvp_fn = func.hvp(f)
-    out, hvp_val = hvp_fn(x, v)
+    out_val, hvp_val = hvp_fn(x, v)
+    print(out_val)
+    print(hvp_val)
     # f''(x) = diag(6x) = diag([6, 12, 18])
     # hvp = [6, 12, 18] @ [1, 1, 1] = [6, 12, 18]
 
@@ -1541,18 +1583,8 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     import riemann as rm
     from riemann import func
 
-    # 定义一个简单的线性层
-    class Linear(rm.nn.Module):
-        def __init__(self, in_features, out_features):
-            super().__init__()
-            self.weight = rm.tensor(
-                np.random.randn(out_features, in_features), requires_grad=True)
-            self.bias = rm.tensor(np.zeros(out_features), requires_grad=True)
-
-        def forward(self, x):
-            return x @ self.weight.T + self.bias
-
-    layer = Linear(3, 2)
+    # 使用框架内置的 Linear 层，weight / bias 自动注册到 _parameters
+    layer = rm.nn.Linear(3, 2)
     x = rm.tensor([[1., 2., 3.], [4., 5., 6.]], requires_grad=False)
 
     # 用自定义参数调用（不修改 layer.weight 和 layer.bias）
@@ -1560,7 +1592,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     alt_bias = rm.tensor([0.5, -0.5], requires_grad=True)
 
     out = func.functional_call(layer, [alt_weight, alt_bias], x)
-    print(out)
+    print("out:", out)
     # layer.weight 和 layer.bias 仍是原值
 
     # 与 grad 组合：对替代参数求梯度
@@ -1568,6 +1600,9 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
         (func.functional_call(layer, params, x) ** 2).sum()
     )
     g, v = loss(alt_weight, alt_bias)
+
+    print("grad:", g)
+    print("value:", v)
 
 **注意事项**: 
 
@@ -1585,52 +1620,86 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 .. code-block:: python
 
+    import riemann as rm
+    from riemann import func
+
     def loss(x):
         return (x ** 2).sum()
 
-    # 对批次中的每个样本独立计算梯度
+    x_batch = rm.tensor([[1., 2.], [3., 4.], [5., 6.]], requires_grad=True)
     grads = func.vmap(func.jacrev(loss))(x_batch)
-    # grads.shape == (batch_size, input_dim)
+    print(grads.shape)  # (3, 2)
 
 **模式 2：jacrev(jacrev(f)) — 通过 jacrev 构造 Hessian**
 
 .. code-block:: python
 
+    import riemann as rm
+    from riemann import func
+
     def f(x):
         return (x ** 4).sum()
 
-    # 对梯度再求 Jacobian，得到 Hessian
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
     h_via_jac = func.jacrev(func.jacrev(f, create_graph=True))(x)
+    print(h_via_jac)
+    # 对角矩阵，对角元 [12·1², 12·2², 12·3²] = [12, 48, 108]
 
 **模式 3：vmap + hvp — 批量 Hessian-向量积**
 
 .. code-block:: python
 
-    hvp_fn = func.hvp(f)  # 返回 (inputs, v) -> (output, hvp_result)
-    batched_hvp = func.vmap(hvp_fn, in_dims=(0, 0))
-    # 注意：hvp_fn 的第一个参数是 inputs，第二个是 v
+    import riemann as rm
+    from riemann import func
+
+    f = lambda x: (x ** 3).sum()
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    v = rm.tensor([1., 1., 1.])
+
+    hvp_fn = func.hvp(f)   # 返回 (inputs, v) -> (output, hvp_result)
+    out_val, hvp_val = hvp_fn(x, v)
+    print(hvp_val)
+    # hvp_fn 的第一个参数是 inputs，第二个是 v
+    # batched_hvp = func.vmap(hvp_fn, in_dims=(0, 0))
 
 **模式 4：functional_call + grad — 对 Module 参数求梯度**
 
 .. code-block:: python
 
+    import riemann as rm
+    from riemann import func
+
+    layer = rm.nn.Linear(3, 2)
+    x = rm.tensor([1., 2., 3.])
+    alt_weight = rm.tensor([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], requires_grad=True)
+    alt_bias = rm.tensor([0.01, 0.02], requires_grad=True)
+
     def param_loss(weight, bias):
         y = func.functional_call(layer, [weight, bias], x)
         return (y ** 2).sum()
 
-    g_w, g_b = func.grad(param_loss, argnums=(0, 1))(
-        alt_weight, alt_bias)
+    g_w, g_b = func.grad(param_loss, argnums=(0, 1))(alt_weight, alt_bias)
+    print(g_w.shape, g_b.shape)
 
 **模式 5：create_graph 链 — 高阶微分**
 
 .. code-block:: python
 
+    import riemann as rm
+    from riemann import func
+
+    f = lambda x: (x ** 4).sum()
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+
     # 一阶
     g = func.grad(f, create_graph=True)
-    # 二阶：对梯度再求 grad
-    h = func.grad(lambda a: g(a).sum())
+    print(g(x))
+    # 二阶：对梯度再求 grad，同样需要 create_graph=True 才能继续链式高阶
+    h = func.grad(lambda a: g(a).sum(), create_graph=True)
+    print(h(x))
     # 三阶：继续叠加
     third = func.grad(lambda a: h(a).sum())(x)
+    print(third)
 
 .. list-table::
    :header-rows: 1
@@ -2004,12 +2073,14 @@ share_grad_map 函数
     a_new, b_new, c_new = rm.share_grad_map((a, b, c))
     y2 = func(a_new, b_new, c_new)
     y2.backward()
-    print(f"c.grad = {c_new.grad}")  # 输出: [0.0, 0.0]
+    # 注意：梯度回传到原始张量 a/b/c，克隆张量.grad 为 None
+    print(f"c.grad (origin): {c.grad}")  # 输出: [0.0, 0.0]
     
     # 验证：前向值相同，a 和 b 的梯度不变
     assert y1.item() == y2.item()
-    assert (a_new.grad == rm.tensor([3., 4.])).all()
-    assert (b_new.grad == rm.tensor([1., 2.])).all()
+    assert (a.grad == rm.tensor([3., 4.])).all()
+    assert (b.grad == rm.tensor([1., 2.])).all()
+    assert (c.grad == rm.tensor([0., 0.])).all()
 
 **典型使用场景：**
 
@@ -2039,22 +2110,45 @@ share_grad_map 函数
 梯度检查
 -----------------
 
-使用 ``gradcheck`` 函数来验证你的自定义梯度函数是否正确：
+可以用有限差分法手动验证自定义梯度函数是否正确：
 
 .. code-block:: python
 
     import riemann as rm
-    
-    # 定义一个用于梯度检查的测试函数
-    def test_function(x):
-        return CustomSigmoid.apply(x)
-    
-    # 执行梯度检查
-    x = rm.tensor(0.0, requires_grad=True)
-    check_passed = rm.gradcheck(test_function, (x,))
-    print(f"梯度检查通过: {check_passed}")
+    import numpy as np
 
-Gradcheck 通过比较解析梯度和有限差分法计算的数值梯度来验证梯度计算的正确性。
+    # 手动数值梯度检查（类似 PyTorch 的 gradcheck 原理）
+    def numerical_grad(func, x, eps=1e-5):
+        x_flat = x._array.astype(np.float64).copy()
+        grad_flat = np.zeros_like(x_flat)
+        it = np.nditer(x_flat, flags=['multi_index'], op_flags=['readwrite'])
+        while not it.finished:
+            idx = it.multi_index
+            old_val = x_flat[idx]
+            x_flat[idx] = old_val + eps
+            f_plus = func(rm.tensor(x_flat.astype(np.float32))).item()
+            x_flat[idx] = old_val - eps
+            f_minus = func(rm.tensor(x_flat.astype(np.float32))).item()
+            x_flat[idx] = old_val
+            grad_flat[idx] = (f_plus - f_minus) / (2 * eps)
+            it.iternext()
+        return rm.tensor(grad_flat.astype(np.float32))
+
+    # 定义一个简单函数测试
+    def f(x):
+        return (x ** 3).sum()
+
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    y = f(x)
+    y.backward()
+
+    num_grad = numerical_grad(f, x)
+    print(f"解析梯度: {x.grad}")
+    print(f"数值梯度: {num_grad}")
+    print(f"最大误差: {(x.grad - num_grad).abs().max()}")
+    # 最大误差应小于 1e-4
+
+Gradcheck 通过比较解析梯度和有限差分法计算的数值梯度来验证梯度计算的正确性。Riemann 目前未提供内置的 ``gradcheck`` 函数，可使用上述数值梯度检查方法代替。
 
 梯度计算技巧
 -------------------------

@@ -742,6 +742,18 @@ class TestFuncs(unittest.TestCase):
         # 多参数 named_parameters
         _run_case("functional_call - multi_params", lambda: self._check_fc_multi_params())
 
+        # ---- rm.nn.Module 真实 Module 场景（今天修复的 _parameters 分支） ----
+        _run_case("functional_call - rm.nn.Linear default",
+                  lambda: self._check_fc_rmnn_default())
+        _run_case("functional_call - rm.nn.Linear custom_and_restore",
+                  lambda: self._check_fc_rmnn_custom())
+        _run_case("functional_call - rm.nn.Linear single TN args (not tuple)",
+                  lambda: self._check_fc_rmnn_single_args())
+
+        # ---- 与 func.grad 组合：对替代参数求梯度 ----
+        _run_case("functional_call + grad - differentiate w.r.t. substitute params",
+                  lambda: self._check_fc_grad_combo())
+
     def _make_linear_module(self):
         class Linear:
             def __init__(self, w): self.w = w
@@ -826,6 +838,70 @@ class TestFuncs(unittest.TestCase):
         return (_close(y_custom, y_expected)
                 and _close(model.w, w0)
                 and _close(model.b, b0))
+
+    # ---- rm.nn.Module 真实 Module 场景 ----
+    def _check_fc_rmnn_default(self):
+        """rm.nn.Linear 使用自身参数调用（parameter_values=None）"""
+        layer = rm.nn.Linear(4, 5)
+        x = _rm_tensor(np.random.randn(2, 4), requires_grad=False)
+        # functional_call 不替换参数
+        y_fc = func.functional_call(layer, None, (x,))
+        y_direct = layer(x)
+        return _close(y_fc, y_direct)
+
+    def _check_fc_rmnn_custom(self):
+        """rm.nn.Linear 用替代参数调用，验证 _parameters 分支替换 + 恢复"""
+        layer = rm.nn.Linear(4, 5)
+        orig_weight = layer.weight.clone()
+        orig_bias = layer.bias.clone()
+
+        w_new = _rm_tensor(np.random.randn(5, 4), requires_grad=True)
+        b_new = _rm_tensor(np.random.randn(5), requires_grad=True)
+        x = _rm_tensor(np.random.randn(2, 4), requires_grad=False)
+
+        y_fc = func.functional_call(layer, [w_new, b_new], (x,))
+        # 手动计算期望值：x @ w_new.T + b_new
+        y_expected = x @ w_new.T + b_new
+        # Module 自身参数必须恢复原值
+        restored = (_close(layer.weight, orig_weight)
+                    and _close(layer.bias, orig_bias))
+        return _close(y_fc, y_expected) and restored
+
+    def _check_fc_rmnn_single_args(self):
+        """args 直接传单个 TN（非 tuple），验证不会被错误解包"""
+        layer = rm.nn.Linear(4, 5)
+        x = _rm_tensor(np.random.randn(2, 4), requires_grad=False)
+        # 单 TN 作为 args（不是 (x,)）
+        y_fc = func.functional_call(layer, None, x)
+        y_direct = layer(x)
+        return _close(y_fc, y_direct)
+
+    # ---- functional_call + func.grad 组合 ----
+    def _check_fc_grad_combo(self):
+        """functional_call 与 func.grad_and_value 组合，对替代参数求梯度"""
+        layer = rm.nn.Linear(4, 5)
+        x = _rm_tensor(np.random.randn(2, 4), requires_grad=False)
+
+        alt_w = _rm_tensor(np.random.randn(5, 4), requires_grad=True)
+        alt_b = _rm_tensor(np.random.randn(5), requires_grad=True)
+
+        # argnums=(0, 1) 同时对 w 和 b 求梯度
+        loss_fn = func.grad_and_value(
+            lambda w, b: (func.functional_call(layer, [w, b], x) ** 2).sum(),
+            argnums=(0, 1)
+        )
+        g, v = loss_fn(alt_w, alt_b)   # g = (g_w, g_b)
+
+        # 手动数值验证：
+        # L = sum((x @ alt_w.T + alt_b)^2)
+        # dL/d(alt_w) = 2 * (x @ alt_w.T + alt_b).T @ x
+        # dL/d(alt_b) = 2 * sum(x @ alt_w.T + alt_b, dim=0)
+        y = x @ alt_w.T + alt_b   # (2, 5)
+        expected_w = (2.0 * y.T @ x)  # (5, 4)
+        expected_b = (2.0 * y).sum(dim=0)  # (5,)
+        return (_close(g[0], expected_w)
+                and _close(g[1], expected_b)
+                and _close(v, (y ** 2).sum()))
 
     # ---------------------------------------------------------------
     # 函数组合（跨原语组合能力）
