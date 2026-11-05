@@ -27,10 +27,9 @@ Riemann是一个类似PyTorch的神经网络编程框架，支持张量计算中
 ## 应用场景
 
 - **深度学习研究**：自定义模型和算法开发
-- **科学计算**：复杂数学模型的梯度计算
-- **优化问题求解**：梯度下降和Adam等优化算法
+- **科学计算**：复杂数学模型的梯度计算，优化问题求解
 - **计算机视觉**：图像分类等视觉任务
-- **教育教学**：自动微分和深度学习原理学习
+- **教育教学**：自动求导和深度学习原理学习
 
 
 ## PyTorch接口兼容性
@@ -40,7 +39,7 @@ Riemann库设计时注重与PyTorch接口的兼容性，同名的函数和类接
 - **张量操作**：支持与PyTorch同名的张量操作函数和方法，如`tensor()`、`grad()`、`backward()`等
 - **神经网络组件**：`nn`模块中的层、激活函数和损失函数与PyTorch保持接口兼容
 - **优化器**：`optim`模块中的优化器（如SGD、Adam等）接口与PyTorch保持一致
-- **自动微分机制**：`requires_grad`、反向传播机制与PyTorch相似
+- **自动求导机制**：`requires_grad`、反向传播机制与PyTorch相似
 - **torch.func兼容**：顶层 ``func`` 模块对齐 `torch.func` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``hessian``、``hvp``、``vmap``、``functional_call``
 - **计算机视觉**：`vision`模块中的数据集和变换与torchvision保持接口兼容
 - **跨框架互操作**：Riemann 张量可与 NumPy 数组、CuPy 数组以及 PyTorch 等其它张量框架互相转换或共享数据，入口包括 `r.tensor()`、`r.as_tensor()`、`r.from_dlpack()`、`TN.array()`、`TN.numpy()`，底层依托 `__array__`、`__cuda_array_interface__`、`__dlpack__`、`__buffer__` 协议；设备与 dtype 一致时为零拷贝
@@ -54,7 +53,7 @@ Riemann库设计时注重与PyTorch接口的兼容性，同名的函数和类接
 Riemann/
 ├── src/
 │   └── riemann/              # 核心源代码
-│       ├── autograd/         # 自动微分相关模块
+│       ├── autograd/         # 自动求导相关模块
 │       ├── nn/               # 神经网络模块
 │       ├── optim/            # 优化器模块
 │       ├── utils/            # 工具函数
@@ -62,7 +61,7 @@ Riemann/
 │       ├── __init__.py       # 包配置文件
 │       ├── cuda.py           # CUDA/GPU 支持
 │       ├── dtype.py          # 数据类型定义
-│       ├── func.py           # 函数式自动微分接口
+│       ├── func.py           # 函数式自动求导接口
 │       ├── gradmode.py       # 梯度模式控制
 │       ├── linalg.py         # 线性代数函数
 │       ├── serialization.py  # 对象保存与加载
@@ -88,19 +87,19 @@ Riemann/
 
 代码目录 `src/riemann/` 是Riemann库的核心源代码所在地，包含了所有主要功能模块：
 
-- **autograd/**: 实现自动微分功能，包括反向传播算法和梯度计算
+- **autograd/**: 实现自动求导功能，包括反向传播算法和梯度计算
 - **nn/**: 神经网络相关组件，如各种层、激活函数和损失函数
 - **optim/**: 优化器模块，如SGD、Adam等优化器，以及学习率调度器
 - **utils/**: 工具函数，包括数据集Dataset类和数据加载器Dataloader类等
 - **vision/**: 计算机视觉相关功能，包括数据集和图像变换
-- **`func`**: 函数式自动微分接口，参考 torch.func 设计。提供柯里化的纯函数式 API，如 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``hvp``、``vmap``、``functional_call``，适合链式高阶求导
+- **`func`**: 函数式自动求导接口，参考 torch.func 设计。提供柯里化的纯函数式 API，如 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``hvp``、``vmap``、``functional_call``，适合链式高阶求导
 - **核心文件**: 如 `tensordef.py`（张量定义）、`linalg.py`（线性代数）、`dtype.py`（数据类型）、`cuda.py`（GPU 支持）等
 
 ### tests目录
 
 `tests/` 目录包含了大量测试用例，用于验证Riemann库的各种功能是否正常工作：
 
-- 测试用例按模块分类，覆盖了自动微分、张量操作、神经网络等各个功能模块
+- 测试用例按模块分类，覆盖了自动求导、张量操作、神经网络等各个功能模块
 - 测试用例既可以使用pytest批量运行，也可以作为独立脚本单独运行
 - 提供了详细的测试覆盖，确保库的稳定性和可靠性
 
@@ -292,9 +291,9 @@ chmod +x make.sh      # 首次使用需赋予执行权限
 
 ```
 riemann                  # 主包
-├── autograd             # 自动微分模块
-│   └── functional       # 自动微分函数式接口
-├── func                 # torch.func 风格函数式自动微分 API
+├── autograd             # 自动求导模块
+│   └── functional       # 自动求导函数式接口
+├── func                 # torch.func 风格函数式自动求导 API
 ├── linalg               # 线性代数模块
 ├── nn                   # 神经网络模块
 │   └── functional       # 神经网络函数
@@ -318,7 +317,7 @@ import riemann as r
 # 使用张量创建函数
 t = r.tensor([1.0, 2.0, 3.0])
 
-# 使用自动微分功能
+# 使用自动求导功能
 x = r.tensor([1.0, 2.0], requires_grad=True)
 y = x ** 2
 y.sum().backward()
@@ -331,11 +330,11 @@ print(x.grad)  # 输出: [2. 4.]
 # 导入张量相关功能
 from riemann import tensor, zeros, ones, randn
 
-# 导入自动微分功能
+# 导入自动求导功能
 from riemann.autograd import grad, backward
 from riemann.autograd.functional import jacobian, hessian
 
-# 导入函数式自动微分 API（torch.func 风格，柯里化，支持高阶求导）
+# 导入函数式自动求导 API（torch.func 风格，柯里化，支持高阶求导）
 from riemann import func
 from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
 

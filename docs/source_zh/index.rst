@@ -3,7 +3,7 @@ Riemann 文档
 
 **English documentation**: https://riemann-en.readthedocs.io/en/latest/
 
-Riemann 是一个开源的轻量级自动微分库，专为学习、教育和研究自动微分和神经网络相关内容而设计。
+Riemann 是一个开源的轻量级自动求导库，专为学习、教育和研究自动求导和神经网络相关内容而设计。
 
 .. toctree::
    :maxdepth: 2
@@ -20,7 +20,7 @@ Riemann 是一个开源的轻量级自动微分库，专为学习、教育和研
 
 .. toctree::
    :maxdepth: 2
-   :caption: 自动微分
+   :caption: 自动求导
 
    autograd_basics
 

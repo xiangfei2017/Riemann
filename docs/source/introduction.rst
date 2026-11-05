@@ -28,7 +28,6 @@ Tensor Operations
 - Vector and matrix operations (batch matrix multiplication, vector dot product, matrix determinant, matrix inverse, matrix decomposition)
 - Tensor shape reshaping, dimension expansion/reduction, indexing and slicing, element gathering/scattering, concatenation/splitting
 - Tensor serialization/deserialization for easy model training and deployment
-- **Unique Features**: ``sumall`` function (add multiple tensors or non-tensors), ``isum`` function (intelligent sum)
 
 Automatic Differentiation
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -164,8 +163,7 @@ Application Scenarios
 ---------------------
 
 - **Deep Learning Research**: Custom model and algorithm development
-- **Scientific Computing**: Gradient computation for complex mathematical models
-- **Optimization Problem Solving**: Gradient descent and Adam optimization algorithms
+- **Scientific Computing**: Gradient computation for complex mathematical models, and optimization problem solving
 - **Computer Vision**: Image classification, object detection, and other vision tasks
 - **Education and Teaching**: Learning automatic differentiation and deep learning principles
 
@@ -183,6 +181,7 @@ Compatible Features
 - **Automatic Differentiation Mechanism**: ``requires_grad`` and backpropagation mechanisms are similar to PyTorch
 - **torch.func Compatibility**: Top-level ``func`` module mirrors ``torch.func`` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``hessian``, ``hvp``, ``vmap``, ``functional_call``
 - **Computer Vision**: Datasets and transforms in the ``vision`` module maintain interface compatibility with torchvision
+- **Cross-framework interoperability**: Riemann tensors can be converted to and from NumPy arrays, CuPy arrays and other tensor frameworks such as PyTorch, or share data with them, through ``r.tensor()``, ``r.as_tensor()``, ``r.from_dlpack()``, ``TN.array()`` and ``TN.numpy()``, built on the ``__array__``, ``__cuda_array_interface__``, ``__dlpack__`` and ``__buffer__`` protocols. Conversion is zero-copy when device and dtype match
 
 PyTorch Features Not Supported by Riemann
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -204,9 +203,7 @@ Riemann provides some features that PyTorch does not have:
 
 - **KAN Network Support**: Kolmogorov-Arnold Networks (KAN) implementation, including KAN, KANLinear modules
 - **Custom Gradient Decorator** (``@track_grad``): Quickly add automatic differentiation support to functions using decorators, without defining a complete Function class
-- **Advanced Computation Graph Building**: More flexible computation graph building and management mechanisms
-- **sumall function**: Add multiple tensors or non-tensors and return the total sum
-- **isum function**: Intelligent sum function that automatically selects the appropriate summation method based on parameters
+- **New functions**: ``sumall`` (add multiple tensors or non-tensors and return the total sum), ``isum`` (intelligent sum function that automatically selects the appropriate summation method based on parameters), ``d()`` (tensor method for chaining variables to compute higher-order mixed partial derivatives), etc.
 - **Concise Code Structure**: Less code volume, clearer structure, easier for learning and research
 
 Installation Guide

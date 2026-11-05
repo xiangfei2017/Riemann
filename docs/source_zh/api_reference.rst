@@ -660,7 +660,7 @@ API 参考
 张量运算符
 ~~~~~~~~~~
 
-Riemann框架支持丰富的张量运算符，包括算术运算符、比较运算符、位运算符和原地运算符。这些运算符可以直接作用于张量对象，支持自动微分，并遵循Python的运算符优先级规则。
+Riemann框架支持丰富的张量运算符，包括算术运算符、比较运算符、位运算符和原地运算符。这些运算符可以直接作用于张量对象，支持自动求导，并遵循Python的运算符优先级规则。
 
 算术运算符
 ``````````
@@ -2769,7 +2769,7 @@ CUDA支持
        >>> rm.get_default_device()
        device(type='cuda', index=1)
 
-自动微分
+自动求导
 --------
 
 .. module:: riemann.autograd
@@ -2779,7 +2779,7 @@ CUDA支持
 
 .. function:: riemann.autograd.backward(self, gradient=None, retain_graph=False, create_graph=False)
 
-   执行反向模式自动微分（反向传播）。
+   执行反向模式自动求导（反向传播）。
 
    从当前张量开始，通过计算图向后传播梯度，为所有叶节点或设置了retains_grad=True的中间节点计算并存储梯度。
 
@@ -2839,7 +2839,7 @@ CUDA支持
    通过比较数值梯度和解析梯度来验证给定函数的梯度计算是否正确。
 
    此函数通过向输入参数添加小扰动来计算数值梯度（使用有限差分），
-   并将其与使用自动微分计算的解析梯度进行比较。
+   并将其与使用自动求导计算的解析梯度进行比较。
 
    :param func: 要验证梯度的函数
    :type func: callable
@@ -2862,10 +2862,10 @@ CUDA支持
 
 .. function:: riemann.track_grad(grad_func)
 
-   创建一个梯度跟踪装饰器，用于为函数添加自动微分支持。
+   创建一个梯度跟踪装饰器，用于为函数添加自动求导支持。
 
    这个装饰器工厂接收一个梯度函数，返回一个修饰器，该修饰器可以将普通的张量运算函数
-   转换为支持自动微分的函数。它会自动创建反向传播函数，并管理梯度计算图的构建。
+   转换为支持自动求导的函数。它会自动创建反向传播函数，并管理梯度计算图的构建。
 
    :param grad_func: 梯度计算函数，签名为 ``grad_func(result, *args, **kwargs)``：
                     第一个参数 result 为前向函数的输出张量，其后参数与前向函数一致；
@@ -2874,7 +2874,7 @@ CUDA支持
                     非 TN 参数不占用位置，对于不需要梯度的张量，对应的梯度值应为 None；
                     调用时关键字参数的顺序不影响梯度对应关系
    :type grad_func: callable
-   :return: 一个修饰器函数，用于包装前向计算函数，使其支持自动微分
+   :return: 一个修饰器函数，用于包装前向计算函数，使其支持自动求导
    :rtype: callable
 
    更多场景示例（命名参数、默认参数、\*args/\*\*kwargs、矩阵乘等）参见
@@ -2888,12 +2888,12 @@ CUDA支持
       def _log_derivative(result, x):
           return (result.grad_value * (1. / x.conj()),)
       
-      # 使用track_grad修饰器创建支持自动微分的对数函数
+      # 使用track_grad修饰器创建支持自动求导的对数函数
       @track_grad(_log_derivative)
       def mylog(x):
           return tensor(np.log(x.detach().array()))
       
-      # 使用带自动微分的对数函数
+      # 使用带自动求导的对数函数
       x = tensor(2., requires_grad=True)
       y = mylog(x)
       y.backward()
@@ -2903,12 +2903,12 @@ CUDA支持
       def _add_derivative(result, x, y):
           return (result.grad_value, result.grad_value)
       
-      # 使用track_grad修饰器创建支持自动微分的加法函数
+      # 使用track_grad修饰器创建支持自动求导的加法函数
       @track_grad(_add_derivative)
       def myadd(x, y):
           return tensor(x.detach().array() + y.detach().array())
       
-      # 使用带自动微分的加法函数
+      # 使用带自动求导的加法函数
       x = tensor(2., requires_grad=True)
       y = tensor(3., requires_grad=True)
       z = myadd(x, y)

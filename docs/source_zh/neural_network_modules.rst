@@ -4119,7 +4119,7 @@ Riemann在 ``riemann.nn.kan`` 模块中提供了完整的KAN实现：
 - 高效的矩阵乘法实现
 - 支持自适应网格更新
 - 提供L1正则化和熵正则化
-- 与Riemann自动微分完全兼容
+- 与Riemann自动求导完全兼容
 
 KANLinear模块
 -------------

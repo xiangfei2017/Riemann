@@ -1053,7 +1053,9 @@ The ``hessian()`` function computes the Hessian matrix of a scalar-valued functi
 ``derivative()`` Function
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``derivative()`` function computes a derivative function for the given function. It creates a new function that, when called, returns the derivative of the original function at the specified inputs.
+The ``derivative()`` function creates a derivative function for the given function. When called, the returned function computes the Jacobian (i.e., the derivative) of the original function at the given inputs.
+
+The result is always a tuple: one derivative tensor per input; if the original function has multiple outputs, an extra tuple level is nested per output, consistent with the multi-input/multi-output return structure of ``jacobian()``.
 
 .. code-block:: python
 
@@ -1068,16 +1070,20 @@ The ``derivative()`` function computes a derivative function for the given funct
     
     # Test the derivative function
     x = rm.tensor(2.0, requires_grad=True)
-    print(df(x))  # Returns (tensor(4.),) — derivative always returns a tuple
+    print(df(x))  # (tensor(4.),) — always a tuple; scalar input yields a 0-D derivative
     
     # Multi-input example
     def g(x, y):
         return x * y + x ** 2.
     
-    dg = rm.autograd.functional.derivative(g)
     x = rm.tensor(2.0, requires_grad=True)
     y = rm.tensor(3.0, requires_grad=True)
-    print(dg(x, y))
+    dg = rm.autograd.functional.derivative(g)
+    print(dg(x, y))  # (tensor(7.), tensor(2.)) — ∂g/∂x = y + 2x, ∂g/∂y = x
+    
+    # create_graph=True enables higher-order derivatives
+    d2f = rm.autograd.functional.derivative(lambda t: t ** 3., create_graph=True)
+    print(d2f(x))  # (tensor(12.),) — 3x^2; requires_grad=True so it can be differentiated again
 
 ``jvp()`` (Jacobian-Vector Product) Function
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1224,13 +1230,13 @@ scalar-valued function with respect to the specified argument positions.
 
 - **func**: Differentiable function that returns a scalar tensor
 - **argnums** (int or tuple[int,...]): Which arguments to differentiate; default ``0``
-- **has_aux** (bool): If ``True``, ``func`` may return ``(value, aux)``; the
-  wrapped function also returns ``aux`` without differentiating through it
+- **has_aux** (bool): If ``True``, ``func`` returns a ``(value, aux)`` pair: ``value`` is the scalar output to differentiate, and ``aux`` is an additional result produced by the forward function (it can be any object). The wrapped function differentiates only ``value`` and passes ``aux`` through unchanged in its return value, so non-differentiable results (such as loss values, statistics, or other intermediate outputs) can be obtained from the same forward pass without recomputing them
 - **create_graph** (bool): If ``True``, gradient tensors are tracked for
   higher-order differentiation
 
 **Returns**: Wrapped function that takes ``func``'s arguments and returns
-the gradient; ``(grad, aux)`` when ``has_aux=True``
+the gradient; ``(grad, aux)`` when ``has_aux=True``, where ``aux`` is the
+auxiliary result passed through unchanged from the forward function
 
 **Example**:
 
@@ -2072,8 +2078,8 @@ Riemann provides three ways to implement custom functions with gradient tracking
    - The ``backward`` method must return a tuple with one gradient for each input to ``forward``
    - Call the function using ``ClassName.apply(*inputs)``, not by instantiating the class
 
-Advanced Computational Graph Manipulation
------------------------------------------
+Manually Modifying the Computational Graph
+------------------------------------------
 
 Riemann provides functions for manually manipulating the computational graph. These functions are designed for special use cases where you need to connect tensors to the computational graph without affecting forward computation values or backward gradient values. These are low-level tools typically used in framework internals (such as Riemann's hook handling mechanism) rather than common user scenarios.
 
@@ -2158,10 +2164,6 @@ Supporting Functions and Methods
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The following functions and methods are used internally by ``share_grad_map`` and are rarely needed directly by users:
-
-**fwbw_all_zero Function**
-
-Returns a scalar tensor with value 0.0 in forward pass and returns a zero tensor with the same shape as input in backward pass. Used to add a tensor to the computational graph without affecting forward or backward values.
 
 **attach_zero_grad_sources Method**
 

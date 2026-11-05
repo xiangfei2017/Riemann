@@ -1,7 +1,7 @@
 自动求导基础
 ============
 
-Riemann 的自动微分引擎能够自动记录张量计算的过程，形成计算图，并通过反向传播算法高效地计算导数。这对于训练神经网络和其他优化任务至关重要。
+Riemann 的自动求导引擎能够自动记录张量计算的过程，形成计算图，并通过反向传播算法高效地计算导数。这对于训练神经网络和其他优化任务至关重要。
 
 **核心概念**
 
@@ -1045,7 +1045,9 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
 ``derivative()`` 函数
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``derivative()`` 函数用于为给定函数计算导函数。它创建一个新函数，当调用时返回原函数在指定输入处的导数。
+``derivative()`` 函数用于为给定函数创建导函数。返回的新函数在调用时，计算原函数在给定输入处的雅可比矩阵（即导数）。
+
+返回值始终为 tuple：每个输入对应一个导数张量；若原函数有多个输出，则每个输出再嵌套一层 tuple，与 ``jacobian()`` 的多输入/多输出返回结构一致。
 
 .. code-block:: python
 
@@ -1060,16 +1062,20 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     
     # 测试导函数
     x = rm.tensor(2.0, requires_grad=True)
-    print(df(x))  # 返回 (tensor(4.),)  — derivative 返回 tuple
+    print(df(x))  # (tensor(4.),) — 始终返回 tuple，标量输入的导数为 0 维张量
     
     # 多输入示例
     def g(x, y):
         return x * y + x ** 2
     
-    dg = rm.autograd.functional.derivative(g)
     x = rm.tensor(2.0, requires_grad=True)
     y = rm.tensor(3.0, requires_grad=True)
-    print(dg(x, y))
+    dg = rm.autograd.functional.derivative(g)
+    print(dg(x, y))  # (tensor(7.), tensor(2.)) — 依次为 ∂g/∂x = y + 2x、∂g/∂y = x
+    
+    # create_graph=True 可在此基础上继续求高阶导数
+    d2f = rm.autograd.functional.derivative(lambda t: t ** 3, create_graph=True)
+    print(d2f(x))  # (tensor(12.),) — 3x^2，结果 requires_grad=True，可再次求导
 
 ``jvp()`` (雅可比向量积) 函数
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1147,7 +1153,7 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
 func 模块求导函数
 ------------------
 
-``riemann.func`` 模块提供了一套**函数式自动微分原语**，接口设计参考了 PyTorch 的 ``torch.func``。
+``riemann.func`` 模块提供了一套**函数式自动求导原语**，接口设计参考了 PyTorch 的 ``torch.func``。
 与底层的 ``autograd.functional`` 相比，``func`` 模块采用更现代的 **柯里化（curry）风格**: 
 先传入函数和参数配置，返回一个**包裹函数**；调用包裹函数时才真正执行前向和反向计算。
 
@@ -1207,10 +1213,10 @@ func 模块求导函数
 
 - func：可微函数，输出必须是标量张量
 - argnums：需要求导的参数位置，默认 ``0``
-- has_aux：如果为 ``True``，``func`` 可以返回 ``(value, aux)`` 二元组；包裹函数也会额外返回 ``aux`` 而不对其求导
+- has_aux：如果为 ``True``，``func`` 返回 ``(value, aux)`` 二元组。``value`` 是待求导的标量输出，``aux`` 是前向函数额外输出的辅助结果（可以是任意对象）；包裹函数只对 ``value`` 求导，并把 ``aux`` 原样透传在返回值中。这样可以在同一次前向计算中顺带获得不需要求导的结果（如损失值、统计量或其它中间输出），无需重复计算
 - create_graph：如果为 ``True``，梯度张量会被追踪，可用于高阶微分
 
-**返回**: 包裹函数，输入为 ``func`` 的参数，返回梯度；若 ``has_aux=True`` 则返回 ``(grad, aux)``
+**返回**: 包裹函数，输入为 ``func`` 的参数，返回梯度；若 ``has_aux=True`` 则返回 ``(grad, aux)``，其中 ``aux`` 为前向函数原样透传的辅助结果
 
 **示例**: 
 
@@ -1384,7 +1390,7 @@ func 模块求导函数
 
 三种方式计算 Jacobian 矩阵：
 
-- jacrev：反向模式自动微分。对 m 维输出做 m 次反向传播，适合输入维度小、输出维度大的场景
+- jacrev：反向模式自动求导。对 m 维输出做 m 次反向传播，适合输入维度小、输出维度大的场景
 - jacfwd：正向模式。通过 vmap+jvp 实现（Riemann 当前没有前向 autodiff），对 n 维输入做 n 次 JVP，适合输入维度大、输出维度小的场景
 - jacobian(func, mode="reverse")：统一入口，``mode`` 选择具体算法
 
@@ -2013,7 +2019,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
    - ``backward`` 方法必须返回一个元组，包含 ``forward`` 每个输入对应的梯度
    - 使用 ``ClassName.apply(*inputs)`` 调用函数，而不是实例化类
 
-高级计算图操作
+手动修改计算图
 --------------
 
 Riemann 提供了用于手动操作计算图的函数。这些函数专为特殊场景设计，用于在不影响前向计算值或反向传播梯度值的情况下将张量连接到计算图。这些函数是底层工具，通常用于框架内部（如 Riemann 的钩子处理机制），而非普通用户场景。
@@ -2099,10 +2105,6 @@ share_grad_map 函数
 
 以下函数和方法由 ``share_grad_map`` 内部使用，用户很少需要直接调用：
 
-**fwbw_all_zero 函数**
-
-在前向传播中返回值为 0.0 的标量张量，在反向传播中返回与输入形状相同的全零张量。用于将张量添加到计算图中，而不影响前向或反向值。
-
 **attach_zero_grad_sources 方法**
 
 将多个张量作为来源张量依附到目标张量。这不改变张量的值，但允许它在反向传播期间向这些来源传递零梯度。内部用于将张量连接到计算图，使它们收到零梯度而不是 None。
@@ -2174,7 +2176,7 @@ Rosenbrock 函数优化 (香蕉函数)
 
 Rosenbrock 函数（也称为香蕉函数）是一个经典的非凸优化问题。该函数在 (1, 1) 处取得最小值 0。
 
-以下是使用 Riemann 的自动微分和 Adam 优化器来优化 Rosenbrock 函数的示例：
+以下是使用 Riemann 的自动求导和 Adam 优化器来优化 Rosenbrock 函数的示例：
 
 .. code-block:: python
 

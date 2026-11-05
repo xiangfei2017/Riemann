@@ -28,8 +28,7 @@ Riemann is a neural network programming framework similar to PyTorch. It support
 ## Application Scenarios
 
 - **Deep learning research**: Custom model and algorithm development
-- **Scientific computing**: Gradient calculation for complex mathematical models
-- **Optimization problem solving**: Gradient descent and Adam optimization algorithms
+- **Scientific computing**: Gradient calculation for complex mathematical models, and optimization problem solving
 - **Computer vision**: Image classification and other vision tasks
 - **Education and teaching**: Learning automatic differentiation and deep learning principles
 

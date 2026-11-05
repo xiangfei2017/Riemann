@@ -15,7 +15,7 @@ Riemann 能做什么？
 - **计算机视觉**：提供图像数据集加载和图像变换功能
 - **线性代数**：支持矩阵分解、特征值计算、线性方程组求解等
 
-Riemann 的核心价值在于其**简洁性**和**可学习性**——代码结构清晰，便于理解深度学习框架的内部工作原理，是学习和研究自动微分及神经网络实现的理想工具。
+Riemann 的核心价值在于其**简洁性**和**可学习性**——代码结构清晰，便于理解深度学习框架的内部工作原理，是学习和研究自动求导及神经网络实现的理想工具。
 
 主要功能
 --------
@@ -28,14 +28,13 @@ Riemann 的核心价值在于其**简洁性**和**可学习性**——代码结�
 - 支持向量、矩阵运算（批量矩阵乘法、向量点积、矩阵行列式、矩阵逆、矩阵分解等）
 - 支持张量形状重塑、维度扩缩、索引和切片、元素收集/散射、拼接/分割等操作
 - 支持张量序列化/反序列化，方便模型训练和部署
-- **特有功能**：``sumall`` 函数（将多个张量或非张量相加）、``isum`` 函数（智能求和）
 
 自动求导
 ~~~~~~~~
 
 - **backward 方法**：触发反向传播计算梯度
 - **grad 函数**：计算函数相对于输入的梯度
-- **func 模块**：torch.func 风格的函数式自动微分 API，提供柯里化的 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``hvp``、``vmap``、``functional_call`` 等函数，适合链式高阶求导
+- **func 模块**：torch.func 风格的函数式自动求导 API，提供柯里化的 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``hvp``、``vmap``、``functional_call`` 等函数，适合链式高阶求导
 - **track_grad 装饰器**：使用 ``@track_grad`` 装饰器自定义梯度跟踪函数（Riemann 特有）
 - **Function 类**：通过继承 Function 类自定义前向和反向传播（Riemann 特有）
 - **雅可比矩阵和海森矩阵**：支持多输入多输出函数的雅可比矩阵计算，支持多输入函数的海森矩阵计算
@@ -93,9 +92,9 @@ riemann包的模块结构
 .. code-block:: text
 
     riemann                  # 主包
-    ├── autograd             # 自动微分模块
-    │   └── functional       # 自动微分函数式接口
-    ├── func                 # torch.func 风格函数式自动微分 API
+    ├── autograd             # 自动求导模块
+    │   └── functional       # 自动求导函数式接口
+    ├── func                 # torch.func 风格函数式自动求导 API
     ├── linalg               # 线性代数模块
     ├── nn                   # 神经网络模块
     │   └── functional       # 神经网络函数
@@ -120,7 +119,7 @@ riemann包的模块结构
     # 使用张量创建函数
     t = r.tensor([1.0, 2.0, 3.0])
 
-    # 使用自动微分功能
+    # 使用自动求导功能
     x = r.tensor([1.0, 2.0], requires_grad=True)
     y = x ** 2
     y.sum().backward()
@@ -133,11 +132,11 @@ riemann包的模块结构
     # 导入张量相关功能
     from riemann import tensor, zeros, ones, randn
 
-    # 导入自动微分功能
+    # 导入自动求导功能
     from riemann.autograd import grad, backward
     from riemann.autograd.functional import jacobian, hessian
 
-    # 导入函数式自动微分 API（torch.func 风格，柯里化，支持高阶求导）
+    # 导入函数式自动求导 API（torch.func 风格，柯里化，支持高阶求导）
     from riemann import func
     from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
 
@@ -164,10 +163,9 @@ riemann包的模块结构
 --------
 
 - **深度学习研究**：自定义模型和算法开发
-- **科学计算**：复杂数学模型的梯度计算
-- **优化问题求解**：梯度下降和 Adam 等优化算法
+- **科学计算**：复杂数学模型的梯度计算，以及优化问题求解
 - **计算机视觉**：图像分类、目标检测等视觉任务
-- **教育教学**：自动微分和深度学习原理学习
+- **教育教学**：自动求导和深度学习原理学习
 
 PyTorch 兼容性说明
 ------------------
@@ -180,9 +178,10 @@ Riemann 设计时注重与 PyTorch 接口的兼容性，同名的函数和类保
 - **张量操作**：支持与 PyTorch 同名的张量操作函数和方法
 - **神经网络组件**：``nn`` 模块中的层、激活函数和损失函数与 PyTorch 保持接口兼容
 - **优化器**：``optim`` 模块中的优化器（如 SGD、Adam 等）接口与 PyTorch 保持一致
-- **自动微分机制**：``requires_grad``、反向传播机制与 PyTorch 相似
+- **自动求导机制**：``requires_grad``、反向传播机制与 PyTorch 相似
 - **torch.func 兼容**：顶层 ``func`` 模块对齐 ``torch.func`` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``hessian``、``hvp``、``vmap``、``functional_call``
 - **计算机视觉**：``vision`` 模块中的数据集和变换与 torchvision 保持接口兼容
+- **跨框架互操作**：Riemann 张量可与 NumPy 数组、CuPy 数组以及 PyTorch 等其它张量框架互相转换或共享数据，入口包括 ``r.tensor()``、``r.as_tensor()``、``r.from_dlpack()``、``TN.array()``、``TN.numpy()``，底层依托 ``__array__``、``__cuda_array_interface__``、``__dlpack__``、``__buffer__`` 协议；设备与 dtype 一致时为零拷贝
 
 Riemann 不支持的 PyTorch 特性
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -203,10 +202,8 @@ Riemann 特有功能
 Riemann 提供了一些 PyTorch 没有的功能：
 
 - **KAN 网络支持**：Kolmogorov-Arnold Networks (KAN) 网络实现，包括 KAN、KANLinear等模块
-- **自定义梯度装饰器** (``@track_grad``)：使用装饰器快速为函数添加自动微分支持，无需定义完整的 Function 类
-- **高级计算图构建**：更灵活的计算图构建和管理机制
-- **sumall 函数**：将多个张量或非张量相加，返回总和
-- **isum 函数**：智能求和函数，根据参数自动选择合适的求和方式
+- **自定义梯度装饰器** (``@track_grad``)：使用装饰器快速为函数添加自动求导支持，无需定义完整的 Function 类
+- **新函数**：``sumall`` （将多个张量或非张量相加，返回总和）、``isum`` （智能求和函数，根据参数自动选择合适的求和方式）、``d()`` （张量方法，按变量链式求高阶混合偏导数）等
 - **简洁的代码结构**：代码量更少，结构更清晰，便于学习和研究
 
 安装指南
