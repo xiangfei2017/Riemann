@@ -41,6 +41,8 @@ The module leverages CuPy for CUDA operations when available, and falls back to 
 when CUDA is not present or CuPy cannot be imported.
 """
 
+from __future__ import annotations
+
 try:
     import cupy as cp  # type: ignore
     # Test if CUDA is actually available by trying to perform a CUDA operation

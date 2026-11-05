@@ -34,7 +34,7 @@ Riemann 的核心价值在于其**简洁性**和**可学习性**——代码结�
 
 - **backward 方法**：触发反向传播计算梯度
 - **grad 函数**：计算函数相对于输入的梯度
-- **func 模块**：torch.func 风格的函数式自动求导 API，提供柯里化的 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``hvp``、``vmap``、``functional_call`` 等函数，适合链式高阶求导
+- **func 模块**：torch.func 风格的函数式自动求导 API，提供柯里化的 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``vmap``、``functional_call`` 等函数，适合链式高阶求导
 - **track_grad 装饰器**：使用 ``@track_grad`` 装饰器自定义梯度跟踪函数（Riemann 特有）
 - **Function 类**：通过继承 Function 类自定义前向和反向传播（Riemann 特有）
 - **雅可比矩阵和海森矩阵**：支持多输入多输出函数的雅可比矩阵计算，支持多输入函数的海森矩阵计算
@@ -138,7 +138,7 @@ riemann包的模块结构
 
     # 导入函数式自动求导 API（torch.func 风格，柯里化，支持高阶求导）
     from riemann import func
-    from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
+    from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, vmap, functional_call
 
     # 导入线性代数功能
     from riemann import linalg
@@ -179,9 +179,9 @@ Riemann 设计时注重与 PyTorch 接口的兼容性，同名的函数和类保
 - **神经网络组件**：``nn`` 模块中的层、激活函数和损失函数与 PyTorch 保持接口兼容
 - **优化器**：``optim`` 模块中的优化器（如 SGD、Adam 等）接口与 PyTorch 保持一致
 - **自动求导机制**：``requires_grad``、反向传播机制与 PyTorch 相似
-- **torch.func 兼容**：顶层 ``func`` 模块对齐 ``torch.func`` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``hessian``、``hvp``、``vmap``、``functional_call``
+- **torch.func 兼容**：顶层 ``func`` 模块对齐 ``torch.func`` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``hessian``、``vmap``、``functional_call``
 - **计算机视觉**：``vision`` 模块中的数据集和变换与 torchvision 保持接口兼容
-- **跨框架互操作**：Riemann 张量可与 NumPy 数组、CuPy 数组以及 PyTorch 等其它张量框架互相转换或共享数据，入口包括 ``r.tensor()``、``r.as_tensor()``、``r.from_dlpack()``、``TN.array()``、``TN.numpy()``，底层依托 ``__array__``、``__cuda_array_interface__``、``__dlpack__``、``__buffer__`` 协议；设备与 dtype 一致时为零拷贝
+- **跨框架互操作**：Riemann 张量可与 NumPy 数组、CuPy 数组以及 PyTorch 等其它张量框架互相转换或共享数据，入口包括 ``r.tensor()``、``r.as_tensor()``、``r.from_dlpack()``、``TN.array()``、``TN.numpy()``，底层依托 ``__array__``、``__cuda_array_interface__``、``__dlpack__``、``__buffer__`` 协议（``__buffer__`` 需 Python 3.12+）；设备与 dtype 一致时为零拷贝
 
 Riemann 不支持的 PyTorch 特性
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

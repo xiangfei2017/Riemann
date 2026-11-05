@@ -5,8 +5,8 @@ riemann.func 模块 —— torch.func 风格函数式自动微分接口测试。
 
 被测函数:
     grad, grad_and_value, jvp, vjp,
-    jacrev, jacfwd, jacobian,
-    hessian, hvp, vmap, functional_call
+    jacrev, jacfwd,
+    hessian, vmap, functional_call
 
 风格与 test_005_shape_operations.py 一致：
     - 一个 TestFuncs 类，每个被测函数对应一个 test_xxx 方法
@@ -532,34 +532,6 @@ class TestFuncs(unittest.TestCase):
                 and _close(j[1], np.array([1.0, 2.0])))
 
     # ---------------------------------------------------------------
-    # jacobian (mode 选择)
-    # ---------------------------------------------------------------
-    def test_jacobian(self):
-        _run_case("jacobian - default_reverse",
-                  lambda: self._check_jacobian_default())
-        _run_case("jacobian - forward_mode",
-                  lambda: self._check_jacobian_forward())
-        _run_case("jacobian - invalid_mode_raises",
-                  lambda: self._check_jacobian_invalid())
-
-    def _check_jacobian_default(self):
-        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        jac = func.jacobian(lambda z: z ** 2)(x)
-        return _close(jac, np.diag([2.0, 4.0, 6.0]))
-
-    def _check_jacobian_forward(self):
-        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        jac = func.jacobian(lambda z: z ** 2, mode="forward")(x)
-        return _close(jac, np.diag([2.0, 4.0, 6.0]))
-
-    def _check_jacobian_invalid(self):
-        try:
-            func.jacobian(lambda x: x ** 2, mode="invalid")
-            return False
-        except ValueError:
-            return True
-
-    # ---------------------------------------------------------------
     # derivative
     # ---------------------------------------------------------------
     def test_derivative(self):
@@ -656,41 +628,6 @@ class TestFuncs(unittest.TestCase):
             return False
         except (RuntimeError, ValueError):
             return True
-
-    # ---------------------------------------------------------------
-    # hvp
-    # ---------------------------------------------------------------
-    def test_hvp(self):
-        _run_case("hvp - simple", lambda: self._check_hvp_simple())
-        _run_case("hvp - matches_hessian_dot_v", lambda: self._check_hvp_chain())
-
-        # create_graph=True
-        _run_case("hvp - create_graph", lambda: self._check_hvp_create_graph())
-
-    def _check_hvp_simple(self):
-        f = lambda x: (x ** 3).sum()
-        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        v = _rm_tensor(np.array([0.5, 1.0, 0.5]), requires_grad=False)
-        out, hvp_res = func.hvp(f)(x, v)
-        expected_hvp = np.diag([6.0, 12.0, 18.0]) @ np.array([0.5, 1.0, 0.5])
-        return _close(out, f(x)) and _close(hvp_res, expected_hvp)
-
-    def _check_hvp_chain(self):
-        f = lambda x: (x ** 3 + 0.5 * x ** 2).sum()
-        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        v = _rm_tensor(np.array([0.5, 1.0, 0.0]), requires_grad=False)
-        _, hvp_direct = func.hvp(f)(x, v)
-        hess = func.hessian(f)(x)
-        expected = hess._array @ np.array([0.5, 1.0, 0.0])
-        return _close(hvp_direct, expected)
-
-    def _check_hvp_create_graph(self):
-        f = lambda x: (x ** 3).sum()
-        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        v = _rm_tensor(np.array([0.5, 1.0, 0.5]), requires_grad=False)
-        _, hvp_res = func.hvp(f, create_graph=True)(x, v)
-        # H = diag([6, 12, 18]); H·v = [3, 12, 9]
-        return _close(hvp_res, np.array([3.0, 12.0, 9.0]))
 
     # ---------------------------------------------------------------
     # vmap
@@ -956,7 +893,6 @@ class TestFuncs(unittest.TestCase):
     # ---------------------------------------------------------------
     def test_compositions(self):
         _run_case("compositions - grad_of_grad", lambda: self._check_comp_grad_grad())
-        _run_case("compositions - hvp_via_jacrev_grad", lambda: self._check_comp_hvp_chain())
         _run_case("compositions - hessian_via_jacrev_of_grad", lambda: self._check_comp_hess_chain())
         _run_case("compositions - jvp_via_finite_diff", lambda: self._check_comp_jvp_fd())
 
@@ -969,9 +905,6 @@ class TestFuncs(unittest.TestCase):
         # vmap + jacfwd 组合
         _run_case("compositions - vmap_jacfwd", lambda: self._check_comp_vmap_jacfwd())
 
-        # jacobian(mode="forward") 与 mode="reverse" 结果一致
-        _run_case("compositions - jacobian_both_modes_equal", lambda: self._check_comp_jacobian_modes())
-
         # 标量输出 f 下：jvp(f,x,v) = vjp(f,x, default=ones) · v
         _run_case("compositions - jvp_vjp_scalar_math", lambda: self._check_comp_jvp_vjp_scalar())
 
@@ -982,15 +915,6 @@ class TestFuncs(unittest.TestCase):
         grad_norm = lambda a: d1f(a).sum()
         d2y = func.grad(grad_norm)(x)
         return _close(d2y, 12.0 * x._array ** 2)
-
-    def _check_comp_hvp_chain(self):
-        f = lambda x: (x ** 3).sum()
-        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        v = _rm_tensor(np.array([0.5, 1.0, 0.5]), requires_grad=False)
-        _, hvp_direct = func.hvp(f)(x, v)
-        grad_f = func.grad(f, create_graph=True)
-        _, hvp_chain = func.vjp(grad_f, x, v)
-        return _close(hvp_direct, hvp_chain)
 
     def _check_comp_hess_chain(self):
         f = lambda x: (x ** 4 + x ** 2).sum()
@@ -1025,13 +949,6 @@ class TestFuncs(unittest.TestCase):
         # 验证形状一致（VJP 应回到输入空间 R^3）
         return vjp_val.shape == (3,)
 
-    def _check_comp_jacobian_modes(self):
-        f = lambda x: (x ** 3 + x ** 2).sum()
-        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        jr = func.jacobian(f, mode="reverse")(x)
-        jf = func.jacobian(f, mode="forward")(x)
-        return _close(jr, jf)
-
     def _check_comp_jvp_vjp_scalar(self):
         # 标量输出 f: jvp(f,x,v) = ∇f·v，vjp(f,x)（默认 cot=ones）= ∇f
         f = lambda x: (x ** 2).sum() + x.sum()  # ∇f = 2x+1
@@ -1060,6 +977,90 @@ class TestFuncs(unittest.TestCase):
         return (out.shape == (2, 3)
                 and _close(out[0], np.array([2.0, 4.0, 6.0]))
                 and _close(out[1], np.array([8.0, 10.0, 12.0])))
+
+    # ---------------------------------------------------------------
+    # argnums 校验（错误信息与 torch.func 一致）
+    # ---------------------------------------------------------------
+    def test_argnums_validation(self):
+        f = lambda x, y: (x ** 2).sum() + x @ y
+
+        _run_case("argnums - grad () raises non-empty",
+                  lambda: self._argnums_raises(func.grad, f, (), "argnums must be non-empty"))
+        _run_case("argnums - grad None raises type error",
+                  lambda: self._argnums_raises(func.grad, f, None,
+                                               "argnums must be int or Tuple[int, ...], got: <class 'NoneType'>"))
+        _run_case("argnums - grad list raises type error",
+                  lambda: self._argnums_raises(func.grad, f, [0],
+                                               "argnums must be int or Tuple[int, ...], got: <class 'list'>"))
+        _run_case("argnums - grad non-int element raises",
+                  lambda: self._argnums_raises(func.grad, f, (0, "a"),
+                                               "argnum must be int, got: <class 'str'>"))
+        _run_case("argnums - grad_and_value None raises",
+                  lambda: self._argnums_raises(func.grad_and_value, f, None,
+                                               "argnums must be int or Tuple[int, ...], got: <class 'NoneType'>"))
+        _run_case("argnums - jacrev () raises",
+                  lambda: self._argnums_raises(func.jacrev, f, (), "argnums must be non-empty"))
+        _run_case("argnums - jacrev None raises",
+                  lambda: self._argnums_raises(func.jacrev, f, None,
+                                               "argnums must be int or Tuple[int, ...], got: <class 'NoneType'>"))
+        _run_case("argnums - jacfwd () raises",
+                  lambda: self._argnums_raises(func.jacfwd, f, (), "argnums must be non-empty"))
+        _run_case("argnums - hessian () raises",
+                  lambda: self._argnums_raises(func.hessian, f, (), "argnums must be non-empty"))
+        _run_case("argnums - hessian None raises",
+                  lambda: self._argnums_raises(func.hessian, f, None,
+                                               "argnums must be int or Tuple[int, ...], got: <class 'NoneType'>"))
+        # 校验在调用导函数时进行（构造导函数本身不报错），与 torch.func 一致
+        _run_case("argnums - validation deferred to call",
+                  lambda: self._check_argnums_deferred(f))
+
+        # jacfwd 的 None 表示“全部参数”（torch.func.jacfwd 语义），且始终返回元组
+        _run_case("argnums - jacfwd None all args (single input)",
+                  lambda: self._check_jacfwd_none_single())
+        _run_case("argnums - jacfwd None all args (two inputs)",
+                  lambda: self._check_jacfwd_none_multi())
+
+    def _argnums_raises(self, fn_factory, f, argnums, expected_msg, **kwargs):
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        wrapped = fn_factory(f, argnums=argnums, **kwargs)
+        try:
+            wrapped(x, y)
+            return False
+        except RuntimeError as e:
+            return expected_msg in str(e)
+        except Exception:
+            return False
+
+    def _check_argnums_deferred(self, f):
+        wrapped = func.grad(f, argnums=())
+        if not callable(wrapped):
+            return False
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        try:
+            wrapped(x, y)
+            return False
+        except RuntimeError:
+            return True
+
+    def _check_jacfwd_none_single(self):
+        g = lambda x: (x ** 3).sum()
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        res = func.jacfwd(g, argnums=None)(x)
+        # 单参数时也返回元组（与 torch.func.jacfwd 一致）
+        return (isinstance(res, tuple) and len(res) == 1
+                and _close(res[0], np.array([3.0, 12.0])))
+
+    def _check_jacfwd_none_multi(self):
+        f = lambda x, y: (x ** 2).sum() + x @ y
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        res_none = func.jacfwd(f, argnums=None)(x, y)
+        res_both = func.jacfwd(f, argnums=(0, 1))(x, y)
+        return (isinstance(res_none, tuple) and len(res_none) == 2
+                and _close(res_none[0], res_both[0])
+                and _close(res_none[1], res_both[1]))
 
 
 # ---------------------------------------------------------------------------

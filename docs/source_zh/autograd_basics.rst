@@ -713,7 +713,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``func`` 模块的柯里化设计（多数函数返回 Callable）天然适合链式嵌套，
-以函数式方式灵活组合 ``grad``、``jacrev``、``jacfwd``、``hessian``、``hvp`` 等函数，
+以函数式方式灵活组合 ``grad``、``jacrev``、``jacfwd``、``hessian`` 等函数，
 表达任意阶的高阶导数。以下展示几种最典型的场景，数值均已验证。
 
 **示例 1: 向量输入 → 向量输出的 Jacobian 与二阶张量**
@@ -753,12 +753,12 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     # T[0,0,0] = 6·1 = 6,  T[1,1,1] = 6·2 = 12,  T[2,2,2] = 6·3 = 18
     # 所有其他元素 = 0
 
-**示例 2: 向量输入 → 标量输出的 Hessian 与 hvp**
+**示例 2: 向量输入 → 标量输出的 Hessian**
 
 这是优化问题中最常见的高阶场景——目标函数是向量输入的标量值，
-需要 Hessian 矩阵或 Hessian-向量乘积（hvp）。
+需要 Hessian 矩阵。
 用 ``func.jacrev(func.grad(f))`` 嵌套一步构造 Hessian，
-用 ``func.hvp`` 则无需显式构造矩阵即可算出 Hessian-向量积。
+也可以用 ``func.hessian`` 直接得到 Hessian 矩阵。
 
 .. code-block:: python
 
@@ -779,14 +779,6 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     H = func.jacrev(func.grad(f_least_squares, create_graph=True))(x)
     # H.shape = (2, 2)
     # H = 2·AᵀA = [[70, 88], [88, 112]]
-
-    # ===== Hessian-向量乘积 hvp =====
-    # 给定方向向量 v，计算 H·v —— 无需显式构造 H，节省 O(n²) 内存
-    v = rm.tensor([1., 0.], requires_grad=False)
-    hvp_fn = func.hvp(f_least_squares)          # 返回包裹函数
-    out_val, hvp_result = hvp_fn(x, v)          # 传入 inputs 和 v
-    print(hvp_result)
-    # hvp_result = H·v = [70, 88]
 
 **示例 3: 多输入函数的各输入独立高阶 —— ``f(x, y) = x³y⁴``**
 
@@ -826,7 +818,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 **示例 4: ``func.grad`` + ``has_aux`` 传递辅助值 + 继续高阶**
 
 当 ``f`` 返回 ``(value, aux)`` 二元组时，``has_aux=True`` 让 ``func.grad``
-只对 ``value`` 求导，同时把 ``aux`` 原样传回：
+只从 ``value`` 计算梯度，同时把 ``aux`` 原样传回：
 
 .. code-block:: python
 
@@ -980,9 +972,6 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
    * - 向量输入到标量输出 Hessian
      - ``func.jacrev(func.grad(fn))``
      - 结构化、一次算出、比手动两次 grad 高效
-   * - Hessian-向量乘积 (hvp)
-     - ``func.hvp(fn)(x, v)``
-     - 优化中极常见；无需显式构造 Hessian，节省 O(n²) 内存
    * - 批量高阶导数
      - ``func.vmap(scalar_high_order)``
      - 批量处理自然，无需手动管理 batch 维
@@ -1211,12 +1200,24 @@ func 模块求导函数
 
 **参数**: 
 
-- func：可微函数，输出必须是标量张量
-- argnums：需要求导的参数位置，默认 ``0``
-- has_aux：如果为 ``True``，``func`` 返回 ``(value, aux)`` 二元组。``value`` 是待求导的标量输出，``aux`` 是前向函数额外输出的辅助结果（可以是任意对象）；包裹函数只对 ``value`` 求导，并把 ``aux`` 原样透传在返回值中。这样可以在同一次前向计算中顺带获得不需要求导的结果（如损失值、统计量或其它中间输出），无需重复计算
+- func：可微函数，输出必须是标量张量（``ndim == 0``），否则抛出 ``RuntimeError``
+- argnums：需要求导的参数位置，可以是整数或整数元组，默认 ``0``：
+
+  - 整数：只对该位置的参数求导，例如 ``argnums=1`` 表示对 ``func`` 的第二个参数求导
+  - 整数元组：对元组中每个位置的参数分别求导，例如 ``argnums=(0, 1)``
+  - 非法取值：``()``、``None``、含非整数元素的元组、list 等，在调用导函数时抛出 ``RuntimeError``，错误信息与 ``torch.func.grad`` 一致（``()`` 报 ``argnums must be non-empty``；``None`` 报 ``argnums must be int or Tuple[int, ...], got: <class 'NoneType'>``）
+- has_aux：如果为 ``True``，``func`` 必须返回 ``(value, aux)`` 二元组。``value`` 是 ``func`` 的前向计算输出，``grad`` 要求它必须是标量张量；``aux`` 是 ``func`` 顺带输出的辅助结果（可以是任意对象，不参与求导）。导函数只从 ``value`` 计算梯度，并把 ``aux`` 原样透传在返回值中。这样可以在同一次前向计算中顺带获得不需要求导的结果（如损失值、统计量或其它中间输出），无需重复计算
 - create_graph：如果为 ``True``，梯度张量会被追踪，可用于高阶微分
 
-**返回**: 包裹函数，输入为 ``func`` 的参数，返回梯度；若 ``has_aux=True`` 则返回 ``(grad, aux)``，其中 ``aux`` 为前向函数原样透传的辅助结果
+**返回**: ``func`` 的导函数（一个函数对象），它接受与 ``func`` 相同的参数。调用导函数时：
+
+- ``has_aux=False``：返回 ``grad_result``
+- ``has_aux=True``：返回 ``(grad_result, aux)``，其中 ``aux`` 为 ``func`` 原样透传的辅助结果
+- ``grad_result`` 是标量输出 ``value`` 关于 ``argnums`` 所选参数的梯度：只含 1 个参数位置时为单个梯度张量（形状与对应输入张量相同），含多个位置时为多个梯度张量构成的元组（顺序与 ``argnums`` 一致）
+
+.. note::
+
+    三层输出容易混淆：``func`` 的输出是 ``value``（``has_aux=True`` 时为 ``(value, aux)``）；``func.grad(...)`` 的输出是一个函数对象（导函数）；导函数的输出才是 ``grad_result``（``has_aux=True`` 时为 ``(grad_result, aux)``）。
 
 **示例**: 
 
@@ -1261,7 +1262,7 @@ func 模块求导函数
 **注意事项**: 
 
 - func 输出必须是**标量**（``ndim == 0``），否则抛出 ``RuntimeError``
-- 单 ``argnums`` 时返回单个张量；多 ``argnums`` 时返回元组
+- 返回值的形态取决于 ``argnums`` 中的参数位置数量：1 个位置返回单个张量，多个位置返回元组
 
 ``grad_and_value()`` — 同时返回梯度和函数值
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1274,7 +1275,9 @@ func 模块求导函数
 
     riemann.func.grad_and_value(func, argnums=0, has_aux=False, create_graph=False) -> Callable
 
-**返回**: 包裹函数返回 ``(grad, value)`` 或 ``(grad, value, aux)``（``has_aux=True`` 时）
+**参数**: 与 ``func.grad`` 相同（``argnums`` 非法取值在调用导函数时抛 ``RuntimeError``）
+
+**返回**: ``func`` 的导函数（一个函数对象），它接受与 ``func`` 相同的参数，调用时返回 ``(grad_result, value)``；``has_aux=True`` 时返回 ``(grad_result, value, aux)``。``grad_result`` 的形态由 ``argnums`` 决定（同 ``func.grad``）
 
 **示例**: 
 
@@ -1385,14 +1388,13 @@ func 模块求导函数
     out3, vjp_val3 = func.vjp(g, x)     # cotangent=None 自动填全1
     print(vjp_val3)  # J^T @ ones = [2., 4., 6.]
 
-``jacrev()`` / ``jacfwd()`` / ``jacobian()`` — Jacobian 矩阵
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``jacrev()`` / ``jacfwd()`` — Jacobian 矩阵
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-三种方式计算 Jacobian 矩阵：
+两种方式计算 Jacobian 矩阵：
 
 - jacrev：反向模式自动求导。对 m 维输出做 m 次反向传播，适合输入维度小、输出维度大的场景
 - jacfwd：正向模式。通过 vmap+jvp 实现（Riemann 当前没有前向 autodiff），对 n 维输入做 n 次 JVP，适合输入维度大、输出维度小的场景
-- jacobian(func, mode="reverse")：统一入口，``mode`` 选择具体算法
 
 **函数签名**: 
 
@@ -1400,7 +1402,11 @@ func 模块求导函数
 
     riemann.func.jacrev(func, argnums=0, create_graph=False, strict=True) -> Callable
     riemann.func.jacfwd(func, argnums=0, create_graph=False) -> Callable
-    riemann.func.jacobian(func, argnums=0, create_graph=False, strict=True, mode="reverse") -> Callable
+
+**参数**: 
+
+- func：可微函数
+- argnums：需要计算 Jacobian 的输入位置，整数或整数元组，默认 ``0``；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``，错误信息与 ``torch.func`` 一致（``torch.func.jacrev`` 对 ``()`` 和 ``None`` 均抛 ``RuntimeError``；``torch.func.jacfwd`` 对 ``()`` 抛 ``RuntimeError``，对 ``None`` 则按全部参数求导）
 
 **返回形状**: 对于输出形状 ``(y1, y2, ...)`` 和输入形状 ``(x1, x2, ...)``，
 Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
@@ -1423,14 +1429,6 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     jac_g = func.jacrev(g)(rm.tensor([1., 2., 3.], requires_grad=True))
     print(jac_g.shape)  # (2, 3)
 
-    # jacobian 统一入口（使用前面的 f 和同一输入）
-    x_in = rm.tensor([1., 2., 3.], requires_grad=True)
-    jac_fwd = func.jacobian(f, mode="forward")(x_in)
-    jac_rev = func.jacobian(f, mode="reverse")(x_in)
-    # jac_fwd ≈ jac_rev
-    print(jac_fwd)
-    print(jac_rev)
-
 **注意事项**: 
 
 - jacfwd 在 Riemann 中通过多次 ``jvp`` 实现，时间复杂度正比于输入维度；若输出维度远大于输入维度，建议使用 ``jacrev``
@@ -1446,6 +1444,11 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 .. code-block:: python
 
     riemann.func.hessian(func, argnums=0, create_graph=False, strict=True) -> Callable
+
+**参数**: 
+
+- func：可微函数，输出必须是标量张量
+- argnums：需要计算 Hessian 的输入位置，整数或整数元组，默认 ``0``；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``，错误信息与 ``torch.func.hessian`` 一致
 
 **返回形状**: 对于形状 ``(n,)`` 的输入，Hessian 形状为 ``(n, n)``。
 
@@ -1465,40 +1468,6 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 - 仅支持标量值函数，向量输出会抛错
 - 当 ``argnums`` 不是全部参数位置时，内部自动放宽严格模式（cross-Hessian 零值不再报错）
-
-``hvp()`` — Hessian-vector 积
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-计算 Hessian 矩阵与给定向量的乘积。比显式构造 Hessian 再乘向量高效得多
-（在高维空间中尤其重要，Hessian 显式构造的内存代价是 O(n²)）。
-
-**函数签名**: 
-
-.. code-block:: python
-
-    riemann.func.hvp(func, argnums=0, create_graph=False, strict=False) -> Callable
-
-包裹函数签名：``(inputs, v) -> (output, hvp_result)``
-
-**示例**: 
-
-.. code-block:: python
-
-    import riemann as rm
-    from riemann import func
-
-    f = lambda x: (x ** 3).sum()
-    x = rm.tensor([1., 2., 3.], requires_grad=True)
-    print(x)
-    v = rm.tensor([1., 1., 1.])
-    print(v)
-
-    hvp_fn = func.hvp(f)
-    out_val, hvp_val = hvp_fn(x, v)
-    print(out_val)
-    print(hvp_val)
-    # f''(x) = diag(6x) = diag([6, 12, 18])
-    # hvp = [6, 12, 18] @ [1, 1, 1] = [6, 12, 18]
 
 ``vmap()`` — 向量化映射
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1651,24 +1620,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     print(h_via_jac)
     # 对角矩阵，对角元 [12·1², 12·2², 12·3²] = [12, 48, 108]
 
-**模式 3：vmap + hvp — 批量 Hessian-向量积**
-
-.. code-block:: python
-
-    import riemann as rm
-    from riemann import func
-
-    f = lambda x: (x ** 3).sum()
-    x = rm.tensor([1., 2., 3.], requires_grad=True)
-    v = rm.tensor([1., 1., 1.])
-
-    hvp_fn = func.hvp(f)   # 返回 (inputs, v) -> (output, hvp_result)
-    out_val, hvp_val = hvp_fn(x, v)
-    print(hvp_val)
-    # hvp_fn 的第一个参数是 inputs，第二个是 v
-    # batched_hvp = func.vmap(hvp_fn, in_dims=(0, 0))
-
-**模式 4：functional_call + grad — 对 Module 参数求梯度**
+**模式 3：functional_call + grad — 对 Module 参数求梯度**
 
 .. code-block:: python
 
@@ -1687,7 +1639,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     g_w, g_b = func.grad(param_loss, argnums=(0, 1))(alt_weight, alt_bias)
     print(g_w.shape, g_b.shape)
 
-**模式 5：create_graph 链 — 高阶微分**
+**模式 4：create_graph 链 — 高阶微分**
 
 .. code-block:: python
 

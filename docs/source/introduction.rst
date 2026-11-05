@@ -34,7 +34,7 @@ Automatic Differentiation
 
 - **backward method**: Triggers backpropagation to compute gradients
 - **grad function**: Computes gradients of functions with respect to inputs
-- **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``vjp``, ``jacrev``, ``jacfwd``, ``hessian``, ``hvp``, ``vmap``, ``functional_call``, suitable for chained higher-order derivatives
+- **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``vjp``, ``jacrev``, ``jacfwd``, ``hessian``, ``vmap``, ``functional_call``, suitable for chained higher-order derivatives
 - **track_grad decorator**: Use ``@track_grad`` decorator to customize gradient tracking functions (Riemann-specific)
 - **Function class**: Customize forward and backward propagation by inheriting from Function class (Riemann-specific)
 - **Jacobian and Hessian Matrices**: Supports Jacobian matrix computation for multi-input multi-output functions, and Hessian matrix computation for multi-input functions
@@ -138,7 +138,7 @@ Module Import Examples
 
     # Import functional autodiff API (torch.func-style, curried, supports higher-order)
     from riemann import func
-    from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
+    from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, vmap, functional_call
 
     # Import linear algebra functionality
     from riemann import linalg
@@ -179,9 +179,9 @@ Compatible Features
 - **Neural Network Components**: Layers, activation functions, and loss functions in the ``nn`` module maintain interface compatibility with PyTorch
 - **Optimizers**: Optimizers in the ``optim`` module (such as SGD, Adam, etc.) maintain consistent interfaces with PyTorch
 - **Automatic Differentiation Mechanism**: ``requires_grad`` and backpropagation mechanisms are similar to PyTorch
-- **torch.func Compatibility**: Top-level ``func`` module mirrors ``torch.func`` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``hessian``, ``hvp``, ``vmap``, ``functional_call``
+- **torch.func Compatibility**: Top-level ``func`` module mirrors ``torch.func`` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``hessian``, ``vmap``, ``functional_call``
 - **Computer Vision**: Datasets and transforms in the ``vision`` module maintain interface compatibility with torchvision
-- **Cross-framework interoperability**: Riemann tensors can be converted to and from NumPy arrays, CuPy arrays and other tensor frameworks such as PyTorch, or share data with them, through ``r.tensor()``, ``r.as_tensor()``, ``r.from_dlpack()``, ``TN.array()`` and ``TN.numpy()``, built on the ``__array__``, ``__cuda_array_interface__``, ``__dlpack__`` and ``__buffer__`` protocols. Conversion is zero-copy when device and dtype match
+- **Cross-framework interoperability**: Riemann tensors can be converted to and from NumPy arrays, CuPy arrays and other tensor frameworks such as PyTorch, or share data with them, through ``r.tensor()``, ``r.as_tensor()``, ``r.from_dlpack()``, ``TN.array()`` and ``TN.numpy()``, built on the ``__array__``, ``__cuda_array_interface__``, ``__dlpack__`` and ``__buffer__`` protocols (``__buffer__`` requires Python 3.12+). Conversion is zero-copy when device and dtype match
 
 PyTorch Features Not Supported by Riemann
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

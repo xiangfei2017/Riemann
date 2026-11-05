@@ -44,6 +44,8 @@ Core components:
 All functions support Riemann Tensor (TN) type and automatic differentiation.
 """
 
+from __future__ import annotations
+
 from typing import Callable, Any
 import numpy as np
 from ..tensordef import *

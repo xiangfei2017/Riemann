@@ -38,8 +38,8 @@ func 模块 —— 函数式自动微分接口，参考 torch.func 设计。
 核心函数：
     - grad / grad_and_value: 标量值函数的梯度
     - jvp / vjp: Jacobian-vector / vector-Jacobian 积
-    - jacrev / jacfwd / jacobian: Jacobian 矩阵的反向/正向/默认计算方式
-    - hessian / hvp / vhp: Hessian 矩阵及其向量积
+    - jacrev / jacfwd: Jacobian 矩阵的反向/正向计算方式
+    - hessian: Hessian 矩阵
     - vmap: 向量化映射（沿指定批次维度循环调用并堆叠）
     - functional_call: 以自定义参数调用 Module 实例
 
@@ -56,9 +56,34 @@ from .autograd.functional import (
     hessian as _hessian,
     jvp as _jvp,
     vjp as _vjp,
-    hvp as _hvp,
-    vhp as _vhp,
 )
+
+# ---------------------------------------------------------------------------
+# argnums 校验（与 torch.func 的错误信息保持一致）
+# ---------------------------------------------------------------------------
+
+def _check_argnums(argnums, allow_none: bool = False):
+    """校验并归一化 argnums，返回位置元组；allow_none=True 时 None 表示全部参数。
+
+    合法取值：int 或非空 tuple[int, ...]。校验在调用包裹函数时进行，错误信息
+    与 torch.func 一致（() -> argnums must be non-empty；
+    None / list 等 -> argnums must be int or Tuple[int, ...]）。
+    """
+    if allow_none and argnums is None:
+        return None
+    if isinstance(argnums, int):
+        return (argnums,)
+    if not isinstance(argnums, tuple):
+        raise RuntimeError(
+            f"argnums must be int or Tuple[int, ...], got: {type(argnums)}"
+        )
+    for a in argnums:
+        if not isinstance(a, int):
+            raise RuntimeError(f"argnum must be int, got: {type(a)}")
+    if len(argnums) == 0:
+        raise RuntimeError("argnums must be non-empty")
+    return argnums
+
 
 # ---------------------------------------------------------------------------
 # grad / grad_and_value
@@ -68,26 +93,38 @@ def grad(func: Callable[..., TN],
          argnums: Union[int, tuple[int, ...]] = 0,
          has_aux: bool = False,
          create_graph: bool = False) -> Callable[..., Union[TN, tuple[TN, Any]]]:
-    """返回一个新函数，该新函数计算 func 在参数 argnums 处的梯度。
+    """返回 func 的导函数（一个包裹函数）。
+
+    注意区分三层输出：
+        1. func 的输出：默认必须是标量 TN（ndim == 0）；has_aux=True 时必须是
+           (value, aux) 二元组，value 是标量 TN，aux 是任意辅助结果。
+        2. func.grad(...) 的输出：一个函数对象，即 func 的导函数（包裹函数），
+           它接受与 func 相同的参数。
+        3. 导函数的输出：has_aux=False 时返回 grad_result；has_aux=True 时返回
+           (grad_result, aux)，aux 原样透传。grad_result 是 value 关于 argnums
+           所选参数的梯度：只含 1 个参数位置时为单个梯度张量（形状与对应输入
+           相同），含多个位置时为由多个梯度张量构成的元组（顺序与 argnums 一致）。
 
     与 autograd.grad 的区别：
         autograd.grad 接受输出和输入；func.grad 接受函数和 argnums，
-        返回一个包裹函数，该包裹函数接受 inputs 并自动前向+反向。
+        返回的导函数接受 func 的参数并自动前向+反向。
 
     参数:
-        func: 可微函数，输出必须是标量 TN
-        argnums: 需要求导的参数位置，单个 int 或 tuple[int, ...]；默认 0
-        has_aux: 如果 True，func 可以返回 (value, aux) 二元组；
-                  包裹函数也会额外返回 aux 而不对其求导。
-        create_graph: 如果 True，梯度张量会被追踪，可用于高阶微分。默认 False。
+        func: 可微函数，输出必须是标量 TN（ndim == 0），否则抛出 RuntimeError
+        argnums: 需要求导的参数位置，int 或 tuple[int, ...]，默认 0。非法取值
+                 （()、None、含非 int 元素的元组、list 等）在调用导函数时抛
+                 RuntimeError，错误信息与 torch.func 一致
+        has_aux: 如果 True，func 必须返回 (value, aux) 二元组：value 是 func 的
+                 前向计算输出，grad 要求它必须是标量张量；aux 是 func 顺带输出
+                 的辅助结果（任意对象，不参与求导）。导函数只从 value 计算梯度，
+                 并把 aux 原样透传在返回值中
+        create_graph: 如果 True，梯度张量会被追踪，可用于高阶微分。默认 False
 
     返回:
-        Callable: 包裹函数，输入为 func 的参数，返回梯度（若 has_aux=True 则返回 (grad, aux)）
+        Callable: func 的导函数，其输出见上文第 3 点
     """
-    if isinstance(argnums, int):
-        argnums = (argnums,)
-
     def _wrapper(*args, **kwargs):
+        an = _check_argnums(argnums)
         outputs = func(*args, **kwargs)
         aux = None
         if has_aux:
@@ -98,10 +135,10 @@ def grad(func: Callable[..., TN],
                 f"grad() requires func to return a scalar tensor, got shape {outputs.shape}"
             )
 
-        grad_args = [args[i] for i in argnums]
+        grad_args = [args[i] for i in an]
         grad_result = _grad(outputs, grad_args, create_graph=create_graph)
 
-        if len(argnums) == 1:
+        if len(an) == 1:
             grad_result = grad_result[0]
 
         if has_aux:
@@ -115,17 +152,26 @@ def grad_and_value(func: Callable[..., TN],
                    argnums: Union[int, tuple[int, ...]] = 0,
                    has_aux: bool = False,
                    create_graph: bool = False) -> Callable[..., Union[tuple[TN, TN], tuple[TN, TN, Any]]]:
-    """同时返回梯度和函数值的包裹函数。
+    """返回 func 的导函数，同时返回 func 的前向输出（value）。
+
+    注意区分三层输出：
+        1. func 的输出：同 func.grad（默认标量 TN；has_aux=True 时为 (value, aux)）
+        2. func.grad_and_value(...) 的输出：一个函数对象，接受与 func 相同的参数
+        3. 该函数的输出：has_aux=False 时返回 (grad_result, value)；has_aux=True
+           时返回 (grad_result, value, aux)。grad_result 是 value 关于 argnums 所选
+           参数的梯度：只含 1 个位置时为单个梯度张量，含多个位置时为梯度元组
 
     内部只做一次前向+一次反向（与分开调用 func 和 grad(func) 等价）。
 
-    返回:
-        Callable: 输入为 func 的参数，返回 (grad, value) 或 (grad, value, aux)
-    """
-    if isinstance(argnums, int):
-        argnums = (argnums,)
+    参数:
+        argnums: 同 func.grad（非法取值在调用导函数时抛 RuntimeError，
+                 错误信息与 torch.func 一致）
 
+    返回:
+        Callable: 导函数，其输出见上文第 3 点
+    """
     def _wrapper(*args, **kwargs):
+        an = _check_argnums(argnums)
         outputs = func(*args, **kwargs)
         aux = None
         if has_aux:
@@ -136,10 +182,10 @@ def grad_and_value(func: Callable[..., TN],
                 f"grad_and_value() requires func to return a scalar tensor, got shape {outputs.shape}"
             )
 
-        grad_args = [args[i] for i in argnums]
+        grad_args = [args[i] for i in an]
         grad_result = _grad(outputs, grad_args, create_graph=create_graph)
 
-        if len(argnums) == 1:
+        if len(an) == 1:
             grad_result = grad_result[0]
 
         if has_aux:
@@ -183,7 +229,7 @@ def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
 
 
 # ---------------------------------------------------------------------------
-# jacrev / jacfwd / jacobian
+# jacrev / jacfwd
 # ---------------------------------------------------------------------------
 
 def jacrev(func: Callable[..., Union[TN, tuple[TN, ...]]],
@@ -195,13 +241,18 @@ def jacrev(func: Callable[..., Union[TN, tuple[TN, ...]]],
     对于输出形状 (y1, y2, ...) 和输入形状 (x1, x2, ...)，
     Jacobian 形状为 (y1, y2, ..., x1, x2, ...)。
 
-    返回一个包裹函数，包裹函数接受 func 的参数并返回 Jacobian。
-    """
-    if isinstance(argnums, int):
-        argnums = (argnums,)
+    参数:
+        argnums: 需要计算 Jacobian 的输入位置，int 或 tuple[int, ...]，默认 0；
+                 多位置时返回元组，顺序与 argnums 一致。非法取值（()、None、
+                 含非 int 元素的元组、list 等）在调用导函数时抛 RuntimeError，
+                 错误信息与 torch.func.jacrev 一致
 
+    返回一个包裹函数（func 的导函数），包裹函数接受 func 的参数并返回 Jacobian：
+    只含 1 个参数位置时返回单个 Jacobian 张量，含多个位置时返回元组。
+    """
     def _wrapper(*args, **kwargs):
-        is_single_argnum = (len(argnums) == 1 and argnums[0] == 0 and len(args) == 1)
+        an = _check_argnums(argnums)
+        is_single_argnum = (len(an) == 1 and an[0] == 0 and len(args) == 1)
         if is_single_argnum:
             return _jacobian(
                 lambda *a: func(*a, **kwargs),
@@ -218,7 +269,7 @@ def jacrev(func: Callable[..., Union[TN, tuple[TN, ...]]],
         )
         # 底层返回 tuple（多输入），按 argnums 过滤结果
         if isinstance(result, tuple):
-            filtered = tuple(result[i] for i in argnums)
+            filtered = tuple(result[i] for i in an)
             if len(filtered) == 1:
                 return filtered[0]
             return filtered
@@ -236,16 +287,25 @@ def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
     对每个输入元素构造 one-hot tangents，调用一次 jvp 得到 Jacobian 的一列，
     最后将所有列 stack 成完整 Jacobian。
 
-    返回一个包裹函数，包裹函数接受 func 的参数并返回 Jacobian。
-    """
-    if isinstance(argnums, int):
-        argnums = (argnums,)
+    参数:
+        argnums: 需要计算 Jacobian 的输入位置，int、tuple[int, ...] 或 None，
+                 默认 0。与 torch.func.jacfwd 一致：None 表示对全部参数求导
+                 （此时即使只有 1 个参数也返回元组）；() 和含非 int 元素的元组、
+                 list 等非法取值在调用导函数时抛 RuntimeError，错误信息与
+                 torch.func 一致
 
+    返回一个包裹函数（func 的导函数），包裹函数接受 func 的参数并返回 Jacobian：
+    只含 1 个参数位置时返回单个 Jacobian 张量（argnums=None 时按全部参数求导，
+    单参数也返回元组），含多个位置时返回元组。
+    """
     def _wrapper(*args, **kwargs):
+        an = _check_argnums(argnums, allow_none=True)
         all_args = list(args)
+        positions = range(len(all_args)) if an is None else an
         # [(inp_tensor, inp_pos_in_all_args), ...]  —— 同时记录张量和它在 args 中的位置
-        result_specs = [(all_args[i], i) for i in argnums]
-        is_single_input = len(result_specs) == 1
+        result_specs = [(all_args[i], i) for i in positions]
+        # argnums=None（全部参数）时始终返回元组，与 torch.func.jacfwd 一致
+        is_single_input = len(result_specs) == 1 and an is not None
 
         # 先跑一次正向拿到输出形状
         outputs = func(*all_args, **kwargs)
@@ -265,8 +325,6 @@ def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
                 for ai, a in enumerate(all_args):
                     if ai == inp_pos:
                         full_tangents.append(tangent)
-                    elif ai in argnums:
-                        full_tangents.append(zeros_like(a))
                     else:
                         full_tangents.append(zeros_like(a))
                 _, jvp_res = _jvp(
@@ -293,24 +351,6 @@ def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
     return _wrapper
 
 
-def jacobian(func: Callable[..., Union[TN, tuple[TN, ...]]],
-             argnums: Union[int, tuple[int, ...]] = 0,
-             create_graph: bool = False,
-             strict: bool = True,
-             mode: str = "reverse") -> Callable[..., Union[TN, tuple[TN, ...]]]:
-    """Jacobian 矩阵的通用接口，mode 选择算法。
-
-    参数:
-        mode: "reverse" (默认, 调用 jacrev) 或 "forward" (调用 jacfwd)
-    """
-    if mode == "reverse":
-        return jacrev(func, argnums=argnums, create_graph=create_graph, strict=strict)
-    elif mode == "forward":
-        return jacfwd(func, argnums=argnums, create_graph=create_graph)
-    else:
-        raise ValueError(f"mode must be 'reverse' or 'forward', got {mode!r}")
-
-
 # ---------------------------------------------------------------------------
 # hessian (薄封装)
 # ---------------------------------------------------------------------------
@@ -319,12 +359,16 @@ def hessian(func: Callable[..., TN],
             argnums: Union[int, tuple[int, ...]] = 0,
             create_graph: bool = False,
             strict: bool = True) -> Callable[..., Union[TN, tuple[TN, ...]]]:
-    """计算标量值函数的 Hessian 矩阵，返回包裹函数。"""
-    if isinstance(argnums, int):
-        argnums = (argnums,)
+    """计算标量值函数的 Hessian 矩阵，返回包裹函数。
 
+    参数:
+        argnums: 需要计算 Hessian 的输入位置，int 或 tuple[int, ...]，默认 0；
+                 非法取值（()、None、含非 int 元素的元组、list 等）在调用导函数时
+                 抛 RuntimeError，错误信息与 torch.func.hessian 一致
+    """
     def _wrapper(*args, **kwargs):
-        is_single_argnum = (len(argnums) == 1 and argnums[0] == 0 and len(args) == 1)
+        an = _check_argnums(argnums)
+        is_single_argnum = (len(an) == 1 and an[0] == 0 and len(args) == 1)
         if is_single_argnum:
             return _hessian(
                 lambda *a: func(*a, **kwargs),
@@ -335,7 +379,7 @@ def hessian(func: Callable[..., TN],
         all_args = list(args)
         # 当 argnums 不是全部参数位置时，内部自动放宽 strict=False，
         # 因为 cross-Hessian 对非 argnums 的依赖不是用户关心的范围。
-        effective_strict = strict if len(argnums) == len(args) else False
+        effective_strict = strict if len(an) == len(args) else False
         result = _hessian(
             lambda *a: func(*a, **kwargs),
             all_args,
@@ -347,49 +391,11 @@ def hessian(func: Callable[..., TN],
         #    (∂grad_1/∂x_0, ∂grad_1/∂x_1, ...), ...)
         # 对角线 result[k][k] 才是第 k 个 input 的 Hessian 矩阵
         if isinstance(result, tuple):
-            filtered = tuple(result[i][i] for i in argnums)
+            filtered = tuple(result[i][i] for i in an)
             if len(filtered) == 1:
                 return filtered[0]
             return filtered
         return result
-
-    return _wrapper
-
-
-def hvp(func: Callable[..., TN],
-        argnums: Union[int, tuple[int, ...]] = 0,
-        create_graph: bool = False,
-        strict: bool = False) -> Callable[..., tuple[Union[TN, tuple[TN, ...]], Union[TN, tuple[TN, ...]]]]:
-    """Hessian-vector product，返回包裹函数。
-
-    包裹函数签名: (inputs, v) -> (output, hvp_result)
-    """
-    if isinstance(argnums, int):
-        argnums = (argnums,)
-
-    def _wrapper(inputs, v, **kwargs):
-        single_input = not isinstance(inputs, (list, tuple))
-        if single_input:
-            inputs = [inputs]
-        else:
-            inputs = list(inputs)
-        single_v = not isinstance(v, (list, tuple))
-        if single_v:
-            v = [v]
-        else:
-            v = list(v)
-        out, hvp_res = _hvp(
-            lambda *a: func(*a, **kwargs),
-            inputs, v,
-            create_graph=create_graph,
-            strict=strict,
-        )
-        # 底层 _hvp 返回 list，这里统一回包成 tuple 或单 TN
-        if isinstance(hvp_res, list):
-            hvp_res = tuple(hvp_res)
-        if len(hvp_res) == 1:
-            hvp_res = hvp_res[0]
-        return out, hvp_res
 
     return _wrapper
 

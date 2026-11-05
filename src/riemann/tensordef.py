@@ -66,7 +66,7 @@ from collections import Counter, defaultdict, namedtuple
 import builtins
 import inspect
 import warnings
-from typing import Callable, Any, TypeAlias, overload
+from typing import Callable, Any, Optional, overload
 from contextlib import contextmanager
 import numpy as np
 from .cuda import Device, cp, get_default_device
@@ -5385,15 +5385,15 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
             # 列表/元组/标量/range/numpy数组：np.array 直接构造或拷贝，无协议探测路径
             arr = np.array(data, dtype=dtype)
 
-    if not is_numeric_array(arr):
-        raise TypeError(f"cannot create a TN tensor with dtype {arr.dtype}; only numeric or boolean dtypes are supported")
-
     tsobj = TN()
     tsobj._array = arr
     tsobj.requires_grad = bool(requires_grad)
-    if requires_grad:
+    if tsobj.requires_grad:
+        # 浮点/复数 dtype 必然是数值类型，无需再单独做数值检查
         if not is_float_or_complex(tsobj._array.dtype):
             raise RuntimeError('Only floating point tensors can require gradients')
+    elif not is_numeric_array(arr):
+        raise TypeError(f"cannot create a TN tensor with dtype {arr.dtype}; only numeric or boolean dtypes are supported")
     return tsobj    
 
 def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, requires_grad:bool|None = False)->TN:
@@ -5481,15 +5481,15 @@ def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = Non
         else:
             arr = np.asarray(data, dtype=dtype)
 
-    if not is_numeric_array(arr):
-        raise TypeError(f"cannot create a TN tensor with dtype {arr.dtype}; only numeric or boolean dtypes are supported")
-
     tsobj = TN()
     tsobj._array = arr
     tsobj.requires_grad = bool(requires_grad)
-    if requires_grad:
+    if tsobj.requires_grad:
+        # 浮点/复数 dtype 必然是数值类型，无需再单独做数值检查
         if not is_float_or_complex(tsobj._array.dtype):
             raise RuntimeError('Only floating point tensors can require gradients')
+    elif not is_numeric_array(arr):
+        raise TypeError(f"cannot create a TN tensor with dtype {arr.dtype}; only numeric or boolean dtypes are supported")
     return tsobj
 
 def _as_tn(x):
@@ -6315,10 +6315,10 @@ def linspace(start: float, end: float, steps: int = 100, endpoint: bool = True, 
     return ret
 
 # 定义函数类型别名
-ForwardFunc: TypeAlias = Callable[..., Any]  # 前向函数类型：输入任意数量的参数，返回任意类型
-GradFunc: TypeAlias = Callable[..., tuple[TN | None, ...]]  # 梯度函数类型：首参为结果张量，后续为前向输入，返回包含每个输入梯度的元组
-BackwardFunc: TypeAlias = Callable[[TN, int], TN]  # 反向函数类型：输入一个TN和一个int，返回一个TN
-DecoratorFunc: TypeAlias = Callable[[Callable[..., Any]], Callable[..., TN]]  # 修饰器类型：输入一个返回任意类型的函数，返回一个返回TN的函数
+ForwardFunc = Callable[..., Any]  # 前向函数类型：输入任意数量的参数，返回任意类型
+GradFunc = Callable[..., tuple[Optional[TN], ...]]  # 梯度函数类型：首参为结果张量，后续为前向输入，返回包含每个输入梯度的元组
+BackwardFunc = Callable[[TN, int], TN]  # 反向函数类型：输入一个TN和一个int，返回一个TN
+DecoratorFunc = Callable[[Callable[..., Any]], Callable[..., TN]]  # 修饰器类型：输入一个返回任意类型的函数，返回一个返回TN的函数
 
 def track_grad(grad_func:GradFunc)->DecoratorFunc:
     """

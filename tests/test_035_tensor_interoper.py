@@ -140,8 +140,11 @@ class StatisticsCollector:
         headers = ['用例名', '通过/总数', '通过率', '耗时(秒)']
         header_widths = [self._get_display_width(h) for h in headers]
 
+        # 跳过/未执行任何子用例的测试（total 为 0）不在统计表中显示
+        visible_stats = {name: stat for name, stat in self.function_stats.items() if stat["total"] > 0}
+
         max_func_name_width = header_widths[0]
-        for func_name in self.function_stats.keys():
+        for func_name in visible_stats.keys():
             max_func_name_width = max(max_func_name_width, self._get_display_width(func_name))
 
         col_widths = [
@@ -158,7 +161,8 @@ class StatisticsCollector:
         print("="*total_width)
         print(f"总测试用例数: {self.total_cases}")
         print(f"通过测试用例数: {Colors.OKGREEN if self.passed_cases == self.total_cases else Colors.FAIL}{self.passed_cases}{Colors.ENDC}")
-        print(f"测试通过率: {Colors.OKGREEN if self.passed_cases == self.total_cases else Colors.FAIL}{self.passed_cases/self.total_cases*100:.2f}%{Colors.ENDC}")
+        pass_rate = self.passed_cases / self.total_cases * 100 if self.total_cases > 0 else 0.0
+        print(f"测试通过率: {Colors.OKGREEN if self.passed_cases == self.total_cases else Colors.FAIL}{pass_rate:.2f}%{Colors.ENDC}")
         print(f"总耗时: {self.total_time:.4f} 秒")
         print("\n各用例测试详情:")
         print("-"*total_width)
@@ -170,7 +174,7 @@ class StatisticsCollector:
         print(header_line)
         print("-"*total_width)
 
-        for func_name, func_stat in self.function_stats.items():
+        for func_name, func_stat in visible_stats.items():
             pass_rate = func_stat["passed"]/func_stat["total"]*100 if func_stat["total"] > 0 else 0
             status_color = Colors.OKGREEN if pass_rate == 100 else Colors.FAIL
 
@@ -209,19 +213,26 @@ class TestTensorInterop(unittest.TestCase):
             rm.cuda.set_default_device('cpu')
         except Exception:
             pass
-        if IS_RUNNING_AS_SCRIPT:
-            test_method_name = self._testMethodName
-            self.current_test_name = test_method_name
-            stats.start_function(test_method_name)
-            print(f"\n{Colors.HEADER}开始测试: {test_method_name}{Colors.ENDC}")
+        # 延迟到真正执行第一个子用例时才打印开始信息并启动统计，
+        # 这样被 skipTest 跳过的用例（如 CUDA/CuPy 相关用例）不会显示任何执行信息
+        self._test_started = False
 
     def tearDown(self):
-        if IS_RUNNING_AS_SCRIPT:
+        if IS_RUNNING_AS_SCRIPT and self._test_started:
             stats.end_function()
             print(f"{Colors.OKBLUE}测试完成: {self.current_test_name}{Colors.ENDC}")
 
+    def _ensure_started(self):
+        """首次执行子用例时启动当前用例的统计与输出"""
+        if IS_RUNNING_AS_SCRIPT and not self._test_started:
+            self._test_started = True
+            self.current_test_name = self._testMethodName
+            stats.start_function(self.current_test_name)
+            print(f"\n{Colors.HEADER}开始测试: {self.current_test_name}{Colors.ENDC}")
+
     def _run_subcase(self, doc, name, test_func):
         """运行单个子用例：统计、打印分组明细，失败时向上抛出异常"""
+        self._ensure_started()
         case_name = f"{doc} - {name}"
         start_time = time.time()
         try:
@@ -663,6 +674,8 @@ class TestTensorInterop(unittest.TestCase):
     # ------------------------------------------------------------------
     # buffer接口协议（memoryview / bytes / np.frombuffer）
     # ------------------------------------------------------------------
+    @unittest.skipUnless(sys.version_info >= (3, 12),
+                         "在纯 Python 对象上实现缓冲区协议需要 Python 3.12+（PEP 688）")
     def test_buffer_protocol(self):
         """Riemann张量buffer接口协议测试"""
         doc = self.test_buffer_protocol.__doc__

@@ -51,6 +51,8 @@ while the grad.py module provides the core grad function for computing
 gradients of scalars or tensors with respect to other tensors.
 """
 
+from __future__ import annotations
+
 import numpy as np
 from typing import Callable, Any
 import builtins

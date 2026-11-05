@@ -57,6 +57,8 @@ sophisticated machine learning algorithms that rely on matrix operations
 and decompositions.
 """
 
+from __future__ import annotations
+
 import contextlib
 import numpy as np
 from .tensordef import *

@@ -58,6 +58,9 @@ Implemented optimizers:
 Each optimizer implements the standard step() method for parameter updates and supports both
 standard optimization steps and closure-based steps (required for LBFGS).
 """
+
+from __future__ import annotations
+
 import numpy as np
 from collections import defaultdict
 from typing import Any, Callable, Iterable

@@ -682,7 +682,7 @@ Riemann's cross-framework conversion is built entirely on the array-exchange pro
     - Returns ``(device_type, device_id)``, e.g. ``(1, 0)`` for CPU and ``(2, 0)`` for the first GPU. Consumers use it to locate the data and pick the right backend.
   * - ``__buffer__``
     - ``memoryview(x)``, ``bytes(x)``, ``np.frombuffer(...)``
-    - Native Python buffer protocol (PEP 688), exposing element format, shape, strides and writability. Buffers can only point at host memory, so a CUDA tensor yields a CPU copy.
+    - Native Python buffer protocol (PEP 688), exposing element format, shape, strides and writability. Buffers can only point at host memory, so a CUDA tensor yields a CPU copy. This protocol can only be implemented in pure Python on Python 3.12+; on 3.11 and earlier ``memoryview``/``bytes``/``np.frombuffer`` do not work, so use ``.array()`` or ``np.asarray()`` instead.
 
 .. note::
    Riemann uses only two storage backends: NumPy (CPU) and CuPy (GPU). ``__array__`` serves the CPU
@@ -889,7 +889,11 @@ Riemann's cross-framework conversion is built entirely on the array-exchange pro
    tensor, so an in-place assignment on the PyTorch side (e.g. ``p2[0] = 42``) changes the Riemann
    tensor's data directly.
 
-**Case 8: Buffer protocol (memoryview / bytes / np.frombuffer)**
+**Case 8: Buffer protocol (memoryview / bytes / np.frombuffer; Python 3.12+)**
+
+.. note::
+   PEP 688 only allows pure-Python objects to implement the buffer protocol from Python 3.12 on;
+   on earlier versions use zero-copy entries such as ``np.asarray(t)`` or ``t.array()`` instead.
 
 .. code-block:: python
 

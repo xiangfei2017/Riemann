@@ -50,6 +50,8 @@ that applies the respective operation from the functional module. The interface
 is fully compatible with PyTorch's nn.Module API for easy migration.
 """
 
+from __future__ import annotations
+
 from .module import *
 from .functional import *
 

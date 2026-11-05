@@ -45,6 +45,8 @@ Implemented Classes:
 - Transformer: Complete Transformer model with encoder and decoder
 """
 
+from __future__ import annotations
+
 import math
 import copy
 from ..tensordef import *

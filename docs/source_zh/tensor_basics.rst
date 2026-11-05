@@ -682,7 +682,7 @@ Riemann 的跨框架互转能力全部建立在 Python 生态的数组交换协�
     - 返回 ``(device_type, device_id)``，例如 CPU 为 ``(1, 0)``、第一块 GPU 为 ``(2, 0)``。消费方据此判断数据位置并选择承接后端。
   * - ``__buffer__``
     - ``memoryview(x)``、``bytes(x)``、``np.frombuffer(...)``
-    - Python 原生缓冲区协议（PEP 688），暴露元素类型、形状、步长与可写标志。缓冲区只能指向主机内存，因此 CUDA 张量返回 CPU 副本。
+    - Python 原生缓冲区协议（PEP 688），暴露元素类型、形状、步长与可写标志。缓冲区只能指向主机内存，因此 CUDA 张量返回 CPU 副本。该协议自 Python 3.12 起才支持在纯 Python 对象上实现；3.11 及更早版本无法用 ``memoryview``/``bytes``/``np.frombuffer``，可改用 ``.array()`` 或 ``np.asarray()``。
 
 .. note::
    Riemann 内部只有 NumPy（CPU）与 CuPy（GPU）两种存储后端：``__array__`` 负责 CPU 方向，
@@ -887,7 +887,11 @@ Riemann 的跨框架互转能力全部建立在 Python 生态的数组交换协�
    ``torch.as_tensor`` 与 ``torch.from_dlpack`` 得到的结果与 Riemann 张量共享内存，因此在
    PyTorch 侧就地修改（如 ``p2[0] = 42``）会直接改变 Riemann 张量的数据。
 
-**场景八：Buffer 协议（memoryview / bytes / np.frombuffer）**
+**场景八：Buffer 协议（memoryview / bytes / np.frombuffer，Python 3.12+）**
+
+.. note::
+   PEP 688 仅在 Python 3.12 及以上版本允许纯 Python 对象实现缓冲区协议；更低版本可用
+   ``np.asarray(t)``、``t.array()`` 等零拷贝入口替代。
 
 .. code-block:: python
 

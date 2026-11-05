@@ -88,7 +88,7 @@ class StatisticsCollector:
         for func_name, stats in self.function_stats.items():
             pass_rate = stats["passed"]/stats["total"]*100 if stats["total"] > 0 else 0
             status_color = Colors.OKGREEN if pass_rate == 100 else Colors.FAIL
-            print(f"{func_name:<33}{f'{stats["passed"]}/{stats["total"]}':<19}{status_color}{pass_rate:<13.2f}{Colors.ENDC}{stats['time']:.4f}")
+            print(f"{func_name:<33}{str(stats['passed']) + '/' + str(stats['total']):<19}{status_color}{pass_rate:<13.2f}{Colors.ENDC}{stats['time']:.4f}")
         print("="*73)
 
     def has_failures(self):

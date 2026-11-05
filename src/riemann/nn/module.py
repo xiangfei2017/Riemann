@@ -61,6 +61,9 @@ This file implements the following key components:
 All modules implement a PyTorch-compatible interface, making it easy to migrate code
 between Riemann and PyTorch frameworks.
 """
+
+from __future__ import annotations
+
 from typing import Any
 import copy
 import numpy as np
@@ -2040,7 +2043,7 @@ class Module:
                     except Exception as e:
                         error_msgs.append(f'While copying the parameter named "{key}", '
                                         f'whose dimensions in the model are {local_state[key].shape} and '
-                                        f'whose dimensions in the checkpoint are {getattr(value, 'shape', 'unknown')}, '
+                                        f'whose dimensions in the checkpoint are {getattr(value, "shape", "unknown")}, '
                                         f'an exception occurred : {e}')
             else:
                 unexpected_keys.append(key)

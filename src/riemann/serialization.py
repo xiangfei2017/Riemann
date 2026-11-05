@@ -53,6 +53,8 @@ and share models across different environments, with full compatibility with
 PyTorch's serialization ecosystem.
 """
 
+from __future__ import annotations
+
 import numpy as np
 import pickle
 import os

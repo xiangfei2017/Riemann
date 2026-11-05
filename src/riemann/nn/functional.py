@@ -85,6 +85,8 @@ All functions in this module are designed to work with the Riemann Tensor (TN) t
 support automatic differentiation through properly implemented backward functions.
 """
 
+from __future__ import annotations
+
 from ..tensordef import *
 from ..tensordef import _wrap_tensor_from_numpy
 

@@ -41,7 +41,7 @@ Riemann library is designed with a focus on compatibility with PyTorch interface
 - **Neural network components**: Layers, activation functions and loss functions in the `nn` module are interface-compatible with PyTorch
 - **Optimizers**: Optimizers (such as SGD, Adam, etc.) in the `optim` module have consistent interfaces with PyTorch
 - **Automatic differentiation mechanism**: `requires_grad` and backpropagation mechanism are similar to PyTorch
-- **torch.func compatibility**: The top-level ``func`` module mirrors `torch.func` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``hessian``, ``hvp``, ``vmap``, ``functional_call``
+- **torch.func compatibility**: The top-level ``func`` module mirrors `torch.func` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``hessian``, ``vmap``, ``functional_call``
 - **Computer vision**: Datasets and transforms in the `vision` module are interface-compatible with torchvision
 - **Cross-framework interoperability**: Riemann tensors can be converted to and from NumPy arrays, CuPy arrays and other tensor frameworks such as PyTorch, or share data with them, through `r.tensor()`, `r.as_tensor()`, `r.from_dlpack()`, `TN.array()` and `TN.numpy()`, built on the `__array__`, `__cuda_array_interface__`, `__dlpack__` and `__buffer__` protocols. Conversion is zero-copy when device and dtype match
 
@@ -733,5 +733,7 @@ Welcome to submit Issues and Pull Requests! Before contributing code, please ens
 ## Contact Information
 
 Author: Fei Xiang
+
 GitHub: https://github.com/xiangfei2017
+
 Gitee: https://gitee.com/xfcode2021
