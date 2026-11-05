@@ -1221,6 +1221,125 @@ class TestJacobianFunctions(unittest.TestCase):
 
             self._run_test_case(case_name, test_func)
 
+    def test_create_graph_with_unused_input(self):
+        """测试场景20: create_graph=True且strict=False时部分输入未使用"""
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            case_name = f"create_graph=True未使用输入 - {device}"
+
+            def test_func():
+                # f(x, y) = x^2，y 未被使用
+                def func(x, y):
+                    return x ** 2.
+
+                rm_x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True, device=device)
+                rm_y = rm.tensor([3.0, 4.0], requires_grad=True, device=device)
+
+                rm_result = rm_jacobian(func, (rm_x, rm_y), create_graph=True, strict=False)
+                jac_x = rm_result[0]
+                jac_y = rm_result[1]
+
+                # 形状 = 输出形状 + 输入形状
+                shape_correct = jac_x.shape == (3, 3) and jac_y.shape == (3, 2)
+                # jac_x = 2*diag(x)，jac_y 应为全零
+                x_correct = np.allclose(jac_x.detach().array(), np.diag([2.0, 4.0, 6.0]))
+                y_correct = np.allclose(jac_y.detach().array(), 0.0)
+                # 已使用输入的雅可比需保留计算图
+                has_grad = jac_x.requires_grad
+
+                passed = shape_correct and x_correct and y_correct and has_grad
+
+                if TORCH_AVAILABLE:
+                    try:
+                        torch_x = torch.tensor([1.0, 2.0, 3.0], requires_grad=True, device=device)
+                        torch_y = torch.tensor([3.0, 4.0], requires_grad=True, device=device)
+                        torch_result = torch_jacobian(func, (torch_x, torch_y), create_graph=True, strict=False)
+                        passed = passed and compare_values(rm_result, torch_result)
+                    except Exception:
+                        pass
+
+                return passed
+
+            self._run_test_case(case_name, test_func)
+
+    def test_create_graph_multi_output(self):
+        """测试场景21: create_graph=True且多输出"""
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            case_name = f"create_graph=True多输出 - {device}"
+
+            def test_func():
+                # f(x) = (x^2, x.sum())，输出形状分别为 (3,) 和 ()
+                def func(x):
+                    return (x ** 2., x.sum())
+
+                rm_x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True, device=device)
+
+                rm_result = rm_jacobian(func, rm_x, create_graph=True)
+                jac_0 = rm_result[0]
+                jac_1 = rm_result[1]
+
+                shape_correct = jac_0.shape == (3, 3) and jac_1.shape == (3,)
+                value_0_correct = np.allclose(jac_0.detach().array(), np.diag([2.0, 4.0, 6.0]))
+                value_1_correct = np.allclose(jac_1.detach().array(), np.ones(3))
+                has_grad = jac_0.requires_grad and jac_1.requires_grad
+
+                passed = shape_correct and value_0_correct and value_1_correct and has_grad
+
+                if passed:
+                    # 对返回的雅可比再求导，验证两个输出的计算图都保留
+                    (jac_0.sum() + jac_1.sum()).backward()
+                    # d(sum(jac_0))/dx = 2，jac_1 与 x 无关，不贡献梯度
+                    passed = np.allclose(rm_x.grad.detach().array(), [2.0, 2.0, 2.0])
+
+                if TORCH_AVAILABLE:
+                    try:
+                        torch_x = torch.tensor([1.0, 2.0, 3.0], requires_grad=True, device=device)
+                        torch_result = torch_jacobian(func, torch_x, create_graph=True)
+                        passed = passed and compare_values(rm_result, torch_result)
+                    except Exception:
+                        pass
+
+                return passed
+
+            self._run_test_case(case_name, test_func)
+
+    def test_empty_output(self):
+        """测试场景22: 输出为空张量"""
+        devices = ["cpu"]
+        if CUDA_AVAILABLE:
+            devices.append("cuda")
+
+        for device in devices:
+            case_name = f"空输出 - {device}"
+
+            def test_func():
+                # f(x) = (2x)[0:0]，输出为空张量
+                def func(x):
+                    return (x * 2.)[0:0]
+
+                rm_x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True, device=device)
+
+                passed = True
+                for create_graph in (False, True):
+                    rm_result = rm_jacobian(func, rm_x, create_graph=create_graph)
+                    # 形状 = 输出形状 + 输入形状 = (0, 3)，且全为零
+                    shape_correct = rm_result.shape == (0, 3)
+                    value_correct = np.allclose(rm_result.detach().array(), 0.0)
+                    grad_flag_correct = rm_result.requires_grad == create_graph
+                    passed = passed and shape_correct and value_correct and grad_flag_correct
+
+                # PyTorch 当前版本对空输出报错（stack expects a non-empty TensorList），仅验证 Riemann 行为
+                return passed
+
+            self._run_test_case(case_name, test_func)
+
 
 # 如果作为独立脚本运行
 if __name__ == '__main__':

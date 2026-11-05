@@ -560,6 +560,54 @@ class TestFuncs(unittest.TestCase):
             return True
 
     # ---------------------------------------------------------------
+    # derivative
+    # ---------------------------------------------------------------
+    def test_derivative(self):
+        _run_case("derivative - scalar_to_scalar", lambda: self._check_derivative_scalar())
+        _run_case("derivative - vector_to_vector", lambda: self._check_derivative_vector())
+        _run_case("derivative - two_inputs", lambda: self._check_derivative_two_inputs())
+        _run_case("derivative - create_graph_second_order",
+                  lambda: self._check_derivative_create_graph())
+
+    @staticmethod
+    def _get_derivative():
+        from riemann.autograd.functional import derivative
+        return derivative
+
+    def _check_derivative_scalar(self):
+        derivative = self._get_derivative()
+        x = _rm_tensor(2.0)
+        res = derivative(lambda t: t ** 3)(x)
+        # 始终返回 tuple；标量输入/输出时元素为 0 维
+        return (isinstance(res, tuple) and len(res) == 1
+                and res[0].shape == () and _close(res[0], 12.0))
+
+    def _check_derivative_vector(self):
+        derivative = self._get_derivative()
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        res = derivative(lambda t: t ** 2)(x)
+        return (isinstance(res, tuple) and len(res) == 1
+                and _close(res[0], np.diag([2.0, 4.0])))
+
+    def _check_derivative_two_inputs(self):
+        derivative = self._get_derivative()
+        a = _rm_tensor(np.array([1.0, 2.0]))
+        b = _rm_tensor(np.array([3.0, 4.0]))
+        res = derivative(lambda x, y: (x * y).sum())(a, b)
+        # 每个输入对应一个导数：d/da = b，d/db = a
+        return (isinstance(res, tuple) and len(res) == 2
+                and _close(res[0], b._array) and _close(res[1], a._array))
+
+    def _check_derivative_create_graph(self):
+        derivative = self._get_derivative()
+        x = _rm_tensor(2.0)
+        d = derivative(lambda t: t ** 3, create_graph=True)
+        first = d(x)[0]
+        second = func.grad(lambda t: d(t)[0])(x)
+        return (first.requires_grad and _close(first, 12.0)
+                and _close(second, 12.0))
+
+    # ---------------------------------------------------------------
     # hessian
     # ---------------------------------------------------------------
     def test_hessian(self):

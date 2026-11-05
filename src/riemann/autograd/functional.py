@@ -129,38 +129,39 @@ def jacobian(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
         if not isinstance(out, TN):
             raise RuntimeError(f"Output {i} must be a tensor")
 
-    input_sizes = [int(np.prod(inp.shape)) for inp in inputs]
+    input_sizes = [inp.numel() for inp in inputs]
     input_shapes = [inp.shape for inp in inputs]
     total_input_elements = builtins.sum(input_sizes)
 
     jacobian_results: list[TN] = []
 
-    # 逐输出计算雅可比：对每个输出元素做一次反向传播，得到雅可比的一行
+    # 逐输出计算雅可比：每个输出元素一行，逐行收集后统一 stack，
+    # 避免 setat 每次复制整个雅可比张量
     for out in outputs:
-        num_output_elements = int(np.prod(out.shape))
-
-        # jac_tensor shape = output_shape + (total_input_elements,)
-        # 每一行对应一个输出元素对所有输入的偏导
-        jac_tensor = zeros(*(out.shape + (total_input_elements,)), dtype=out.dtype, device=out.device)
-        jac_tensor.requires_grad = create_graph
-
         base_grad_output = zeros_like(out)
-        all_indices = [np.unravel_index(j, out.shape) for j in range(num_output_elements)]
+        jac_rows: list[TN] = []
 
-        for idx in all_indices:
+        for idx in np.ndindex(out.shape):
             # 构造 one-hot 向量，选中第 idx 个输出元素
             grad_output = base_grad_output.setat(idx, 1.0)
             # 反向传播：grads[k] = ∂out[idx] / ∂inputs[k]
             grads = grad(out, inputs, grad_outputs=grad_output, create_graph=create_graph, allow_unused=not strict)
 
-            # 将各输入的梯度按偏移量填入 jac_tensor 的对应列
-            current_input_idx = 0
+            # allow_unused 时为未使用输入补零，保证多输入可正确拼接
+            parts = []
             for k, g in enumerate(grads):
-                if g is not None:
-                    grad_flat = g.reshape(-1)
-                    jac_idx = idx + (slice(current_input_idx, current_input_idx + input_sizes[k]),)
-                    jac_tensor = jac_tensor.setat(jac_idx, grad_flat)
-                current_input_idx += input_sizes[k]
+                parts.append(g.reshape(-1) if g is not None else zeros(input_sizes[k], dtype=out.dtype, device=out.device))
+            jac_rows.append(parts[0] if len(parts) == 1 else concatenate(parts))
+
+        if not jac_rows:
+            # 输出为空张量时没有任何行，直接返回零雅可比
+            jac_tensor = zeros(*(out.shape + (total_input_elements,)), dtype=out.dtype, device=out.device)
+            jac_tensor.requires_grad = create_graph
+        else:
+            # 每行对应一个输出元素，stack 后还原为 output_shape + (total_input_elements,)
+            jac_tensor = stack(jac_rows)._reshape(out.shape + (total_input_elements,))
+            if jac_tensor.dtype != out.dtype:
+                jac_tensor = jac_tensor.to(out.dtype)
 
         jacobian_results.append(jac_tensor)
 
@@ -197,7 +198,9 @@ def derivative(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
         create_graph (bool, 可选): 是否在梯度计算中创建计算图，默认为False
 
     返回:
-        Callable[..., TN | list[TN] | tuple[TN, ...]]: 返回导函数，该函数接受与原函数相同的输入
+        Callable[..., TN | list[TN] | tuple[TN, ...]]: 返回导函数，该函数接受与原函数相同的输入。
+            调用结果始终为 tuple：每个输入对应一个导数张量；函数有多个输出时，
+            每个输出再嵌套一层 tuple，结构与 jacobian 的多输入返回一致。
 
     示例:
         >>> def f(x):
@@ -208,13 +211,7 @@ def derivative(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
     """
 
     def _derivative(*inputs: Any) -> TN | list[TN] | tuple[TN, ...]:
-        jac = jacobian(func, inputs, create_graph=create_graph)
-        # 雅可比形状 = output_shape + (input_size,)
-        # 标量输出时 output_shape=()，jac.ndim=1
-        # 标量输入时 input.ndim=0，jac.shape=(1,)，需 squeeze 到 ()
-        if isinstance(jac, TN) and jac.ndim == 1 and inputs[0].ndim == 0:
-            return jac.squeeze(0)
-        return jac
+        return jacobian(func, inputs, create_graph=create_graph)
 
     return _derivative
 
@@ -335,24 +332,30 @@ def jvp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
         else:
             # 非标量输出：JVP[j] = sum_i(J[j,i] * v[i]) = sum_i(grad(out_j, inp_i) · v_i)
             # 需逐输出元素做反向传播（每个元素对应雅可比的一行）
-            jvp_val = zeros_like(out, requires_grad=create_graph)
+            # 逐元素做反向传播；create_graph 时先收集标量贡献、最后统一 stack，
+            # 避免 setat 每次复制整个结果张量
             base_grad_output = zeros_like(out)
-            all_indices = [np.unravel_index(j, out.shape) for j in range(out._array.size)]  # type: ignore
+            contributions: list[TN] = []
+            if not create_graph:
+                jvp_val = zeros_like(out)
 
-            for idx in all_indices:
+            for idx in np.ndindex(out.shape):
                 # one-hot 向量选中第 idx 个输出元素
                 grad_output = base_grad_output.setat(idx, 1.0)
                 # 一次 grad 调用获得所有输入对该输出元素的梯度
                 all_grads = grad(out, inputs, grad_outputs=grad_output, create_graph=create_graph, allow_unused=True)
 
                 if create_graph:
-                    contribution = tensor(0.0, dtype=out.dtype, device=out.device, requires_grad=True)
+                    contribution = None
                     for j, (g, vec) in enumerate(zip(all_grads, v)):
                         if g is not None:
-                            contribution = contribution + (g * vec).sum()
+                            term = g.reshape(-1) @ vec.reshape(-1)
+                            contribution = term if contribution is None else contribution + term
                         elif strict:
                             raise RuntimeError(f"At least one of the outputs is independent of input {j}")
-                    jvp_val = jvp_val.setat(idx, contribution)
+                    if contribution is None:
+                        contribution = tensor(0.0, dtype=out.dtype, device=out.device, requires_grad=True)
+                    contributions.append(contribution)
                 else:
                     contribution = 0.0
                     for j, (g, vec) in enumerate(zip(all_grads, v)):
@@ -361,6 +364,15 @@ def jvp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
                         elif strict:
                             raise RuntimeError(f"At least one of the outputs is independent of input {j}")
                     jvp_val._array[idx] = contribution
+
+            if create_graph:
+                if not contributions:
+                    # 输出为空张量时没有任何元素
+                    jvp_val = zeros_like(out, requires_grad=True)
+                else:
+                    jvp_val = stack(contributions)._reshape(out.shape)
+                    if jvp_val.dtype != out.dtype:
+                        jvp_val = jvp_val.to(out.dtype)
 
         jvp_results.append(jvp_val)
 
@@ -446,7 +458,8 @@ def vjp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
                 raise RuntimeError(f"Shapes of output {i} and v[{i}] do not match: {out.shape} vs {vec.shape}")
 
     # 计算VJP：对每个输出使用对应的v计算梯度并累加
-    vjp_results = [zeros_like(inp, requires_grad=create_graph) for inp in inputs]
+    # 先以 None 占位、首个可用梯度直接赋值，避免为每个输入创建零张量并做无谓加法
+    vjp_results = [None] * len(inputs)
 
     for out, vec in zip(outputs, v):
         grads = grad(out, inputs, grad_outputs=vec, create_graph=create_graph, allow_unused=True)  # type: ignore
@@ -458,7 +471,12 @@ def vjp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
 
         for j in range(len(inputs)):
             if grads[j] is not None:
-                vjp_results[j] = vjp_results[j] + grads[j]
+                prev = vjp_results[j]
+                vjp_results[j] = grads[j] if prev is None else prev + grads[j]
+
+    # 所有输出都未使用某输入时，按 torch 语义返回零张量
+    vjp_results = [zeros_like(inp, requires_grad=create_graph) if r is None else r
+                   for inp, r in zip(inputs, vjp_results)]
 
 
     if is_single_input:
@@ -519,11 +537,15 @@ def _compute_hessian_vector_product(func: Callable[..., TN], inputs: TN | list[T
             if grad_out is None:
                 raise RuntimeError(f"The output of the user-provided function is independent of input {i}. This is not allowed in strict mode.")
 
-    # 计算梯度与v的内积
-    dot_product = zeros_like(func_output, requires_grad=True)
+    # 计算梯度与v的内积（避免额外的零张量累加器）
+    dot_product = None
     for grad_out, vec in zip(grads, v):
         if grad_out is not None:
-            dot_product = dot_product + (grad_out * vec).sum()
+            term = grad_out.reshape(-1) @ vec.reshape(-1)
+            dot_product = term if dot_product is None else dot_product + term
+    if dot_product is None:
+        # 所有输入都未被使用时，仍需一个 requires_grad 的标量供第二次反向
+        dot_product = zeros_like(func_output, requires_grad=True)
 
     # 第二次反向：对内积求梯度，得到Hessian-vector product
     hessian_vec_product = grad(dot_product, inputs, create_graph=create_graph, allow_unused=True)
