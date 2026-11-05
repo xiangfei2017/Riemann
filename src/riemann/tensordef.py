@@ -951,7 +951,7 @@ class TN:
         # 处理设备迁移、数据转换
         if device_not_change:
             # 设备相同，只需要转换数据类型（或强制复制）
-            if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
+            if is_complex(self.dtype) and not is_complex(target_dtype):
                 # 复数向非复数转换时，为避免warning，不用astype直接转，取real后再转换
                 ret._array = self._array.real.astype(target_dtype, copy=False)
             else:
@@ -962,7 +962,7 @@ class TN:
             if target_device.type=='cuda':
                 # CPU -> CUDA
                 # 利用cp.asarray()支持dtype参数的特性，一步完成转换
-                if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
+                if is_complex(self.dtype) and not is_complex(target_dtype):
                     # 复数向非复数转换时，先取real
                     source_data = self._array.real
                 else:
@@ -986,7 +986,7 @@ class TN:
                 # 注意：non_blocking 参数主要适用于 CPU -> GPU 传输
                 # GPU -> CPU 使用 cp.asnumpy()，这是同步操作
                 # 如果需要异步 GPU -> CPU 传输，需要更复杂的实现（使用 pinned memory + 异步拷贝）
-                if np.issubdtype(self.dtype, np.complexfloating) and not np.issubdtype(target_dtype, np.complexfloating):
+                if is_complex(self.dtype) and not is_complex(target_dtype):
                     # 复数向非复数转换时，先取real
                     ret._array = cp.asnumpy(self._array.real).astype(target_dtype,copy=False)
                 else:
@@ -11007,31 +11007,6 @@ def trunc(x:TN)->TN:
     x = _as_tn(x)
     arrlib = x._get_array_lib()
     return as_tensor(arrlib.trunc(x._array),device=x.device)
-
-def fwbw_all_zero(x:TN)->TN:
-    """
-    前向计算返回值标量张量0.0，反向梯度计算返回形状与输入相同的全0张量
-    当希望将张量x加入计算图，但又要求不影响计算图的前向计算函数值和反向传播梯度值时，
-    用a = a + fwbw_all_zero(x)“无损修改“a，但将x加入了计算图
-
-    返回:
-        标量张量0.0
-    """
-    
-    ret = tensor(
-        0.0, dtype=x.dtype, device=x.device,
-        requires_grad=is_grad_enabled() and x.requires_grad
-    )
-
-    if ret.requires_grad:
-        ret.fromvars = (x,)
-        ret.params = ()
-
-        def _fwbw_all_zero_backward(result:TN, i)->TN:
-            return zeros_like(result.fromvars[i])
-        ret.gradfuncs = (_fwbw_all_zero_backward,)
-    
-    return ret
 
 def attach_zero_grad_sources(self:TN, sources:tuple|list):
     """
