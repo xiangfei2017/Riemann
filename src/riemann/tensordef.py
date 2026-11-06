@@ -1490,7 +1490,7 @@ class TN:
         # index张量的维度必须与读取数据的源张量和写入数据的目的张量的维度相同
         # 用于gather函数时，self是源张量，用于scatter函数时，self是目的张量
         if index_data.ndim != self.ndim:
-            raise ValueError(f"Dimension mismatch between index and self: index has {index.ndim} dimensions, self has {self.ndim} dimensions")  # type: ignore
+            raise ValueError(f"Dimension mismatch between index and self: index has {index_data.ndim} dimensions, self has {self.ndim} dimensions")
         
         # 确保dim在有效范围内
         if dim >= len(target_shape) or dim < -len(target_shape):
@@ -1532,20 +1532,12 @@ class TN:
         """
         根据指定的 ​维度和​索引收集元素，
         常用于需要根据条件动态选择数据的场景（如交叉熵损失函数中选择正确类别的预测概率）
+        等价于模块级函数 riemann.gather(self, dim, index)
         :param dim: 收集维度（0 ≤ dim < self.ndim）
         :param index: 索引张量（dtype=int64）
         :return: 新TN实例，形状与index相同
         """
-        # 确保索引是int64类型
-        arrlib = self._get_array_lib()
-        index._array = index._array.astype(arrlib.int64)
-                
-        gather_indices_tuple = self._compute_to_direct_indices(dim, index._array)
-        result = self[gather_indices_tuple]
-        
-        # 无需设置自定义的梯度函数，__getitem__已经处理了反向传播
-        
-        return result
+        return gather(self, dim, index)
 
     def scatter(self, dim, index, src=None, *, value=None):
         """
@@ -1605,9 +1597,8 @@ class TN:
                 if not (isinstance(value, named_scalar_types) or is_numpy_scalar or is_TN_scalar):
                     raise TypeError(f"Named value must be a scalar (int, float, complex, numpy scalar, TN scalar), got {type(value).__name__}")
         
-        # 将index转换为TN张量（如果它不是）
-        if not isinstance(index, TN):
-            index = as_tensor(index, dtype=int64, device=dev)
+        # 统一将index转换为int64的TN张量（已是int64且同设备的TN会直接返回原对象）
+        index = as_tensor(index, dtype=int64, device=dev)
         
         # 确保dim是有效的维度
         if dim < 0:
@@ -1706,9 +1697,8 @@ class TN:
                 if not (isinstance(value, named_scalar_types) or is_numpy_scalar or is_TN_scalar):
                     raise TypeError(f"Named value must be a scalar (int, float, complex, numpy scalar, TN scalar), got {type(value).__name__}")
         
-        # 将index转换为TN张量（如果它不是）
-        if not isinstance(index, TN):
-            index = as_tensor(index, dtype = int64, device=dev)
+        # 统一将index转换为int64的TN张量（已是int64且同设备的TN会直接返回原对象）
+        index = as_tensor(index, dtype=int64, device=dev)
         
         # 确保dim是有效的维度
         if dim < 0:
@@ -1760,9 +1750,8 @@ class TN:
         """
         dev = self.device
         
-        # 将index转换为TN张量（如果它不是）
-        if not isinstance(index, TN):
-            index = as_tensor(index, dtype = int64, device=dev)
+        # 统一将index转换为int64的TN张量（已是int64且同设备的TN会直接返回原对象）
+        index = as_tensor(index, dtype=int64, device=dev)
         
         # 处理src为标量的情况        
         # src参数的类型检查：int、float、complex、numpy标量、TN标量
@@ -1815,9 +1804,8 @@ class TN:
         
         dev = self.device
         
-        # 将index转换为TN张量（如果它不是）
-        if not isinstance(index, TN):
-            index = as_tensor(index, dtype = int64, device=dev)
+        # 统一将index转换为int64的TN张量（已是int64且同设备的TN会直接返回原对象）
+        index = as_tensor(index, dtype=int64, device=dev)
         
         # 处理src为标量的情况        
         # src参数的类型检查：int、float、complex、numpy标量、TN标量
@@ -7412,6 +7400,66 @@ def _cumsum_backward(result_tensor: TN, i: int) -> TN:
     
     return input_grad
 
+
+def _validate_out_tensor(out, result: TN, inputs, name: str, label: str = "out", allow_grad: bool = False) -> None:
+    """校验单个 out 张量是否与计算结果兼容（语义对齐 torch 的 out= 参数）
+
+    参数:
+        out: 调用方传入的输出张量
+        result: 函数的计算结果
+        inputs: 参与本次计算的输入序列，用于判断是否需要梯度
+        name: 函数名，用于报错信息
+        label: out 的显示名称，多输出场景下形如 out[0]
+        allow_grad: 输入可带梯度时是否仍允许 out（仅 norm/cond 等 torch 支持的复合算子为 True）
+    """
+    if not isinstance(out, TN):
+        raise TypeError(f"{name}(): {label} must be a tensor of type TN, but got {type(out)}")
+
+    # out 自身需要梯度时无法安全地原地写入（与 torch 的叶节点原地操作限制一致）
+    if out.requires_grad:
+        if allow_grad:
+            raise RuntimeError("a leaf Variable that requires grad is being used in an in-place operation.")
+        raise RuntimeError(f"{name}(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
+
+    # 其余算子与 torch 一致：只要输入需要梯度就不支持 out= 形式
+    if not allow_grad and builtins.any(isinstance(t, TN) and t.requires_grad for t in inputs):
+        raise RuntimeError(f"{name}(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
+
+    if out.shape != result.shape:
+        raise RuntimeError(f"{name}(): {label} shape ({out.shape}) is incompatible with result shape ({result.shape})")
+    if out.dtype != result.dtype:
+        raise RuntimeError(f"Expected out tensor to have dtype {result.dtype}, but got {out.dtype} instead")
+    if out.device != result.device:
+        raise RuntimeError(f"Expected out tensor to have device {result.device}, but got {out.device} instead")
+
+
+def _apply_out(out, result: TN, inputs, name: str, allow_grad: bool = False) -> TN:
+    """校验 out 并把计算结果写入其中；out 为 None 时直接返回 result"""
+    if out is None:
+        return result
+    _validate_out_tensor(out, result, inputs, name, allow_grad=allow_grad)
+    if allow_grad and result.requires_grad:
+        # 与 torch 的 CopyBackwards 一致：通过原地拷贝把 out 接入计算图
+        out.copy_(result)
+    else:
+        result._get_array_lib().copyto(out._array, result._array)
+    return out
+
+
+def _apply_out_tuple(out, results: tuple, inputs, name: str) -> tuple:
+    """校验多输出场景的 out 元组并把结果写入其中；out 为 None 时原样返回 results"""
+    if out is None:
+        return results
+    if not isinstance(out, (tuple, list)) or len(out) != len(results):
+        raise TypeError(f"{name}(): out must be a tuple of {len(results)} tensors, but got {out}")
+    # 先整体校验，避免部分写入后才发现不合法
+    for i, (out_item, result_item) in enumerate(zip(out, results)):
+        _validate_out_tensor(out_item, result_item, inputs, name, label=f"out[{i}]")
+    for out_item, result_item in zip(out, results):
+        result_item._get_array_lib().copyto(out_item._array, result_item._array)
+    return tuple(out)
+
+
 def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN | None = None) -> TN:
     """
     对输入张量沿指定维度进行累积求和。
@@ -7441,10 +7489,6 @@ def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN 
     if not isinstance(input, TN):
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     
-    if out is not None:
-        if not isinstance(out, TN):
-            raise TypeError(f"Expected out type to be TN tensor or None, but received type: {type(out)}")
-    
     # 处理dtype参数 - 支持字符串格式或numpy dtype
     if dtype is None:
         result_dtype = input.dtype
@@ -7457,10 +7501,7 @@ def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN 
     if input.ndim == 0:
         # 0D标量的累积和就是它自身
         ret = input.type(result_dtype)
-        # 如果指定了输出张量，将结果写入其中
-        if out is not None:
-            out._array = ret._array
-        return ret
+        return _apply_out(out, ret, (input,), "cumsum")
 
     # 处理1D向量情况，验证dim参数的有效性
     if input.ndim == 1:
@@ -7471,10 +7512,6 @@ def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN 
     # 前向计算 - 使用numpy.cumsum
     result_data = input._array.cumsum(axis=dim, dtype=result_dtype)
     
-    # 如果指定了输出张量，将结果写入其中
-    if out is not None:
-        out._array = result_data
-    
     # 创建结果张量
     ret = _wrap_tensor_from_numpy(result_data, requires_grad=(is_grad_enabled() and input.requires_grad))
     
@@ -7484,7 +7521,7 @@ def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN 
         ret.parms = ((dim, result_dtype),)
         ret.gradfuncs = (_cumsum_backward,)
     
-    return ret
+    return _apply_out(out, ret, (input,), "cumsum")
 
 def _prod_backward(result_tensor:TN, i:int)->TN:
     dim, keepdims = result_tensor.parms[i]
@@ -7896,6 +7933,12 @@ def max(x:TN, dim:int|tuple|None=None, keepdim:bool=False, *, out=None):
     if x.is_complex():
         raise RuntimeError("max() does not support complex input")
 
+    # 规范化负维度：前向虽支持负轴，但反向的掩码重建需要非负维度
+    if isinstance(dim, int):
+        dim = dim + x.ndim if dim < 0 else dim
+    elif isinstance(dim, tuple):
+        dim = tuple(d + x.ndim if d < 0 else d for d in dim)
+
     arrlib = x._get_array_lib()
     # 计算最大值 - 利用numpy原生的axis=None行为
     values_arr = arrlib.max(x._array, axis=dim, keepdims=keepdim)
@@ -7926,16 +7969,22 @@ def max(x:TN, dim:int|tuple|None=None, keepdim:bool=False, *, out=None):
 
     # 根据dim是否为None决定返回类型
     if dim is None:
-        return values_tensor
+        return _apply_out(out, values_tensor, (x,), "max")
     else:
         if keepdim and isinstance(dim, int):
             indices_arr = arrlib.expand_dims(indices_arr, axis=dim)
         indices_tensor = _wrap_tensor_from_numpy(indices_arr)
-        return ReturnType_max(values_tensor, indices_tensor)
+        return _apply_out_tuple(out, ReturnType_max(values_tensor, indices_tensor), (x,), "max")
 
 def min(x:TN, dim:int|tuple|None=None, keepdim:bool=False, *, out=None):
     if x.is_complex():
         raise RuntimeError("min() does not support complex input")
+
+    # 规范化负维度：前向虽支持负轴，但反向的掩码重建需要非负维度
+    if isinstance(dim, int):
+        dim = dim + x.ndim if dim < 0 else dim
+    elif isinstance(dim, tuple):
+        dim = tuple(d + x.ndim if d < 0 else d for d in dim)
 
     arrlib = x._get_array_lib()
     # 计算最小值 - 利用numpy原生的axis=None行为
@@ -7967,12 +8016,12 @@ def min(x:TN, dim:int|tuple|None=None, keepdim:bool=False, *, out=None):
 
     # 根据dim是否为None决定返回类型
     if dim is None:
-        return values_tensor
+        return _apply_out(out, values_tensor, (x,), "min")
     else:
         if keepdim and isinstance(dim, int):
             indices_arr = arrlib.expand_dims(indices_arr, axis=dim)
         indices_tensor = _wrap_tensor_from_numpy(indices_arr)
-        return ReturnType_min(values_tensor, indices_tensor)
+        return _apply_out_tuple(out, ReturnType_min(values_tensor, indices_tensor), (x,), "min")
 
 def _var_backward(result_tensor:TN, i:int)->TN:
     dim,unbiased,keepdim = result_tensor.parms[i]     
@@ -9215,12 +9264,6 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
     if min is None and max is None:
         raise ValueError("clamp(): min or max must be specified")
     
-    # out 与自动微分互斥（须在构建计算图前拦截，与 PyTorch 一致）
-    if out is not None and (x.requires_grad or 
-                           (isinstance(min, TN) and min.requires_grad) or 
-                           (isinstance(max, TN) and max.requires_grad)):
-        raise RuntimeError("clamp(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-    
     # 标量与张量边界不可混用（与 PyTorch 的重载约束一致）
     min_is_tn = isinstance(min, TN)
     max_is_tn = isinstance(max, TN)
@@ -9257,16 +9300,8 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
             t_hi = (x == hi) & (lo < hi)
             y = where(t_hi, 0.5 * (x + hi), y)
 
-    # 若指定 out，直接把结果数据写入其中并返回（out 场景不支持自动微分）
-    if out is not None:
-        if not isinstance(out, TN):
-            raise TypeError(f"out must be a TN type, not {type(out)}")
-        if out.shape != y.shape:
-            raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible with result shape ({y.shape})")
-        out._array = y._array
-        return out
-
-    return y
+    # 若指定 out，把结果写入其中并返回（out 场景不支持自动微分）
+    return _apply_out(out, y, (x, min, max), "clamp")
 
 def _split_with_indices(input: TN, indices_or_sections, dim: int) -> tuple[TN, ...]:
     """
@@ -9523,10 +9558,6 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
         
     注意: 当使用out参数时，不支持自动微分
     """
-    # 检查out参数和梯度需求的冲突
-    if out is not None and input.requires_grad:
-        raise RuntimeError("sort(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-    
     # 确保dim在有效范围内
     if dim < -input.ndim or dim >= input.ndim:
         raise IndexError(f"Dimension out of range (expected to be in range of [-{input.ndim}, {input.ndim-1}], got {dim})")
@@ -9591,31 +9622,7 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
         sorted_values.gradfuncs = (_sort_backward,)
     
     # 处理out参数
-    if out is not None:
-        if not isinstance(out, tuple) or len(out) != 2:
-            raise TypeError("out must be a tuple of two tensors")
-        
-        values_out, indices_out = out
-        
-        # 检查out参数类型
-        if not isinstance(values_out, TN) or not isinstance(indices_out, TN):
-            raise TypeError("out tensors must be of type TN")
-        
-        # 检查形状兼容性
-        if values_out.shape != sorted_values.shape:
-            raise RuntimeError(f"out values tensor shape ({values_out.shape}) is incompatible with result shape ({sorted_values.shape})")
-        if indices_out.shape != sorted_indices_tensor.shape:
-            raise RuntimeError(f"out indices tensor shape ({indices_out.shape}) is incompatible with result shape ({sorted_indices_tensor.shape})")
-        
-        # 复制数据到out参数
-        arrlib.copyto(values_out._array, sorted_values._array)
-        arrlib.copyto(indices_out._array, sorted_indices_tensor._array)
-        
-        # 使用out参数时不设置梯度跟踪
-        return (values_out, indices_out)
-    
-    # 返回排序结果
-    return (sorted_values, sorted_indices_tensor)
+    return _apply_out_tuple(out, (sorted_values, sorted_indices_tensor), (input,), "sort")
 
 def argsort(input: TN, dim: int = -1, descending: bool = False, stable: bool = False, *, out = None) -> TN:
     """    
@@ -9633,9 +9640,6 @@ def argsort(input: TN, dim: int = -1, descending: bool = False, stable: bool = F
         
     注意: 当使用out参数时，不支持自动微分
     """
-    if out is not None and input.requires_grad:
-        raise RuntimeError("argsort(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-    
     if dim < -input.ndim or dim >= input.ndim:
         raise IndexError(f"Dimension out of range (expected to be in range of [-{input.ndim}, {input.ndim-1}], got {dim})")
     
@@ -9661,15 +9665,33 @@ def argsort(input: TN, dim: int = -1, descending: bool = False, stable: bool = F
     
     sorted_indices_tensor = _wrap_tensor_from_numpy(sorted_indices, requires_grad=False)
     
-    if out is not None:
-        if not isinstance(out, TN):
-            raise TypeError("out must be a tensor of type TN")
-        if out.shape != sorted_indices_tensor.shape:
-            raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible with result shape ({sorted_indices_tensor.shape})")
-        arrlib.copyto(out._array, sorted_indices_tensor._array)
-        return out
-    
-    return sorted_indices_tensor
+    return _apply_out(out, sorted_indices_tensor, (input,), "argsort")
+
+def gather(input: TN, dim: int, index: TN, *, sparse_grad: bool = False, out = None) -> TN:
+    """
+    沿指定维度收集元素，与 torch.gather 语义一致
+
+    参数:
+        input: 源张量
+        dim: 收集维度，支持负维度
+        index: 索引张量，维数须与 input 相同，dtype 会被规范化为 int64
+        sparse_grad: 是否产生稀疏梯度；Riemann 暂不支持，仅允许 False
+        out: 可选的输出张量，形状须与结果一致
+
+    返回:
+        形状与 index 相同的新张量
+
+    注意: 当使用out参数时，不支持自动微分
+    """
+    if sparse_grad:
+        raise NotImplementedError("gather(): sparse_grad=True is not supported")
+
+    arrlib = input._get_array_lib()
+    index_data = index._array.astype(arrlib.int64)
+    result = input[input._compute_to_direct_indices(dim, index_data)]
+
+    return _apply_out(out, result, (input,), "gather")
+
 
 def stack(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
     """沿新维度堆叠张量"""
@@ -12529,11 +12551,7 @@ def kron(input: TN, other: TN, *, out: TN | None = None) -> TN:
         result_shape = tuple(input_shape[i] * other_shape[i] for i in range(ndim))
         result = outer.reshape(result_shape)
     
-    if out is not None:
-        out._array = result._array
-        return out
-    
-    return result
+    return _apply_out(out, result, (input, other), "kron")
 
 
 def _topk_backward(result_tensor: TN, i: int) -> TN:
@@ -12628,11 +12646,6 @@ def topk(input: TN, k: int, dim: int = -1, largest: bool = True, sorted: bool = 
     if k < 0 or k > dim_size:
         raise RuntimeError(f"selected index k out of range, k should be in [0, {dim_size}] but got {k}")
 
-    # out参数和梯度需求冲突检查
-    if out is not None and input.requires_grad:
-        raise RuntimeError("topk(): functions with out=... arguments don't support automatic "
-                           "differentiation, but one of the arguments requires grad.")
-
     arrlib = input._get_array_lib()
     data = input._array
 
@@ -12690,25 +12703,7 @@ def topk(input: TN, k: int, dim: int = -1, largest: bool = True, sorted: bool = 
         values_tensor.gradfuncs = (_topk_backward,)
 
     # 处理out参数
-    if out is not None:
-        if not isinstance(out, tuple) or len(out) != 2:
-            raise TypeError("out must be a tuple of two tensors")
-
-        values_out, indices_out = out
-        if not isinstance(values_out, TN) or not isinstance(indices_out, TN):
-            raise TypeError("out tensors must be of type TN")
-        if values_out.shape != values_tensor.shape:
-            raise RuntimeError(f"out values tensor shape ({values_out.shape}) is incompatible "
-                               f"with result shape ({values_tensor.shape})")
-        if indices_out.shape != indices_tensor.shape:
-            raise RuntimeError(f"out indices tensor shape ({indices_out.shape}) is incompatible "
-                               f"with result shape ({indices_tensor.shape})")
-
-        arrlib.copyto(values_out._array, values_tensor._array)
-        arrlib.copyto(indices_out._array, indices_tensor._array)
-        return (values_out, indices_out)
-
-    return (values_tensor, indices_tensor)
+    return _apply_out_tuple(out, (values_tensor, indices_tensor), (input,), "topk")
 
 
 def multinomial(input: TN, num_samples: int, replacement: bool = False, *, generator=None, out: TN|None = None) -> TN:
@@ -12830,13 +12825,4 @@ def multinomial(input: TN, num_samples: int, replacement: bool = False, *, gener
     result = as_tensor(samples_arr, device=input.device, requires_grad=False)
 
     # 处理out参数
-    if out is not None:
-        if not isinstance(out, TN):
-            raise TypeError("out must be a tensor of type TN")
-        if out.shape != result.shape:
-            raise RuntimeError(f"out tensor shape ({out.shape}) is incompatible "
-                               f"with result shape ({result.shape})")
-        arrlib.copyto(out._array, result._array)
-        return out
-
-    return result
+    return _apply_out(out, result, (input,), "multinomial")

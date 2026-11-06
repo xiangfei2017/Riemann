@@ -2641,335 +2641,548 @@ In addition to `with` statements, Riemann also provides gradient context managem
 Indexing Operations
 -------------------
 
-Riemann supports various tensor indexing operations for accessing array elements or slices. Here are the common indexing methods:
+Indexing operations fall into two categories: reading by index (``x[idx]``) and writing by index (the ``setat``/``scatter`` function families as well as the ``x[idx] = val`` syntax). This section covers "Reading by Index", "Writing by Index" and "Summary of Indexing Functions"; both reading and writing support automatic differentiation.
 
-**1. Integer Indexing**
+.. _index-read:
 
-Integer indexing is used to access a single element at a specific position in the tensor. For multi-dimensional tensors, multiple integer indices can be used separated by commas.
+Reading by Index
+~~~~~~~~~~~~~~~~
 
-.. code-block:: python
+Read operations are implemented by ``TN.__getitem__`` and accept the same index expressions as NumPy.
 
-    import riemann as rm
+**1. Integer and Negative Integer Indexing**
 
-    # Create tensor
-    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
-
-    # Integer indexing
-    print("x[0, 0]:", x[0, 0])  # Get element at first row, first column
-    print("x[1, 2]:", x[1, 2])  # Get element at second row, third column
-
-**2. Negative Integer Indexing**
-
-Negative integer indexing counts from the end of the tensor, where -1 represents the last element, -2 represents the second last element, and so on.
+Integer indexing accesses the element at a specific position; for multi-dimensional tensors, multiple integer indices are separated by commas. Integer indexing reduces the number of dimensions by one (using integers for every dimension yields a 0-d scalar tensor). Negative indices count from the end, where ``-1`` denotes the last element.
 
 .. code-block:: python
 
     import riemann as rm
 
-    # Create tensor
     x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
 
-    # Negative integer indexing
-    print("x[-1, -1]:", x[-1, -1])  # Get element at last row, last column
-    print("x[-2, -3]:", x[-2, -3])  # Get element at second last row, third last column
+    print(x[0, 0])    # tensor(1): a 0-d tensor
+    print(x[1, 2])    # tensor(6)
+    print(x[-1, -1])  # tensor(9): last row, last column
+    print(x[-2, -3])  # tensor(4)
+    print(x[0])       # tensor([1, 2, 3]): one dimension removed
 
-**3. Slice Indexing**
+**2. Slice Indexing**
 
-Slice indexing is used to access contiguous segments of the tensor, using colons (:) to represent ranges. The format is `start:end:step`, where start is the starting index, end is the ending index (exclusive), and step is the step size.
+Slices use the ``start:end:step`` form, where ``end`` is exclusive and ``step`` may be negative:
 
 .. code-block:: python
 
-    import riemann as rm
-
-    # Create tensor
     x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
 
-    # Slice indexing
-    print("x[:, 0]:", x[:, 0])  # Get first column of all rows
-    print("x[0, :]:", x[0, :])  # Get all columns of first row
-    print("x[1:, 1:]:", x[1:, 1:])  # Get sub-tensor starting from second row and second column
-    print("x[::2, ::2]:", x[::2, ::2])  # Get elements at every other row and column
+    print(x[:, 0])      # tensor([1, 4, 7]): column 0 of every row
+    print(x[1:, 1:])    # tensor([[5, 6], [8, 9]])
+    print(x[::2, ::2])  # tensor([[1, 3], [7, 9]]): every other row and column
+    print(x[::-1])      # rows in reverse order
 
-**4. Integer Array Indexing**
+**3. Integer Array Indexing**
 
-Integer array indexing is used to access elements at positions specified by an integer array, returning a tensor with the same shape as the index array.
+Integer arrays (``TN`` or integer-typed ``numpy.ndarray``) follow NumPy's fancy indexing rules: multiple index arrays are combined by broadcasting, and the result shape is the broadcast shape of the index arrays.
 
 .. code-block:: python
 
-    import riemann as rm
-
-    # Create tensor
     x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
 
-    # Integer array indexing
-    indices = rm.tensor([0, 1, 2])
-    print("x[indices, indices]:", x[indices, indices])  # Get diagonal elements
+    idx = rm.tensor([0, 1, 2])
+    print(x[idx, idx])            # tensor([1, 5, 9]): diagonal elements
+    print(x[rm.tensor([2, 0])])   # tensor([[7, 8, 9], [1, 2, 3]]): reorder rows
 
-**5. Boolean Indexing**
+**4. Boolean Indexing**
 
-Boolean indexing is used to access elements that satisfy conditions specified by a boolean array, returning a 1D tensor of elements that meet the conditions.
+Boolean indexing uses a boolean tensor with the same shape as a mask and returns a 1-D tensor holding the elements that satisfy the condition:
 
 .. code-block:: python
 
-    import riemann as rm
-
-    # Create tensor
     x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
 
-    # Boolean indexing
     mask = x > 5
-    print("mask:", mask)
-    print("x[mask]:", x[mask])  # Get elements greater than 5
+    print(mask)
+    print(x[mask])  # tensor([6, 7, 8, 9]): returns a 1-D tensor
 
-**6. Mixed Indexing**
+**5. Mixed Indexing**
 
-Mixed indexing refers to using multiple indexing methods in the same indexing expression, such as using both integer indexing and slice indexing.
+A single index expression may combine integers, slices, integer arrays, boolean masks and the ellipsis ``...``:
+
+.. code-block:: python
+
+    y = rm.tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
+
+    print(y[0, 1:])      # tensor([[3, 4]]): second row of block 0
+    print(y[..., 0])     # tensor([[1, 3], [5, 7]]): column 0 of every matrix
+    print(y[0, [1, 0]])  # tensor([[3, 4], [1, 2]]): reorder rows inside block 0
+
+**Views and Copies**
+
+An indexing result is either a view of the original tensor (sharing the underlying data) or a copy (holding freshly copied data). The rules match NumPy:
+
+.. list-table:: Index Forms and Result Type
+  :widths: 26 32 25 17
+  :header-rows: 1
+
+  * - Index form
+    - Example
+    - Result shape
+    - View/Copy
+  * - Integer, slice, ellipsis (basic indexing)
+    - ``x[0]``, ``x[1:3]``, ``x[..., 0]``
+    - Dimensions indexed by integers are removed
+    - View
+  * - Integer array
+    - ``x[[0, 2]]``, ``x[idx]``
+    - Broadcast shape of the index arrays
+    - Copy
+  * - Boolean mask
+    - ``x[mask]``
+    - 1-D (number of matching elements)
+    - Copy
+  * - Mixed indexing
+    - ``x[0, [1, 0]]``
+    - Follows NumPy rules
+    - Copy if integer arrays or boolean masks are involved, otherwise a view
+
+The difference between a view and a copy is whether the underlying data is shared: when the original tensor is modified, a view changes accordingly while a copy does not.
+
+.. code-block:: python
+
+    x = rm.tensor([[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]])
+
+    y = x[0:2]     # slice: view
+    z = x[[0, 2]]  # integer array: copy
+
+    x.setat_((0, 0), 99.)   # modify the original tensor in place
+
+    print(y)  # tensor([[99., 2., 3.], [4., 5., 6.]]): the view follows
+    print(z)  # tensor([[1., 2., 3.], [7., 8., 9.]]): the copy is unaffected
+
+The internal flag ``_is_view`` on the result records whether it is a view (``True``) or a copy (``False``), and ``_base`` points to the original tensor that produced it.
+
+Practical advice:
+
+- Prefer slices (views) for read-only access to avoid the extra memory and time cost of copying large tensors;
+- Use integer-array or boolean indexing, or call ``clone()``/``copy()`` explicitly, when you need independent data;
+- Writing in place through a view also modifies the original tensor, so confirm that this is the intended behavior.
+
+**Gathering Along a Dimension: gather**
+
+``gather`` is the function form of "reading by index" and matches the semantics of ``torch.gather``: along the given dimension ``dim``, elements are selected position by position with an ``index`` of the same shape as the output.
+
+Riemann provides two equivalent spellings:
+
+.. code-block:: python
+
+    riemann.gather(input, dim, index)   # module-level function
+    input.gather(dim, index)            # TN method
+
+**Parameters**
+
+- ``input``: source tensor (``riemann.TN``) to read from;
+- ``dim``: dimension to gather along, negative values are accepted (``-1`` means the last dimension);
+- ``index``: index tensor (``riemann.TN``) whose number of dimensions must equal that of ``input``; dtypes other than int64 are converted to int64 automatically; the result has exactly the shape of ``index``;
+- ``sparse_grad``: whether to produce a sparse gradient; only ``False`` is supported in the current version, ``True`` raises ``NotImplementedError``;
+- ``out``: optional output tensor whose shape, dtype and device must match the result; only the module-level ``riemann.gather`` provides it, and automatic differentiation is not supported when ``out`` is used.
+
+**Behavior**
+
+For every position ``(i0, ..., i(n-1))`` in the output, the value is:
+
+``out[i0, ..., i(n-1)] = input[i0, ..., index[i0, ..., i(n-1)], ..., i(n-1)]``
+
+where the ``dim``-th subscript is given by the value of ``index`` at that position and all other subscripts coincide with the output position. This implies the following constraints:
+
+- values of ``index`` along ``dim`` must lie in ``[0, input.shape[dim])``, otherwise ``IndexError`` is raised;
+- for dimensions other than ``dim``, the shape of ``index`` must not exceed the corresponding size of ``input``, otherwise out-of-range indexing raises an error;
+- the number of dimensions of ``index`` and ``input`` must be equal, otherwise ``ValueError`` is raised;
+- the result is a copy and does not share memory with ``input``.
+
+.. code-block:: python
+
+    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    index = rm.tensor([[0, 1], [1, 2]], dtype=rm.int64)
+
+    print(input.gather(0, index))
+    # tensor([[1, 5],
+    #         [4, 8]])
+
+    print(rm.gather(input, 1, index))
+    # tensor([[1, 2],
+    #         [5, 6]])
+
+**Use cases**
+
+- picking the predicted values of target classes in cross-entropy and negative log-likelihood losses;
+- selecting or reordering elements by a predefined order during sequence decoding;
+- assembling outputs from sampled or sorted indices.
+
+**Gradients of gather**
+
+``gather`` is fully differentiable: during backpropagation the upstream gradient is scattered back to the corresponding positions of ``input``; positions that were not selected receive a zero gradient, and a position selected multiple times accumulates gradients.
+
+.. code-block:: python
+
+    input = rm.tensor([[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]], requires_grad=True)
+    index = rm.tensor([[0, 1], [1, 2]], dtype=rm.int64)
+
+    out = rm.gather(input, 1, index)
+    out.sum().backward()
+
+    print(input.grad)
+    # tensor([[1., 1., 0.],
+    #         [0., 1., 1.],
+    #         [0., 0., 0.]])
+
+**Gradient Tracking for Index Reads**
+
+The result of ``x[idx]`` can take part in automatic differentiation whether it is a view or a copy. During backpropagation the gradient is scattered back to the corresponding positions of the original tensor: positions that were not indexed receive a zero gradient, and positions indexed repeatedly accumulate gradients. Being a view or a copy only affects memory sharing, not the correctness of gradient propagation.
 
 .. code-block:: python
 
     import riemann as rm
 
-    # Create tensor
-    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
+    # Integer array indexing: copy
+    a = rm.tensor([1., 2., 3.], requires_grad=True)
+    b = a[[0, 2]]
+    (b * b).sum().backward()
+    print(a.grad)   # tensor([2., 0., 6.]): only the selected positions have gradients
 
-    # Mixed indexing
-    print("x[0, 1:]:", x[0, 1:])  # Get elements from second column onwards in first row
-    print("x[1:, 0]:", x[1:, 0])  # Get elements from first column in second row and onwards
+    # Repeated index: gradients accumulate
+    a = rm.tensor([1., 2., 3.], requires_grad=True)
+    b = a[[1, 1]]
+    (b * b).sum().backward()
+    print(a.grad)   # tensor([0., 8., 0.])
 
-**7. Indexing-Related Functions**
+    # Slice indexing: view
+    a = rm.tensor([[1., 2., 3.], [4., 5., 6.]], requires_grad=True)
+    b = a[:, 1]
+    (b * 2).sum().backward()
+    print(a.grad)
+    # tensor([[0., 2., 0.],
+    #         [0., 2., 0.]])
 
-Riemann provides several indexing-related functions for gathering or scattering data by indices:
+    # Boolean mask: copy
+    a = rm.tensor([[1., 2., 3.], [4., 5., 6.]], requires_grad=True)
+    b = a[a > 3]
+    (b * 10).sum().backward()
+    print(a.grad)
+    # tensor([[ 0.,  0.,  0.],
+    #         [10., 10., 10.]])
 
-.. list-table:: Indexing-Related Functions
-  :widths: 15 45 40
+Writing by Index
+~~~~~~~~~~~~~~~~
+
+Write operations are grouped by how the target positions are specified. Every function comes in a non-in-place form and an in-place form (suffixed with ``_``): the non-in-place version returns a new tensor and leaves the original untouched, whereas the in-place version modifies the tensor itself and returns ``self``.
+
+- the ``setat`` family: positions are given by NumPy-style index expressions, matching the ``x[idx] = val`` syntax;
+- the ``scatter`` family: positions are given by ``dim`` + ``index``, matching ``torch.scatter``/``torch.scatter_add`` semantics.
+
+**1. The setat Family**
+
+.. list-table:: Functions in the setat Family
+  :widths: 18 30 16 36
   :header-rows: 1
 
   * - Function
-    - Description
-    - Example
-  * - ``gather``
-    - Gather data by indices
-    - ``input.gather(dim, index)``
-  * - ``scatter``
-    - Scatter data by indices (non-in-place)
-    - ``input.scatter(dim, index, src)``
-  * - ``scatter_``
-    - Scatter data by indices (in-place)
-    - ``input.scatter_(dim, index, src)``
-  * - ``scatter_add``
-    - Scatter and accumulate data by indices (non-in-place)
-    - ``input.scatter_add(dim, index, src)``
-  * - ``scatter_add_``
-    - Scatter and accumulate data by indices (in-place)
-    - ``input.scatter_add_(dim, index, src)``
+    - Semantics
+    - In-place version
+    - Equivalent syntax
   * - ``setat``
-    - Set values at specified indices (non-in-place)
-    - ``rm.setat(input, indices, value)``
-  * - ``setat_``
-    - Set values at specified indices (in-place)
-    - ``input.setat_(indices, value)``
+    - Set the given positions to a value
+    - ``setat_``
+    - ``x[idx] = val``
   * - ``addat``
-    - Add values at specified indices (non-in-place)
-    - ``input.addat(indices, value)``
-  * - ``addat_``
-    - Add values at specified indices (in-place)
-    - ``input.addat_(indices, value)``
+    - Add a value at the given positions
+    - ``addat_``
+    - ``x[idx] += val``
   * - ``subat``
-    - Subtract values at specified indices (non-in-place)
-    - ``input.subat(indices, value)``
-  * - ``subat_``
-    - Subtract values at specified indices (in-place)
-    - ``input.subat_(indices, value)``
+    - Subtract a value at the given positions
+    - ``subat_``
+    - ``x[idx] -= val``
   * - ``mulat``
-    - Multiply values at specified indices (non-in-place)
-    - ``input.mulat(indices, value)``
-  * - ``mulat_``
-    - Multiply values at specified indices (in-place)
-    - ``input.mulat_(indices, value)``
+    - Multiply the given positions by a value
+    - ``mulat_``
+    - ``x[idx] *= val``
   * - ``divat``
-    - Divide values at specified indices (non-in-place)
-    - ``input.divat(indices, value)``
-  * - ``divat_``
-    - Divide values at specified indices (in-place)
-    - ``input.divat_(indices, value)``
+    - Divide the given positions by a value
+    - ``divat_``
+    - ``x[idx] /= val``
   * - ``powat``
-    - Raise values at specified indices to power (non-in-place)
-    - ``input.powat(indices, value)``
-  * - ``powat_``
-    - Raise values at specified indices to power (in-place)
-    - ``input.powat_(indices, value)``
+    - Raise the given positions to a power
+    - ``powat_``
+    - ``x[idx] **= val``
 
-**gather Function Example**
+**Parameters**
 
-The ``gather`` function is used to gather data from the specified dimension of the input tensor by indices.
+- ``indices``: NumPy-style index expression supporting integers, slices, integer arrays, boolean masks and tuples thereof, with exactly the same rules as "Reading by Index";
+- ``val``: right-hand value, which may be a scalar, a ``riemann.TN`` or an object convertible to ``TN``; its shape must match the selected region (NumPy broadcasting applies when possible).
 
-.. code-block:: python
+**Behavior**
 
-    import riemann as rm
-
-    # Create input tensor
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("input:", input)
-
-    # Define indices
-    index = rm.tensor([[0, 1], [1, 2]])
-    print("index:", index)
-
-    # Gather data along dimension 0
-    output = input.gather(0, index)
-    print("gather along dim 0:", output)
-
-    # Gather data along dimension 1
-    output = input.gather(1, index)
-    print("gather along dim 1:", output)
-
-**scatter Function Example**
-
-The ``scatter`` function is used to scatter data from the source tensor to the specified dimension of the target tensor by indices.
+- ``setat`` follows overwrite semantics: when the same position is written multiple times, the last write wins;
+- ``addat`` follows ``numpy.add.at`` semantics: repeated writes to the same position accumulate, which makes it the natural choice for duplicate indices; ``subat``/``mulat``/``divat``/``powat`` behave likewise, applying the corresponding operation to the target position each time.
 
 .. code-block:: python
 
     import riemann as rm
 
-    # Create target tensor
-    input = rm.tensor([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
-    print("input:", input)
+    x = rm.tensor([[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]])
 
-    # Define indices and source tensor
-    index = rm.tensor([[0, 1], [1, 2]])
-    src = rm.tensor([[10, 20], [30, 40]])
-    print("index:", index)
-    print("src:", src)
+    # Single position: setat returns a new tensor, x itself is unchanged
+    print(x.setat((0, 1), 99.))
+    # tensor([[ 1., 99.,  3.],
+    #         [ 4.,  5.,  6.],
+    #         [ 7.,  8.,  9.]])
 
-    # Scatter data along dimension 0 (non-in-place)
-    output = input.scatter(0, index, src)
-    print("scatter along dim 0:", output)
+    # Slice region: set rows 0~1 and columns 1~2 to zero
+    print(x.setat((slice(0, 2), slice(1, 3)), rm.zeros((2, 2))))
+    # tensor([[1., 0., 0.],
+    #         [4., 0., 0.],
+    #         [7., 8., 9.]])
 
-    # Scatter data along dimension 1 (non-in-place)
-    output = input.scatter(1, index, src)
-    print("scatter along dim 1:", output)
+    # Duplicate indices: setat overwrites while addat accumulates
+    b = rm.tensor([1., 2., 3.])
+    print(b.setat([1, 1], rm.tensor([10., 20.])))  # tensor([ 1., 20.,  3.])
+    print(b.addat([1, 1], rm.tensor([10., 20.])))  # tensor([ 1., 32.,  3.])
 
-**scatter_ Function Example**
+**Use cases**
 
-``scatter_`` is the in-place version of ``scatter``, which directly modifies the input tensor.
+- updating a small number of positions, such as masked assignment, padding or writing fixed constants;
+- accumulating statistics with duplicate indices (``addat``), for example projecting several samples onto the same position;
+- for tidier "write by category" scenarios, prefer the ``scatter`` family below.
 
-.. code-block:: python
+**2. The scatter Family**
 
-    import riemann as rm
+The ``scatter`` family describes the target positions by ``dim`` + ``index``, matching PyTorch's ``torch.Tensor.scatter``/``scatter_add`` and fitting batch writes by category or by position.
 
-    # Create target tensor
-    input = rm.tensor([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
-    print("input:", input)
+.. list-table:: Functions in the scatter Family
+  :widths: 22 36 14 28
+  :header-rows: 1
 
-    # Define indices and source tensor
-    index = rm.tensor([[0, 1], [1, 2]])
-    src = rm.tensor([[10, 20], [30, 40]])
-    print("index:", index)
-    print("src:", src)
+  * - Function
+    - Semantics
+    - In-place version
+    - Duplicate indices
+  * - ``scatter``
+    - Write src (or value) along dim according to index
+    - ``scatter_``
+    - Last write wins
+  * - ``scatter_add``
+    - Add src along dim according to index
+    - ``scatter_add_``
+    - Accumulate
 
-    # Scatter data along dimension 1 (in-place)
-    input.scatter_(1, index, src)
-    print("after scatter_ along dim 1:", input)
+**Parameters**
 
-**scatter_add Function Example**
+- ``dim``: dimension to scatter along, negative values are accepted;
+- ``index``: index tensor (``riemann.TN``) whose dtype is normalized to int64; **its number of dimensions must equal that of ``self``**; its shape determines the region actually written;
+- ``src``: source data, either a scalar or a ``TN`` with the same shape as ``index``; its dtype must equal that of ``self``, otherwise ``RuntimeError`` is raised; mutually exclusive with ``value`` (``scatter_add``/``scatter_add_`` only accept ``src`` and have no ``value``);
+- ``value``: a scalar (int/float/complex or a NumPy scalar; a 0-d ``TN`` is also accepted when passed as a keyword argument), mutually exclusive with ``src``; internally a source tensor of the same shape as ``index`` filled with ``value`` is created. A scalar may also be passed as the third positional argument, in which case it is treated as ``value``; the positional form only accepts int/float/complex and NumPy scalars;
+- returns: ``scatter``/``scatter_add`` return a new tensor with the same shape as ``self``, while ``scatter_``/``scatter_add_`` return ``self``.
 
-The ``scatter_add`` function is used to scatter and accumulate data from the source tensor to the specified dimension of the target tensor by indices.
+**Behavior**
 
-.. code-block:: python
+Each position ``i`` of ``index`` corresponds to one write. The target position is determined by two parts: the subscript along ``dim`` is taken from ``index[i]``, while the subscripts of the remaining dimensions are the coordinates of ``i`` itself, that is:
 
-    import riemann as rm
+``self[..., index[i] at dim, ...] op= src[i]``
 
-    # Create target tensor
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("input:", input)
-
-    # Define indices and source tensor
-    index = rm.tensor([[0, 1], [1, 2]])
-    src = rm.tensor([[10, 20], [30, 40]])
-    print("index:", index)
-    print("src:", src)
-
-    # Scatter and accumulate data along dimension 1 (non-in-place)
-    output = input.scatter_add(1, index, src)
-    print("scatter_add along dim 1:", output)
-
-**scatter_add_ Function Example**
-
-``scatter_add_`` is the in-place version of ``scatter_add``, which directly modifies the input tensor.
-
-.. code-block:: python
-
-    import riemann as rm
-
-    # Create target tensor
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("input:", input)
-
-    # Define indices and source tensor
-    index = rm.tensor([[0, 1], [1, 2]])
-    src = rm.tensor([[10, 20], [30, 40]])
-    print("index:", index)
-    print("src:", src)
-
-    # Scatter and accumulate data along dimension 1 (in-place)
-    input.scatter_add_(1, index, src)
-    print("after scatter_add_ along dim 1:", input)
-
-**setat and setat_ Function Examples**
-
-The ``setat`` function is used to set values at specified indices (non-in-place), while ``setat_`` is the in-place version.
+- values of ``index`` along ``dim`` must lie in ``[0, self.shape[dim])``, otherwise ``IndexError`` is raised;
+- the shape of ``index`` may be smaller than that of ``self``, in which case only the region covered by ``index`` is written and the rest keeps its original values;
+- ``scatter`` overwrites, so multiple writes to the same target let the last write win, whereas ``scatter_add`` accumulates;
+- internally the implementation converts indirect indices into direct indices and then calls ``setat``/``addat``, so all rules of the ``setat`` family apply to ``scatter`` as well.
 
 .. code-block:: python
 
     import riemann as rm
 
-    # Create input tensor
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("input:", input)
+    base = rm.tensor([[0., 0., 0.], [0., 0., 0.], [0., 0., 0.]])
+    index = rm.tensor([[0, 1], [1, 2]], dtype=rm.int64)
+    src = rm.tensor([[10., 20.], [30., 40.]])
 
-    # 1. Using setat (non-in-place)
-    print("\n1. Using setat (non-in-place):")
-    # Set values at specified indices
-    indices = (0, 1)  # Row 0, column 1
-    value = 99
-    output = input.setat(indices, value)
-    print("setat result:", output)
-    print("original input unchanged:", input)
+    # dim=0: the row number comes from index, the column number is the current coordinate
+    print(base.scatter(0, index, src))
+    # tensor([[10.,  0.,  0.],
+    #         [30., 20.,  0.],
+    #         [ 0., 40.,  0.]])
 
-    # 2. Using setat_ (in-place)
-    print("\n2. Using setat_ (in-place):")
-    # Set values at specified indices
-    indices = (1, 2)  # Row 1, column 2
-    value = 88
-    input.setat_(indices, value)
-    print("after setat_:", input)
+    # dim=1: the column number comes from index, the row number is the current coordinate
+    print(base.scatter(1, index, src))
+    # tensor([[10., 20.,  0.],
+    #         [ 0., 30., 40.],
+    #         [ 0.,  0.,  0.]])
 
-    # 3. Using setat with multiple indices
-    print("\n3. Using setat with multiple indices:")
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    indices = [[0, 0], [2, 2]]  # (0,0) and (2,2)
-    value = 100
-    output = input.setat(indices, value)
-    print("setat with multiple indices:", output)
+    # Use the value parameter instead of src
+    print(base.scatter(1, index, value=5.))
+    # tensor([[5., 5., 0.],
+    #         [0., 5., 5.],
+    #         [0., 0., 0.]])
 
-**Indexing Operation Notes**
+    # In-place version: modifies base directly
+    base.scatter_(1, index, src)
+    print(base)
+    # tensor([[10., 20.,  0.],
+    #         [ 0., 30., 40.],
+    #         [ 0.,  0.,  0.]])
 
-1. **Index Out of Bounds**：Using indices beyond the tensor range will result in an error.
-2. **Memory Layout**：Different indexing methods may affect the memory layout of the returned tensor. Some indexing operations may return a view of the original tensor instead of a copy.
-3. **Gradient Tracking**：For tensors requiring gradient tracking, some indexing operations may affect gradient calculation, especially in-place operations.
-4. **Performance Considerations**：For large tensors, integer array indexing and boolean indexing may be slower than slice indexing because they create new tensor copies.
-5. **gather/scatter Function Parameters**：
+.. code-block:: python
 
-   - ``dim``：Specifies the dimension of the operation
-   - ``index``：Specifies the index positions
-   - ``src``：Specifies the source data (only for scatter-related functions)
-   - For in-place operations (functions with underscores), ensure the input tensor is not a leaf node, otherwise an error will occur.
+    # scatter_add: accumulates on duplicate indices, useful for statistics/aggregation
+    base = rm.tensor([[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]])
+    print(base.scatter_add(1, index, src))
+    # tensor([[11., 22.,  3.],
+    #         [ 4., 35., 46.],
+    #         [ 7.,  8.,  9.]])
+
+**Use cases**
+
+- building one-hot encodings or writing labels and weights back by class index;
+- rebuilding vocabularies/embeddings by writing batch vectors back into a global table;
+- message aggregation in graph neural networks and attention pooling, where ``scatter_add`` sums several sources targeting the same position.
+
+**3. In-place Assignment Syntax and Limits**
+
+``x[idx] = val``, ``x[idx] += val`` and similar syntax are equivalent to the corresponding ``setat_``/``addat_`` series and count as in-place writes, which come with two limits:
+
+- in-place writes on a leaf tensor with ``requires_grad=True`` raise ``RuntimeError`` because they would corrupt the computation graph; call ``clone()`` first to obtain a non-leaf tensor;
+- in-place writes do not create new graph nodes, so switch to the non-in-place versions (``setat``/``scatter`` and so on) when exact gradients are required afterwards.
+
+.. code-block:: python
+
+    x0 = rm.tensor([1., 2., 3.], requires_grad=True)
+    x = x0.clone()      # non-leaf tensor, in-place writes are allowed
+
+    x[1] = 10.          # equivalent to x.setat_(1, 10.)
+    print(x)            # tensor([ 1., 10.,  3.], requires_grad=True)
+    print(x0)           # tensor([1., 2., 3.], requires_grad=True): x0 is untouched
+
+**Gradient Tracking for Index Writes**
+
+The non-in-place writers (``setat``, ``addat``, ``subat``, ``mulat``, ``divat``, ``powat``, ``scatter``, ``scatter_add``) all support automatic differentiation; they behave like "read + compute + write back", so gradients flow to both the written tensor and the right-hand value:
+
+- for the **written tensor**: positions overwritten by ``setat``/``scatter`` no longer contribute to the forward result, hence their gradients are zero while untouched positions keep the upstream gradient; ``addat``/``scatter_add`` keep the original values in the computation, so every position keeps its gradient;
+- for the **right-hand value** (``val`` or ``src``): each written element receives the upstream gradient of its position; with ``addat``/``scatter_add`` repeated writes to the same position accumulate gradients.
+
+Note the duplicate-index subtlety of ``setat``: the forward pass keeps only the last written value, while the backward pass sends gradients back to every duplicated right-hand element, so the two are inconsistent. Use ``addat``/``scatter_add`` whenever duplicate indices are possible.
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # setat: overwritten positions get zero gradient, the value gets one gradient per write
+    base = rm.tensor([[1., 2.], [3., 4.]], requires_grad=True)
+    val = rm.tensor([10., 20.], requires_grad=True)
+    out = base.setat(([0, 1], [0, 1]), val)   # writes (0,0) and (1,1)
+    (out * 2).sum().backward()
+    print(base.grad)
+    # tensor([[0., 2.],
+    #         [2., 0.]])
+    print(val.grad)   # tensor([2., 2.])
+
+.. code-block:: python
+
+    # scatter: gradients of the value flow back element by element, overwritten positions of the base get zero
+    base = rm.zeros((2, 3), requires_grad=True)
+    index = rm.tensor([[0, 1], [1, 0]], dtype=rm.int64)
+    src = rm.tensor([[1., 2.], [3., 4.]], requires_grad=True)
+
+    out = base.scatter(1, index, src)
+    out.sum().backward()
+    print(base.grad)
+    # tensor([[0., 0., 1.],
+    #         [0., 0., 1.]])
+    print(src.grad)
+    # tensor([[1., 1.],
+    #         [1., 1.]])
+
+.. code-block:: python
+
+    # scatter_add: original values still take part in the computation, so every position keeps its gradient
+    base = rm.ones((2, 3), requires_grad=True)
+    index = rm.tensor([[0, 0], [0, 0]], dtype=rm.int64)   # duplicate indices
+    src = rm.tensor([[1., 2.], [3., 4.]], requires_grad=True)
+
+    out = base.scatter_add(1, index, src)
+    out.sum().backward()
+    print(base.grad)
+    # tensor([[1., 1., 1.],
+    #         [1., 1., 1.]])
+    print(src.grad)
+    # tensor([[1., 1.],
+    #         [1., 1.]])
+
+.. code-block:: python
+
+    # Gradients also work with the in-place x[idx] = val syntax
+    x0 = rm.tensor([1., 2., 3.], requires_grad=True)
+    y = rm.tensor([5., 6.], requires_grad=True)
+
+    x = x0.clone()
+    x[[0, 2]] = y
+    x.sum().backward()
+
+    print(x0.grad)  # tensor([0., 1., 0.]): overwritten positions get no gradient
+    print(y.grad)   # tensor([1., 1.])
+
+Summary of Indexing Functions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The table below summarizes Riemann's indexing functions. The "In-place" column lists the corresponding in-place version and the "Gradients" column states whether the non-in-place version supports automatic differentiation.
+
+.. list-table:: Summary of Indexing Functions
+  :widths: 16 34 14 36
+  :header-rows: 1
+
+  * - Function
+    - Signature
+    - In-place version
+    - Notes and gradients
+  * - ``gather``
+    - ``gather(input, dim, index, *, sparse_grad=False, out=None)``; ``x.gather(dim, index)``
+    - None
+    - Reads along a dimension and returns a copy shaped like index; gradients supported
+  * - ``scatter``
+    - ``x.scatter(dim, index, src=None, *, value=None)``
+    - ``scatter_``
+    - Overwrites along a dimension; gradients supported (non-in-place)
+  * - ``scatter_add``
+    - ``x.scatter_add(dim, index, src)``
+    - ``scatter_add_``
+    - Adds along a dimension, accumulating duplicate indices; gradients supported (non-in-place)
+  * - ``setat``
+    - ``x.setat(indices, val)``
+    - ``setat_``
+    - Overwrites by NumPy index expression; gradients supported (non-in-place)
+  * - ``addat``
+    - ``x.addat(indices, val)``
+    - ``addat_``
+    - Adds by NumPy index expression, accumulating duplicate indices; gradients supported (non-in-place)
+  * - ``subat``
+    - ``x.subat(indices, val)``
+    - ``subat_``
+    - Subtracts by NumPy index expression; gradients supported (non-in-place)
+  * - ``mulat``
+    - ``x.mulat(indices, val)``
+    - ``mulat_``
+    - Multiplies by NumPy index expression; gradients supported (non-in-place)
+  * - ``divat``
+    - ``x.divat(indices, val)``
+    - ``divat_``
+    - Divides by NumPy index expression; gradients supported (non-in-place)
+  * - ``powat``
+    - ``x.powat(indices, val)``
+    - ``powat_``
+    - Raises positions to a power by NumPy index expression; gradients supported (non-in-place)
+
+**Related Functions**
+
+The following functions also produce "indices" but belong to extremum, sorting and conditional operations; see the corresponding subsections of the Tensor Operations chapter:
+
+- ``argmax``/``argmin``: indices of the minimum and maximum values;
+- ``argsort``: indices that sort the tensor;
+- ``topk``: the top-k values together with their indices;
+- ``nonzero``: indices of the non-zero elements;
+- ``where``: selects elements by a condition, and returns the index tuple of matching elements when the condition is None.
 
 In-place Operations
 -------------------

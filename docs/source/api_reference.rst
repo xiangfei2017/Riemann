@@ -219,6 +219,23 @@ Random Number Generation
    :return: Tensor filled with random values
    :rtype: riemann.TN
 
+.. function:: riemann.multinomial(input, num_samples, replacement=False, *, generator=None, out=None)
+
+   Draw samples from a multinomial distribution given by the weights in the input tensor and return the category indices.
+
+   :param input: 1-D or 2-D weight tensor
+   :type input: riemann.TN
+   :param num_samples: Number of samples to draw
+   :type num_samples: int
+   :param replacement: Whether to sample with replacement
+   :type replacement: bool, optional
+   :param generator: Random number generator, kept for PyTorch signature compatibility and currently ignored
+   :type generator: optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
+   :type out: riemann.TN, optional
+   :return: Category index tensor of dtype int64
+   :rtype: riemann.TN
+
 Random Seed Control
 ~~~~~~~~~~~~~~~~~~~
 
@@ -477,7 +494,7 @@ Tensor Shape Operations
    :return: Tensor with contiguous memory
    :rtype: riemann.TN
 
-.. function:: riemann.gather(input, dim, index)
+.. function:: riemann.gather(input, dim, index, *, sparse_grad=False, out=None)
 
    Gather elements from the tensor along a specified dimension.
 
@@ -487,6 +504,10 @@ Tensor Shape Operations
    :type dim: int
    :param index: Index tensor
    :type index: riemann.TN
+   :param sparse_grad: Whether to produce a sparse gradient for input. Not supported in Riemann; True raises NotImplementedError.
+   :type sparse_grad: bool, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
+   :type out: riemann.TN, optional
    :return: Gathered tensor
    :rtype: riemann.TN
 
@@ -1081,7 +1102,7 @@ Mathematical Operations
    :type input: riemann.TN
    :param other: Second input tensor
    :type other: riemann.TN
-   :param out: Optional output tensor for storing result
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
    :type out: riemann.TN, optional
    :return: Kronecker product result tensor
    :rtype: riemann.TN
@@ -1181,8 +1202,8 @@ Mathematical Operations
    :type dim: int, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
-   :param out: Output tensor
-   :type out: riemann.TN, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``). When dim is None, pass a single tensor; otherwise pass a (values, indices) tuple.
+   :type out: riemann.TN or tuple of riemann.TN, optional
    :return: Maximum value
    :rtype: riemann.TN
 
@@ -1196,8 +1217,8 @@ Mathematical Operations
    :type dim: int, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
-   :param out: Output tensor
-   :type out: riemann.TN, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``). When dim is None, pass a single tensor; otherwise pass a (values, indices) tuple.
+   :type out: riemann.TN or tuple of riemann.TN, optional
    :return: Minimum value
    :rtype: riemann.TN
 
@@ -1553,7 +1574,7 @@ Mathematical Operations
    :type min: float, optional
    :param max: Maximum value
    :type max: float, optional
-   :param out: Output tensor
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
    :type out: riemann.TN, optional
    :return: Tensor with elements clamped within the specified range
    :rtype: riemann.TN
@@ -1678,7 +1699,7 @@ Mathematical Operations
    :return: Upper triangular part of the matrix
    :rtype: riemann.TN
 
-.. function:: riemann.cumsum(input, dim, *, dtype=None)
+.. function:: riemann.cumsum(input, dim, *, dtype=None, out=None)
 
    Calculate the cumulative sum of a tensor along a specified dimension.
 
@@ -1688,6 +1709,8 @@ Mathematical Operations
    :type dim: int
    :param dtype: Data type of the output tensor
    :type dtype: riemann.dtype, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
+   :type out: riemann.TN, optional
    :return: Cumulative sum result
    :rtype: riemann.TN
 
@@ -1856,8 +1879,8 @@ Sorting Operations
    :type descending: bool, optional
    :param stable: Whether to use stable sort
    :type stable: bool, optional
-   :param out: Output tensor
-   :type out: riemann.TN, optional
+   :param out: Optional tuple of output tensors, one element per returned value (in the order (values, indices)); each element must be a ``riemann.TN`` with matching shape, dtype and device. Results are written into these tensors and the tuple itself is returned. Not supported when any input or out element requires grad (raises ``RuntimeError``).
+   :type out: tuple of riemann.TN, optional
    :return: Sorted tensor and indices
    :rtype: riemann.TN, riemann.TN
 
@@ -1873,10 +1896,29 @@ Sorting Operations
    :type descending: bool, optional
    :param stable: Whether to use stable sort
    :type stable: bool, optional
-   :param out: Output tensor
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
    :type out: riemann.TN, optional
    :return: Sorting indices
    :rtype: riemann.TN
+
+.. function:: riemann.topk(input, k, dim=-1, largest=True, sorted=True, *, out=None)
+
+   Return the values and indices of the k largest (or smallest) elements along a given dimension.
+
+   :param input: Input tensor, at least 1-D
+   :type input: riemann.TN
+   :param k: Number of elements to return
+   :type k: int
+   :param dim: Dimension to search, default is the last dimension
+   :type dim: int, optional
+   :param largest: If True, return the k largest elements; otherwise the k smallest elements
+   :type largest: bool, optional
+   :param sorted: Whether to guarantee that the returned elements are sorted by value
+   :type sorted: bool, optional
+   :param out: Optional tuple of output tensors, one element per returned value (in the order (values, indices)); each element must be a ``riemann.TN`` with matching shape, dtype and device. Results are written into these tensors and the tuple itself is returned. Not supported when any input or out element requires grad (raises ``RuntimeError``).
+   :type out: tuple of riemann.TN, optional
+   :return: Tuple of (values, indices)
+   :rtype: tuple
 
 In-place Operations
 ~~~~~~~~~~~~~~~~~~~
@@ -2988,7 +3030,7 @@ The ``riemann.linalg`` module provides various linear algebra operations, includ
 Matrix Operations
 ~~~~~~~~~~~~~~~~~
 
-.. function:: riemann.linalg.matmul(a, b)
+.. function:: riemann.linalg.matmul(a, b, *, out=None)
 
    Compute the matrix product of two tensors.
 
@@ -2996,10 +3038,12 @@ Matrix Operations
    :type a: riemann.TN
    :param b: Second input tensor
    :type b: riemann.TN
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
+   :type out: riemann.TN, optional
    :return: Matrix product result
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.cross(a, b, dim=-1)
+.. function:: riemann.linalg.cross(a, b, dim=-1, out=None)
 
    Compute the cross product (vector product) of two tensors.
 
@@ -3009,13 +3053,15 @@ Matrix Operations
    :type b: riemann.TN
    :param dim: Dimension along which to compute cross product, default is -1
    :type dim: int, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
+   :type out: riemann.TN, optional
    :return: Cross product result
    :rtype: riemann.TN
 
 Norm Computation
 ~~~~~~~~~~~~~~~~
 
-.. function:: riemann.linalg.norm(A, ord=None, dim=None, keepdim=False)
+.. function:: riemann.linalg.norm(A, ord=None, dim=None, keepdim=False, out=None, dtype=None)
 
    Compute the norm of a tensor or matrix.
 
@@ -3027,40 +3073,52 @@ Norm Computation
    :type dim: int or tuple, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Like torch, inputs that require grad are allowed; ``out`` is then linked into the autograd graph via an in-place copy (CopyBackwards), while ``out.requires_grad=True`` raises.
+   :type out: riemann.TN, optional
+   :param dtype: Data type of the output tensor
+   :type dtype: riemann.dtype, optional
    :return: Norm value
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.vector_norm(x, ord=2, dim=None, keepdim=False)
+.. function:: riemann.linalg.vector_norm(x, p=None, dim=None, keepdim=False, out=None, dtype=None)
 
    Compute the vector norm.
 
    :param x: Input tensor
    :type x: riemann.TN
-   :param ord: Order of norm, default is 2 (L2 norm)
-   :type ord: float, optional
+   :param p: Order of norm, None means the 2-norm (default); supports 0, 1, 2, -1, -2, inf, -inf; 'fro' and 'nuc' are rejected with ``ValueError``
+   :type p: int or float or str, optional
    :param dim: Dimension along which to compute norm
    :type dim: int or tuple, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Like torch, inputs that require grad are allowed; ``out`` is then linked into the autograd graph via an in-place copy (CopyBackwards), while ``out.requires_grad=True`` raises.
+   :type out: riemann.TN, optional
+   :param dtype: Data type of the output tensor
+   :type dtype: riemann.dtype, optional
    :return: Norm value
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.matrix_norm(A, ord='fro', dim=(-2, -1), keepdim=False)
+.. function:: riemann.linalg.matrix_norm(A, p=None, dim=None, keepdim=False, out=None, dtype=None)
 
    Compute the matrix norm.
 
    :param A: Input tensor
    :type A: riemann.TN
-   :param ord: Order of norm, default is 'fro' (Frobenius norm)
-   :type ord: str or int, optional
-   :param dim: Dimensions of the matrix, default is (-2, -1)
+   :param p: Order of norm, None means the Frobenius norm (default); supports 1, 2, -1, -2, inf, -inf, 'fro', 'nuc'; 0 is rejected with ``ValueError``
+   :type p: str or int or float, optional
+   :param dim: Dimensions along which to compute the norm; must be a tuple of length 2 or None (an int raises ``ValueError``)
    :type dim: tuple, optional
    :param keepdim: Whether to keep the reduced dimensions
    :type keepdim: bool, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Like torch, inputs that require grad are allowed; ``out`` is then linked into the autograd graph via an in-place copy (CopyBackwards), while ``out.requires_grad=True`` raises.
+   :type out: riemann.TN, optional
+   :param dtype: Data type of the output tensor
+   :type dtype: riemann.dtype, optional
    :return: Matrix norm value
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.cond(A, p=None)
+.. function:: riemann.linalg.cond(A, p=None, *, out=None)
 
    Compute the condition number of a matrix.
 
@@ -3068,6 +3126,8 @@ Norm Computation
    :type A: riemann.TN
    :param p: Type of norm, default is None (2-norm condition number)
    :type p: int or float or str, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Like torch, inputs that require grad are allowed; ``out`` is then linked into the autograd graph via an in-place copy (CopyBackwards), while ``out.requires_grad=True`` raises.
+   :type out: riemann.TN, optional
    :return: Condition number
    :rtype: riemann.TN
 
@@ -3110,7 +3170,7 @@ Matrix Decomposition
    :return: Skew-symmetric matrix
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.svd(A, full_matrices=True)
+.. function:: riemann.linalg.svd(A, full_matrices=True, out=None)
 
    Compute the singular value decomposition (SVD) of a matrix.
 
@@ -3118,33 +3178,43 @@ Matrix Decomposition
    :type A: riemann.TN
    :param full_matrices: Whether to return full U and Vh matrices
    :type full_matrices: bool, optional
+   :param out: Optional tuple of output tensors, one element per returned value (in the order (U, S, Vh)); each element must be a ``riemann.TN`` with matching shape, dtype and device. Results are written into these tensors and the tuple itself is returned. Not supported when any input or out element requires grad (raises ``RuntimeError``).
+   :type out: tuple of riemann.TN, optional
    :return: Tuple of (U, S, Vh)
    :rtype: tuple
 
-.. function:: riemann.linalg.pinv(A, rcond=1e-15)
+.. function:: riemann.linalg.pinv(A, atol=None, rtol=None, hermitian=False, out=None)
 
    Compute the Moore-Penrose pseudoinverse of a matrix.
 
-   :param A: Input matrix
+   :param A: Input matrix of shape (\*, m, n), where \* denotes any number of batch dimensions
    :type A: riemann.TN
-   :param rcond: Singular value threshold
-   :type rcond: float, optional
-   :return: Pseudoinverse matrix
+   :param atol: Absolute threshold used to decide whether a singular value is zero; when None, ``max singular value × rtol`` is used
+   :type atol: float, optional
+   :param rtol: Relative threshold used to decide whether a singular value is zero; when None, ``min(m, n) × eps`` is used
+   :type rtol: float, optional
+   :param hermitian: Whether to assume the input is Hermitian or real symmetric, default False; kept for signature compatibility with torch and currently has no special treatment
+   :type hermitian: bool, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
+   :type out: riemann.TN, optional
+   :return: Pseudoinverse matrix of shape (\*, n, m)
    :rtype: riemann.TN
 
 Eigenvalue Decomposition
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. function:: riemann.linalg.eig(A)
+.. function:: riemann.linalg.eig(A, out=None)
 
    Compute the eigenvalues and eigenvectors of a square matrix.
 
    :param A: Input square matrix
    :type A: riemann.TN
+   :param out: Optional tuple of output tensors, one element per returned value (in the order (eigenvalues, eigenvectors)); each element must be a ``riemann.TN`` with matching shape, dtype and device. Results are written into these tensors and the tuple itself is returned. Not supported when any input or out element requires grad (raises ``RuntimeError``).
+   :type out: tuple of riemann.TN, optional
    :return: Tuple of (eigenvalues, eigenvectors)
    :rtype: tuple
 
-.. function:: riemann.linalg.eigh(A, UPLO='L')
+.. function:: riemann.linalg.eigh(A, UPLO='L', out=None)
 
    Compute the eigenvalues and eigenvectors of a Hermitian (or real symmetric) matrix.
 
@@ -3152,26 +3222,30 @@ Eigenvalue Decomposition
    :type A: riemann.TN
    :param UPLO: Specifies whether to use upper ('U') or lower ('L') triangular part
    :type UPLO: str, optional
+   :param out: Optional tuple of output tensors, one element per returned value (in the order (eigenvalues, eigenvectors)); each element must be a ``riemann.TN`` with matching shape, dtype and device. Results are written into these tensors and the tuple itself is returned. Not supported when any input or out element requires grad (raises ``RuntimeError``).
+   :type out: tuple of riemann.TN, optional
    :return: Tuple of (eigenvalues, eigenvectors)
    :rtype: tuple
 
 Linear Equation Solving
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. function:: riemann.linalg.lstsq(A, b, rcond=None)
+.. function:: riemann.linalg.lstsq(A, B, *, rcond=None, out=None)
 
    Compute the least-squares solution.
 
-   :param A: Coefficient matrix
+   :param A: Coefficient matrix of shape (\*, m, n)
    :type A: riemann.TN
-   :param b: Right-hand side vector or matrix
-   :type b: riemann.TN
-   :param rcond: Singular value threshold
+   :param B: Observation vector or matrix of shape (\*, m) or (\*, m, k)
+   :type B: riemann.TN
+   :param rcond: Relative condition number threshold for singular value truncation (keyword-only); when None, ``max(m, n) × eps`` is used
    :type rcond: float, optional
-   :return: Least-squares solution
-   :rtype: riemann.TN
+   :param out: Optional tuple of output tensors, one element per returned value (in the order (solution, residuals, rank, singular_values)); each element must be a ``riemann.TN`` with matching shape, dtype and device. Results are written into these tensors and the tuple itself is returned. Not supported when any input or out element requires grad (raises ``RuntimeError``).
+   :type out: tuple of riemann.TN, optional
+   :return: Tuple of (solution, residuals, rank, singular_values)
+   :rtype: tuple
 
-.. function:: riemann.linalg.lu(A, pivot=True)
+.. function:: riemann.linalg.lu(A, pivot=True, out=None)
 
    Compute the LU decomposition of a matrix.
 
@@ -3179,10 +3253,12 @@ Linear Equation Solving
    :type A: riemann.TN
    :param pivot: Whether to perform pivoting
    :type pivot: bool, optional
+   :param out: Optional tuple of output tensors, one element per returned value (in the order (P, L, U)); each element must be a ``riemann.TN`` with matching shape, dtype and device. Results are written into these tensors and the tuple itself is returned. Not supported when any input or out element requires grad (raises ``RuntimeError``).
+   :type out: tuple of riemann.TN, optional
    :return: Tuple of (P, L, U)
    :rtype: tuple
 
-.. function:: riemann.linalg.solve(A, b)
+.. function:: riemann.linalg.solve(A, b, out=None)
 
    Solve the linear equation system Ax = b.
 
@@ -3190,10 +3266,12 @@ Linear Equation Solving
    :type A: riemann.TN
    :param b: Right-hand side vector or matrix
    :type b: riemann.TN
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
+   :type out: riemann.TN, optional
    :return: Solution vector or matrix
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.qr(A, mode='reduced')
+.. function:: riemann.linalg.qr(A, mode='reduced', out=None)
 
    Compute the QR decomposition of a matrix.
 
@@ -3201,10 +3279,12 @@ Linear Equation Solving
    :type A: riemann.TN
    :param mode: Decomposition mode, 'reduced' or 'complete'
    :type mode: str, optional
+   :param out: Optional tuple of output tensors, one element per returned value (in the order (Q, R)); each element must be a ``riemann.TN`` with matching shape, dtype and device. Results are written into these tensors and the tuple itself is returned. Not supported when any input or out element requires grad (raises ``RuntimeError``).
+   :type out: tuple of riemann.TN, optional
    :return: Tuple of (Q, R)
    :rtype: tuple
 
-.. function:: riemann.linalg.cholesky(A, upper=False)
+.. function:: riemann.linalg.cholesky(A, upper=False, out=None)
 
    Compute the Cholesky decomposition of a positive-definite matrix.
 
@@ -3212,6 +3292,8 @@ Linear Equation Solving
    :type A: riemann.TN
    :param upper: Whether to return upper triangular matrix, default is False (lower)
    :type upper: bool, optional
+   :param out: Optional output tensor. Must be a ``riemann.TN`` with the same shape, dtype and device as the result; when provided, the result is written into it and the tensor itself is returned. Not supported when any input or ``out`` requires grad (raises ``RuntimeError``).
+   :type out: riemann.TN, optional
    :return: Cholesky factor
    :rtype: riemann.TN
 

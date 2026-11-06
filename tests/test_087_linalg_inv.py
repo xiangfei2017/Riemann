@@ -328,7 +328,8 @@ class TestLinalgInv(unittest.TestCase):
                                 print(f"警告: 批量矩阵中索引 {i} 的矩阵行列式为 {det}，可能不是真正的奇异矩阵")
                 
                 # Riemann计算
-                riemann_input = tensor(input_data, requires_grad=True)
+                # out= 形式不支持自动微分，因此 out 用例不使用需要梯度的输入
+                riemann_input = tensor(input_data, requires_grad=not has_out_param)
                 
                 # 处理out参数
                 out_tensor = None
@@ -370,9 +371,13 @@ class TestLinalgInv(unittest.TestCase):
                     inv_verified = verify_inverse(riemann_input, riemann_result, is_pinv=is_pinv)
                     
                     # 反向传播 - 使用(abs()**2.0).sum()作为标量函数
-                    sum_result = (riemann_result.abs() ** 2.0).sum()
-                    sum_result.backward()
-                    riemann_grad = riemann_input.grad
+                    # 注意：out= 形式不支持自动微分，out 用例只校验前向值与返回对象
+                    if has_out_param:
+                        riemann_grad = None
+                    else:
+                        sum_result = (riemann_result.abs() ** 2.0).sum()
+                        sum_result.backward()
+                        riemann_grad = riemann_input.grad
                     
                     # PyTorch计算
                     torch_result = None
@@ -380,20 +385,22 @@ class TestLinalgInv(unittest.TestCase):
                     
                     if TORCH_AVAILABLE and not should_fail:
                         # 转换为PyTorch张量
-                        torch_input = torch.tensor(input_data, requires_grad=True)
+                        torch_input = torch.tensor(input_data, requires_grad=not has_out_param)
                         # 应用对应的PyTorch函数
                         if is_pinv:
                             torch_result = torch.linalg.pinv(torch_input, hermitian=False)
                         else:
                             torch_result = torch.linalg.inv(torch_input)
-                        # 反向传播 - 使用相同的标量函数
-                        torch_sum = (torch.abs(torch_result) ** 2.0).sum()
-                        torch_sum.backward()
-                        torch_grad = torch_input.grad
-                        
-                        # 比较值和梯度
+                        # 比较值
                         values_match = compare_values(riemann_result, torch_result)
-                        grads_match = compare_values(riemann_grad, torch_grad)
+                        if has_out_param:
+                            grads_match = True
+                        else:
+                            # 反向传播 - 使用相同的标量函数
+                            torch_sum = (torch.abs(torch_result) ** 2.0).sum()
+                            torch_sum.backward()
+                            torch_grad = torch_input.grad
+                            grads_match = compare_values(riemann_grad, torch_grad)
                     else:
                         # 如果PyTorch不可用或预期失败，只检查Riemann的计算
                         values_match = True
@@ -577,6 +584,12 @@ class TestLinalgInv(unittest.TestCase):
         ]
         
         self._test_inv_function("pinv", linalg.pinv, torch.linalg.pinv, test_cases, is_pinv=True)
+
+        # out= 与需要梯度的输入组合不支持自动微分（与 torch 行为一致）
+        grad_input = tensor(np.random.randn(3, 3), requires_grad=True)
+        out_tensor = tensor(np.zeros((3, 3), dtype=np.float64))
+        with self.assertRaises(RuntimeError):
+            linalg.pinv(grad_input, out=out_tensor)
 
 # 主函数
 if __name__ == "__main__":

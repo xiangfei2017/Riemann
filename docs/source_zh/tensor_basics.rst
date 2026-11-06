@@ -2638,335 +2638,548 @@ Riemann 提供了多种梯度上下文管理工具，用于在特定代码块中
 索引操作
 --------
 
-Riemann 支持多种张量索引操作方式，用于获取数组元素或片段。以下是常见的索引方式：
+Riemann 的索引操作分为两类：按索引读取（``x[idx]``）和按索引写入（``setat``/``scatter`` 系列函数以及 ``x[idx] = val`` 语法）。本节依次介绍“按索引读取”“按索引写入”和“索引类函数汇总列表”，读、写两条路径都支持自动微分。
 
-**1. 整数索引**
+.. _index-read:
 
-整数索引用于获取张量中特定位置的单个元素。对于多维张量，可以使用逗号分隔的多个整数索引。
+按索引读取
+~~~~~~~~~~
 
-.. code-block:: python
+读取操作由 ``TN.__getitem__`` 实现，支持与 NumPy 一致的索引表达式。
 
-    import riemann as rm
+**1. 整数索引与负整数索引**
 
-    # 创建张量
-    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
-
-    # 整数索引
-    print("x[0, 0]:", x[0, 0])  # 获取第一行第一列元素
-    print("x[1, 2]:", x[1, 2])  # 获取第二行第三列元素
-
-**2. 负整数索引**
-
-负整数索引从张量末尾开始计数，-1 表示最后一个元素，-2 表示倒数第二个元素，以此类推。
+整数索引获取张量中特定位置的元素，多维张量用逗号分隔多个整数索引。整数索引会使结果的维度数减少 1（全部维度都用整数索引时得到 0 维标量张量）。负整数索引从末尾开始计数，``-1`` 表示最后一个元素。
 
 .. code-block:: python
 
     import riemann as rm
 
-    # 创建张量
     x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
 
-    # 负整数索引
-    print("x[-1, -1]:", x[-1, -1])  # 获取最后一行最后一列元素
-    print("x[-2, -3]:", x[-2, -3])  # 获取倒数第二行倒数第三列元素
+    print(x[0, 0])    # tensor(1)：0 维张量
+    print(x[1, 2])    # tensor(6)
+    print(x[-1, -1])  # tensor(9)：最后一行最后一列
+    print(x[-2, -3])  # tensor(4)
+    print(x[0])       # tensor([1, 2, 3])：维度数减 1
 
-**3. 切片索引**
+**2. 切片索引**
 
-切片索引用于获取张量的连续片段，使用冒号（:）表示范围。格式为 `start:end:step`，其中 start 是起始索引，end 是结束索引（不包含），step 是步长。
+切片使用 ``start:end:step`` 形式，``end`` 不包含在内，``step`` 可以为负数：
 
 .. code-block:: python
 
-    import riemann as rm
-
-    # 创建张量
     x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
 
-    # 切片索引
-    print("x[:, 0]:", x[:, 0])  # 获取所有行的第一列
-    print("x[0, :]:", x[0, :])  # 获取第一行的所有列
-    print("x[1:, 1:]:", x[1:, 1:])  # 获取从第二行开始，第二列开始的子张量
-    print("x[::2, ::2]:", x[::2, ::2])  # 获取隔行隔列的元素
+    print(x[:, 0])      # tensor([1, 4, 7])：所有行的第 0 列
+    print(x[1:, 1:])    # tensor([[5, 6], [8, 9]])
+    print(x[::2, ::2])  # tensor([[1, 3], [7, 9]])：隔行隔列
+    print(x[::-1])      # 行逆序
 
-**4. 整数数组索引**
+**3. 整数数组索引**
 
-整数数组索引用于根据整数数组指定的位置获取元素，返回的张量形状与索引数组相同。
+整数数组（``TN`` 或整型的 ``numpy.ndarray``）按 NumPy 的花式索引规则取元素：多个索引数组按广播规则组合，结果形状为索引数组广播后的形状。
 
 .. code-block:: python
 
-    import riemann as rm
-
-    # 创建张量
     x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
 
-    # 整数数组索引
-    indices = rm.tensor([0, 1, 2])
-    print("x[indices, indices]:", x[indices, indices])  # 获取对角线元素
+    idx = rm.tensor([0, 1, 2])
+    print(x[idx, idx])            # tensor([1, 5, 9])：对角线元素
+    print(x[rm.tensor([2, 0])])   # tensor([[7, 8, 9], [1, 2, 3]])：按行重排
 
-**5. 布尔索引**
+**4. 布尔索引**
 
-布尔索引用于根据布尔数组指定的条件获取元素，返回的是满足条件的元素组成的一维张量。
+布尔索引使用与张量形状一致的布尔张量作为掩码，返回满足条件的元素组成的 1 维张量：
 
 .. code-block:: python
 
-    import riemann as rm
-
-    # 创建张量
     x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
 
-    # 布尔索引
     mask = x > 5
-    print("mask:", mask)
-    print("x[mask]:", x[mask])  # 获取大于 5 的元素
+    print(mask)
+    print(x[mask])  # tensor([6, 7, 8, 9])：返回 1 维张量
 
-**6. 混合索引**
+**5. 混合索引**
 
-混合索引是指在同一个索引表达式中使用多种索引方式，例如同时使用整数索引和切片索引。
+同一个索引表达式中可以混用整数、切片、整数数组、布尔掩码和省略号 ``...``：
 
 .. code-block:: python
 
-    import riemann as rm
+    y = rm.tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
 
-    # 创建张量
-    x = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("x:", x)
+    print(y[0, 1:])      # tensor([[3, 4]])：第 0 块的第 2 行
+    print(y[..., 0])     # tensor([[1, 3], [5, 7]])：每个矩阵的第 0 列
+    print(y[0, [1, 0]])  # tensor([[3, 4], [1, 2]])：第 0 块内按行重排
 
-    # 混合索引
-    print("x[0, 1:]:", x[0, 1:])  # 获取第一行的第二列及以后的元素
-    print("x[1:, 0]:", x[1:, 0])  # 获取第二行及以后的第一列元素
+**视图与副本**
 
-**7. 索引相关函数**
+索引结果可能是原张量的视图（与原张量共享底层数据），也可能是副本（复制出一份新数据）。判定规则与 NumPy 一致：
 
-Riemann 提供了多个与索引相关的函数，用于按索引收集或散射数据：
-
-.. list-table:: 索引相关函数
-  :widths: 15 45 40
+.. list-table:: 索引形式与结果类型
+  :widths: 26 32 25 17
   :header-rows: 1
 
-  * - 函数名
-    - 功能描述
+  * - 索引形式
     - 示例
-  * - ``gather``
-    - 按索引收集数据
-    - ``input.gather(dim, index)``
-  * - ``scatter``
-    - 按索引散射数据（非原地）
-    - ``input.scatter(dim, index, src)``
-  * - ``scatter_``
-    - 按索引散射数据（原地）
-    - ``input.scatter_(dim, index, src)``
-  * - ``scatter_add``
-    - 按索引散射并累加数据（非原地）
-    - ``input.scatter_add(dim, index, src)``
-  * - ``scatter_add_``
-    - 按索引散射并累加数据（原地）
-    - ``input.scatter_add_(dim, index, src)``
+    - 结果形状
+    - 视图/副本
+  * - 整数、切片、省略号（基本索引）
+    - ``x[0]``、``x[1:3]``、``x[..., 0]``
+    - 去掉被整数索引的维度
+    - 视图
+  * - 整数数组
+    - ``x[[0, 2]]``、``x[idx]``
+    - 索引数组广播后的形状
+    - 副本
+  * - 布尔掩码
+    - ``x[mask]``
+    - 1 维（满足条件的元素个数）
+    - 副本
+  * - 混合索引
+    - ``x[0, [1, 0]]``
+    - 遵循 NumPy 规则
+    - 含整数数组或布尔掩码时为副本，否则为视图
+
+视图与副本的差别在于是否共享底层数据：修改原张量时，视图会同步变化，副本不受影响。
+
+.. code-block:: python
+
+    x = rm.tensor([[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]])
+
+    y = x[0:2]     # 切片：视图
+    z = x[[0, 2]]  # 整数数组：副本
+
+    x.setat_((0, 0), 99.)   # 原地修改原张量
+
+    print(y)  # tensor([[99., 2., 3.], [4., 5., 6.]])：视图同步变化
+    print(z)  # tensor([[1., 2., 3.], [7., 8., 9.]])：副本保持不变
+
+结果张量上的内部标记 ``_is_view`` 记录了该结果是否为视图（``True`` 为视图、``False`` 为副本），``_base`` 指向产生该结果的原始张量。
+
+实践建议：
+
+- 只读取数据时优先使用切片（视图），避免复制大张量带来的额外内存与时间开销；
+- 需要一份独立数据时，使用整数数组索引/布尔索引，或显式调用 ``clone()``/``copy()``；
+- 通过视图做原地写入会同时修改原张量，使用前要确认这是期望的行为。
+
+**按维度收集：gather**
+
+``gather`` 是“按索引读取”的函数化形式，语义与 ``torch.gather`` 一致：沿指定维度 ``dim``，用与输出同形状的 ``index`` 逐位置选择元素。
+
+Riemann 提供两种等价写法：
+
+.. code-block:: python
+
+    riemann.gather(input, dim, index)   # 模块级函数
+    input.gather(dim, index)            # TN 方法
+
+**参数说明**
+
+- ``input``：源张量（``riemann.TN``），被读取的数据；
+- ``dim``：收集维度，支持负数（``-1`` 表示最后一个维度）；
+- ``index``：索引张量（``riemann.TN``），维数必须与 ``input`` 相同；不是 int64 时会自动转换为 int64；结果形状与 ``index`` 完全相同；
+- ``sparse_grad``：是否产生稀疏梯度，当前版本仅支持 ``False``，传入 ``True`` 会抛出 ``NotImplementedError``；
+- ``out``：可选的输出张量，形状、dtype、device 须与计算结果一致；仅在模块级 ``riemann.gather`` 中提供，使用 ``out`` 时不支持自动微分。
+
+**行为规则**
+
+对输出中的每个位置 ``(i0, ..., i(n-1))``，取值为：
+
+``out[i0, ..., i(n-1)] = input[i0, ..., index[i0, ..., i(n-1)], ..., i(n-1)]``
+
+其中第 ``dim`` 个下标由 ``index`` 在该位置的值给出，其余下标与输出位置相同。由此得到以下约束：
+
+- ``index`` 在 ``dim`` 维上的取值必须在 ``[0, input.shape[dim])`` 内，越界抛 ``IndexError``；
+- 对 ``dim`` 之外的维度，``index`` 的形状不能超过 ``input`` 对应维度的大小，否则会因索引越界报错；
+- ``index`` 的维数与 ``input`` 的维数必须相同，否则抛 ``ValueError``；
+- 返回结果是副本，不与 ``input`` 共享内存。
+
+.. code-block:: python
+
+    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+    index = rm.tensor([[0, 1], [1, 2]], dtype=rm.int64)
+
+    print(input.gather(0, index))
+    # tensor([[1, 5],
+    #         [4, 8]])
+
+    print(rm.gather(input, 1, index))
+    # tensor([[1, 2],
+    #         [5, 6]])
+
+**用途**
+
+- 交叉熵、负对数似然等损失中按标签取对应类别的预测值；
+- 序列模型解码、重排时按预设顺序选取元素；
+- 依据采样或排序得到的索引整理输出。
+
+**gather 的梯度**
+
+``gather`` 支持自动微分：反向传播时，上游梯度被散射回 ``input`` 的对应位置，未被选中的位置梯度为 0，同一位置被选中多次时梯度累加。
+
+.. code-block:: python
+
+    input = rm.tensor([[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]], requires_grad=True)
+    index = rm.tensor([[0, 1], [1, 2]], dtype=rm.int64)
+
+    out = rm.gather(input, 1, index)
+    out.sum().backward()
+
+    print(input.grad)
+    # tensor([[1., 1., 0.],
+    #         [0., 1., 1.],
+    #         [0., 0., 0.]])
+
+**索引读取的梯度跟踪**
+
+``x[idx]`` 的结果无论是视图还是副本，都可以正常参与自动微分。反向传播时，梯度按索引散射回原张量的对应位置：未被索引到的位置梯度为 0，同一位置被重复索引时梯度累加。视图与副本只影响内存共享，不影响梯度回传的正确性。
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 整数数组索引：副本
+    a = rm.tensor([1., 2., 3.], requires_grad=True)
+    b = a[[0, 2]]
+    (b * b).sum().backward()
+    print(a.grad)   # tensor([2., 0., 6.])：只有被选中的位置有梯度
+
+    # 重复索引：梯度累加
+    a = rm.tensor([1., 2., 3.], requires_grad=True)
+    b = a[[1, 1]]
+    (b * b).sum().backward()
+    print(a.grad)   # tensor([0., 8., 0.])
+
+    # 切片索引：视图
+    a = rm.tensor([[1., 2., 3.], [4., 5., 6.]], requires_grad=True)
+    b = a[:, 1]
+    (b * 2).sum().backward()
+    print(a.grad)
+    # tensor([[0., 2., 0.],
+    #         [0., 2., 0.]])
+
+    # 布尔掩码：副本
+    a = rm.tensor([[1., 2., 3.], [4., 5., 6.]], requires_grad=True)
+    b = a[a > 3]
+    (b * 10).sum().backward()
+    print(a.grad)
+    # tensor([[ 0.,  0.,  0.],
+    #         [10., 10., 10.]])
+
+按索引写入
+~~~~~~~~~~~
+
+写入操作按定位方式分为两类，每个函数都同时提供非原地与原地（函数名以 ``_`` 结尾）两种形式：非原地版本返回新张量、原张量不变；原地版本直接修改张量本身并返回 ``self``。
+
+- ``setat`` 家族：用 NumPy 风格索引表达式定位，与 ``x[idx] = val`` 语法一致；
+- ``scatter`` 家族：用 ``dim`` + ``index`` 定位，与 ``torch.scatter``/``torch.scatter_add`` 语义一致。
+
+**1. setat 家族**
+
+.. list-table:: setat 家族函数
+  :widths: 18 30 16 36
+  :header-rows: 1
+
+  * - 函数
+    - 语义
+    - 原地版本
+    - 等效写法
   * - ``setat``
-    - 在指定索引处设置值（非原地）
-    - ``input.setat(indices, value)``
-  * - ``setat_``
-    - 在指定索引处设置值（原地）
-    - ``input.setat_(indices, value)``
+    - 将指定位置设为给定值
+    - ``setat_``
+    - ``x[idx] = val``
   * - ``addat``
-    - 在指定索引处添加值（非原地）
-    - ``input.addat(indices, value)``
-  * - ``addat_``
-    - 在指定索引处添加值（原地）
-    - ``input.addat_(indices, value)``
+    - 在指定位置上累加
+    - ``addat_``
+    - ``x[idx] += val``
   * - ``subat``
-    - 在指定索引处减去值（非原地）
-    - ``input.subat(indices, value)``
-  * - ``subat_``
-    - 在指定索引处减去值（原地）
-    - ``input.subat_(indices, value)``
+    - 在指定位置上相减
+    - ``subat_``
+    - ``x[idx] -= val``
   * - ``mulat``
-    - 在指定索引处乘以值（非原地）
-    - ``input.mulat(indices, value)``
-  * - ``mulat_``
-    - 在指定索引处乘以值（原地）
-    - ``input.mulat_(indices, value)``
+    - 在指定位置上相乘
+    - ``mulat_``
+    - ``x[idx] *= val``
   * - ``divat``
-    - 在指定索引处除以值（非原地）
-    - ``input.divat(indices, value)``
-  * - ``divat_``
-    - 在指定索引处除以值（原地）
-    - ``input.divat_(indices, value)``
+    - 在指定位置上相除
+    - ``divat_``
+    - ``x[idx] /= val``
   * - ``powat``
-    - 在指定索引处进行幂运算（非原地）
-    - ``input.powat(indices, value)``
-  * - ``powat_``
-    - 在指定索引处进行幂运算（原地）
-    - ``input.powat_(indices, value)``
+    - 在指定位置上做幂运算
+    - ``powat_``
+    - ``x[idx] **= val``
 
-**gather 函数示例**
+**参数说明**
 
-``gather`` 函数用于从输入张量的指定维度中按索引收集数据。
+- ``indices``：NumPy 风格索引表达式，支持整数、切片、整数数组、布尔掩码及其元组组合，规则与“按索引读取”一节完全一致；
+- ``val``：右值，可以是标量、``riemann.TN`` 或可被转换为 ``TN`` 的对象，形状需与索引选中区域的形状一致（可广播时按 NumPy 规则广播）。
 
-.. code-block:: python
+**行为规则**
 
-    import riemann as rm
-
-    # 创建输入张量
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("input:", input)
-
-    # 定义索引
-    index = rm.tensor([[0, 1], [1, 2]])
-    print("index:", index)
-
-    # 按维度 0 收集数据
-    output = input.gather(0, index)
-    print("gather along dim 0:", output)
-
-    # 按维度 1 收集数据
-    output = input.gather(1, index)
-    print("gather along dim 1:", output)
-
-**scatter 函数示例**
-
-``scatter`` 函数用于将源张量的数据按索引散射到目标张量的指定维度。
+- ``setat`` 是覆盖语义：同一个位置被多次写入时，最后写入的值生效；
+- ``addat`` 使用 ``numpy.add.at`` 语义：同一个位置被多次写入时累加，因此天然适合重复索引；``subat``/``mulat``/``divat``/``powat`` 同理，按对应运算逐次作用到目标位置。
 
 .. code-block:: python
 
     import riemann as rm
 
-    # 创建目标张量
-    input = rm.tensor([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
-    print("input:", input)
+    x = rm.tensor([[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]])
 
-    # 定义索引和源张量
-    index = rm.tensor([[0, 1], [1, 2]])
-    src = rm.tensor([[10, 20], [30, 40]])
-    print("index:", index)
-    print("src:", src)
+    # 单点覆盖：setat 返回新张量，x 本身不变
+    print(x.setat((0, 1), 99.))
+    # tensor([[ 1., 99.,  3.],
+    #         [ 4.,  5.,  6.],
+    #         [ 7.,  8.,  9.]])
 
-    # 按维度 0 散射数据（非原地）
-    output = input.scatter(0, index, src)
-    print("scatter along dim 0:", output)
+    # 切片区域覆盖：把第 0~1 行、第 1~2 列置零
+    print(x.setat((slice(0, 2), slice(1, 3)), rm.zeros((2, 2))))
+    # tensor([[1., 0., 0.],
+    #         [4., 0., 0.],
+    #         [7., 8., 9.]])
 
-    # 按维度 1 散射数据（非原地）
-    output = input.scatter(1, index, src)
-    print("scatter along dim 1:", output)
+    # 重复索引：setat 覆盖 vs addat 累加
+    b = rm.tensor([1., 2., 3.])
+    print(b.setat([1, 1], rm.tensor([10., 20.])))  # tensor([ 1., 20.,  3.])
+    print(b.addat([1, 1], rm.tensor([10., 20.])))  # tensor([ 1., 32.,  3.])
 
-**scatter_ 函数示例**
+**用途**
 
-``scatter_`` 是 ``scatter`` 的原地版本，直接修改输入张量。
+- 按位置更新少量元素，例如掩码赋值、padding 填充、把某些位置写成固定常量；
+- 用重复索引做累加统计（``addat``），例如把多个样本投射到同一位置；
+- 结构更规整的“按类别写值”场景，推荐使用下面的 ``scatter`` 家族。
 
-.. code-block:: python
+**2. scatter 家族**
 
-    import riemann as rm
+``scatter`` 家族用 ``dim`` + ``index`` 来描述“写到哪儿”，语义与 PyTorch 的 ``torch.Tensor.scatter``/``scatter_add`` 一致，适合按类别或按位置批量写入。
 
-    # 创建目标张量
-    input = rm.tensor([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
-    print("input:", input)
+.. list-table:: scatter 家族函数
+  :widths: 22 36 14 28
+  :header-rows: 1
 
-    # 定义索引和源张量
-    index = rm.tensor([[0, 1], [1, 2]])
-    src = rm.tensor([[10, 20], [30, 40]])
-    print("index:", index)
-    print("src:", src)
+  * - 函数
+    - 语义
+    - 原地版本
+    - 重复索引
+  * - ``scatter``
+    - 按 index 把 src（或 value）写入指定维度
+    - ``scatter_``
+    - 最后写入生效
+  * - ``scatter_add``
+    - 按 index 把 src 累加到指定维度
+    - ``scatter_add_``
+    - 累加
 
-    # 按维度 1 散射数据（原地）
-    input.scatter_(1, index, src)
-    print("after scatter_ along dim 1:", input)
+**参数说明**
 
-**scatter_add 函数示例**
+- ``dim``：沿哪个维度散射，支持负数；
+- ``index``：索引张量（``riemann.TN``），dtype 会被规范化为 int64；**维数必须与 ``self`` 相同**；其形状决定实际写入的范围；
+- ``src``：源数据，可以是标量，也可以是形状与 ``index`` 相同的 ``TN``；dtype 必须与 ``self`` 相同，否则抛 ``RuntimeError``；与 ``value`` 互斥（``scatter_add``/``scatter_add_`` 只接受 ``src``，不接受 ``value``）；
+- ``value``：标量（int/float/complex、NumPy 标量；作为命名参数时也接受 0 维 ``TN``），与 ``src`` 互斥；内部会构造与 ``index`` 同形状、全部填 ``value`` 的源张量。也可以把标量作为第三个位置参数传入，此时它同样被当作 ``value`` 使用；位置参数形式仅支持 int/float/complex 与 NumPy 标量；
+- 返回：``scatter``/``scatter_add`` 返回与 ``self`` 同形状的新张量，``scatter_``/``scatter_add_`` 返回 ``self``。
 
-``scatter_add`` 函数用于将源张量的数据按索引散射并累加到目标张量的指定维度。
+**行为规则**
 
-.. code-block:: python
+``index`` 中的每个位置 ``i`` 对应一次写入，目标位置由两部分确定：``dim`` 维的下标取 ``index[i]``，其余维度的下标取 ``i`` 自身的坐标，即：
 
-    import riemann as rm
+``self[..., index[i] at dim, ...] op= src[i]``
 
-    # 创建目标张量
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("input:", input)
-
-    # 定义索引和源张量
-    index = rm.tensor([[0, 1], [1, 2]])
-    src = rm.tensor([[10, 20], [30, 40]])
-    print("index:", index)
-    print("src:", src)
-
-    # 按维度 1 散射并累加数据（非原地）
-    output = input.scatter_add(1, index, src)
-    print("scatter_add along dim 1:", output)
-
-**scatter_add_ 函数示例**
-
-``scatter_add_`` 是 ``scatter_add`` 的原地版本，直接修改输入张量。
-
-.. code-block:: python
-
-    import riemann as rm
-
-    # 创建目标张量
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("input:", input)
-
-    # 定义索引和源张量
-    index = rm.tensor([[0, 1], [1, 2]])
-    src = rm.tensor([[10, 20], [30, 40]])
-    print("index:", index)
-    print("src:", src)
-
-    # 按维度 1 散射并累加数据（原地）
-    input.scatter_add_(1, index, src)
-    print("after scatter_add_ along dim 1:", input)
-
-**setat 和 setat_ 函数示例**
-
-``setat`` 函数用于在指定索引处设置值（非原地），而 ``setat_`` 是其原地版本。
+- ``index`` 在 ``dim`` 维上的取值必须在 ``[0, self.shape[dim])`` 内，越界抛 ``IndexError``；
+- ``index`` 的形状可以小于 ``self`` 的形状，此时只写入 ``index`` 覆盖到的区域，其余位置保持原值；
+- ``scatter`` 为覆盖语义，同一目标被写多次时最后写入生效；``scatter_add`` 为累加语义，同一目标被写多次时累加；
+- 内部实现是“把间接索引换算成直接索引，再调用 ``setat``/``addat``”，因此 ``setat`` 家族的所有规则在 ``scatter`` 中同样成立。
 
 .. code-block:: python
 
     import riemann as rm
 
-    # 创建输入张量
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    print("input:", input)
+    base = rm.tensor([[0., 0., 0.], [0., 0., 0.], [0., 0., 0.]])
+    index = rm.tensor([[0, 1], [1, 2]], dtype=rm.int64)
+    src = rm.tensor([[10., 20.], [30., 40.]])
 
-    # 1. 使用 setat（非原地）
-    print("\n1. 使用 setat（非原地）:")
-    # 在指定索引处设置值
-    indices = (0, 1)  # 第 0 行，第 1 列
-    value = 99
-    output = input.setat(indices, value)
-    print("setat 结果:", output)
-    print("原始输入保持不变:", input)
+    # dim=0：行号由 index 的值给出，列号取当前位置的坐标
+    print(base.scatter(0, index, src))
+    # tensor([[10.,  0.,  0.],
+    #         [30., 20.,  0.],
+    #         [ 0., 40.,  0.]])
 
-    # 2. 使用 setat_（原地）
-    print("\n2. 使用 setat_（原地）:")
-    # 在指定索引处设置值
-    indices = (1, 2)  # 第 1 行，第 2 列
-    value = 88
-    input.setat_(indices, value)
-    print("setat_ 后:", input)
+    # dim=1：列号由 index 的值给出，行号取当前位置的坐标
+    print(base.scatter(1, index, src))
+    # tensor([[10., 20.,  0.],
+    #         [ 0., 30., 40.],
+    #         [ 0.,  0.,  0.]])
 
-    # 3. 使用 setat 设置多个索引
-    print("\n3. 使用 setat 设置多个索引:")
-    input = rm.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-    indices = [[0, 0], [2, 2]]  # (0,0) 和 (2,2)
-    value = 100
-    output = input.setat(indices, value)
-    print("setat 设置多个索引:", output)
+    # 用 value 参数代替 src
+    print(base.scatter(1, index, value=5.))
+    # tensor([[5., 5., 0.],
+    #         [0., 5., 5.],
+    #         [0., 0., 0.]])
 
-**索引操作注意事项**
+    # 原地版本：直接修改 base
+    base.scatter_(1, index, src)
+    print(base)
+    # tensor([[10., 20.,  0.],
+    #         [ 0., 30., 40.],
+    #         [ 0.,  0.,  0.]])
 
-1. **索引越界**：使用超出张量范围的索引会导致错误。
-2. **内存布局**：不同的索引方式可能会影响返回张量的内存布局，某些索引操作可能会返回原始张量的视图，而不是副本。
-3. **梯度跟踪**：对于需要梯度跟踪的张量，某些索引操作可能会影响梯度计算，特别是原地操作。
-4. **性能考虑**：对于大型张量，整数数组索引和布尔索引可能会比切片索引慢，因为它们会创建新的张量副本。
-5. **gather/scatter 函数参数**：
+.. code-block:: python
 
-   - ``dim``：指定操作的维度
-   - ``index``：指定索引位置
-   - ``src``：指定源数据（仅用于 scatter 相关函数）
-   - 对于原地操作（带下划线的函数），需要确保输入张量不是叶子节点，否则会导致错误。
+    # scatter_add：重复索引时累加，常用于统计/聚合
+    base = rm.tensor([[1., 2., 3.], [4., 5., 6.], [7., 8., 9.]])
+    print(base.scatter_add(1, index, src))
+    # tensor([[11., 22.,  3.],
+    #         [ 4., 35., 46.],
+    #         [ 7.,  8.,  9.]])
+
+**用途**
+
+- 构造 one-hot 或按类别索引写回标签、权重；
+- 词表/嵌入重建：把 batch 中的向量写回全局表格；
+- 图神经网络、注意力池化等“消息聚合”场景，用 ``scatter_add`` 对同一目标的多个来源求和。
+
+**3. 原地写入语法与限制**
+
+``x[idx] = val``、``x[idx] += val`` 等语法等价于对应的 ``setat_``/``addat_`` 系列，属于原地写入。原地写入有两条限制：
+
+- 对 ``requires_grad=True`` 的叶子张量执行原地写入会抛 ``RuntimeError``，因为这会破坏计算图；需要先 ``clone()`` 得到非叶子张量再写入；
+- 原地写入不会创建新的计算图节点，若后续还要做精确的梯度计算，应改用非原地版本（``setat``/``scatter`` 等）。
+
+.. code-block:: python
+
+    x0 = rm.tensor([1., 2., 3.], requires_grad=True)
+    x = x0.clone()      # 非叶子张量，允许原地写入
+
+    x[1] = 10.          # 等价于 x.setat_(1, 10.)
+    print(x)            # tensor([ 1., 10.,  3.], requires_grad=True)
+    print(x0)           # tensor([1., 2., 3.], requires_grad=True)：x0 未被修改
+
+**写入操作的梯度跟踪**
+
+非原地写函数（``setat``、``addat``、``subat``、``mulat``、``divat``、``powat``、``scatter``、``scatter_add``）均支持自动微分，求解过程等价于“读取 + 运算 + 回写”，梯度会同时回传给被写入的张量和右值：
+
+- 对**被写入的张量**：``setat``/``scatter`` 中被覆盖的位置不再参与前向计算，这些位置的梯度为 0，未被写入的位置梯度与上游梯度一致；``addat``/``scatter_add`` 中原值仍参与计算，所有位置都保留梯度；
+- 对**右值**（``val`` 或 ``src``）：每个被写入的元素得到对应位置的上游梯度；``addat``/``scatter_add`` 中同一位置被写入多次时梯度累加。
+
+需要注意 ``setat`` 的重复索引：前向取“最后写入值”，反向却会把梯度回传给所有被重复写入的右值元素，前后不一致。含重复索引的写入请使用 ``addat``/``scatter_add``。
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # setat：被覆盖位置的梯度为 0，右值按写入次数获得梯度
+    base = rm.tensor([[1., 2.], [3., 4.]], requires_grad=True)
+    val = rm.tensor([10., 20.], requires_grad=True)
+    out = base.setat(([0, 1], [0, 1]), val)   # 写入 (0,0) 和 (1,1)
+    (out * 2).sum().backward()
+    print(base.grad)
+    # tensor([[0., 2.],
+    #         [2., 0.]])
+    print(val.grad)   # tensor([2., 2.])
+
+.. code-block:: python
+
+    # scatter：右值梯度逐元素回传，原张量被覆盖位置梯度为 0
+    base = rm.zeros((2, 3), requires_grad=True)
+    index = rm.tensor([[0, 1], [1, 0]], dtype=rm.int64)
+    src = rm.tensor([[1., 2.], [3., 4.]], requires_grad=True)
+
+    out = base.scatter(1, index, src)
+    out.sum().backward()
+    print(base.grad)
+    # tensor([[0., 0., 1.],
+    #         [0., 0., 1.]])
+    print(src.grad)
+    # tensor([[1., 1.],
+    #         [1., 1.]])
+
+.. code-block:: python
+
+    # scatter_add：原值仍参与计算，所有位置都保留梯度
+    base = rm.ones((2, 3), requires_grad=True)
+    index = rm.tensor([[0, 0], [0, 0]], dtype=rm.int64)   # 重复索引
+    src = rm.tensor([[1., 2.], [3., 4.]], requires_grad=True)
+
+    out = base.scatter_add(1, index, src)
+    out.sum().backward()
+    print(base.grad)
+    # tensor([[1., 1., 1.],
+    #         [1., 1., 1.]])
+    print(src.grad)
+    # tensor([[1., 1.],
+    #         [1., 1.]])
+
+.. code-block:: python
+
+    # 原地写入 x[idx] = val 的梯度同样可用
+    x0 = rm.tensor([1., 2., 3.], requires_grad=True)
+    y = rm.tensor([5., 6.], requires_grad=True)
+
+    x = x0.clone()
+    x[[0, 2]] = y
+    x.sum().backward()
+
+    print(x0.grad)  # tensor([0., 1., 0.])：被覆盖的位置不回传梯度
+    print(y.grad)   # tensor([1., 1.])
+
+索引类函数汇总列表
+~~~~~~~~~~~~~~~~~~~
+
+下表汇总了 Riemann 的索引类函数。“原地”一列标出对应的原地版本，“梯度”一列说明非原地版本是否支持自动微分。
+
+.. list-table:: 索引类函数汇总
+  :widths: 16 34 14 36
+  :header-rows: 1
+
+  * - 函数
+    - 签名
+    - 原地版本
+    - 说明与梯度
+  * - ``gather``
+    - ``gather(input, dim, index, *, sparse_grad=False, out=None)``；``x.gather(dim, index)``
+    - 无
+    - 按维度读取，返回与 index 同形状的副本；支持梯度
+  * - ``scatter``
+    - ``x.scatter(dim, index, src=None, *, value=None)``
+    - ``scatter_``
+    - 按维度覆盖写入；支持梯度（非原地）
+  * - ``scatter_add``
+    - ``x.scatter_add(dim, index, src)``
+    - ``scatter_add_``
+    - 按维度累加写入，重复索引累加；支持梯度（非原地）
+  * - ``setat``
+    - ``x.setat(indices, val)``
+    - ``setat_``
+    - 按 NumPy 索引覆盖写入；支持梯度（非原地）
+  * - ``addat``
+    - ``x.addat(indices, val)``
+    - ``addat_``
+    - 按 NumPy 索引累加，重复索引累加；支持梯度（非原地）
+  * - ``subat``
+    - ``x.subat(indices, val)``
+    - ``subat_``
+    - 按 NumPy 索引相减；支持梯度（非原地）
+  * - ``mulat``
+    - ``x.mulat(indices, val)``
+    - ``mulat_``
+    - 按 NumPy 索引相乘；支持梯度（非原地）
+  * - ``divat``
+    - ``x.divat(indices, val)``
+    - ``divat_``
+    - 按 NumPy 索引相除；支持梯度（非原地）
+  * - ``powat``
+    - ``x.powat(indices, val)``
+    - ``powat_``
+    - 按 NumPy 索引做幂运算；支持梯度（非原地）
+
+**相关函数**
+
+以下函数同样以“索引”为结果，但属于极值/排序/条件运算，详见“张量操作”章节中的对应小节：
+
+- ``argmax``/``argmin``：返回极值所在的索引；
+- ``argsort``：返回排序后的索引；
+- ``topk``：返回前 k 个元素及其索引；
+- ``nonzero``：返回非零元素的索引；
+- ``where``：按条件选择元素，条件为 None 时返回满足条件的索引元组。
 
 原地操作
 --------

@@ -62,6 +62,7 @@ from __future__ import annotations
 import contextlib
 import numpy as np
 from .tensordef import *
+from .tensordef import _apply_out, _apply_out_tuple
 import builtins
 
 def matmul(A, B, *, out=None):
@@ -113,16 +114,7 @@ def matmul(A, B, *, out=None):
     result = A @ B
     
     # 处理out参数
-    if out is not None:
-        if not isinstance(out, TN):
-            raise TypeError("out must be TN type")
-        if out.shape != result.shape:
-            raise ValueError(f"out has wrong shape: expected {result.shape}, got {out.shape}")
-        
-        # 将计算结果复制到out中
-        return out.copy_(result)
-    
-    return result
+    return _apply_out(out, result, (A, B), "matmul")
 
 def cross(input, other, *, dim=-1, out=None):
     """计算两个3D向量的叉积
@@ -219,14 +211,7 @@ def cross(input, other, *, dim=-1, out=None):
         ret.parms = (dim, dim)
     
     # 处理out参数
-    if out is not None:
-        if not isinstance(out, TN):
-            raise TypeError("out must be TN type")
-        if out.shape != ret.shape:
-            raise ValueError(f"out has wrong shape: expected {ret.shape}, got {out.shape}")
-        return out.copy_(ret)
-    
-    return ret
+    return _apply_out(out, ret, (input, other), "cross")
 
 
 def _cross_grad_left(result_tensor, i):
@@ -356,16 +341,8 @@ def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtyp
         ret = ret.type(dtype)
     
     # 处理out参数
-    if out is not None:
-        if not isinstance(out, TN):
-            raise TypeError("out must be TN type")
-        if out.shape != ret.shape:
-            raise ValueError(f"out has wrong shape: expected {ret.shape}, got {out.shape}")
-        
-        # 将计算结果复制到out中
-        return out.copy_(ret)
-    
-    return ret
+    # torch 对 norm 的复合实现允许 out= 与梯度输入共存（CopyBackwards）
+    return _apply_out(out, ret, (A,), "norm", allow_grad=True)
 
 
 def _vector_norm(A, p):
@@ -1124,19 +1101,8 @@ def cond(A: TN, p=None, *, out=None) -> TN:
             cond_value = cond_value.abs()
     
     # 处理out参数
-    if out is not None:
-        # 检查out参数是否是TN类型
-        if not isinstance(out, TN):
-            raise TypeError(f"out must be TN type, got {type(out)}")
-        
-        # 检查out参数的形状是否与计算结果一致
-        if out.shape != cond_value.shape:
-            raise RuntimeError(f"out has wrong shape: expected {cond_value.shape}, got {out.shape}")
-        
-        # 将计算结果复制到out中
-        return out.copy_(cond_value)
-            
-    return cond_value
+    # torch 对 cond 的复合实现允许 out= 与梯度输入共存（CopyBackwards）
+    return _apply_out(out, cond_value, (A,), "cond", allow_grad=True)
 
 def svdvals(A: TN) -> TN:
     """返回矩阵的奇异值。
@@ -1334,16 +1300,6 @@ def svd(A, full_matrices=True, driver=None, out=None):
     if driver is not None: 
         print("Warning: driver parameter is ignored in the current implementation because numpy is used as the backend") 
     
-    # 处理out参数 
-    if out is not None: 
-        if not isinstance(out, tuple) or len(out) != 3: 
-            raise TypeError("out must be a tuple containing 3 tensors") 
-        for i, out_tensor in enumerate(out): 
-            if not isinstance(out_tensor, TN): 
-                raise TypeError(f"out[{i}] must be TN type") 
-        if out[0].requires_grad or out[1].requires_grad or out[2].requires_grad or A.requires_grad:
-            raise RuntimeError(f"svd(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-
     # 使用numpy.linalg.svd计算SVD，正确传递full_matrices参数 
     try: 
         U_data, S_data, Vh_data = arrlib.linalg.svd(A._array, full_matrices=full_matrices) 
@@ -1371,20 +1327,7 @@ def svd(A, full_matrices=True, driver=None, out=None):
         Vh.parms = ((U, S, Vh, full_matrices),)  # 保存full_matrices参数供梯度计算使用
     
     # 处理out参数
-    if out is not None:
-        if out[0].shape != U.shape:
-            raise ValueError(f"out[0] must have shape {U.shape}, got {out[0].shape}")
-        if out[1].shape != S.shape:
-            raise ValueError(f"out[1] must have shape {S.shape}, got {out[1].shape}")
-        if out[2].shape != Vh.shape:
-            raise ValueError(f"out[2] must have shape {Vh.shape}, got {out[2].shape}")
-        
-        out[0].copy_(U)
-        out[1].copy_(S)
-        out[2].copy_(Vh)
-        return out
-        
-    return U, S, Vh
+    return _apply_out_tuple(out, (U, S, Vh), (A,), "svd")
 
 # U的梯度计算函数 - 支持full_matrices参数
 def _svd_backward_u(result_tensor: TN, i: int) -> TN:
@@ -1620,19 +1563,7 @@ def pinv(A, atol=None, rtol=None, hermitian=False, out=None):
     pinv_A = Vh.mH @ S_inv @ U.mH
     
     # 处理out参数
-    if out is not None:
-        # 检查out参数是否是TN类型
-        if not isinstance(out, TN):
-            raise TypeError(f"out must be TN type, got {type(out)}")
-        
-        # 检查out参数的形状是否与计算结果一致
-        if out.shape != pinv_A.shape:
-            raise RuntimeError(f"out has wrong shape: expected {pinv_A.shape}, got {out.shape}")
-        
-        # 将计算结果复制到out中
-        return out.copy_(pinv_A)
-
-    return pinv_A
+    return _apply_out(out, pinv_A, (A,), "pinv")
 
 
 def eig(A, *, out=None):
@@ -1670,16 +1601,6 @@ def eig(A, *, out=None):
     if m != n:
         raise ValueError(f"Input matrix must be square, got shape {A.shape}")
     
-    # 处理out参数 
-    if out is not None: 
-        if not isinstance(out, tuple) or len(out) != 2: 
-            raise TypeError("out must be a tuple containing 2 tensors") 
-        for i, out_tensor in enumerate(out): 
-            if not isinstance(out_tensor, TN): 
-                raise TypeError(f"out[{i}] must be TN type") 
-        if out.requires_grad or A.requires_grad:
-            raise RuntimeError(f"eig(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-        
     # 使用numpy.linalg.eig计算特征值分解 - 支持批量计算
     try: 
         # numpy.linalg.eig 原生支持批处理维度
@@ -1706,17 +1627,7 @@ def eig(A, *, out=None):
         V.parms = ((w, V, U),)  # 保存特征值和特征向量供梯度计算使用
     
     # 处理out参数
-    if out is not None:
-        if out[0].shape != w.shape:
-            raise ValueError(f"out[0] must have shape {w.shape}, got {out[0].shape}")
-        if out[1].shape != V.shape:
-            raise ValueError(f"out[1] must have shape {V.shape}, got {out[1].shape}")
-
-        out[0].copy_(w)
-        out[1].copy_(V)
-        return out
-        
-    return w, V
+    return _apply_out_tuple(out, (w, V), (A,), "eig")
 
 
 def _eig_backward_w(result_tensor: TN, i: int) -> TN:
@@ -1889,31 +1800,7 @@ def lstsq(A, B, *, rcond=None, out=None):
         X = X.squeeze(-1)
     
     # 处理out参数
-    if out is not None:
-        if not isinstance(out, tuple) or len(out) != 4:
-            raise TypeError("out must be a tuple containing 4 tensors")
-        for i, out_tensor in enumerate(out):
-            if not isinstance(out_tensor, TN):
-                raise TypeError(f"out[{i}] must be TN type")
-        
-        # 检查形状
-        if out[0].shape != X.shape:
-            raise ValueError(f"out[0] must have shape {X.shape}, got {out[0].shape}")
-        if out[1].shape != residuals.shape:
-            raise ValueError(f"out[1] must have shape {residuals.shape}, got {out[1].shape}")
-        if out[2].shape != rank.shape:
-            raise ValueError(f"out[2] must have shape {rank.shape}, got {out[2].shape}")
-        if out[3].shape != S.shape:
-            raise ValueError(f"out[3] must have shape {S.shape}, got {out[3].shape}")
-        
-        # 复制结果
-        out[0].copy_(X)
-        out[1].copy_(residuals)
-        out[2].copy_(rank)
-        out[3].copy_(S)
-        return out
-    
-    return X, residuals, rank, S
+    return _apply_out_tuple(out, (X, residuals, rank, S), (A, B), "lstsq")
 
 def eigh(A, *, UPLO='L', out=None):
     """计算Hermitian（复数域对称）或实对称矩阵的特征值分解。
@@ -1954,16 +1841,6 @@ def eigh(A, *, UPLO='L', out=None):
     if m != n:
         raise ValueError(f"Input matrix must be square, got shape {A.shape}")
     
-    # 处理out参数 
-    if out is not None: 
-        if not isinstance(out, tuple) or len(out) != 2: 
-            raise TypeError("out must be a tuple containing 2 tensors") 
-        for i, out_tensor in enumerate(out): 
-            if not isinstance(out_tensor, TN): 
-                raise TypeError(f"out[{i}] must be TN type")  
-        if out.requires_grad or A.requires_grad:
-            raise RuntimeError(f"eigh(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-        
     arrlib = A._get_array_lib()
     dev = A.device
     
@@ -1990,17 +1867,7 @@ def eigh(A, *, UPLO='L', out=None):
         V.parms = ((w, V),)  # 保存特征值和特征向量供梯度计算使用
     
     # 处理out参数
-    if out is not None:
-        if out[0].shape != w.shape:
-            raise ValueError(f"out[0] must have shape {w.shape}, got {out[0].shape}")
-        if out[1].shape != V.shape:
-            raise ValueError(f"out[1] must have shape {V.shape}, got {out[1].shape}")
-
-        out[0].copy_(w)
-        out[1].copy_(V)
-        return out
-        
-    return w, V
+    return _apply_out_tuple(out, (w, V), (A,), "eigh")
 
 def _eigh_backward_w(result_tensor: TN, i: int) -> TN:
     """计算特征值的反向传播梯度 - 使用正确的解析公式"""
@@ -2459,16 +2326,6 @@ def lu(A, *, pivot=True, out=None):
     if A.ndim < 2: 
         raise ValueError(f"linalg.lu:Input matrix must be at least 2-dimensional, got dimension {A.ndim}") 
     
-    # 处理out参数 
-    if out is not None: 
-        if not isinstance(out, tuple) or len(out) != 3: 
-            raise TypeError("out must be a tuple containing 3 tensors") 
-        for i, out_tensor in enumerate(out): 
-            if not isinstance(out_tensor, TN): 
-                raise TypeError(f"out[{i}] must be TN type")  
-        if out.requires_grad or A.requires_grad:
-            raise RuntimeError(f"lu(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-    
     # 获取矩阵维度
     m, n = A.shape[-2], A.shape[-1]
 
@@ -2505,20 +2362,7 @@ def lu(A, *, pivot=True, out=None):
         ret_P,ret_L,ret_U = P[...,:m,:m], L[...,:m,:m], U[...,:m,:n]
 
     # 处理out参数
-    if out is not None:
-        if out[0].shape != ret_P.shape:
-            raise ValueError(f"out[0] must have shape {ret_P.shape}, got {out[0].shape}")
-        if out[1].shape != ret_L.shape:
-            raise ValueError(f"out[1] must have shape {ret_L.shape}, got {out[1].shape}")
-        if out[2].shape != ret_U.shape:
-            raise ValueError(f"out[2] must have shape {ret_U.shape}, got {out[2].shape}")
-        
-        out[0].copy_(ret_P)
-        out[1].copy_(ret_L)
-        out[2].copy_(ret_U)
-        return out
-    
-    return ret_P,ret_L,ret_U
+    return _apply_out_tuple(out, (ret_P, ret_L, ret_U), (A,), "lu")
 
 def solve(A, B, *, left=True, out=None):
     """
@@ -2637,20 +2481,7 @@ def solve(A, B, *, left=True, out=None):
             raise RuntimeError(f"Linear system solution failed: {str(e)}")
     
     # 处理out参数
-    if out is not None:
-        if not isinstance(out,TN):
-            raise TypeError(f"out must be TN type, got {type(out)}")
-        
-        if out.shape != X.shape:
-            raise ValueError(f"out has wrong shape: expected {X.shape}, got {out.shape}")
-        
-        if out.requires_grad or A.requires_grad or B.requires_grad:
-            raise RuntimeError(f"solve(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-        
-        out.copy_(X)
-        return out
-        
-    return X
+    return _apply_out(out, X, (A, B), "solve")
 
 def qr(A, mode='reduced', *, out=None):
     """计算矩阵的QR分解。
@@ -2702,22 +2533,6 @@ def qr(A, mode='reduced', *, out=None):
     m, n = A.shape[-2], A.shape[-1]
     k = builtins.min(m, n)
     
-    # 处理out参数
-    if out is not None:
-        if not isinstance(out, tuple) or len(out) != 2:
-            raise TypeError("out must be a tuple containing 2 tensors")
-        for i, out_tensor in enumerate(out):
-            if not isinstance(out_tensor, TN):
-                raise TypeError(f"out[{i}] must be TN type")
-        
-        # # mode='r'不支持梯度
-        # if mode == 'r' and (out[0].requires_grad or out[1].requires_grad or A.requires_grad):
-        #     raise RuntimeError("qr(..., mode='r') does not support automatic differentiation")
-        
-        # 不支持out参数的梯度
-        if A.requires_grad or out[0].requires_grad or out[1].requires_grad or A.requires_grad:
-            raise RuntimeError(f"qr() with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-    
     # 使用numpy.linalg.qr计算QR分解
     try:
         if mode == 'r':
@@ -2752,18 +2567,7 @@ def qr(A, mode='reduced', *, out=None):
         R.parms = ((Q, R, mode),)  # 保存Q, R和mode参数供梯度计算使用
     
     # 处理out参数
-    if out is not None:
-        # 检查形状匹配
-        if Q.shape != out[0].shape:
-            raise ValueError(f"out[0] must have shape {Q.shape}, got {out[0].shape}")
-        if R.shape != out[1].shape:
-            raise ValueError(f"out[1] must have shape {R.shape}, got {out[1].shape}")
-        
-        out[0].copy_(Q)
-        out[1].copy_(R)
-        return out
-        
-    return Q, R
+    return _apply_out_tuple(out, (Q, R), (A,), "qr")
 
 # Q的梯度计算函数
 def _qr_backward_q(result_tensor: TN, i: int) -> TN:
@@ -2931,15 +2735,6 @@ def cholesky(input: TN, upper: bool = False, *, out: TN = None) -> TN:
     if last_dim != second_last_dim:
         raise ValueError(f"Input matrix must be square, got shape {input.shape[-2:]} at last two dimensions")
     
-    # 处理out参数
-    if out is not None:
-        if not isinstance(out, TN):
-            raise TypeError("out must be TN type")
-        if out.shape != input.shape:
-            raise ValueError(f"out has wrong shape: expected {input.shape}, got {out.shape}")
-        if out.requires_grad or input.requires_grad:
-            raise RuntimeError(f"cholesky(): functions with out=... arguments don't support automatic differentiation, but one of the arguments requires grad.")
-    
     # 使用arrlib.linalg.cholesky计算Cholesky分解
     try:
         L_data = arrlib.linalg.cholesky(input._array)
@@ -2962,10 +2757,7 @@ def cholesky(input: TN, upper: bool = False, *, out: TN = None) -> TN:
         result.parms = (upper,)  # 保存upper参数供梯度计算使用
     
     # 处理out参数
-    if out is not None:
-        return out.copy_(result)
-    
-    return result
+    return _apply_out(out, result, (input,), "cholesky")
 
 def _cholesky_backward(result_tensor: TN, i: int) -> TN:
     """Cholesky 分解的反向梯度计算函数。

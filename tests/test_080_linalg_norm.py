@@ -411,8 +411,9 @@ class TestLinalgNorm(unittest.TestCase):
         torch_tensor = torch.tensor(np_data, requires_grad=True)
         
         # 创建输出张量（不设置requires_grad以避免PyTorch的原地操作错误）
-        riemann_out = tensor(np.zeros(()))
-        torch_out = torch.zeros(())
+        # 注意：out 的 dtype 必须与输入一致（torch 对 dtype 不匹配会直接报错）
+        riemann_out = tensor(np.zeros((), dtype=np_data.dtype))
+        torch_out = torch.zeros((), dtype=torch_tensor.dtype)
         
         # 计算riemann的结果
         riemann_result = norm(riemann_tensor, ord=2, out=riemann_out)

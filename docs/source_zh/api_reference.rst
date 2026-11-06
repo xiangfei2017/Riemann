@@ -219,6 +219,23 @@ API 参考
    :return: 填充随机值的张量
    :rtype: riemann.TN
 
+.. function:: riemann.multinomial(input, num_samples, replacement=False, *, generator=None, out=None)
+
+   按照输入张量给出的多项分布权重进行抽样，返回类别的索引。
+
+   :param input: 1-D 或 2-D 的权重张量
+   :type input: riemann.TN
+   :param num_samples: 抽样次数
+   :type num_samples: int
+   :param replacement: 是否为有放回抽样
+   :type replacement: bool, optional
+   :param generator: 随机数生成器，为与 PyTorch 签名兼容而保留，当前忽略
+   :type generator: optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: riemann.TN, optional
+   :return: int64 类型的类别索引张量
+   :rtype: riemann.TN
+
 随机种子控制
 ~~~~~~~~~~~~
 
@@ -477,7 +494,7 @@ API 参考
    :return: 内存连续的张量
    :rtype: riemann.TN
 
-.. function:: riemann.gather(input, dim, index)
+.. function:: riemann.gather(input, dim, index, *, sparse_grad=False, out=None)
 
    沿指定维度收集张量中的元素。
 
@@ -487,6 +504,10 @@ API 参考
    :type dim: int
    :param index: 索引张量
    :type index: riemann.TN
+   :param sparse_grad: 是否对 input 产生稀疏梯度；Riemann 暂不支持，传 True 会抛出 NotImplementedError。
+   :type sparse_grad: bool, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: riemann.TN, optional
    :return: 收集后的张量
    :rtype: riemann.TN
 
@@ -1081,7 +1102,7 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type input: riemann.TN
    :param other: 第二个输入张量
    :type other: riemann.TN
-   :param out: 可选的输出张量，用于存储结果
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
    :type out: riemann.TN, optional
    :return: 克罗内克积结果张量
    :rtype: riemann.TN
@@ -1181,8 +1202,8 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type dim: int, optional
    :param keepdim: 是否保持缩减的维度
    :type keepdim: bool, optional
-   :param out: 输出张量
-   :type out: riemann.TN, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。dim 为 None 时传单个张量；指定 dim 时需传 (values, indices) 二元组。
+   :type out: riemann.TN or tuple of riemann.TN, optional
    :return: 最大值
    :rtype: riemann.TN
 
@@ -1196,8 +1217,8 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type dim: int, optional
    :param keepdim: 是否保持缩减的维度
    :type keepdim: bool, optional
-   :param out: 输出张量
-   :type out: riemann.TN, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。dim 为 None 时传单个张量；指定 dim 时需传 (values, indices) 二元组。
+   :type out: riemann.TN or tuple of riemann.TN, optional
    :return: 最小值
    :rtype: riemann.TN
 
@@ -1553,7 +1574,7 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type min: float, optional
    :param max: 最大值
    :type max: float, optional
-   :param out: 输出张量
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
    :type out: riemann.TN, optional
    :return: 元素被限制在指定范围内的张量
    :rtype: riemann.TN
@@ -1678,7 +1699,7 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :return: 矩阵的上三角部分
    :rtype: riemann.TN
 
-.. function:: riemann.cumsum(input, dim, *, dtype=None)
+.. function:: riemann.cumsum(input, dim, *, dtype=None, out=None)
 
    计算张量沿指定维度的累积和。
 
@@ -1688,6 +1709,8 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type dim: int
    :param dtype: 输出张量的数据类型
    :type dtype: riemann.dtype, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: riemann.TN, optional
    :return: 累积和结果
    :rtype: riemann.TN
 
@@ -1856,8 +1879,8 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type descending: bool, optional
    :param stable: 是否使用稳定排序
    :type stable: bool, optional
-   :param out: 输出张量
-   :type out: riemann.TN, optional
+   :param out: 可选的输出张量元组，元素个数与返回值一致（顺序为 (values, indices)）；每个元素必须是 ``riemann.TN`` 且形状、dtype、device 与对应结果一致；传入时结果写入这些张量并原样返回该元组。任一输入或 out 元素需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: tuple of riemann.TN, optional
    :return: 排序后的张量和索引
    :rtype: riemann.TN, riemann.TN
 
@@ -1873,10 +1896,29 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type descending: bool, optional
    :param stable: 是否使用稳定排序
    :type stable: bool, optional
-   :param out: 输出张量
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
    :type out: riemann.TN, optional
    :return: 排序索引
    :rtype: riemann.TN
+
+.. function:: riemann.topk(input, k, dim=-1, largest=True, sorted=True, *, out=None)
+
+   沿指定维度返回输入张量中 k 个最大（或最小）元素的值和索引。
+
+   :param input: 输入张量，至少为 1 维
+   :type input: riemann.TN
+   :param k: 返回元素的个数
+   :type k: int
+   :param dim: 查找的维度，默认为最后一维
+   :type dim: int, optional
+   :param largest: 为 True 时返回最大的 k 个元素，为 False 时返回最小的 k 个元素
+   :type largest: bool, optional
+   :param sorted: 是否保证返回元素按值有序
+   :type sorted: bool, optional
+   :param out: 可选的输出张量元组，元素个数与返回值一致（顺序为 (values, indices)）；每个元素必须是 ``riemann.TN`` 且形状、dtype、device 与对应结果一致；传入时结果写入这些张量并原样返回该元组。任一输入或 out 元素需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: tuple of riemann.TN, optional
+   :return: (values, indices) 元组
+   :rtype: tuple
 
 原地操作
 ~~~~~~~~
@@ -3090,7 +3132,7 @@ CUDA支持
 矩阵运算
 ~~~~~~~~
 
-.. function:: riemann.linalg.matmul(a, b)
+.. function:: riemann.linalg.matmul(a, b, *, out=None)
 
    计算两个张量的矩阵乘积。
 
@@ -3098,10 +3140,12 @@ CUDA支持
    :type a: riemann.TN
    :param b: 第二个输入张量
    :type b: riemann.TN
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: riemann.TN, optional
    :return: 矩阵乘积结果
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.cross(a, b, dim=-1)
+.. function:: riemann.linalg.cross(a, b, dim=-1, out=None)
 
    计算两个张量的叉积（向量积）。
 
@@ -3111,13 +3155,15 @@ CUDA支持
    :type b: riemann.TN
    :param dim: 计算叉积的维度，默认为-1
    :type dim: int, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: riemann.TN, optional
    :return: 叉积结果
    :rtype: riemann.TN
 
 范数计算
 ~~~~~~~~
 
-.. function:: riemann.linalg.norm(A, ord=None, dim=None, keepdim=False)
+.. function:: riemann.linalg.norm(A, ord=None, dim=None, keepdim=False, out=None, dtype=None)
 
    计算张量或矩阵的范数。
 
@@ -3129,40 +3175,52 @@ CUDA支持
    :type dim: int or tuple, optional
    :param keepdim: 是否保留输出的维度
    :type keepdim: bool, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。输入需要梯度时仍可使用（与 torch 一致），此时 out 通过原地拷贝接入计算图（CopyBackwards）；out 自身 requires_grad=True 时会报错。
+   :type out: riemann.TN, optional
+   :param dtype: 输出张量的数据类型
+   :type dtype: riemann.dtype, optional
    :return: 范数值
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.vector_norm(x, ord=2, dim=None, keepdim=False)
+.. function:: riemann.linalg.vector_norm(x, p=None, dim=None, keepdim=False, out=None, dtype=None)
 
    计算向量范数。
 
    :param x: 输入张量
    :type x: riemann.TN
-   :param ord: 范数的阶，默认为2（L2范数）
-   :type ord: float, optional
+   :param p: 范数的阶，None 表示 2-范数（默认），支持 0、1、2、-1、-2、inf、-inf；不支持 'fro' 与 'nuc'（抛出 ValueError）
+   :type p: int or float or str, optional
    :param dim: 计算范数的维度
    :type dim: int or tuple, optional
    :param keepdim: 是否保留输出的维度
    :type keepdim: bool, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。输入需要梯度时仍可使用（与 torch 一致），此时 out 通过原地拷贝接入计算图（CopyBackwards）；out 自身 requires_grad=True 时会报错。
+   :type out: riemann.TN, optional
+   :param dtype: 输出张量的数据类型
+   :type dtype: riemann.dtype, optional
    :return: 范数值
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.matrix_norm(A, ord='fro', dim=(-2, -1), keepdim=False)
+.. function:: riemann.linalg.matrix_norm(A, p=None, dim=None, keepdim=False, out=None, dtype=None)
 
    计算矩阵范数。
 
    :param A: 输入张量
    :type A: riemann.TN
-   :param ord: 范数的阶，默认为'fro'（Frobenius范数）
-   :type ord: str or int, optional
-   :param dim: 矩阵所在的维度，默认为(-2, -1)
+   :param p: 范数的阶，None 表示 Frobenius 范数（默认），支持 1、2、-1、-2、inf、-inf、'fro'、'nuc'；不支持 0（抛出 ValueError）
+   :type p: str or int or float, optional
+   :param dim: 计算范数的维度，必须是长度为 2 的元组或 None（传入 int 会抛出 ValueError）
    :type dim: tuple, optional
    :param keepdim: 是否保留输出的维度
    :type keepdim: bool, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。输入需要梯度时仍可使用（与 torch 一致），此时 out 通过原地拷贝接入计算图（CopyBackwards）；out 自身 requires_grad=True 时会报错。
+   :type out: riemann.TN, optional
+   :param dtype: 输出张量的数据类型
+   :type dtype: riemann.dtype, optional
    :return: 矩阵范数值
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.cond(A, p=None)
+.. function:: riemann.linalg.cond(A, p=None, *, out=None)
 
    计算矩阵的条件数。
 
@@ -3170,6 +3228,8 @@ CUDA支持
    :type A: riemann.TN
    :param p: 范数类型，默认为None（2-范数条件数）
    :type p: int or float or str, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。输入需要梯度时仍可使用（与 torch 一致），此时 out 通过原地拷贝接入计算图（CopyBackwards）；out 自身 requires_grad=True 时会报错。
+   :type out: riemann.TN, optional
    :return: 条件数
    :rtype: riemann.TN
 
@@ -3212,7 +3272,7 @@ CUDA支持
    :return: 斜对称矩阵
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.svd(A, full_matrices=True)
+.. function:: riemann.linalg.svd(A, full_matrices=True, out=None)
 
    计算矩阵的奇异值分解（SVD）。
 
@@ -3220,33 +3280,43 @@ CUDA支持
    :type A: riemann.TN
    :param full_matrices: 是否返回完整的U和Vh矩阵
    :type full_matrices: bool, optional
+   :param out: 可选的输出张量元组，元素个数与返回值一致（顺序为 (U, S, Vh)）；每个元素必须是 ``riemann.TN`` 且形状、dtype、device 与对应结果一致；传入时结果写入这些张量并原样返回该元组。任一输入或 out 元素需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: tuple of riemann.TN, optional
    :return: (U, S, Vh)元组
    :rtype: tuple
 
-.. function:: riemann.linalg.pinv(A, rcond=1e-15)
+.. function:: riemann.linalg.pinv(A, atol=None, rtol=None, hermitian=False, out=None)
 
    计算矩阵的Moore-Penrose伪逆。
 
-   :param A: 输入矩阵
+   :param A: 输入矩阵，形状为 (\*, m, n)，\* 表示任意数量批处理维度
    :type A: riemann.TN
-   :param rcond: 奇异值阈值
-   :type rcond: float, optional
-   :return: 伪逆矩阵
+   :param atol: 绝对阈值，用于判定奇异值是否为零；为 None 时取 ``最大奇异值 × rtol``
+   :type atol: float, optional
+   :param rtol: 相对阈值，用于判定奇异值是否为零；为 None 时取 ``min(m, n) × eps``
+   :type rtol: float, optional
+   :param hermitian: 是否假设输入为厄米特矩阵或实对称矩阵，默认为 False；为与 torch 签名兼容而保留，当前实现不做特殊处理
+   :type hermitian: bool, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: riemann.TN, optional
+   :return: 伪逆矩阵，形状为 (\*, n, m)
    :rtype: riemann.TN
 
 特征值分解
 ~~~~~~~~~~~~
 
-.. function:: riemann.linalg.eig(A)
+.. function:: riemann.linalg.eig(A, out=None)
 
    计算方阵的特征值和特征向量。
 
    :param A: 输入方阵
    :type A: riemann.TN
+   :param out: 可选的输出张量元组，元素个数与返回值一致（顺序为 (eigenvalues, eigenvectors)）；每个元素必须是 ``riemann.TN`` 且形状、dtype、device 与对应结果一致；传入时结果写入这些张量并原样返回该元组。任一输入或 out 元素需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: tuple of riemann.TN, optional
    :return: (特征值, 特征向量)元组
    :rtype: tuple
 
-.. function:: riemann.linalg.eigh(A, UPLO='L')
+.. function:: riemann.linalg.eigh(A, UPLO='L', out=None)
 
    计算厄米特矩阵（或实对称矩阵）的特征值和特征向量。
 
@@ -3254,26 +3324,30 @@ CUDA支持
    :type A: riemann.TN
    :param UPLO: 指定使用上三角('U')还是下三角('L')部分
    :type UPLO: str, optional
+   :param out: 可选的输出张量元组，元素个数与返回值一致（顺序为 (eigenvalues, eigenvectors)）；每个元素必须是 ``riemann.TN`` 且形状、dtype、device 与对应结果一致；传入时结果写入这些张量并原样返回该元组。任一输入或 out 元素需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: tuple of riemann.TN, optional
    :return: (特征值, 特征向量)元组
    :rtype: tuple
 
 线性方程组求解
 ~~~~~~~~~~~~~~~~
 
-.. function:: riemann.linalg.lstsq(A, b, rcond=None)
+.. function:: riemann.linalg.lstsq(A, B, *, rcond=None, out=None)
 
    计算最小二乘解。
 
-   :param A: 系数矩阵
+   :param A: 系数矩阵，形状为 (\*, m, n)
    :type A: riemann.TN
-   :param b: 右侧向量或矩阵
-   :type b: riemann.TN
-   :param rcond: 奇异值阈值
+   :param B: 观测值向量或矩阵，形状为 (\*, m) 或 (\*, m, k)
+   :type B: riemann.TN
+   :param rcond: 相对条件数阈值，用于奇异值截断（仅关键字参数）；为 None 时取 ``max(m, n) × eps``
    :type rcond: float, optional
-   :return: 最小二乘解
-   :rtype: riemann.TN
+   :param out: 可选的输出张量元组，元素个数与返回值一致（顺序为 (solution, residuals, rank, singular_values)）；每个元素必须是 ``riemann.TN`` 且形状、dtype、device 与对应结果一致；传入时结果写入这些张量并原样返回该元组。任一输入或 out 元素需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: tuple of riemann.TN, optional
+   :return: (最小二乘解, 残差平方和, 秩, 奇异值) 元组
+   :rtype: tuple
 
-.. function:: riemann.linalg.lu(A, pivot=True)
+.. function:: riemann.linalg.lu(A, pivot=True, out=None)
 
    计算矩阵的LU分解。
 
@@ -3281,10 +3355,12 @@ CUDA支持
    :type A: riemann.TN
    :param pivot: 是否进行主元选取
    :type pivot: bool, optional
+   :param out: 可选的输出张量元组，元素个数与返回值一致（顺序为 (P, L, U)）；每个元素必须是 ``riemann.TN`` 且形状、dtype、device 与对应结果一致；传入时结果写入这些张量并原样返回该元组。任一输入或 out 元素需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: tuple of riemann.TN, optional
    :return: (P, L, U)元组
    :rtype: tuple
 
-.. function:: riemann.linalg.solve(A, b)
+.. function:: riemann.linalg.solve(A, b, out=None)
 
    求解线性方程组 Ax = b。
 
@@ -3292,10 +3368,12 @@ CUDA支持
    :type A: riemann.TN
    :param b: 右侧向量或矩阵
    :type b: riemann.TN
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: riemann.TN, optional
    :return: 解向量或矩阵
    :rtype: riemann.TN
 
-.. function:: riemann.linalg.qr(A, mode='reduced')
+.. function:: riemann.linalg.qr(A, mode='reduced', out=None)
 
    计算矩阵的QR分解。
 
@@ -3303,10 +3381,12 @@ CUDA支持
    :type A: riemann.TN
    :param mode: 分解模式，'reduced'或'complete'
    :type mode: str, optional
+   :param out: 可选的输出张量元组，元素个数与返回值一致（顺序为 (Q, R)）；每个元素必须是 ``riemann.TN`` 且形状、dtype、device 与对应结果一致；传入时结果写入这些张量并原样返回该元组。任一输入或 out 元素需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: tuple of riemann.TN, optional
    :return: (Q, R)元组
    :rtype: tuple
 
-.. function:: riemann.linalg.cholesky(A, upper=False)
+.. function:: riemann.linalg.cholesky(A, upper=False, out=None)
 
    计算正定矩阵的Cholesky分解。
 
@@ -3314,6 +3394,8 @@ CUDA支持
    :type A: riemann.TN
    :param upper: 是否返回上三角矩阵，默认为False（下三角）
    :type upper: bool, optional
+   :param out: 可选的输出张量。必须是 ``riemann.TN``，且形状、dtype、device 与计算结果一致；传入时计算结果写入该张量并返回该张量本身。任一输入或 out 自身需要梯度时不支持该参数（抛出 RuntimeError）。
+   :type out: riemann.TN, optional
    :return: Cholesky因子
    :rtype: riemann.TN
 

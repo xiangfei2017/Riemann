@@ -1275,9 +1275,19 @@ func 模块求导函数
 
     riemann.func.grad_and_value(func, argnums=0, has_aux=False, create_graph=False) -> Callable
 
-**参数**: 与 ``func.grad`` 相同（``argnums`` 非法取值在调用导函数时抛 ``RuntimeError``）
+**参数**: 与 ``func.grad`` 相同，逐项说明如下：
 
-**返回**: ``func`` 的导函数（一个函数对象），它接受与 ``func`` 相同的参数，调用时返回 ``(grad_result, value)``；``has_aux=True`` 时返回 ``(grad_result, value, aux)``。``grad_result`` 的形态由 ``argnums`` 决定（同 ``func.grad``）
+- func：可微函数，输出必须是标量张量（``ndim == 0``），否则抛出 ``RuntimeError``
+- argnums：需要求导的参数位置，整数或整数元组，默认 ``0``；整数表示只对该位置求导，整数元组表示对多个位置分别求导；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``
+- has_aux：为 ``True`` 时 ``func`` 必须返回 ``(value, aux)`` 二元组，``value`` 是参与求导的标量输出，``aux`` 是不参与求导、原样透传的辅助结果
+- create_graph：为 ``True`` 时梯度张量保留计算图，可继续求高阶导数
+
+**返回**: ``func`` 的导函数（一个函数对象），它接受与 ``func`` 相同的参数。调用导函数时返回：
+
+- ``has_aux=False``：``(grad_result, value)``
+- ``has_aux=True``：``(grad_result, value, aux)``
+
+其中 ``value`` 是 ``func`` 的前向输出（标量张量），``aux`` 是原样透传的辅助结果；``grad_result`` 的形态由 ``argnums`` 决定（同 ``func.grad``：1 个位置为单个梯度张量，多个位置为梯度元组）
 
 **示例**: 
 
@@ -1307,13 +1317,20 @@ func 模块求导函数
 
 **参数**: 
 
-- func：可微函数
-- primals：函数输入（单个张量或元组/list）
-- tangents：与 primals 形状相同的切向量
-- create_graph（bool）：是否追踪 JVP 结果，支持高阶微分
-- strict（bool）：严格模式，cross-JVP 非零时报错
+- func：可微函数，输入为一个或多个张量，输出可为单个张量或张量元组（输出可以是标量，也可以是非标量）
+- primals：**求值点** (primal point)，即函数的前向输入，单个张量或元组/list（与 ``func`` 的多输入一一对应）。数学上 ``primal`` 指“原始值” x₀，与之相对的是无穷小扰动项（tangent）；传入的张量不需要 ``requires_grad=True``，内部会自动处理
+- tangents：**切向量** (tangent vector)，与 ``primals`` 逐项对应的扰动方向 v，要求每一项的形状与对应输入完全相同（否则抛 ``RuntimeError``）；单输入时传单个张量，多输入时须传与 ``primals`` 等长的元组/list。把输入看成一条过求值点的曲线 x(t) = x₀ + t·v，那么 v 就是该曲线在 t = 0 处的切向量，而 JVP 正是沿该切向的方向导数：
 
-**返回**: ``(output, jvp_result)`` — 输出值和 JVP 结果（单输入为单个张量，多输入为元组）
+  ``JVP = J(x₀)·v = d/dt f(x₀ + t·v) |_(t=0)``
+
+  即“雅可比矩阵 × 切向量”，结果是输出空间中曲线 f(x₀ + t·v) 在 t = 0 处的切向量——这也正是（前向模式）自动微分的传播方式
+- create_graph（bool，默认 ``False``）：为 ``True`` 时 JVP 结果保留计算图且可继续求导（支持高阶微分）；``False`` 时结果不带梯度追踪
+- strict（bool，默认 ``False``）：严格模式。当某个输出与某个输入完全无关（该输入对应梯度为 ``None``）时，``False`` 按数学语义贡献 0；``True`` 则抛出 ``RuntimeError``
+
+**返回**: 二元组 ``(output, jvp_result)``
+
+- ``output``：**前向计算的输出值**，即 ``func(*primals)`` 的结果（单输出为一个张量，多输出为张量元组）。它只是求值点处的函数值，与导数无关，随返回值一并给出是为了避免重复执行前向计算
+- ``jvp_result``：JVP 结果 ``J(x₀)·v``，**形状与 output 相同**；单输出时为单个张量，多输出时为与 output 逐项对应的元组
 
 **示例**: 
 
@@ -1329,7 +1346,7 @@ func 模块求导函数
     v = rm.tensor([0.5, 1., 0.5], requires_grad=False)
 
     out, jvp_val = func.jvp(f, x, v)
-    print(out)      # [1., 8., 27.]
+    print(out)      # [1., 8., 27.] —— 前向输出 f(x)
     print(jvp_val)  # 3*x^2 * v = [3*0.5, 12*1, 27*0.5] = [1.5, 12., 13.5]
 
     # 多输入
@@ -1357,9 +1374,22 @@ func 模块求导函数
 
 **参数**: 
 
-- cotangents（可选）：输出空间的向量。为 ``None`` 时自动填全 1（对齐 torch.func.vjp 行为）
+- func：可微函数，输入为一个或多个张量，输出可为单个张量或张量元组（输出可以是标量，也可以是非标量）
+- primals：**求值点** (primal point)，即函数的前向输入，单个张量或元组/list（与 ``func`` 的多输入一一对应）。与 JVP 中的 ``primals`` 含义相同，是未加扰动的“原始值” x₀；不需要 ``requires_grad=True``，内部会自动处理
+- cotangents：**余切向量** (cotangent vector)，输出空间的权向量 w，与 ``func`` 的每个输出逐项对应，且形状必须与对应输出完全相同（否则抛 ``RuntimeError``）；单输出时传单个张量，多输出时传与输出等长的元组/list。为 ``None`` 时自动按输出形状填全 1（标量输出填标量 1，对齐 ``torch.func.vjp`` 行为）。
 
-**返回**: ``(output, vjp_result)``
+  数学上，前向的雅可比 J 把输入切向量映射为输出切向量，而余切向量属于输出切空间的**对偶空间**：它不表示“往哪个方向走”，而是一个线性泛函，作用在输出增量 dy 上给出标量 wᵀ·dy。VJP 计算的就是
+
+  ``VJP = wᵀ·J(x₀)``
+
+  它等价于标量函数 L(x) = wᵀ·f(x) 在 x₀ 处的梯度 ``∇L(x₀)``。反向模式自动微分每一步传播的正是这种余切向量（即通常所说的“上游梯度”），因此 VJP 是反向模式的核心原语
+- create_graph（bool，默认 ``False``）：为 ``True`` 时 ``output`` 与 ``vjp_result`` 均以可微方式计算（保留计算图），可继续求高阶导数；``False`` 时结果不带梯度追踪
+- strict（bool，默认 ``False``）：严格模式。当某个输入与所有输出都无关（梯度为 ``None``）时，``False`` 返回同形状零张量（数学上 VJP 即为 0）；``True`` 则抛出 ``RuntimeError``
+
+**返回**: 二元组 ``(output, vjp_result)``
+
+- ``output``：**前向计算的输出值**，即 ``func(*primals)`` 的结果（单输出为一个张量，多输出为张量元组）。它只是求值点处的函数值，与导数无关，随返回值一并给出是为了避免重复执行前向计算
+- ``vjp_result``：VJP 结果 ``wᵀ·J(x₀)``，形状与对应输入相同；单输入时为单个张量，多输入时为与 ``primals`` 逐项对应的元组。当 ``func`` 输出为标量且 ``cotangents=None`` 时（即 w = 1），它就退化为普通梯度
 
 **示例**: 
 
@@ -1375,6 +1405,7 @@ func 模块求导函数
 
     # 默认 cotangent=None 等价于 [1., 1., 1.]
     out, vjp_val = func.vjp(f, x)
+    print(out)      # 20.0 —— 前向输出 f(x)
     print(vjp_val)  # 2x + 1 = [3., 5., 7.]
 
     # 自定义 cotangent（标量输出对应标量 cotangent，相当于把函数输出加权求和）
@@ -1405,8 +1436,12 @@ func 模块求导函数
 
 **参数**: 
 
-- func：可微函数
+- func：可微函数，输入为一个或多个张量，输出可为单个张量或张量元组
 - argnums：需要计算 Jacobian 的输入位置，整数或整数元组，默认 ``0``；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``，错误信息与 ``torch.func`` 一致（``torch.func.jacrev`` 对 ``()`` 和 ``None`` 均抛 ``RuntimeError``；``torch.func.jacfwd`` 对 ``()`` 抛 ``RuntimeError``，对 ``None`` 则按全部参数求导）
+- create_graph（bool，默认 ``False``）：为 ``True`` 时 Jacobian 的每个元素都保留计算图，可再对其求导（例如 ``func.jacrev(func.jacrev(f, create_graph=True))`` 得到二阶导数）
+- strict（bool，默认 ``True``，仅 ``jacrev`` 支持）：严格模式。当某个输出与某个输入完全无关（该输入对应的梯度为 ``None``）时，``True`` 抛出 ``RuntimeError``；``False`` 时该部分按数学语义填 0。``jacfwd`` 内部通过 ``vmap+jvp`` 实现，没有此参数
+
+**返回**: 一个包裹函数，接受与 ``func`` 相同的参数；调用后返回 Jacobian 矩阵（形状见下）。只含 1 个参数位置时返回单个张量，含多个位置时返回元组（顺序与 ``argnums`` 一致）；``jacfwd`` 在 ``argnums=None`` 时按全部参数求导，此时即使只有 1 个参数也返回元组
 
 **返回形状**: 对于输出形状 ``(y1, y2, ...)`` 和输入形状 ``(x1, x2, ...)``，
 Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
@@ -1447,8 +1482,12 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 **参数**: 
 
-- func：可微函数，输出必须是标量张量
+- func：可微函数，输出必须是标量张量（``ndim == 0``），向量输出会抛 ``RuntimeError``
 - argnums：需要计算 Hessian 的输入位置，整数或整数元组，默认 ``0``；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``，错误信息与 ``torch.func.hessian`` 一致
+- create_graph（bool，默认 ``False``）：为 ``True`` 时 Hessian 的每个元素都保留计算图，可继续求高阶导数；``False`` 时结果不带梯度追踪
+- strict（bool，默认 ``True``）：严格模式。当函数对某个输入的梯度为 ``None``（即输出与该输入无关）时报错；当 ``argnums`` 未覆盖全部参数时，内部会自动放宽为 ``False``
+
+**返回**: 一个包裹函数，接受与 ``func`` 相同的参数；调用后返回 Hessian 矩阵。只含 1 个参数位置时返回单个张量，含多个位置时返回元组（顺序与 ``argnums`` 一致）
 
 **返回形状**: 对于形状 ``(n,)`` 的输入，Hessian 形状为 ``(n, n)``。
 
@@ -1483,10 +1522,13 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 **参数**: 
 
-- in_dims：每个输入的批次维度。
+- func：需要被批处理的函数。它作用于单个样本（形如 ``func(x)``），输入/输出可以是张量或张量元组
+- in_dims：每个输入的批次维度，默认 ``0``。
   - ``int``：所有输入共用该维度位置
   - ``tuple[int|None, ...]``：每个输入各自的维度位置；``None`` 表示该输入不批处理（直接透传，适合模型参数等共享量）
-- out_dims：每个输出的批次维度，语义同 ``in_dims``
+- out_dims：每个输出的批次维度，默认 ``0``，语义同 ``in_dims``；返回的每个输出都会沿该维度堆叠
+
+**返回**: 一个包裹函数，接受带批次维的输入，返回带批次维的输出。单输出时返回单个张量，多输出（tuple）时返回与之结构相同的元组
 
 **示例**: 
 
@@ -1548,8 +1590,11 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 **参数**: 
 
 - module：带有 ``forward`` 和 ``named_parameters`` 方法的对象（通常是 ``riemann.nn.Module``）
-- parameter_values：与 ``module.named_parameters()`` 顺序一致的参数值（list/tuple/TN）
-- args / **kwargs**: ``forward`` 的位置参数和关键字参数
+- parameter_values：与 ``module.named_parameters()`` 顺序一致的参数值（list/tuple/TN）；为 ``None`` 时直接使用 Module 自身参数（退化为普通 ``forward`` 调用）；长度与参数数量不一致时抛 ``ValueError``
+- args：传给 ``forward`` 的位置参数；传入单个张量时会自动包装成单元素元组，传入 list 会转成 tuple
+- kwargs（dict，可选，默认 ``None``）：传给 ``forward`` 的关键字参数字典
+
+**返回**: ``module.forward(*args, **kwargs)`` 的返回值（单输出为张量，多输出为元组，具体由 Module 自身的 ``forward`` 决定）
 
 **示例**: 
 
