@@ -1,4 +1,4 @@
-"""索引操作测试脚本（合并 getitem / scatter / gather 三类用例组）
+"""索引操作测试脚本（合并 getitem / scatter / gather / index_select / masked_select / take / index_put_ 用例组）
 
 - 独立运行: python tests/test_006_index_oper.py
   每个用例组输出子用例结果，执行结束打印统计表格
@@ -413,6 +413,251 @@ GATHER_CASES = [
 
 
 # =============================================================================
+# index_select 用例组
+# =============================================================================
+INDEX_SELECT_CASES = [
+    {"name": "1D dim=0 基础选择", "input": [1.0, 2.0, 3.0, 4.0], "dim": 0, "index": [2, 0], "grad": True},
+    {"name": "1D 重复索引梯度累加", "input": [1.0, 2.0, 3.0], "dim": 0, "index": [0, 0, 2], "grad": True},
+    {"name": "2D dim=0 行选择", "input": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], "dim": 0,
+     "index": [2, 0, 1], "grad": True},
+    {"name": "2D dim=1 列选择", "input": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "dim": 1,
+     "index": [2, 0], "grad": True},
+    {"name": "3D dim=1 中间维选择", "input": np.arange(24, dtype=np.float32).reshape(2, 3, 4), "dim": 1,
+     "index": [2, 0, 1], "grad": True},
+    {"name": "负维度 dim=-1", "input": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "dim": -1,
+     "index": [1, 0], "grad": True},
+    {"name": "空索引", "input": [[1.0, 2.0, 3.0]], "dim": 1, "index": [], "grad": True},
+    {"name": "单元素索引", "input": [[1.0, 2.0], [3.0, 4.0]], "dim": 0, "index": [1], "grad": True},
+    {"name": "整型输入", "input": np.arange(6).reshape(2, 3), "dim": 0, "index": [1, 1],
+     "dtype": np.int64},
+]
+
+
+# =============================================================================
+# masked_select 用例组
+# =============================================================================
+MASKED_SELECT_CASES = [
+    {"name": "1D 掩码选择", "input": [1.0, -2.0, 3.0, -4.0],
+     "mask": [True, False, True, False], "grad": True},
+    {"name": "2D 同形状掩码", "input": [[1.0, -2.0, 3.0], [-4.0, 5.0, -6.0]],
+     "mask": [[True, False, True], [False, True, False]], "grad": True},
+    {"name": "行掩码广播", "input": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+     "mask": [True, False, True], "grad": True},
+    {"name": "列掩码广播", "input": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+     "mask": [[True], [False]], "grad": True},
+    {"name": "全False空结果", "input": [[1.0, 2.0], [3.0, 4.0]],
+     "mask": [[False, False], [False, False]], "grad": True},
+    {"name": "全True", "input": [[1.0, 2.0], [3.0, 4.0]],
+     "mask": [[True, True], [True, True]], "grad": True},
+    {"name": "3D 掩码", "input": np.arange(8, dtype=np.float32).reshape(2, 2, 2),
+     "mask": (np.arange(8).reshape(2, 2, 2) % 2 == 0), "grad": True},
+    {"name": "0维输入True", "input": 3.5, "mask": True, "grad": True},
+    {"name": "0维输入False", "input": 3.5, "mask": False, "grad": True},
+    {"name": "整型输入", "input": np.arange(6).reshape(2, 3),
+     "mask": (np.arange(6).reshape(2, 3) % 2 == 0), "dtype": np.int64},
+]
+
+
+# =============================================================================
+# take 用例组
+# =============================================================================
+TAKE_CASES = [
+    {"name": "1D 基础", "input": [1.0, 2.0, 3.0, 4.0], "index": [2, 0, 3], "grad": True},
+    {"name": "重复索引梯度累加", "input": [1.0, 2.0, 3.0], "index": [0, 0, 2], "grad": True},
+    {"name": "2D输入扁平化", "input": [[1.0, 2.0], [3.0, 4.0]], "index": [3, 1, 2], "grad": True},
+    {"name": "二维索引输出", "input": np.arange(6, dtype=np.float32).reshape(2, 3),
+     "index": [[0, 5], [3, 1]], "grad": True},
+    {"name": "0维标量索引", "input": np.arange(6, dtype=np.float32).reshape(2, 3),
+     "index": np.array(4, dtype=np.int64), "grad": True},
+    {"name": "空索引", "input": [[1.0, 2.0], [3.0, 4.0]], "index": [], "grad": True},
+    {"name": "单元素输入", "input": [5.0], "index": [0, 0], "grad": True},
+    {"name": "最大索引", "input": [[1.0, 2.0], [3.0, 4.0]], "index": [3], "grad": True},
+    {"name": "整型输入", "input": np.arange(6).reshape(2, 3), "index": [4, 0],
+     "dtype": np.int64},
+]
+
+
+# =============================================================================
+# index_put_ 用例组
+# =============================================================================
+INDEX_PUT_CASES = [
+    {"name": "1D 覆盖写入", "input": [1.0, 2.0, 3.0, 4.0], "indices": [[0, 2]],
+     "values": [10.0, 20.0], "accumulate": False, "grad": True},
+    {"name": "1D 累加写入重复索引", "input": [1.0, 2.0, 3.0], "indices": [[1, 1]],
+     "values": [10.0, 20.0], "accumulate": True, "grad": True},
+    {"name": "1D 覆盖重复索引（最后写入生效）", "input": [1.0, 2.0, 3.0],
+     "indices": [[1, 1]], "values": [10.0, 20.0], "accumulate": False, "grad": True},
+    {"name": "2D 对角写入", "input": [[1.0, 2.0], [3.0, 4.0]],
+     "indices": [[0, 1], [1, 0]], "values": [10.0, 20.0], "accumulate": False, "grad": True},
+    {"name": "2D 行选择写入", "input": np.arange(12, dtype=np.float32).reshape(3, 4),
+     "indices": [[0, 2]], "values": [[10.0, 20.0, 30.0, 40.0], [50.0, 60.0, 70.0, 80.0]],
+     "accumulate": False, "grad": True},
+    {"name": "0维值广播", "input": [[1.0, 2.0], [3.0, 4.0]],
+     "indices": [[0, 1], [1, 0]], "values": 5.0, "accumulate": False, "grad": True},
+    {"name": "累加时0维值广播到重复行", "input": np.zeros((3, 4), dtype=np.float32),
+     "indices": [[1, 1]], "values": 2.0, "accumulate": True, "grad": True},
+    {"name": "布尔掩码写入", "input": [[1.0, 2.0], [3.0, 4.0]],
+     "indices": [[[True, False], [False, True]], ], "values": 0.0,
+     "accumulate": False, "grad": True, "mask_indices": True},
+    {"name": "整型输入", "input": np.arange(6).reshape(2, 3),
+     "indices": [[0, 1], [2, 0]], "values": [100, 200], "accumulate": False,
+     "dtype": np.int64},
+]
+
+
+# =============================================================================
+# 新增函数的边界/错误用例组
+# =============================================================================
+INDEX_SELECT_EDGE_CASES = [
+    {"name": "out参数正常写入", "kind": "out",
+     "input": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "dim": 1, "index": [2, 0]},
+    {"name": "requires_grad输入与out报错", "kind": "out_grad_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "dim": 0, "index": [1]},
+    {"name": "越界索引报错", "kind": "range_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "dim": 0, "index": [2]},
+    {"name": "负索引报错", "kind": "range_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "dim": 0, "index": [-1]},
+    {"name": "非一维索引报错", "kind": "index_ndim_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "dim": 0, "index": [[0, 1]]},
+    {"name": "非连续输入", "kind": "non_contiguous",
+     "input": np.arange(12, dtype=np.float32).reshape(3, 4), "dim": 0, "index": [2, 0]},
+]
+
+MASKED_SELECT_EDGE_CASES = [
+    {"name": "out参数正常写入", "kind": "out",
+     "input": [[1.0, -2.0, 3.0], [4.0, -5.0, 6.0]],
+     "mask": [[True, False, True], [False, False, True]]},
+    {"name": "requires_grad输入与out报错", "kind": "out_grad_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "mask": [[True, False], [False, True]]},
+    {"name": "非布尔掩码报错", "kind": "mask_dtype_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "mask": np.array([[1, 0], [0, 1]], dtype=np.int64)},
+    {"name": "掩码无法广播报错", "kind": "mask_broadcast_error",
+     "input": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "mask": [True, False]},
+    {"name": "非连续输入", "kind": "non_contiguous",
+     "input": np.arange(12, dtype=np.float32).reshape(3, 4),
+     "mask": (np.arange(12).reshape(3, 4) % 2 == 0)},
+]
+
+TAKE_EDGE_CASES = [
+    {"name": "负索引与梯度", "kind": "normal",
+     "input": np.arange(6, dtype=np.float32).reshape(2, 3), "index": [-1, -3, 2]},
+    {"name": "越界索引报错", "kind": "range_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "index": [4]},
+    {"name": "过小负索引报错", "kind": "range_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "index": [-5]},
+    {"name": "非连续输入", "kind": "non_contiguous",
+     "input": np.arange(6, dtype=np.float32).reshape(2, 3), "index": [5, 0, 3, 3]},
+    {"name": "2D重复索引梯度", "kind": "normal",
+     "input": [1.0, 2.0, 3.0], "index": [[0, 0], [2, 2]]},
+]
+
+INDEX_PUT_EDGE_CASES = [
+    {"name": "索引广播写入", "kind": "broadcast_indices",
+     "input": np.arange(12, dtype=np.float32).reshape(3, 4),
+     "indices": [np.array([[0], [2]], dtype=np.int64), np.array([[1, 2, 3]], dtype=np.int64)],
+     "values": np.arange(6, dtype=np.float32).reshape(2, 3) + 10.0, "accumulate": False},
+    {"name": "对base与values的梯度", "kind": "base_grad",
+     "input": [[1.0, 2.0], [3.0, 4.0]],
+     "indices": [np.array([0, 1], dtype=np.int64), np.array([1, 0], dtype=np.int64)],
+     "values": [10.0, 20.0], "accumulate": False},
+    {"name": "叶子张量原地写入报错", "kind": "leaf_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]],
+     "indices": [np.array([0], dtype=np.int64)], "values": 5.0, "accumulate": False},
+    {"name": "空索引无操作", "kind": "empty",
+     "input": [1.0, 2.0, 3.0], "indices": [np.array([], dtype=np.int64)],
+     "values": np.array([], dtype=np.float32), "accumulate": False},
+    {"name": "负索引写入", "kind": "negative",
+     "input": np.arange(12, dtype=np.float32).reshape(3, 4),
+     "indices": [np.array([-1], dtype=np.int64), np.array([-1], dtype=np.int64)],
+     "values": [99.0], "accumulate": False},
+    {"name": "越界索引报错", "kind": "index_range_error",
+     "input": [1.0, 2.0, 3.0], "indices": [np.array([3], dtype=np.int64)],
+     "values": [5.0], "accumulate": False},
+    {"name": "values形状过大报错", "kind": "values_shape_error",
+     "input": [1.0, 2.0, 3.0], "indices": [np.array([0], dtype=np.int64)],
+     "values": [1.0, 2.0], "accumulate": False},
+    {"name": "values无法广播报错", "kind": "values_shape_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]],
+     "indices": [np.array([0], dtype=np.int64), np.array([1], dtype=np.int64)],
+     "values": [[1.0, 2.0], [3.0, 4.0]], "accumulate": False},
+]
+
+
+# =============================================================================
+# 新增函数的中级用例组：dtype、高维与空输入
+# =============================================================================
+INDEX_SELECT_MEDIUM_CASES = [
+    {"name": "int32索引", "input": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], "dim": 1,
+     "index": [2, 0], "index_dtype": np.int32, "grad": True},
+    {"name": "float64输入", "input": [[1.0, 2.0], [3.0, 4.0]], "dim": 0,
+     "index": [1, 0], "dtype": np.float64, "grad": True},
+    {"name": "布尔输入", "input": [[True, False], [False, True]], "dim": 0,
+     "index": [1, 0], "dtype": np.bool_},
+    {"name": "int32输入", "input": np.arange(6, dtype=np.int32).reshape(2, 3), "dim": 0,
+     "index": [1, 1], "dtype": np.int32},
+    {"name": "4D输入", "input": np.arange(24, dtype=np.float32).reshape(2, 3, 4, 1), "dim": 2,
+     "index": [2, 0, 3], "grad": True},
+    {"name": "空维度+空索引", "input": np.zeros((2, 0, 3), dtype=np.float32), "dim": 1,
+     "index": [], "grad": True},
+    {"name": "空维度+非空索引报错", "kind": "range_error",
+     "input": np.zeros((2, 0, 3), dtype=np.float32), "dim": 1, "index": [0]},
+]
+
+MASKED_SELECT_MEDIUM_CASES = [
+    {"name": "float64输入", "input": [[1.0, -2.0], [3.0, -4.0]],
+     "mask": [[True, False], [False, True]], "dtype": np.float64, "grad": True},
+    {"name": "布尔输入", "input": [[True, False], [False, True]],
+     "mask": [[True, False], [False, True]], "dtype": np.bool_},
+    {"name": "int32输入", "input": np.arange(6, dtype=np.int32).reshape(2, 3),
+     "mask": (np.arange(6).reshape(2, 3) % 2 == 0), "dtype": np.int32},
+    {"name": "高维广播", "input": np.arange(24, dtype=np.float32).reshape(4, 2, 3),
+     "mask": np.array([[True, False, True], [False, True, False]]), "grad": True},
+    {"name": "首维广播", "input": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+     "mask": [[True, True, True]], "grad": True},
+    {"name": "空输入", "input": np.zeros((0,), dtype=np.float32),
+     "mask": np.zeros((0,), dtype=np.bool_), "grad": True},
+    {"name": "空2D输入", "input": np.zeros((0, 3), dtype=np.float32),
+     "mask": np.zeros((0, 3), dtype=np.bool_), "grad": True},
+]
+
+TAKE_MEDIUM_CASES = [
+    {"name": "float64输入", "input": [[1.0, 2.0], [3.0, 4.0]], "index": [3, 0],
+     "dtype": np.float64, "grad": True},
+    {"name": "布尔输入", "input": [True, False, True], "index": [2, 0],
+     "dtype": np.bool_},
+    {"name": "int32输入", "input": np.arange(6, dtype=np.int32).reshape(2, 3),
+     "index": [4, 1], "dtype": np.int32},
+    {"name": "4D输入", "input": np.arange(24, dtype=np.float32).reshape(2, 3, 4, 1),
+     "index": [23, 0, 12], "grad": True},
+    {"name": "4D索引", "input": [[1.0, 2.0], [3.0, 4.0]],
+     "index": (np.arange(16).reshape(2, 2, 2, 2) % 4), "grad": True},
+    {"name": "空输入+空索引", "input": np.zeros((0,), dtype=np.float32),
+     "index": [], "grad": True},
+    {"name": "0维输入+0索引", "input": 7.0, "index": 0, "grad": True},
+]
+
+INDEX_PUT_MEDIUM_CASES = [
+    {"name": "3D三元索引", "input": np.arange(24, dtype=np.float32).reshape(2, 3, 4),
+     "indices": [np.array([0, 1], dtype=np.int64), np.array([2, 0], dtype=np.int64),
+                 np.array([3, 1], dtype=np.int64)],
+     "values": [10.0, 20.0], "accumulate": False, "grad": True},
+    {"name": "float64输入与values", "input": [[1.0, 2.0], [3.0, 4.0]],
+     "indices": [np.array([0, 1], dtype=np.int64), np.array([1, 0], dtype=np.int64)],
+     "values": [10.0, 20.0], "dtype": np.float64, "grad": True, "accumulate": False},
+    {"name": "int32输入", "input": np.arange(6, dtype=np.int32).reshape(2, 3),
+     "indices": [np.array([0, 1], dtype=np.int64), np.array([2, 0], dtype=np.int64)],
+     "values": np.array([100, 200], dtype=np.int32), "dtype": np.int32,
+     "grad": False, "accumulate": False},
+    {"name": "values整型不匹配报错", "kind": "dtype_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "indices": [np.array([0], dtype=np.int64)],
+     "values": [5], "values_dtype": np.int64, "accumulate": False},
+    {"name": "values float64不匹配报错", "kind": "dtype_error",
+     "input": [[1.0, 2.0], [3.0, 4.0]], "indices": [np.array([0], dtype=np.int64)],
+     "values": [5.0], "values_dtype": np.float64, "accumulate": False},
+]
+
+
+# =============================================================================
 # 测试基类：统一设备调度、子用例执行、结果记录与统计
 # =============================================================================
 
@@ -493,6 +738,65 @@ class IndexOperTestBase(unittest.TestCase):
         )
 
     @classmethod
+    def _make_rm_mask(cls, np_array, device):
+        return cls._ensure_placement(
+            rm_tensor(np.asarray(np_array, dtype=np.bool_), device=device),
+            device, "Riemann掩码张量"
+        )
+
+    @classmethod
+    def _make_torch_bool(cls, np_array, device):
+        return cls._ensure_placement(
+            torch.tensor(np.asarray(np_array, dtype=np.bool_), dtype=torch.bool, device=device),
+            device, "PyTorch掩码张量"
+        )
+
+    def _make_input_pair(self, np_input, device, dtype=np.float32, requires_grad=True):
+        """按 dtype 构造 Riemann/PyTorch 输入对；整型/布尔输入不参与梯度"""
+        dtype = np.dtype(dtype)
+        data = np.asarray(np_input)
+        if dtype == np.float32:
+            rm_input = self._make_rm_float(data.astype(np.float32), device, requires_grad=requires_grad)
+            torch_input = (
+                self._make_torch_float(data.astype(np.float32), device, requires_grad=requires_grad)
+                if TORCH_AVAILABLE else None
+            )
+            return rm_input, torch_input, bool(requires_grad)
+
+        if dtype == np.float64:
+            rm_input = self._ensure_placement(
+                rm_tensor(data.astype(np.float64), requires_grad=bool(requires_grad), device=device),
+                device, "Riemann输入张量"
+            )
+            torch_input = (
+                torch.tensor(
+                    data.astype(np.float64), dtype=torch.float64,
+                    requires_grad=bool(requires_grad), device=device
+                ) if TORCH_AVAILABLE else None
+            )
+            return rm_input, torch_input, bool(requires_grad)
+
+        if dtype == np.bool_:
+            rm_input = self._ensure_placement(
+                rm_tensor(data.astype(np.bool_), device=device), device, "Riemann布尔输入张量"
+            )
+            torch_input = (
+                torch.tensor(data.astype(np.bool_), dtype=torch.bool, device=device)
+                if TORCH_AVAILABLE else None
+            )
+            return rm_input, torch_input, False
+
+        torch_int_dtype = torch.int32 if dtype == np.int32 else torch.long
+        rm_input = self._ensure_placement(
+            rm_tensor(data.astype(dtype), device=device), device, "Riemann输入张量"
+        )
+        torch_input = (
+            torch.tensor(data.astype(dtype), dtype=torch_int_dtype, device=device)
+            if TORCH_AVAILABLE else None
+        )
+        return rm_input, torch_input, False
+
+    @classmethod
     def _make_torch_float(cls, np_array, device, requires_grad=True):
         return cls._ensure_placement(
             torch.tensor(np_array, requires_grad=requires_grad, dtype=torch.float32, device=device),
@@ -524,6 +828,25 @@ class IndexOperTestBase(unittest.TestCase):
         for label, rm_input, torch_input in grad_pairs:
             if not compare_values(rm_input.grad, torch_input.grad):
                 failures.append(f"{label}梯度比较失败")
+
+    def _check_both_raise(self, failures, label, rm_call, torch_call):
+        """校验 Riemann 与 PyTorch 在非法输入下均抛出异常"""
+        rm_raised = False
+        try:
+            rm_call()
+        except Exception:
+            rm_raised = True
+        if not rm_raised:
+            failures.append(f"{label}: Riemann未抛出异常")
+
+        if TORCH_AVAILABLE:
+            torch_raised = False
+            try:
+                torch_call()
+            except Exception:
+                torch_raised = True
+            if not torch_raised:
+                failures.append(f"{label}: PyTorch未抛出异常")
 
     def _check_rm_device(self, failures, device, rm_obj, label):
         """检查Riemann侧计算结果（含梯度）仍位于目标设备"""
@@ -1001,6 +1324,722 @@ class TestGatherOperations(IndexOperTestBase):
         return failures
 
 
+# =============================================================================
+# index_select 用例组
+# =============================================================================
+
+class TestIndexSelectOperations(IndexOperTestBase):
+    """index_select 类索引操作用例组"""
+
+    group_name = "index_select 索引操作"
+    requires_torch = True
+
+    def test_index_select_operations(self):
+        """index_select 类：多维度、负维度、空索引、重复索引与整型输入"""
+        self._run_group(
+            INDEX_SELECT_CASES,
+            None,
+            self._execute_index_select_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_index_select_case(self, case, payload, device):
+        failures = []
+        rm_input, torch_input, need_grad = self._make_input_pair(
+            case["input"], device, case.get("dtype", np.float32), case.get("grad", False)
+        )
+        rm_index = self._make_rm_long(np.asarray(case["index"], dtype=np.int64), device)
+        rm_output = rm.index_select(rm_input, case["dim"], rm_index)
+        self._check_rm_device(failures, device, rm_output, "index_select结果")
+
+        if TORCH_AVAILABLE:
+            torch_index = self._make_torch_long(np.asarray(case["index"], dtype=np.int64), device)
+            torch_output = torch.index_select(torch_input, case["dim"], torch_index)
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            if need_grad:
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("input", rm_input, torch_input)]
+                )
+        return failures
+
+    def test_index_select_edge_cases(self):
+        """index_select 边界：out 参数、错误路径与非连续输入"""
+        self._run_group(
+            INDEX_SELECT_EDGE_CASES,
+            None,
+            self._execute_index_select_edge_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_index_select_edge_case(self, case, payload, device):
+        failures = []
+        kind = case["kind"]
+        dim = case["dim"]
+        np_input = np.asarray(case["input"], dtype=np.float32)
+        dim_norm = dim if dim >= 0 else dim + np_input.ndim
+        index_np = np.asarray(case["index"], dtype=np.int64)
+        out_shape = list(np_input.shape)
+        out_shape[dim_norm] = len(index_np)
+
+        if kind == "non_contiguous":
+            rm_base = self._make_rm_float(np_input, device)
+            rm_input = rm_base.transpose(0, 1)
+            rm_index = self._make_rm_long(index_np, device)
+            rm_output = rm.index_select(rm_input, dim, rm_index)
+            self._check_rm_device(failures, device, rm_output, "index_select结果")
+
+            if TORCH_AVAILABLE:
+                torch_base = self._make_torch_float(np_input, device)
+                torch_input = torch_base.transpose(0, 1)
+                torch_index = self._make_torch_long(index_np, device)
+                torch_output = torch.index_select(torch_input, dim, torch_index)
+                self._check_tensors(failures, "函数值", rm_output, torch_output)
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("base", rm_base, torch_base)]
+                )
+            return failures
+
+        need_grad = kind == "out_grad_error"
+        rm_input, torch_input, _ = self._make_input_pair(
+            np_input, device, requires_grad=need_grad
+        )
+        rm_index = self._make_rm_long(index_np, device)
+
+        if kind == "out":
+            rm_out = self._ensure_placement(
+                rm_tensor(np.zeros(out_shape, dtype=np.float32), device=device),
+                device, "index_select输出张量"
+            )
+            rm_output = rm.index_select(rm_input, dim, rm_index, out=rm_out)
+            if rm_output is not rm_out:
+                failures.append("index_select未返回传入的out张量")
+
+            if TORCH_AVAILABLE:
+                torch_index = self._make_torch_long(index_np, device)
+                torch_out = self._ensure_placement(
+                    torch.zeros(out_shape, dtype=torch.float32, device=device),
+                    device, "PyTorch输出张量"
+                )
+                torch_output = torch.index_select(torch_input, dim, torch_index, out=torch_out)
+                self._check_tensors(failures, "out函数值", rm_output, torch_output)
+            return failures
+
+        if kind in ("range_error", "index_ndim_error"):
+            self._check_both_raise(
+                failures, "index_select非法索引",
+                lambda: rm.index_select(rm_input, dim, rm_index),
+                lambda: torch.index_select(
+                    torch_input, dim, self._make_torch_long(index_np, device)
+                ) if TORCH_AVAILABLE else None
+            )
+            return failures
+
+        # out_grad_error：输入需要梯度时 out= 形式应被拒绝
+        rm_out = self._ensure_placement(
+            rm_tensor(np.zeros(out_shape, dtype=np.float32), device=device),
+            device, "index_select输出张量"
+        )
+        self._check_both_raise(
+            failures, "requires_grad输入与out",
+            lambda: rm.index_select(rm_input, dim, rm_index, out=rm_out),
+            lambda: torch.index_select(
+                torch_input, dim, self._make_torch_long(index_np, device),
+                out=torch.zeros(out_shape, dtype=torch.float32, device=device)
+            ) if TORCH_AVAILABLE else None
+        )
+        return failures
+
+    def test_index_select_medium_cases(self):
+        """index_select 中级：索引 dtype、输入 dtype、高维与空维度"""
+        self._run_group(
+            INDEX_SELECT_MEDIUM_CASES,
+            None,
+            self._execute_index_select_medium_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_index_select_medium_case(self, case, payload, device):
+        failures = []
+        if case.get("kind") == "range_error":
+            np_input = np.asarray(case["input"], dtype=np.float32)
+            index_np = np.asarray(case["index"], dtype=np.int64)
+            rm_input, torch_input, _ = self._make_input_pair(np_input, device)
+            rm_index = self._make_rm_long(index_np, device)
+            if TORCH_AVAILABLE:
+                torch_index = self._make_torch_long(index_np, device)
+                self._check_both_raise(
+                    failures, "index_select空维度非法索引",
+                    lambda: rm.index_select(rm_input, case["dim"], rm_index),
+                    lambda: torch.index_select(torch_input, case["dim"], torch_index)
+                )
+            else:
+                try:
+                    rm.index_select(rm_input, case["dim"], rm_index)
+                except Exception:
+                    pass
+                else:
+                    failures.append("index_select空维度非法索引: Riemann未抛出异常")
+            return failures
+
+        dtype = case.get("dtype", np.float32)
+        index_dtype = case.get("index_dtype", np.int64)
+        rm_input, torch_input, need_grad = self._make_input_pair(
+            case["input"], device, dtype, case.get("grad", False)
+        )
+        index_np = np.asarray(case["index"], dtype=index_dtype)
+        rm_index = self._make_rm_long(index_np, device)
+        rm_output = rm.index_select(rm_input, case["dim"], rm_index)
+        self._check_rm_device(failures, device, rm_output, "index_select结果")
+
+        if TORCH_AVAILABLE:
+            torch_index = self._ensure_placement(
+                torch.tensor(
+                    index_np,
+                    dtype=torch.int32 if index_dtype == np.int32 else torch.long,
+                    device=device
+                ),
+                device, "PyTorch索引张量"
+            )
+            torch_output = torch.index_select(torch_input, case["dim"], torch_index)
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            if need_grad:
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("input", rm_input, torch_input)]
+                )
+        return failures
+
+
+# =============================================================================
+# masked_select 用例组
+# =============================================================================
+
+class TestMaskedSelectOperations(IndexOperTestBase):
+    """masked_select 类索引操作用例组"""
+
+    group_name = "masked_select 索引操作"
+    requires_torch = True
+
+    def test_masked_select_operations(self):
+        """masked_select 类：同形状掩码、广播掩码、空结果、0维输入与整型输入"""
+        self._run_group(
+            MASKED_SELECT_CASES,
+            None,
+            self._execute_masked_select_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_masked_select_case(self, case, payload, device):
+        failures = []
+        rm_input, torch_input, need_grad = self._make_input_pair(
+            case["input"], device, case.get("dtype", np.float32), case.get("grad", False)
+        )
+        rm_mask = self._make_rm_mask(case["mask"], device)
+        rm_output = rm.masked_select(rm_input, rm_mask)
+        self._check_rm_device(failures, device, rm_output, "masked_select结果")
+
+        if TORCH_AVAILABLE:
+            torch_mask = self._make_torch_bool(case["mask"], device)
+            torch_output = torch.masked_select(torch_input, torch_mask)
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            if need_grad:
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("input", rm_input, torch_input)]
+                )
+        return failures
+
+    def test_masked_select_edge_cases(self):
+        """masked_select 边界：out 参数、非法掩码与非连续输入"""
+        self._run_group(
+            MASKED_SELECT_EDGE_CASES,
+            None,
+            self._execute_masked_select_edge_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_masked_select_edge_case(self, case, payload, device):
+        failures = []
+        kind = case["kind"]
+        np_input = np.asarray(case["input"], dtype=np.float32)
+        np_mask = np.asarray(case["mask"])
+
+        if kind == "non_contiguous":
+            rm_base = self._make_rm_float(np_input, device)
+            rm_input = rm_base.transpose(0, 1)
+            rm_mask = self._make_rm_mask(np_mask.T, device)
+            rm_output = rm.masked_select(rm_input, rm_mask)
+            self._check_rm_device(failures, device, rm_output, "masked_select结果")
+
+            if TORCH_AVAILABLE:
+                torch_base = self._make_torch_float(np_input, device)
+                torch_input = torch_base.transpose(0, 1)
+                torch_mask = self._make_torch_bool(np_mask.T, device)
+                torch_output = torch.masked_select(torch_input, torch_mask)
+                self._check_tensors(failures, "函数值", rm_output, torch_output)
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("base", rm_base, torch_base)]
+                )
+            return failures
+
+        need_grad = kind == "out_grad_error"
+        rm_input, torch_input, _ = self._make_input_pair(
+            np_input, device, requires_grad=need_grad
+        )
+
+        if np_mask.dtype == np.bool_:
+            rm_mask = self._make_rm_mask(np_mask, device)
+            torch_mask = self._make_torch_bool(np_mask, device) if TORCH_AVAILABLE else None
+        else:
+            rm_mask = self._ensure_placement(
+                rm_tensor(np_mask, device=device), device, "非布尔掩码张量"
+            )
+            torch_mask = (
+                torch.tensor(np_mask, device=device) if TORCH_AVAILABLE else None
+            )
+
+        n_selected = int(np.count_nonzero(np_mask))
+
+        if kind == "out":
+            rm_out = self._ensure_placement(
+                rm_tensor(np.zeros((n_selected,), dtype=np.float32), device=device),
+                device, "masked_select输出张量"
+            )
+            rm_output = rm.masked_select(rm_input, rm_mask, out=rm_out)
+            if rm_output is not rm_out:
+                failures.append("masked_select未返回传入的out张量")
+
+            if TORCH_AVAILABLE:
+                torch_out = self._ensure_placement(
+                    torch.zeros((n_selected,), dtype=torch.float32, device=device),
+                    device, "PyTorch输出张量"
+                )
+                torch_output = torch.masked_select(torch_input, torch_mask, out=torch_out)
+                self._check_tensors(failures, "out函数值", rm_output, torch_output)
+            return failures
+
+        if kind in ("mask_dtype_error", "mask_broadcast_error"):
+            self._check_both_raise(
+                failures, "masked_select非法掩码",
+                lambda: rm.masked_select(rm_input, rm_mask),
+                lambda: torch.masked_select(torch_input, torch_mask)
+                if TORCH_AVAILABLE else None
+            )
+            return failures
+
+        # out_grad_error：输入需要梯度时 out= 形式应被拒绝
+        rm_out = self._ensure_placement(
+            rm_tensor(np.zeros((n_selected,), dtype=np.float32), device=device),
+            device, "masked_select输出张量"
+        )
+        self._check_both_raise(
+            failures, "requires_grad输入与out",
+            lambda: rm.masked_select(rm_input, rm_mask, out=rm_out),
+            lambda: torch.masked_select(
+                torch_input, torch_mask,
+                out=torch.zeros((n_selected,), dtype=torch.float32, device=device)
+            ) if TORCH_AVAILABLE else None
+        )
+        return failures
+
+    def test_masked_select_medium_cases(self):
+        """masked_select 中级：输入 dtype、高维广播与空输入"""
+        self._run_group(
+            MASKED_SELECT_MEDIUM_CASES,
+            None,
+            self._execute_masked_select_medium_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_masked_select_medium_case(self, case, payload, device):
+        failures = []
+        dtype = case.get("dtype", np.float32)
+        rm_input, torch_input, need_grad = self._make_input_pair(
+            case["input"], device, dtype, case.get("grad", False)
+        )
+        rm_mask = self._make_rm_mask(case["mask"], device)
+        rm_output = rm.masked_select(rm_input, rm_mask)
+        self._check_rm_device(failures, device, rm_output, "masked_select结果")
+
+        if TORCH_AVAILABLE:
+            torch_mask = self._make_torch_bool(case["mask"], device)
+            torch_output = torch.masked_select(torch_input, torch_mask)
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            if need_grad:
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("input", rm_input, torch_input)]
+                )
+        return failures
+
+
+# =============================================================================
+# take 用例组
+# =============================================================================
+
+class TestTakeOperations(IndexOperTestBase):
+    """take 类索引操作用例组"""
+
+    group_name = "take 索引操作"
+    requires_torch = True
+
+    def test_take_operations(self):
+        """take 类：扁平化下标、多维/0维索引、空索引、重复索引与整型输入"""
+        self._run_group(
+            TAKE_CASES,
+            None,
+            self._execute_take_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_take_case(self, case, payload, device):
+        failures = []
+        rm_input, torch_input, need_grad = self._make_input_pair(
+            case["input"], device, case.get("dtype", np.float32), case.get("grad", False)
+        )
+        rm_index = self._make_rm_long(np.asarray(case["index"], dtype=np.int64), device)
+        rm_output = rm.take(rm_input, rm_index)
+        self._check_rm_device(failures, device, rm_output, "take结果")
+
+        if TORCH_AVAILABLE:
+            torch_index = self._make_torch_long(np.asarray(case["index"], dtype=np.int64), device)
+            torch_output = torch.take(torch_input, torch_index)
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            if need_grad:
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("input", rm_input, torch_input)]
+                )
+        return failures
+
+    def test_take_edge_cases(self):
+        """take 边界：负索引、越界错误、非连续输入与2D重复索引梯度"""
+        self._run_group(
+            TAKE_EDGE_CASES,
+            None,
+            self._execute_take_edge_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_take_edge_case(self, case, payload, device):
+        failures = []
+        kind = case["kind"]
+        np_input = np.asarray(case["input"], dtype=np.float32)
+        index_np = np.asarray(case["index"], dtype=np.int64)
+
+        if kind == "non_contiguous":
+            rm_base = self._make_rm_float(np_input, device)
+            rm_input = rm_base.transpose(0, 1)
+            rm_index = self._make_rm_long(index_np, device)
+            rm_output = rm.take(rm_input, rm_index)
+            self._check_rm_device(failures, device, rm_output, "take结果")
+
+            if TORCH_AVAILABLE:
+                torch_base = self._make_torch_float(np_input, device)
+                torch_input = torch_base.transpose(0, 1)
+                torch_index = self._make_torch_long(index_np, device)
+                torch_output = torch.take(torch_input, torch_index)
+                self._check_tensors(failures, "函数值", rm_output, torch_output)
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("base", rm_base, torch_base)]
+                )
+            return failures
+
+        rm_input, torch_input, need_grad = self._make_input_pair(np_input, device)
+        rm_index = self._make_rm_long(index_np, device)
+
+        if kind == "range_error":
+            self._check_both_raise(
+                failures, "take非法索引",
+                lambda: rm.take(rm_input, rm_index),
+                lambda: torch.take(
+                    torch_input, self._make_torch_long(index_np, device)
+                ) if TORCH_AVAILABLE else None
+            )
+            return failures
+
+        rm_output = rm.take(rm_input, rm_index)
+        self._check_rm_device(failures, device, rm_output, "take结果")
+        if TORCH_AVAILABLE:
+            torch_index = self._make_torch_long(index_np, device)
+            torch_output = torch.take(torch_input, torch_index)
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            self._check_backward(
+                failures, rm_output, torch_output,
+                [("input", rm_input, torch_input)]
+            )
+        return failures
+
+    def test_take_medium_cases(self):
+        """take 中级：输入 dtype、4D 输入/索引、空输入与 0 维边界"""
+        self._run_group(
+            TAKE_MEDIUM_CASES,
+            None,
+            self._execute_take_medium_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_take_medium_case(self, case, payload, device):
+        failures = []
+        dtype = case.get("dtype", np.float32)
+        rm_input, torch_input, need_grad = self._make_input_pair(
+            case["input"], device, dtype, case.get("grad", False)
+        )
+        index_np = np.asarray(case["index"], dtype=np.int64)
+        rm_index = self._make_rm_long(index_np, device)
+        rm_output = rm.take(rm_input, rm_index)
+        self._check_rm_device(failures, device, rm_output, "take结果")
+
+        if TORCH_AVAILABLE:
+            torch_index = self._make_torch_long(index_np, device)
+            torch_output = torch.take(torch_input, torch_index)
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            if need_grad:
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("input", rm_input, torch_input)]
+                )
+        return failures
+
+
+# =============================================================================
+# index_put_ 用例组
+# =============================================================================
+
+class TestIndexPutOperations(IndexOperTestBase):
+    """index_put_ 类原地索引操作用例组"""
+
+    group_name = "index_put_ 索引操作"
+    requires_torch = True
+
+    def test_index_put_operations(self):
+        """index_put_ 类：覆盖/累加、重复索引、广播值、布尔掩码与整型输入"""
+        self._run_group(
+            INDEX_PUT_CASES,
+            None,
+            self._execute_index_put_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_index_put_case(self, case, payload, device):
+        failures = []
+        dtype = np.dtype(case.get("dtype", np.float32))
+        need_grad = bool(case.get("grad")) and np.issubdtype(dtype, np.floating)
+        rm_input, torch_input, _ = self._make_input_pair(
+            case["input"], device, dtype, requires_grad=False
+        )
+        rm_values, torch_values, _ = self._make_input_pair(
+            case["values"], device, dtype, requires_grad=need_grad
+        )
+
+        if case.get("mask_indices"):
+            rm_indices = (self._make_rm_mask(case["indices"][0], device),)
+            torch_indices = (self._make_torch_bool(case["indices"][0], device),)
+        else:
+            rm_indices = tuple(
+                self._make_rm_long(np.asarray(idx, dtype=np.int64), device)
+                for idx in case["indices"]
+            )
+            torch_indices = tuple(
+                self._make_torch_long(np.asarray(idx, dtype=np.int64), device)
+                for idx in case["indices"]
+            )
+
+        rm_output = rm_input.clone().index_put_(
+            rm_indices, rm_values, accumulate=case["accumulate"]
+        )
+        self._check_rm_device(failures, device, rm_output, "index_put_结果")
+
+        if TORCH_AVAILABLE:
+            torch_output = torch_input.clone().index_put_(
+                torch_indices, torch_values, accumulate=case["accumulate"]
+            )
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            if need_grad:
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("values", rm_values, torch_values)]
+                )
+        return failures
+
+    def test_index_put_edge_cases(self):
+        """index_put_ 边界：索引广播、base 梯度、叶子报错、空索引与错误路径"""
+        self._run_group(
+            INDEX_PUT_EDGE_CASES,
+            None,
+            self._execute_index_put_edge_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_index_put_edge_case(self, case, payload, device):
+        failures = []
+        kind = case["kind"]
+        np_input = np.asarray(case["input"], dtype=np.float32)
+        np_values = np.asarray(case["values"], dtype=np.float32)
+        rm_indices = tuple(
+            self._make_rm_long(np.asarray(idx, dtype=np.int64), device)
+            for idx in case["indices"]
+        )
+        accumulate = case["accumulate"]
+
+        if kind == "leaf_error":
+            rm_base = self._make_rm_float(np_input, device, requires_grad=True)
+            rm_values = self._make_rm_float(np_values, device)
+            rm_raised = False
+            try:
+                rm_base.index_put_(rm_indices, rm_values, accumulate=accumulate)
+            except Exception:
+                rm_raised = True
+            if not rm_raised:
+                failures.append("叶子张量原地写入: Riemann未抛出异常")
+
+            if TORCH_AVAILABLE:
+                torch_base = self._make_torch_float(np_input, device, requires_grad=True)
+                torch_values = self._make_torch_float(np_values, device)
+                torch_indices = tuple(
+                    self._make_torch_long(np.asarray(idx, dtype=np.int64), device)
+                    for idx in case["indices"]
+                )
+                self._check_both_raise(
+                    failures, "叶子张量原地写入",
+                    lambda: rm_base.index_put_(rm_indices, rm_values, accumulate=accumulate),
+                    lambda: torch_base.index_put_(torch_indices, torch_values, accumulate=accumulate)
+                )
+            return failures
+
+        need_grad = kind in ("base_grad", "broadcast_indices", "negative")
+        rm_base = self._make_rm_float(np_input, device, requires_grad=need_grad)
+        rm_values = self._make_rm_float(np_values, device, requires_grad=need_grad)
+
+        if kind in ("index_range_error", "values_shape_error"):
+            rm_target = rm_base.clone()
+            if TORCH_AVAILABLE:
+                torch_base = self._make_torch_float(np_input, device)
+                torch_values = self._make_torch_float(np_values, device)
+                torch_indices = tuple(
+                    self._make_torch_long(np.asarray(idx, dtype=np.int64), device)
+                    for idx in case["indices"]
+                )
+                self._check_both_raise(
+                    failures, "index_put_非法写入",
+                    lambda: rm_target.index_put_(rm_indices, rm_values, accumulate=accumulate),
+                    lambda: torch_base.clone().index_put_(
+                        torch_indices, torch_values, accumulate=accumulate
+                    )
+                )
+            else:
+                try:
+                    rm_target.index_put_(rm_indices, rm_values, accumulate=accumulate)
+                except Exception:
+                    pass
+                else:
+                    failures.append("index_put_非法写入: Riemann未抛出异常")
+            return failures
+
+        rm_output = rm_base.clone().index_put_(rm_indices, rm_values, accumulate=accumulate)
+        self._check_rm_device(failures, device, rm_output, "index_put_结果")
+
+        if TORCH_AVAILABLE:
+            torch_base = self._make_torch_float(np_input, device, requires_grad=need_grad)
+            torch_values = self._make_torch_float(np_values, device, requires_grad=need_grad)
+            torch_indices = tuple(
+                self._make_torch_long(np.asarray(idx, dtype=np.int64), device)
+                for idx in case["indices"]
+            )
+            torch_output = torch_base.clone().index_put_(
+                torch_indices, torch_values, accumulate=accumulate
+            )
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            if kind == "base_grad":
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("base", rm_base, torch_base), ("values", rm_values, torch_values)]
+                )
+            elif need_grad:
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("values", rm_values, torch_values)]
+                )
+        return failures
+
+    def test_index_put_medium_cases(self):
+        """index_put_ 中级：3D 三元索引、float64/int32 dtype 与 dtype 不匹配报错"""
+        self._run_group(
+            INDEX_PUT_MEDIUM_CASES,
+            None,
+            self._execute_index_put_medium_case,
+            self._devices(require_torch=True)
+        )
+
+    def _execute_index_put_medium_case(self, case, payload, device):
+        failures = []
+        dtype = np.dtype(case.get("dtype", np.float32))
+        values_dtype = np.dtype(case.get("values_dtype", dtype))
+        need_grad = bool(case.get("grad")) and np.issubdtype(dtype, np.floating)
+
+        rm_input, torch_input, _ = self._make_input_pair(
+            case["input"], device, dtype, requires_grad=False
+        )
+        rm_values, torch_values, _ = self._make_input_pair(
+            case["values"], device, values_dtype, requires_grad=need_grad
+        )
+        rm_indices = tuple(
+            self._make_rm_long(np.asarray(idx, dtype=np.int64), device)
+            for idx in case["indices"]
+        )
+
+        if case.get("kind") == "dtype_error":
+            if TORCH_AVAILABLE:
+                torch_indices = tuple(
+                    self._make_torch_long(np.asarray(idx, dtype=np.int64), device)
+                    for idx in case["indices"]
+                )
+                self._check_both_raise(
+                    failures, "index_put_dtype不匹配",
+                    lambda: rm_input.clone().index_put_(
+                        rm_indices, rm_values, accumulate=case["accumulate"]
+                    ),
+                    lambda: torch_input.clone().index_put_(
+                        torch_indices, torch_values, accumulate=case["accumulate"]
+                    )
+                )
+            else:
+                try:
+                    rm_input.clone().index_put_(
+                        rm_indices, rm_values, accumulate=case["accumulate"]
+                    )
+                except Exception:
+                    pass
+                else:
+                    failures.append("index_put_dtype不匹配: Riemann未抛出异常")
+            return failures
+
+        rm_output = rm_input.clone().index_put_(
+            rm_indices, rm_values, accumulate=case["accumulate"]
+        )
+        self._check_rm_device(failures, device, rm_output, "index_put_结果")
+
+        if TORCH_AVAILABLE:
+            torch_indices = tuple(
+                self._make_torch_long(np.asarray(idx, dtype=np.int64), device)
+                for idx in case["indices"]
+            )
+            torch_output = torch_input.clone().index_put_(
+                torch_indices, torch_values, accumulate=case["accumulate"]
+            )
+            self._check_tensors(failures, "函数值", rm_output, torch_output)
+            if need_grad:
+                self._check_backward(
+                    failures, rm_output, torch_output,
+                    [("values", rm_values, torch_values)]
+                )
+        return failures
+
+
 # 独立运行入口
 if __name__ == '__main__':
     # 设置为独立脚本运行模式
@@ -1009,17 +2048,25 @@ if __name__ == '__main__':
     # 清屏
     clear_screen()
 
-    print(f"{Colors.HEADER}{Colors.BOLD}===== 开始运行索引操作测试（getitem / scatter / gather） ====={Colors.ENDC}")
+    print(f"{Colors.HEADER}{Colors.BOLD}===== 开始运行索引操作测试（getitem / scatter / gather / index_select / masked_select / take / index_put_） ====={Colors.ENDC}")
     print(f"{Colors.OKBLUE}测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}{Colors.ENDC}")
     print(f"{Colors.OKBLUE}测试框架: Riemann vs PyTorch{Colors.ENDC}")
     print(f"{Colors.OKBLUE}Riemann 可用: {RIEMANN_AVAILABLE} | PyTorch 可用: {TORCH_AVAILABLE} | "
           f"Riemann CUDA 可用: {CUDA_AVAILABLE} | PyTorch CUDA 可用: {TORCH_CUDA_AVAILABLE}{Colors.ENDC}")
     print()
 
-    # 创建测试套件（三个用例组）
+    # 创建测试套件（七个用例组）
     loader = unittest.TestLoader()
     test_suite = unittest.TestSuite()
-    for test_case in (TestGetitemOperations, TestScatterOperations, TestGatherOperations):
+    for test_case in (
+        TestGetitemOperations,
+        TestScatterOperations,
+        TestGatherOperations,
+        TestIndexSelectOperations,
+        TestMaskedSelectOperations,
+        TestTakeOperations,
+        TestIndexPutOperations,
+    ):
         test_suite.addTests(loader.loadTestsFromTestCase(test_case))
 
     # 运行测试

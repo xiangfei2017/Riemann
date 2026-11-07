@@ -2834,6 +2834,75 @@ where the ``dim``-th subscript is given by the value of ``index`` at that positi
     #         [0., 1., 1.],
     #         [0., 0., 0.]])
 
+**More Selection Functions: index_select, masked_select and take**
+
+Besides ``gather``, Riemann provides three specialized read functions that mirror the corresponding PyTorch interfaces. They are all implemented on top of ``x[idx]`` and therefore share the same indexing rules and support automatic differentiation.
+
+.. list-table:: More Read Functions
+  :widths: 18 42 40
+  :header-rows: 1
+
+  * - Function
+    - Signature
+    - Semantics
+  * - ``index_select``
+    - ``index_select(input, dim, index, *, out=None)``; ``x.index_select(dim, index)``
+    - Selects along ``dim`` with a 1-D index; the result keeps the input dimensions and replaces ``dim`` with ``len(index)``
+  * - ``masked_select``
+    - ``masked_select(input, mask, *, out=None)``; ``x.masked_select(mask)``
+    - Selects elements by a broadcastable boolean mask and returns a 1-D copy in row-major order
+  * - ``take``
+    - ``take(input, index)``; ``x.take(index)``
+    - Selects by a flattened row-major index and returns a tensor shaped like ``index``
+
+**index_select**
+
+``index_select`` is equivalent to ``torch.index_select``. ``index`` must be a one-dimensional integer tensor (other integer dtypes are converted to int64 automatically) whose values lie in ``[0, input.shape[dim])``; out-of-range values raise ``IndexError``. The result has the same number of dimensions as ``input``, with the length of ``dim`` equal to ``len(index)``:
+
+.. code-block:: python
+
+    input = rm.tensor([[1, 2, 3], [4, 5, 6]])
+    index = rm.tensor([1, 0], dtype=rm.int64)
+
+    print(rm.index_select(input, 0, index))
+    # tensor([[4, 5, 6],
+    #         [1, 2, 3]])
+
+    print(input.index_select(1, rm.tensor([2, 0], dtype=rm.int64)))
+    # tensor([[3, 1],
+    #         [6, 4]])
+
+Gradients are scattered back to the selected positions, and a position selected multiple times accumulates gradients.
+
+**masked_select**
+
+``masked_select`` is equivalent to ``torch.masked_select``. ``mask`` must be a boolean tensor whose shape is broadcastable to the shape of ``input``; a non-boolean mask raises ``TypeError``. The result is always one-dimensional and holds the selected elements in row-major order; an all-``False`` mask yields an empty tensor:
+
+.. code-block:: python
+
+    input = rm.tensor([[1., -2., 3.], [-4., 5., -6.]])
+    mask = input > 0
+
+    print(rm.masked_select(input, mask))   # tensor([1., 3., 5.])
+
+Gradients flow only to the selected positions; unselected positions receive a zero gradient.
+
+**take**
+
+``take`` is equivalent to ``torch.take``. It treats ``input`` as flattened row-major data and indexes it with ``index``, which may have any shape. Negative indices follow Python semantics (``-1`` selects the last element); values must lie in ``[-input.numel(), input.numel())``, otherwise ``IndexError`` is raised. A 0-d ``index`` returns a 0-d tensor:
+
+.. code-block:: python
+
+    input = rm.tensor([[1., 2.], [3., 4.]])
+
+    print(rm.take(input, rm.tensor([[3, 0], [1, 2]], dtype=rm.int64)))
+    # tensor([[4., 1.],
+    #         [2., 3.]])
+
+    print(rm.take(input, rm.tensor(2, dtype=rm.int64)))   # tensor(3.)
+
+Gradients are routed through flatten + integer-array indexing, so repeated indices accumulate gradients on the original positions.
+
 **Gradient Tracking for Index Reads**
 
 The result of ``x[idx]`` can take part in automatic differentiation whether it is a view or a copy. During backpropagation the gradient is scattered back to the corresponding positions of the original tensor: positions that were not indexed receive a zero gradient, and positions indexed repeatedly accumulate gradients. Being a view or a copy only affects memory sharing, not the correctness of gradient propagation.
@@ -3141,6 +3210,22 @@ The table below summarizes Riemann's indexing functions. The "In-place" column l
     - ``gather(input, dim, index, *, sparse_grad=False, out=None)``; ``x.gather(dim, index)``
     - None
     - Reads along a dimension and returns a copy shaped like index; gradients supported
+  * - ``index_select``
+    - ``index_select(input, dim, index, *, out=None)``; ``x.index_select(dim, index)``
+    - None
+    - Selects along a dimension with a 1-D index; gradients supported
+  * - ``masked_select``
+    - ``masked_select(input, mask, *, out=None)``; ``x.masked_select(mask)``
+    - None
+    - Selects elements by a broadcastable boolean mask and returns a 1-D copy; gradients supported
+  * - ``take``
+    - ``take(input, index)``; ``x.take(index)``
+    - None
+    - Selects by a flattened row-major index, returns a tensor shaped like index; gradients supported
+  * - ``index_put_``
+    - ``x.index_put_(indices, values, accumulate=False)``
+    - None (in-place only)
+    - Writes values by an index tuple, overwriting or accumulating; gradients supported for values
   * - ``scatter``
     - ``x.scatter(dim, index, src=None, *, value=None)``
     - ``scatter_``
@@ -3291,6 +3376,30 @@ Riemann supports the following in-place operations functions and operators:
     - In-place scatter and accumulate values according to index
     - None
     - ``x.scatter_add_(dim, index, src)``
+  * - ``index_put_``
+    - In-place write values according to an index tuple
+    - None
+    - ``x.index_put_(indices, values, accumulate=False)``
+
+.. note::
+
+   ``index_put_`` takes an index tuple such as ``(rows, cols)`` or ``(mask,)`` and follows ``torch.Tensor.index_put_``: with ``accumulate=False`` it overwrites (``setat_`` semantics, the last write wins), and with ``accumulate=True`` it accumulates duplicate indices (``addat_`` semantics). The dtype of ``values`` must match the target tensor, otherwise ``RuntimeError`` is raised. It only exists in the in-place form; use ``setat``/``addat`` when a non-in-place result is required.
+
+.. code-block:: python
+
+    x = rm.tensor([[1., 2.], [3., 4.]])
+    rows = rm.tensor([0, 1], dtype=rm.int64)
+    cols = rm.tensor([1, 0], dtype=rm.int64)
+
+    # Overwrite the selected positions
+    print(x.clone().index_put_((rows, cols), rm.tensor([10., 20.])))
+    # tensor([[ 1., 10.],
+    #         [20.,  4.]])
+
+    # Accumulate a broadcast scalar onto the selected positions
+    print(x.clone().index_put_((rows, cols), rm.tensor(5.), accumulate=True))
+    # tensor([[1., 7.],
+    #         [8., 4.]])
 
 Notes on In-place Operations
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

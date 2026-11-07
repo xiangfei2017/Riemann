@@ -2831,6 +2831,75 @@ Riemann 提供两种等价写法：
     #         [0., 1., 1.],
     #         [0., 0., 0.]])
 
+**更多选择函数：index_select、masked_select 与 take**
+
+除 ``gather`` 外，Riemann 还提供三个与 PyTorch 接口对应的专用读取函数。它们都基于 ``x[idx]`` 实现，因此索引规则一致，并自动支持自动微分。
+
+.. list-table:: 更多读取函数
+  :widths: 18 42 40
+  :header-rows: 1
+
+  * - 函数
+    - 签名
+    - 语义
+  * - ``index_select``
+    - ``index_select(input, dim, index, *, out=None)``；``x.index_select(dim, index)``
+    - 用一维索引沿 ``dim`` 选择，结果维数不变，``dim`` 的长度变为 ``len(index)``
+  * - ``masked_select``
+    - ``masked_select(input, mask, *, out=None)``；``x.masked_select(mask)``
+    - 用可广播的布尔掩码选择元素，按行主序返回一维副本
+  * - ``take``
+    - ``take(input, index)``；``x.take(index)``
+    - 把输入按行主序展平后按下标选择，返回与 ``index`` 同形状的张量
+
+**index_select**
+
+``index_select`` 语义与 ``torch.index_select`` 一致。``index`` 必须是一维整数张量（其他整数 dtype 会自动转换为 int64），取值须在 ``[0, input.shape[dim])`` 内，越界抛 ``IndexError``。结果的维数与 ``input`` 相同，``dim`` 维的长度等于 ``len(index)``：
+
+.. code-block:: python
+
+    input = rm.tensor([[1, 2, 3], [4, 5, 6]])
+    index = rm.tensor([1, 0], dtype=rm.int64)
+
+    print(rm.index_select(input, 0, index))
+    # tensor([[4, 5, 6],
+    #         [1, 2, 3]])
+
+    print(input.index_select(1, rm.tensor([2, 0], dtype=rm.int64)))
+    # tensor([[3, 1],
+    #         [6, 4]])
+
+反向传播时梯度散射回被选中的位置，同一位置被选中多次时梯度累加。
+
+**masked_select**
+
+``masked_select`` 语义与 ``torch.masked_select`` 一致。``mask`` 必须是布尔张量，形状须可广播到 ``input`` 的形状，非布尔掩码抛 ``TypeError``。结果始终是一维张量，按行主序保存被选中的元素；掩码全为 ``False`` 时返回空张量：
+
+.. code-block:: python
+
+    input = rm.tensor([[1., -2., 3.], [-4., 5., -6.]])
+    mask = input > 0
+
+    print(rm.masked_select(input, mask))   # tensor([1., 3., 5.])
+
+梯度只回传给被选中的位置，未被选中的位置梯度为 0。
+
+**take**
+
+``take`` 语义与 ``torch.take`` 一致。它把 ``input`` 按行主序展平后按下标选择，``index`` 形状任意；负下标遵循 Python 语义（``-1`` 表示最后一个元素），取值须在 ``[-input.numel(), input.numel())`` 内，越界抛 ``IndexError``。``index`` 为 0 维时返回 0 维张量：
+
+.. code-block:: python
+
+    input = rm.tensor([[1., 2.], [3., 4.]])
+
+    print(rm.take(input, rm.tensor([[3, 0], [1, 2]], dtype=rm.int64)))
+    # tensor([[4., 1.],
+    #         [2., 3.]])
+
+    print(rm.take(input, rm.tensor(2, dtype=rm.int64)))   # tensor(3.)
+
+梯度经“展平 + 整数数组索引”路径回传，重复下标会在原张量的对应位置累加梯度。
+
 **索引读取的梯度跟踪**
 
 ``x[idx]`` 的结果无论是视图还是副本，都可以正常参与自动微分。反向传播时，梯度按索引散射回原张量的对应位置：未被索引到的位置梯度为 0，同一位置被重复索引时梯度累加。视图与副本只影响内存共享，不影响梯度回传的正确性。
@@ -3138,6 +3207,22 @@ Riemann 提供两种等价写法：
     - ``gather(input, dim, index, *, sparse_grad=False, out=None)``；``x.gather(dim, index)``
     - 无
     - 按维度读取，返回与 index 同形状的副本；支持梯度
+  * - ``index_select``
+    - ``index_select(input, dim, index, *, out=None)``；``x.index_select(dim, index)``
+    - 无
+    - 按一维索引沿维度选择；支持梯度
+  * - ``masked_select``
+    - ``masked_select(input, mask, *, out=None)``；``x.masked_select(mask)``
+    - 无
+    - 按可广播的布尔掩码选择元素，返回一维副本；支持梯度
+  * - ``take``
+    - ``take(input, index)``；``x.take(index)``
+    - 无
+    - 按行主序展平后的下标选择，返回与 index 同形状的张量；支持梯度
+  * - ``index_put_``
+    - ``x.index_put_(indices, values, accumulate=False)``
+    - 无（仅原地）
+    - 按索引元组写入值，覆盖或累加；支持 values 的梯度
   * - ``scatter``
     - ``x.scatter(dim, index, src=None, *, value=None)``
     - ``scatter_``
@@ -3288,6 +3373,30 @@ Riemann 支持以下原地操作函数和运算符：
     - 原地根据索引分散并累加值
     - 无
     - ``x.scatter_add_(dim, index, src)``
+  * - ``index_put_``
+    - 原地按索引元组写入值
+    - 无
+    - ``x.index_put_(indices, values, accumulate=False)``
+
+.. note::
+
+   ``index_put_`` 接受形如 ``(rows, cols)`` 或 ``(mask,)`` 的索引元组，语义与 ``torch.Tensor.index_put_`` 一致：``accumulate=False`` 时覆盖写入（``setat_`` 语义，重复索引以最后一次写入为准），``accumulate=True`` 时对重复索引累加（``addat_`` 语义）。写入值 ``values`` 的 dtype 须与目标张量一致，否则抛 ``RuntimeError``。该函数只有原地形式；若需要非原地结果，请使用 ``setat``/``addat``。
+
+.. code-block:: python
+
+    x = rm.tensor([[1., 2.], [3., 4.]])
+    rows = rm.tensor([0, 1], dtype=rm.int64)
+    cols = rm.tensor([1, 0], dtype=rm.int64)
+
+    # 覆盖写入指定位置
+    print(x.clone().index_put_((rows, cols), rm.tensor([10., 20.])))
+    # tensor([[ 1., 10.],
+    #         [20.,  4.]])
+
+    # 对指定位置累加一个广播标量
+    print(x.clone().index_put_((rows, cols), rm.tensor(5.), accumulate=True))
+    # tensor([[1., 7.],
+    #         [8., 4.]])
 
 原地操作的注意事项
 ~~~~~~~~~~~~~~~~~~

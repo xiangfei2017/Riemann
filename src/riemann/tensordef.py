@@ -1539,6 +1539,48 @@ class TN:
         """
         return gather(self, dim, index)
 
+    def index_select(self, dim: int, index: TN) -> 'TN':
+        """沿指定维度按索引选择元素，等价于 riemann.index_select(self, dim, index)"""
+        return index_select(self, dim, index)
+
+    def masked_select(self, mask: TN) -> 'TN':
+        """按布尔掩码选择元素，返回一维张量，等价于 riemann.masked_select(self, mask)"""
+        return masked_select(self, mask)
+
+    def take(self, index: TN) -> 'TN':
+        """按扁平化下标选择元素，返回与 index 同形状的张量，等价于 riemann.take(self, index)"""
+        return take(self, index)
+
+    def index_put_(self, indices, values, accumulate: bool = False) -> 'TN':
+        """
+        按索引把 values 写入当前张量（原地操作），与 torch.Tensor.index_put_ 语义一致
+
+        参数:
+            indices: 索引元组，每个元素为整数索引张量或布尔掩码张量
+            values: 写入值，可为标量、TN 或可转换为 TN 的数据，须可广播到被选中区域；
+                当传入 TN 时，其 dtype 须与当前张量一致
+            accumulate: 为 True 时按 addat_ 语义累加（重复索引累加），否则按 setat_ 覆盖
+
+        返回:
+            原地修改后的张量（self）
+        """
+        # 与 torch 一致：禁止对需要梯度的叶子张量执行原地写入
+        if is_grad_enabled() and self.is_leaf and self.requires_grad:
+            raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
+        # 与 torch 一致：写入值张量的 dtype 必须与目标张量一致
+        if isinstance(values, TN) and values.dtype != self.dtype:
+            raise RuntimeError(
+                f"Index put requires the source and destination dtypes match, "
+                f"got {self.dtype} for the destination and {values.dtype} for the source."
+            )
+
+        # 与 torch 的 tuple 约定保持一致，同时兼容列表形式
+        if isinstance(indices, list):
+            indices = tuple(indices)
+        if accumulate:
+            return self.addat_(indices, values)
+        return self.setat_(indices, values)
+
     def scatter(self, dim, index, src=None, *, value=None):
         """
         将值按照index指定的位置填充到与self同形状的一个新张量中
@@ -9691,6 +9733,97 @@ def gather(input: TN, dim: int, index: TN, *, sparse_grad: bool = False, out = N
     result = input[input._compute_to_direct_indices(dim, index_data)]
 
     return _apply_out(out, result, (input,), "gather")
+
+
+def index_select(input: TN, dim: int, index: TN, *, out = None) -> TN:
+    """
+    沿指定维度按索引选择元素，与 torch.index_select 语义一致
+
+    参数:
+        input: 源张量
+        dim: 选择维度，支持负维度
+        index: 一维整数索引张量，dtype 会被规范化为 int64
+        out: 可选的输出张量，形状须与结果一致
+
+    返回:
+        形状为 input.shape 但 dim 维长度等于 index 长度的新张量
+
+    注意: 当使用out参数时，不支持自动微分
+    """
+    if dim < -input.ndim or dim >= input.ndim:
+        raise IndexError(
+            f"Dimension out of range (expected to be in range of [{-input.ndim}, {input.ndim-1}], got {dim})"
+        )
+    if dim < 0:
+        dim += input.ndim
+
+    index = as_tensor(index, dtype=int64, device=input.device)
+    if index.ndim != 1:
+        raise IndexError("index_select(): Index tensor must be a vector")
+
+    index_data = index._array
+    size = input.shape[dim]
+    arrlib = index._get_array_lib()
+    if index_data.size and (bool(arrlib.any(index_data < 0)) or bool(arrlib.any(index_data >= size))):
+        raise IndexError(f"index_select(): index out of range for dimension {dim} with size {size}")
+
+    # 复用 __getitem__ 的花式索引：沿 dim 使用索引数组，其余维度全选
+    indices = tuple(index_data if i == dim else slice(None) for i in range(input.ndim))
+    result = input[indices]
+
+    return _apply_out(out, result, (input,), "index_select")
+
+
+def masked_select(input: TN, mask: TN, *, out = None) -> TN:
+    """
+    按布尔掩码选择元素，与 torch.masked_select 语义一致
+
+    参数:
+        input: 源张量
+        mask: 布尔张量，形状须可广播到 input 的形状
+        out: 可选的输出张量，形状须与结果一致
+
+    返回:
+        包含所有被选中元素的一维新张量
+
+    注意: 当使用out参数时，不支持自动微分
+    """
+    mask = as_tensor(mask, device=input.device)
+    if mask.dtype != np.bool_:
+        raise TypeError(f"masked_select(): mask must be a boolean tensor, but got {mask.dtype}")
+
+    # 先按广播规则扩展掩码，再复用 __getitem__ 的布尔索引
+    result = input[mask._expand(input.shape)]
+
+    return _apply_out(out, result, (input,), "masked_select")
+
+
+def take(input: TN, index: TN) -> TN:
+    """
+    按扁平化后的下标选择元素，与 torch.take 语义一致
+
+    参数:
+        input: 源张量，按行主序视为一维数据
+        index: 整数索引张量，形状任意，dtype 会被规范化为 int64
+
+    返回:
+        形状与 index 相同的新张量
+    """
+    index = as_tensor(index, dtype=int64, device=input.device)
+
+    index_data = index._array
+    numel = input._array.size
+    arrlib = index._get_array_lib()
+    # 与 torch.take 一致：支持负下标（按 Python 规则从末尾计数），仅校验取值范围
+    if index_data.size and (
+        bool(arrlib.any(index_data >= numel)) or bool(arrlib.any(index_data < -numel))
+    ):
+        raise IndexError(f"take(): index out of range for tensor with {numel} elements")
+
+    # 展平后复用 __getitem__ 的整数数组索引，梯度经 reshape/getitem 自动回传
+    result = input.reshape(-1)[index]
+
+    return result
 
 
 def stack(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
