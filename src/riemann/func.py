@@ -43,9 +43,11 @@ func 模块 —— 函数式自动微分接口，参考 torch.func 设计。
     - vmap: 向量化映射（沿指定批次维度循环调用并堆叠）
     - functional_call: 以自定义参数调用 Module 实例
 
-所有函数间相互复用：jvp / vjp 是前向 / 反向模式原语，
-jacrev 由 vmap(vjp) 组合而成，jacfwd 由逐列 jvp 组合而成（与 vmap(jvp) 语义相同，
-但共享一次前向求值与局部 VJP 图缓存），hessian 由 jacrev(grad) 组合而成。
+所有函数间相互复用：jvp / vjp 是前向 / 反向模式原语，共享参数归一化与前向求值
+辅助（_traceable_args / _prepare_forward / _call_and_split）。
+jacrev / jacfwd 共用 _make_jacobian 做 argnums 校验与结果整形，内核分别是 vmap(vjp)
+与逐列 jvp（共享一次前向求值与局部 VJP 图缓存，与 vmap(jvp) 语义相同）。
+hessian 复用 _jacobian_via_vjp 内核，对 grad 的结果再求一次 Jacobian（反向叠反向）。
 
 补充说明：本库算子只登记局部 VJP（反向模式），因此 jvp 并非基于对偶数，而是通过
 "对局部 VJP 再做一次转置"沿计算图正向传播 tangent；细节见 _local_jvp。
@@ -55,8 +57,8 @@ import builtins
 from typing import Callable, Any, Optional, Union
 from .tensordef import *
 from .tensordef import _batch_slice
-from .gradmode import set_grad_enabled
 from .autograd.grad import grad as _grad
+
 
 # ---------------------------------------------------------------------------
 # argnums 校验（与 torch.func 的错误信息保持一致）
@@ -68,6 +70,13 @@ def _check_argnums(argnums, allow_none: bool = False):
     合法取值：int 或非空 tuple[int, ...]。校验在调用包裹函数时进行，错误信息
     与 torch.func 一致（() -> argnums must be non-empty；
     None / list 等 -> argnums must be int or Tuple[int, ...]）。
+
+    参数:
+        argnums: 待校验的输入位置，int 或 tuple[int, ...]；allow_none 时可为 None。
+        allow_none: 是否允许 None 表示"全部参数"。
+
+    返回:
+        归一化后的 tuple[int, ...]；argnums 为 None 且 allow_none=True 时返回 None。
     """
     if allow_none and argnums is None:
         return None
@@ -204,17 +213,29 @@ def grad_and_value(func: Callable[..., TN],
 #   - jacfwd / jacrev / hessian 均由这两个原语与 vmap 组合而成。
 # ---------------------------------------------------------------------------
 
-def _wrap_single_or_tuple(result):
-    """将 (可能是 list 的) 结果包装为 tuple 或单 TN（若仅一个元素）"""
-    if isinstance(result, list):
-        result = tuple(result)
-    if isinstance(result, tuple) and len(result) == 1:
-        result = result[0]
-    return result
+def _as_list(value):
+    """把单个对象或 list/tuple 序列统一转为 list。
+
+    参数:
+        value: 单个对象，或对象序列。
+
+    返回:
+        对象列表；输入本身是 list/tuple 时返回其浅拷贝。
+    """
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
 def _ensure_traceable(tensors):
-    """确保每个张量 requires_grad=True；关闭梯度的输入会被 detach 成新的叶子。"""
+    """确保每个张量 requires_grad=True；关闭梯度的输入会被 detach 成新的叶子。
+
+    参数:
+        tensors: 张量序列。
+
+    返回:
+        与输入等长的 list；原本可微的张量原样返回，否则返回其可微副本。
+    """
     result = []
     for t in tensors:
         if not t.requires_grad:
@@ -223,51 +244,50 @@ def _ensure_traceable(tensors):
     return result
 
 
-def _grad_with_cotangent(output: TN, inputs, grad_outputs: TN, create_graph: bool):
-    """反向传播原语：保留 cotangent 计算图的 VJP 内核。
+def _traceable_args(args):
+    """把实参序列拆成可微副本与位置映射，非张量参数原样透传。
 
-    与 autograd.grad 的唯一区别是 create_graph=True 时不 detach grad_outputs，
-    使 cotangent 本身参与高阶导数计算 —— 前向模式对局部 VJP 做"转置"时需要这一点。
+    参数:
+        args: 完整实参序列，可能包含非张量参数。
+
+    返回:
+        (call_args, primals, slot_of)：call_args 为把张量替换成可微副本后的
+        实参列表；primals 为参与求导的叶子张量序列；slot_of[i] 是第 i 个实参
+        在 primals 中的下标，非张量参数为 None。
     """
-    if not isinstance(output, TN) or not output.requires_grad:
-        raise RuntimeError("Only a tensor require grad can call grad()")
-    if output.shape != grad_outputs.shape:
-        raise RuntimeError("shape of grad_outputs need to be same as the shape of outputs")
+    call_args = list(args)
+    primals = []
+    slot_of = {}
+    for i, arg in enumerate(args):
+        if isinstance(arg, TN):
+            slot_of[i] = len(primals)
+            if not arg.requires_grad:
+                arg = arg.detach().requires_grad_(True)
+            primals.append(arg)
+            call_args[i] = arg
+        else:
+            slot_of[i] = None
+    return call_args, primals, slot_of
 
-    # 同一张计算图会被多次反传（jacrev 的每一列），必须先清空残留的
-    # grad_value / rcv_grad_count，否则上一次的结果会污染本次累加。
-    output._init_calc_graph()
-    grad_output = grad_outputs
-    # 设备不一致时才搬运；同设备直接复用，避免多余的拷贝
-    if grad_output.device != output.device:
-        grad_output = grad_output.to(device=output.device)
-    output.grad_value = grad_output if create_graph else grad_output.detach()
 
-    # 从输出出发做一次非递归的后向遍历：
-    #   - q 是后进先出栈；received 是该节点本次真正收到非零梯度的上游节点集合
-    #     （set 天然去重，多条路径只入队一次）
-    #   - 命中某个目标输入后记录其梯度，全部输入收齐即可提前退出
-    #   - 处理完的节点把 grad_value 置 None，防止后续错误地重复累加
-    grad_list = [None] * len(inputs)
-    saved_flags = [False] * len(inputs)
-    saved_count = 0
-    q = [output]
-    with set_grad_enabled(create_graph):
-        while q:
-            item = q.pop(-1)
-            for i, var in enumerate(inputs):
-                if not saved_flags[i] and var is item:
-                    saved_flags[i] = True
-                    saved_count += 1
-                    grad_list[i] = item.grad_value if create_graph else item.grad_value.detach()
-                    break
-            if saved_count == len(inputs):
-                break
-            received = set()
-            item._propagate_grad_to_sources(received)
-            item.grad_value = None
-            q.extend(received)
-    return grad_list
+def _call_and_split(func, args):
+    """执行 func 并把输出规范化为 (out_list, is_single_output)。
+
+    参数:
+        func: 待调用的函数。
+        args: 传给 func 的位置参数序列。
+
+    返回:
+        (out_list, is_single_output)：out_list 是输出张量列表，逐个校验类型，
+        便于后续按输出维度循环；is_single_output 表示 func 是否只返回一个张量。
+    """
+    outputs = func(*args)
+    is_single_output = isinstance(outputs, TN)
+    out_list = [outputs] if is_single_output else _as_list(outputs)
+    for i, out in enumerate(out_list):
+        if not isinstance(out, TN):
+            raise RuntimeError(f"Output {i} must be a tensor")
+    return out_list, is_single_output
 
 
 def _vjp_with_output(out: TN, inputs, cotangent: TN,
@@ -276,7 +296,25 @@ def _vjp_with_output(out: TN, inputs, cotangent: TN,
 
     VJP 关于 cotangent 是线性的：对固定的前向输出，可反复以不同 cotangent
     调用，无需重跑 func。jacrev 的每个输出基向量因此共享同一次前向计算。
+
+    参数:
+        out: 已求值的前向输出节点。
+        inputs: 目标输入张量序列。
+        cotangent: 输出侧余切，形状与 out 一致。
+        create_graph: 是否为高阶导数保留计算图。
+        strict: 为 True 时，若某个输入与输出完全不连通（梯度为 None）则报错。
+
+    返回:
+        与 inputs 等长的 list；不连通输入以同形零张量补齐。
     """
+    if not out.requires_grad:
+        # 常量输出与所有输入都不连通：strict 时报错，否则返回同形零块，
+        # 避免落入 _grad 的 "Only a tensor require grad" 错误。
+        if strict:
+            raise RuntimeError(
+                "Output is independent of input (0), "
+                "Set allow_unused=True if this is the desired behavior.")
+        return [zeros_like(inp, requires_grad=create_graph) for inp in inputs]
     grads = _grad(out, inputs, grad_outputs=cotangent,
                   create_graph=create_graph, allow_unused=True)
     if strict:
@@ -289,12 +327,22 @@ def _vjp_with_output(out: TN, inputs, cotangent: TN,
             for inp, gv in zip(inputs, grads)]
 
 
-def _leaf_shadow(var: TN) -> TN:
-    """构造与 var 共享数据、但不带计算图的叶子张量。"""
-    shadow = TN()
-    shadow._array = var._array
-    shadow.requires_grad = False
-    return shadow
+def _share_data_leaf(data) -> TN:
+    """构造不参与求导、与给定数组共享底层数据的叶子张量。
+
+    影子节点的入参与 jacfwd 的 tangent 基向量都只作为余切参与局部 JVP，
+    从不被原地修改，因此无需视图元数据，直接共享 _array 即可。
+
+    参数:
+        data: 底层数组（numpy / cupy），不做拷贝。
+
+    返回:
+        requires_grad=False、无 fromvars 的叶子 TN。
+    """
+    leaf = TN()
+    leaf._array = data
+    leaf.requires_grad = False
+    return leaf
 
 
 def _make_shadow(node: TN, leaf_map: dict) -> TN:
@@ -302,6 +350,14 @@ def _make_shadow(node: TN, leaf_map: dict) -> TN:
 
     影子节点与真实节点共享底层数据，但其 fromvars 全是叶子副本，
     因此在影子上求局部 VJP 的转置时只会遍历当前算子，而不会回溯整张图。
+
+    参数:
+        node: 前向图中的真实节点。
+        leaf_map: id(原始张量) -> 叶子副本 的映射，保证同一张量在多处被引用时
+            共用同一个叶子副本。
+
+    返回:
+        影子节点：共享 node._array 与 node.parms，fromvars 均为无计算图的叶子。
     """
     shadow = TN()
     shadow._array = node._array
@@ -311,19 +367,29 @@ def _make_shadow(node: TN, leaf_map: dict) -> TN:
     for var in node.fromvars:
         var_shadow = leaf_map.get(id(var))
         if var_shadow is None:
-            var_shadow = _leaf_shadow(var)
+            var_shadow = _share_data_leaf(var._array)
             leaf_map[id(var)] = var_shadow
         fromvars.append(var_shadow)
     shadow.fromvars = tuple(fromvars)
     return shadow
 
 
-def _local_jvp_by_basis(node: TN, i: int, target: TN, g_in: TN, tangent: TN) -> TN:
+def _local_jvp_by_basis(node: TN, i: int, target: TN, tangent: TN) -> TN:
     """gradfunc 未建立计算图时的回退：用输出基向量显式构造局部 Jacobian。
 
     全程使用张量运算（不经过 numpy），因此 CPU/CUDA 都适用：对输出的每个
     基向量 k 求局部 VJP 得到 J_i 的第 k 列，堆叠为 (numel_in, numel_out) 的
     转置矩阵，再与 tangent 相乘得到 J_i @ tangent。
+
+    参数:
+        node: 当前算子的输出节点，提供形状、dtype、device 与 numel。
+        i: 入边下标，对应 node.gradfuncs[i]。
+        target: 调用 gradfunc 的目标节点（真实节点或影子节点），其 grad_value
+            会被临时改写为各基向量。
+        tangent: 与第 i 个输入同形的切向量。
+
+    返回:
+        与输出同形的张量：J_i @ tangent。
     """
     numel_out = node.numel()
     basis = eye(numel_out, dtype=node.dtype, device=node.device)
@@ -346,21 +412,40 @@ def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
                create_graph: bool, cache: Optional[dict] = None) -> TN:
     """计算单个节点的局部 JVP：J_i @ tangent。
 
-    节点的 gradfunc 计算的是局部 VJP：g_in = J_iᵀ g_out（复数寄存器为共轭
-    转置 J_iᴴ g_out）。恒等式 J_i = (J_iᵀ)ᵀ 意味着：对 g_in 关于 g_out 再做
-    一次同样的反向传播、以 tangent 作为余切，即可得到 J_i @ tangent —— 这正是
-    前向模式在单个算子上的传播（复数情形两次共轭相互抵消，结果同样是 J_i）。
+    背景：每个算子只登记了反向规则 gradfunc，它把 node 的余切 g_out（与输出
+    同形）映射为 g_in = J_iᵀ g_out（与输入同形），并没有前向规则。这里用
+    "对局部 VJP 再做一次反向"补出前向结果：
 
-    cache 非 None 时（jacfwd 多列场景），把每个 (节点, 边) 的局部 VJP 图
-    (g_in, g_out) 只构建一次供所有列复用。安全性依据：J_i @ tangent 的推导
-    只依赖 g_in 的图结构（gradfunc 中除 grad_value 以外的操作数来自固定数据），
-    与 g_out 的数值无关，因此零值 seed 构建出的图可反复使用。
+    1. 以零值 g_out 调 gradfunc，只为得到 g_in = J_iᵀ g_out 这张小图；
+    2. 小图对应线性映射 L(g) = J_iᵀ g，线性映射的 VJP 就是其转置，
+       (J_iᵀ)ᵀ = J_i；
+    3. 以 tangent 作为 g_in 的余切对 L 反向，得到 Lᵀ tangent = J_i @ tangent。
+
+    注意角色互换：node 的余切始终是 g_out；tangent 只在内层反向里充当 g_in
+    的余切，因此形状与输入一致，与输出同形的 g_out 无关。复数情形 gradfunc
+    登记的是 J_iᴴ，两次共轭随两次转置一起抵消，结果同样是 J_i。
+
+    参数:
+        node: 前向图中的当前算子输出节点，node.gradfuncs[i] 是第 i 条入边的
+            局部 VJP 规则。
+        shadow: node 的局部影子节点（共享底层数据、fromvars 换成叶子副本），
+            让内层反向只遍历当前算子；为 None 时退化为 node 本身。
+        i: 入边下标，同时索引 node.fromvars[i] 与 node.gradfuncs[i]。
+        tangent: 沿该入边传入的切向量，形状与第 i 个输入一致。
+        create_graph: 为 True 时保留内层反向的计算图以支持高阶导数，此时必须
+            使用真实节点（影子节点会与原始输入断链）。
+        cache: 可选缓存，键为 (id(node), i)，值为 (g_in, g_out) 的局部 VJP 图；
+            jacfwd 的多列因此可复用同一图结构，只重复反传、不重复构图。
+
+    返回:
+        与第 i 个输入同形的张量，即该条边上的局部 JVP：J_i @ tangent。
     """
     if cache is not None:
         entry = cache.get((id(node), i))
         if entry is not None:
             g_in, g_out = entry
-            return _grad_with_cotangent(g_in, [g_out], tangent, create_graph)[0]
+            return _grad(g_in, [g_out], grad_outputs=tangent,
+                         create_graph=create_graph, allow_unused=True)[0]
 
     # create_graph=True 时必须真实节点上建图：若用影子节点，g_in 与原始输入
     # 断开连接，高阶导数会丢失。其余情况用影子节点，使局部反传只遍历当前算子，
@@ -384,9 +469,10 @@ def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
         # 常规路径：gradfunc 建了图，再反传一次即得 J_i @ tangent
         if cache is not None:
             cache[(id(node), i)] = (g_in, g_out)
-        return _grad_with_cotangent(g_in, [g_out], tangent, create_graph)[0]
+        return _grad(g_in, [g_out], grad_outputs=tangent,
+                     create_graph=create_graph, allow_unused=True)[0]
     # 回退路径：gradfunc 未建图（如梯度开关关闭），只能显式构造局部 Jacobian
-    return _local_jvp_by_basis(node, i, target, g_in, tangent)
+    return _local_jvp_by_basis(node, i, target, tangent)
 
 
 def _graph_topological_order(outputs):
@@ -395,6 +481,12 @@ def _graph_topological_order(outputs):
     用迭代式 DFS 的后序输出实现，避免递归深度限制。每个节点入栈两次：
     先以 expanded=False 入栈（用于展开子节点），再以 expanded=True 入栈
     （子节点全部处理完后才追加到 order），从而保证输出一定排在其输入之后。
+
+    参数:
+        outputs: 前向输出节点序列。
+
+    返回:
+        list[TN]：从 outputs 可达的全部节点，按拓扑序排列（叶子在前、输出在后）。
     """
     order = []
     visited = set()
@@ -421,21 +513,23 @@ def _graph_topological_order(outputs):
 def _prepare_forward(run, primals, create_graph: bool):
     """执行一次前向求值，并缓存可复用的计算图结构。
 
-    返回字典，包含：
+    jacfwd 的每个输入基向量共享同一次前向与同一批影子节点，
+    从而避免为每个基向量重复构造相同的计算图。
+
+    参数:
+        run: 无参可调用对象，执行真实的 func 前向并返回单个 TN 或 TN 序列。
+        primals: 参与播种的可微输入张量序列（叶子在前）。
+        create_graph: 为 False 时预先构建影子节点；为 True 时跳过（局部 JVP 需要
+            在真实节点上建图）。
+
+    返回:
+        dict，键为：
         primals: 参与播种的（可微）叶子张量
         out_list / is_single_output: 前向输出
         order: 拓扑序（叶子在前、输出在后）
         shadow_map: id(node) -> 局部影子节点（仅 create_graph=False 时构建）
-
-    jacfwd 的每个输入基向量共享同一次前向与同一批影子节点，
-    从而避免为每个基向量重复构造相同的计算图。
     """
-    outputs = run()
-    is_single_output = isinstance(outputs, TN)
-    out_list = [outputs] if is_single_output else list(outputs)
-    for i, out in enumerate(out_list):
-        if not isinstance(out, TN):
-            raise RuntimeError(f"Output {i} must be a tensor")
+    out_list, is_single_output = _call_and_split(run, ())
 
     order = _graph_topological_order(out_list)
     shadow_map = None
@@ -464,6 +558,17 @@ def _jvp_with_prepared(prepared, tangents, create_graph: bool, strict: bool,
 
     tangents 与 prepared['primals'] 一一对应，元素为 None 表示该输入的
     tangent 为零（跳过，不做任何传播）。cache 用于跨列复用局部 VJP 图。
+
+    参数:
+        prepared: _prepare_forward 的返回值（前向输出、拓扑序、影子节点等）。
+        tangents: 切向量序列，与 prepared['primals'] 一一对应；None 表示零方向。
+        create_graph: 是否为高阶导数保留内层反向的计算图。
+        strict: 为 True 时，若某输出与某输入完全不连通则报错。
+        cache: 可选的局部 VJP 图缓存，jacfwd 多列共享。
+
+    返回:
+        单输出时返回 (输出张量, tangent 张量)；多输出时返回
+        (tuple[输出], tuple[tangent])，与输入输出数量对应。
     """
     primals = prepared['primals']
     out_list = prepared['out_list']
@@ -533,21 +638,34 @@ def _jvp_with_prepared(prepared, tangents, create_graph: bool, strict: bool,
     return tuple(out_list), tuple(results)
 
 
-def _jvp_forward(func, primals, tangents, create_graph: bool, strict: bool):
-    """前向模式 JVP：先正常前向求值，再沿计算图正向传播 tangent。
+def jvp(func: Callable[..., Union[TN, tuple[TN, ...]]],
+        primals: Union[TN, list[TN], tuple[TN, ...]],
+        tangents: Union[TN, list[TN], tuple[TN, ...]],
+        create_graph: bool = False,
+        strict: bool = False) -> tuple[Union[TN, tuple[TN, ...]], Union[TN, tuple[TN, ...]]]:
+    """Jacobian-vector 积（前向模式）。
 
-    tangents=None 只允许单输入，表示以标量 1.0 作为方向（即对唯一输入求
-    方向导数，常用于标量函数）。strict 语义在 _jvp_with_prepared 中检查：
-    输出与某个输入完全不连通时报错。
+    先执行 func 的前向计算，再沿计算图从输入到输出正向传播 tangent，
+    得到 J(x)·v。返回 (输出值, JVP 结果)。
+
+    参数:
+        func: 待求方向导数的函数，输入为 TN，输出为单个 TN 或 TN 序列。
+        primals: 求值点输入，单个 TN 或 TN 序列，顺序与 func 的入参一致。
+        tangents: 切向量，结构须与 primals 一致；仅当 primals 为单个输入时可传
+            None，等价于以全 1 向量作为方向（0 维输入即标量 1.0）。
+        create_graph: 为 True 时保留计算图，JVP 结果可继续求导（高阶导数）。
+        strict: 为 True 时，若某输出与某输入完全不连通则抛 RuntimeError。
+
+    返回:
+        (输出值, JVP 结果)。输出值结构与 func 的返回一致（单输出为 TN，
+        多输出为 tuple）；JVP 结果即 J(x)·v，结构与输出值一致。
     """
     is_single_input = not isinstance(primals, (list, tuple))
     if is_single_input:
         primals = [primals]
         if tangents is None:
-            tangents = [tensor(1.0,
-                               dtype=primals[0].dtype,
-                               device=primals[0].device,
-                               requires_grad=create_graph)]
+            # 全 1 方向：0 维输入即标量 1.0，向量输入则逐元素为 1
+            tangents = [ones_like(primals[0], requires_grad=create_graph)]
         else:
             tangents = [tangents]
     else:
@@ -572,21 +690,6 @@ def _jvp_forward(func, primals, tangents, create_graph: bool, strict: bool):
     return _jvp_with_prepared(prepared, tangents, create_graph, strict)
 
 
-def jvp(func: Callable[..., Union[TN, tuple[TN, ...]]],
-        primals: Union[TN, list[TN], tuple[TN, ...]],
-        tangents: Union[TN, list[TN], tuple[TN, ...]],
-        create_graph: bool = False,
-        strict: bool = False) -> tuple[Union[TN, tuple[TN, ...]], Union[TN, tuple[TN, ...]]]:
-    """Jacobian-vector 积（前向模式）。
-
-    先执行 func 的前向计算，再沿计算图从输入到输出正向传播 tangent，
-    得到 J(x)·v。返回 (输出值, JVP 结果)。
-    """
-    out, jvp_res = _jvp_forward(func, primals, tangents,
-                                create_graph=create_graph, strict=strict)
-    return out, _wrap_single_or_tuple(jvp_res)
-
-
 def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
         primals: Union[TN, list[TN], tuple[TN, ...]],
         cotangents: Optional[Union[TN, list[TN], tuple[TN, ...]]] = None,
@@ -596,6 +699,19 @@ def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
 
     先执行 func 的前向计算，再从输出到输入反向传播 cotangent，
     得到 vᵀ·J(x)。返回 (输出值, VJP 结果)。
+
+    参数:
+        func: 待求 VJP 的函数，输入为 TN，输出为单个 TN 或 TN 序列。
+        primals: 求值点输入，单个 TN 或 TN 序列，顺序与 func 的入参一致。
+        cotangents: 输出侧余切，结构须与输出一致；为 None 时取全 1，等价于
+            对输出求和后求梯度。多输出时各输出的贡献会累加到同一输入梯度上。
+        create_graph: 为 True 时保留计算图，VJP 结果可继续求导。
+        strict: 为 True 时，若某个输出与某个输入完全不连通则抛 RuntimeError。
+
+    返回:
+        (输出值, VJP 结果)。输出值结构与 func 的返回一致；VJP 结果为各输入的
+        余切传播结果——单输入时为单个 TN，多输入时为 tuple，每个元素形状与
+        对应输入相同。
     """
     is_single_input = not isinstance(primals, (list, tuple))
     inputs = [primals] if is_single_input else list(primals)
@@ -604,20 +720,12 @@ def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
             raise RuntimeError(f"Input {i} must be a tensor")
     inputs = _ensure_traceable(inputs)
 
-    outputs = func(*inputs)
-    is_single_output = not isinstance(outputs, (list, tuple))
-    out_list = [outputs] if is_single_output else list(outputs)
-    for i, out in enumerate(out_list):
-        if not isinstance(out, TN):
-            raise RuntimeError(f"Output {i} must be a tensor")
+    out_list, is_single_output = _call_and_split(func, inputs)
 
     if cotangents is None:
         cot_list = [ones_like(out, requires_grad=create_graph) for out in out_list]
     else:
-        if isinstance(cotangents, TN):
-            kot = [cotangents]
-        else:
-            kot = list(cotangents)
+        kot = _as_list(cotangents)
         if len(kot) != len(out_list):
             raise RuntimeError(f"Expected {len(out_list)} cotangents, got {len(kot)}")
         cot_list = []
@@ -635,10 +743,10 @@ def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
         for j, gv in enumerate(grads):
             results[j] = gv if results[j] is None else results[j] + gv
 
-    vjp_result = results[0] if is_single_input else tuple(results)
-    if is_single_output:
-        return out_list[0], _wrap_single_or_tuple(vjp_result)
-    return tuple(out_list), _wrap_single_or_tuple(vjp_result)
+    out_values = out_list[0] if is_single_output else tuple(out_list)
+    # 单个输入（含只含 1 个元素的序列）直接返回梯度张量，多输入返回元组
+    vjp_values = results[0] if len(results) == 1 else tuple(results)
+    return out_values, vjp_values
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +757,15 @@ def _identity_basis(numel: int, shape, dtype, device) -> TN:
     """构造 numel 个标准基向量，形状为 (numel,) + shape。
 
     用一次 eye 填充整个 (numel, numel) 平面，避免 numel 次逐元素赋值。
+
+    参数:
+        numel: 展平后的元素个数，也是基向量个数。
+        shape: 单个基向量的形状（即被展开张量的形状）。
+        dtype: 数据类型。
+        device: 计算设备。
+
+    返回:
+        形状为 (numel,) + shape 的张量，第 k 个切片为第 k 个单位基向量。
     """
     basis = zeros(numel, *shape, dtype=dtype, device=device)
     arrlib = basis._get_array_lib()
@@ -656,113 +773,111 @@ def _identity_basis(numel: int, shape, dtype, device) -> TN:
     return basis
 
 
-def _jacobian_via_vjp(func, inputs, create_graph: bool, strict: bool):
+def _jacobian_via_vjp(func, args, positions, create_graph: bool, strict: bool):
     """用 vjp 原语计算 Jacobian：对输出的每个基向量做一次 VJP。
 
     func 只执行一次，所有列共享同一张前向计算图；每列仅做一次独立反向遍历
-    （见 _vjp_with_output）。
+    （见 _vjp_with_output）。只为 positions 选中的输入收集梯度，未选中的参数
+    既不参与 strict 检查，也不产生多余的反向遍历。
 
-    返回结构与 autograd.functional.jacobian 一致：
-    单输出单输入返回 TN；单输出多输入 / 多输出单输入返回 tuple；
-    多输出多输入返回 tuple-of-tuples（输出在外、输入在内）。
+    参数:
+        func: 待求 Jacobian 的函数。
+        args: 完整实参序列（含非张量参数，非张量原样透传）。
+        positions: 需要求导的参数位置序列。
+        create_graph: 是否为高阶导数保留计算图。
+        strict: 输出与输入不连通时是否报错。
+
+    返回:
+        (blocks, is_single_output)。blocks[k][j] 是第 k 个被选中输入对第 j 个
+        输出的 Jacobian，形状为 output_shape + input_shape。
     """
-    for i, inp in enumerate(inputs):
-        if not isinstance(inp, TN):
-            raise RuntimeError(f"Input {i} must be a tensor")
-    inputs = _ensure_traceable(inputs)
+    call_args, primals, slot_of = _traceable_args(args)
 
-    outputs = func(*inputs)
-    is_single_output = isinstance(outputs, TN)
-    out_list = [outputs] if is_single_output else list(outputs)
-    for i, out in enumerate(out_list):
-        if not isinstance(out, TN):
-            raise RuntimeError(f"Output {i} must be a tensor")
+    inputs = []
+    for pos in positions:
+        slot = slot_of.get(pos)
+        if slot is None:
+            raise RuntimeError(f"Input {pos} must be a tensor")
+        inputs.append(primals[slot])
 
-    per_output = []
-    for out in out_list:
+    out_list, is_single_output = _call_and_split(func, call_args)
+
+    blocks = [[None] * len(out_list) for _ in inputs]
+    for j, out in enumerate(out_list):
         numel = out.numel()
         if numel == 0 or not out.requires_grad:
             # 不可微或空输出（如 sort 返回的 indices）没有梯度，直接给零块
-            blocks = [zeros(out.shape + inp.shape, dtype=out.dtype, device=out.device)
-                      for inp in inputs]
-        else:
-            cot_batch = _identity_basis(numel, out.shape, out.dtype, out.device)
+            for k, inp in enumerate(inputs):
+                blocks[k][j] = zeros(out.shape + inp.shape, dtype=out.dtype,
+                                     device=out.device)
+            continue
 
-            def _single_vjp(cot, _out=out, _inputs=tuple(inputs)):
-                # 复用已建立的前向计算图：VJP 关于 cotangent 线性，
-                # 无需为每个输出基向量重跑 func。
-                return _vjp_with_output(_out, _inputs, cot, create_graph, strict)
+        cot_batch = _identity_basis(numel, out.shape, out.dtype, out.device)
 
-            stacked = vmap(_single_vjp)(cot_batch)
-            stacked_list = list(stacked) if isinstance(stacked, tuple) else [stacked]
-            blocks = []
-            for blk, inp in zip(stacked_list, inputs):
-                # 每个输入的分量形状为 (numel,)，还原成 Jacobian 块
-                # out.shape + inp.shape；dtype 统一向输出对齐
-                blk = blk.reshape(out.shape + inp.shape)
-                if blk.dtype != out.dtype:
-                    blk = blk.to(dtype=out.dtype)
-                blocks.append(blk)
-        per_output.append(blocks)
+        def _single_vjp(cot, _out=out):
+            # 复用已建立的前向计算图：VJP 关于 cotangent 线性，
+            # 无需为每个输出基向量重跑 func。
+            return _vjp_with_output(_out, tuple(inputs), cot, create_graph, strict)
 
-    if is_single_output:
-        if len(inputs) == 1:
-            return per_output[0][0]
-        return tuple(per_output[0])
-    if len(inputs) == 1:
-        return tuple(per_output[j][0] for j in range(len(out_list)))
-    return tuple(tuple(per_output[j][p] for p in range(len(inputs)))
-                 for j in range(len(out_list)))
+        stacked = _as_list(vmap(_single_vjp)(cot_batch))
+        for k, (blk, inp) in enumerate(zip(stacked, inputs)):
+            # 每个输入的分量形状为 (numel,)，还原成 Jacobian 块
+            # out.shape + inp.shape；dtype 统一向输出对齐
+            blk = blk.reshape(out.shape + inp.shape)
+            if blk.dtype != out.dtype:
+                blk = blk.to(dtype=out.dtype)
+            blocks[k][j] = blk
+
+    return blocks, is_single_output
 
 
 def _basis_row(basis: TN, k: int) -> TN:
     """取出基向量张量的第 k 行，构造共享底层数据、无计算图的叶子张量。
 
     tangent 只作为余切参与局部 JVP，从不被原地修改，因此无需视图元数据。
+
+    参数:
+        basis: _identity_basis 返回的基向量张量，形状 (numel,) + shape。
+        k: 行下标，取值 [0, numel)。
+
+    返回:
+        与 basis[0] 同形、共享底层数据且 requires_grad=False 的叶子张量。
     """
-    row = TN()
     data = basis._array[k]
     # 输出为 0 维时基向量只有 1 维，整数索引会返回 numpy/cupy 标量而非
     # 0 维数组；统一转成数组，避免后续算子里 _get_array_lib/ndim 失效
     arrlib = basis._get_array_lib()
     if not isinstance(data, arrlib.ndarray):
         data = arrlib.asarray(data)
-    row._array = data
-    row.requires_grad = False
-    return row
+    return _share_data_leaf(data)
 
 
-def _jacobian_via_jvp(func, args, argnums, create_graph: bool):
+def _jacobian_via_jvp(func, args, positions, create_graph: bool):
     """用 jvp 原语计算 Jacobian：对每个输入基向量做一次 JVP。
 
     等价于 vmap(jvp)，但不经 vmap：前向计算图只建立一次，所有基向量共享
     同一张图、同一批影子节点以及同一份局部 VJP 图缓存（local_cache），
     避免每个基向量都重复执行 func 或重复构建局部梯度图。
 
-    返回 (blocks, is_single_output)。blocks[k][j] 是第 k 个被选中输入
-    对第 j 个输出的 Jacobian，形状为 output_shape + input_shape。
+    参数:
+        func: 待求 Jacobian 的函数。
+        args: 完整实参序列（含非张量参数，非张量原样透传）。
+        positions: 需要求导的参数位置序列。
+        create_graph: 是否为高阶导数保留计算图。
+
+    返回:
+        (blocks, is_single_output)。blocks[k][j] 是第 k 个被选中输入对第 j 个
+        输出的 Jacobian，形状为 output_shape + input_shape。
     """
-    # 只为 TN 参数建立可微副本，非 TN 参数原样透传
-    call_args = list(args)
-    primals = []
-    slot_of = {}
-    for i, a in enumerate(args):
-        if isinstance(a, TN):
-            slot_of[i] = len(primals)
-            traceable = a if a.requires_grad else a.detach().requires_grad_(True)
-            primals.append(traceable)
-            call_args[i] = traceable
-        else:
-            slot_of[i] = None
+    call_args, primals, slot_of = _traceable_args(args)
 
     prepared = _prepare_forward(lambda: func(*call_args), primals, create_graph)
     out_list = prepared['out_list']
-    is_single_output = prepared['is_single_output']
     # 局部 VJP 图按 (节点, 边) 缓存一次，所有基向量（列）共享
     local_cache = {}
 
     blocks = []
-    for pos in argnums:
+    for pos in positions:
         slot = slot_of.get(pos)
         if slot is None:
             raise RuntimeError(f"Input {pos} must be a tensor")
@@ -784,7 +899,7 @@ def _jacobian_via_jvp(func, args, argnums, create_graph: bool):
             tangents[slot] = _basis_row(basis, k)
             _, jvp_res = _jvp_with_prepared(prepared, tangents, create_graph, False,
                                             local_cache)
-            res_list = list(jvp_res) if isinstance(jvp_res, tuple) else [jvp_res]
+            res_list = _as_list(jvp_res)
             if cols is None:
                 cols = [[] for _ in res_list]
             for j, res in enumerate(res_list):
@@ -795,7 +910,60 @@ def _jacobian_via_jvp(func, args, argnums, create_graph: bool):
         blocks.append([stack(col, dim=-1).reshape(out.shape + inp.shape)
                        for col, out in zip(cols, out_list)])
 
-    return blocks, is_single_output
+    return blocks, prepared['is_single_output']
+
+
+def _format_jacobian(blocks, is_single_output: bool):
+    """把 blocks[k][j] 整理为公开返回结构。
+
+    参数:
+        blocks: 每个被选中输入位置对各输出的 Jacobian，blocks[k][j] 的形状为
+            output_shape + input_shape。
+        is_single_output: func 是否只返回一个输出。
+
+    返回:
+        单输出且只选中 1 个位置时返回单个矩阵；否则返回 tuple。多输出时外层
+        按输出顺序、内层按 argnums 顺序；单输出多位置时直接返回位置元组。
+    """
+    n_pos = len(blocks)
+    if is_single_output:
+        per_output = [(blocks[k][0],) for k in range(n_pos)]
+    else:
+        per_output = [tuple(blocks[k][j] for k in range(n_pos))
+                      for j in range(len(blocks[0]))]
+
+    if len(per_output) == 1:
+        inner = per_output[0]
+        return inner[0] if len(inner) == 1 else inner
+    return tuple(inner[0] if len(inner) == 1 else inner for inner in per_output)
+
+
+def _make_jacobian(compute_blocks, func, argnums, allow_none: bool, **opts):
+    """构造 jacrev / jacfwd 共用的导函数：校验 argnums、算 blocks、统一格式化。
+
+    参数:
+        compute_blocks: 底层原语，签名为 (func, args, positions, **opts)，
+            返回 (blocks, is_single_output)。
+        func: 待求 Jacobian 的函数。
+        argnums: 需要求导的参数位置，int、tuple[int, ...]；allow_none 时可为 None。
+        allow_none: 是否允许 None 表示全部参数（jacfwd 支持，与 torch.func 一致）。
+        **opts: 透传给 compute_blocks 的选项（create_graph / strict）。
+
+    返回:
+        Callable：接受与 func 相同的参数，返回 _format_jacobian 整理后的结果。
+    """
+    def _wrapper(*args, **kwargs):
+        an = _check_argnums(argnums, allow_none=allow_none)
+        positions = tuple(range(len(args))) if an is None else an
+        blocks, is_single_output = compute_blocks(
+            lambda *a: func(*a, **kwargs), args, positions, **opts)
+        result = _format_jacobian(blocks, is_single_output)
+        # argnums=None 表示“对全部参数求导”，此时即使只有 1 个参数也返回元组
+        if an is None and not isinstance(result, tuple):
+            return (result,)
+        return result
+
+    return _wrapper
 
 
 def jacrev(func: Callable[..., Union[TN, tuple[TN, ...]]],
@@ -811,41 +979,23 @@ def jacrev(func: Callable[..., Union[TN, tuple[TN, ...]]],
     Jacobian 形状为 (y1, y2, ..., x1, x2, ...)。
 
     参数:
+        func: 待求 Jacobian 的函数，输入为 TN，输出为单个 TN 或 TN 序列。
         argnums: 需要计算 Jacobian 的输入位置，int 或 tuple[int, ...]，默认 0；
                  多位置时返回元组，顺序与 argnums 一致。非法取值（()、None、
                  含非 int 元素的元组、list 等）在调用导函数时抛 RuntimeError，
                  错误信息与 torch.func.jacrev 一致
+        create_graph: 为 True 时 Jacobian 张量保留计算图，可继续求导。
+        strict: 为 True 时，若某输出与某输入完全不连通则抛 RuntimeError（默认 True）。
 
-    返回一个包裹函数（func 的导函数），包裹函数接受 func 的参数并返回 Jacobian：
-    只含 1 个参数位置时返回单个 Jacobian 张量，含多个位置时返回元组。
+    返回:
+        Callable：func 的导函数，接受与 func 相同的参数并返回 Jacobian。
+        结果结构与输出结构对应：单输出单输入时返回单个矩阵，形状为
+        output_shape + input_shape；单输出多输入时返回 tuple，顺序与 argnums
+        一致；多输出单输入时返回 tuple，顺序与输出顺序一致；多输出多输入时
+        返回 tuple-of-tuples（输出在外层、输入在内层），内层顺序与 argnums 一致。
     """
-    def _wrapper(*args, **kwargs):
-        an = _check_argnums(argnums)
-        # 最常见情形（单参数、argnums=0）：底层直接返回单个 Jacobian 张量，
-        # 无需再走 argnums 过滤逻辑。
-        is_single_argnum = (len(an) == 1 and an[0] == 0 and len(args) == 1)
-        if is_single_argnum:
-            return _jacobian_via_vjp(
-                lambda *a: func(*a, **kwargs),
-                [args[0]],
-                create_graph=create_graph,
-                strict=strict,
-            )
-        result = _jacobian_via_vjp(
-            lambda *a: func(*a, **kwargs),
-            list(args),
-            create_graph=create_graph,
-            strict=strict,
-        )
-        # 底层返回 tuple（多输入），按 argnums 过滤结果
-        if isinstance(result, tuple):
-            filtered = tuple(result[i] for i in an)
-            if len(filtered) == 1:
-                return filtered[0]
-            return filtered
-        return result
-
-    return _wrapper
+    return _make_jacobian(_jacobian_via_vjp, func, argnums,
+                          allow_none=False, create_graph=create_graph, strict=strict)
 
 
 def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
@@ -859,37 +1009,24 @@ def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
     _jacobian_via_jvp）。
 
     参数:
+        func: 待求 Jacobian 的函数，输入为 TN，输出为单个 TN 或 TN 序列。
         argnums: 需要计算 Jacobian 的输入位置，int、tuple[int, ...] 或 None，
                  默认 0。与 torch.func.jacfwd 一致：None 表示对全部参数求导
                  （此时即使只有 1 个参数也返回元组）；() 和含非 int 元素的元组、
                  list 等非法取值在调用导函数时抛 RuntimeError，错误信息与
                  torch.func 一致
+        create_graph: 为 True 时 Jacobian 张量保留计算图，可继续求导。
 
-    返回一个包裹函数（func 的导函数），包裹函数接受 func 的参数并返回 Jacobian：
-    只含 1 个参数位置时返回单个 Jacobian 张量（argnums=None 时按全部参数求导，
-    单参数也返回元组），含多个位置时返回元组。
+    返回:
+        Callable：func 的导函数，接受与 func 相同的参数并返回 Jacobian。
+        结果结构与输出结构对应：单输出单输入时返回单个矩阵，形状为
+        output_shape + input_shape（argnums=None 时即使只有 1 个参数也返回
+        元组）；单输出多输入时返回 tuple，顺序与 argnums 一致；多输出单输入时
+        返回 tuple，顺序与输出顺序一致；多输出多输入时返回 tuple-of-tuples
+        （输出在外层、输入在内层），内层顺序与 argnums 一致。
     """
-    def _wrapper(*args, **kwargs):
-        an = _check_argnums(argnums, allow_none=True)
-        positions = tuple(range(len(args))) if an is None else an
-        blocks, is_single_output = _jacobian_via_jvp(
-            lambda *a: func(*a, **kwargs),
-            args,
-            positions,
-            create_graph=create_graph,
-        )
-        if is_single_output:
-            result = [blocks[k][0] for k in range(len(positions))]
-            if len(result) == 1 and an is not None:
-                return result[0]
-            return tuple(result)
-        # 多输出：与 jacrev 保持一致的嵌套结构（输出在外、输入在内）
-        if len(positions) == 1 and an is not None:
-            return tuple(blocks[0])
-        return tuple(tuple(blocks[k][j] for k in range(len(positions)))
-                     for j in range(len(blocks[0])))
-
-    return _wrapper
+    return _make_jacobian(_jacobian_via_jvp, func, argnums,
+                          allow_none=True, create_graph=create_graph)
 
 
 # ---------------------------------------------------------------------------
@@ -906,9 +1043,18 @@ def hessian(func: Callable[..., TN],
     再由反向模式 jacrev 对梯度求 Jacobian，即 Hessian。
 
     参数:
+        func: 标量值函数，输出必须是 0 维 TN（ndim == 0），否则抛 RuntimeError。
         argnums: 需要计算 Hessian 的输入位置，int 或 tuple[int, ...]，默认 0；
                  非法取值（()、None、含非 int 元素的元组、list 等）在调用导函数时
                  抛 RuntimeError，错误信息与 torch.func.hessian 一致
+        create_graph: 为 True 时 Hessian 张量保留计算图，可继续求导。
+        strict: 为 True 时，若梯度与 argnums 选中的输入完全不连通则抛
+                 RuntimeError（未被选中的参数不参与检查）。
+
+    返回:
+        Callable：func 的导函数，接受与 func 相同的参数并返回 Hessian。
+        单个 argnums 位置时返回形状 input_shape + input_shape 的矩阵；多个位置时
+        返回 tuple，第 j 项是第 argnums[j] 个输入的梯度对该输入的 Hessian 块。
     """
     def _wrapper(*args, **kwargs):
         an = _check_argnums(argnums)
@@ -918,16 +1064,16 @@ def hessian(func: Callable[..., TN],
         if not isinstance(output, TN) or output.ndim != 0:
             raise RuntimeError("Hessian only supports scalar-valued functions")
 
-        # 当 argnums 不是全部参数位置时，内部自动放宽 strict=False，
-        # 因为 cross-Hessian 对非 argnums 的依赖不是用户关心的范围。
-        effective_strict = strict if len(an) == len(args) else False
-
         # hessian = jacrev(grad(func))：反向叠反向。
         # 内层用 create_graph=True 求出标量输出梯度的张量（对 argnums 所选输入），
         # 外层 jacrev 再对梯度求 Jacobian，即得 Hessian。
         # 相比 jacrev(jacfwd(func))，梯度图只构建一次：本库的前向模式由局部 VJP
         # 转置模拟，jacfwd(create_graph=True) 会为每个基向量生成一条独立的列子图，
         # 外层每次反向都要遍历这些子图，导致 O(n^2) 放大；反向叠反向则避免该开销。
+        # argnums 未覆盖全部参数时放宽 strict：部分 Hessian 块为零（如 ∂²(xy²)/∂x²）
+        # 是正常结果，不应视为“未连接”。
+        effective_strict = strict if len(an) == len(args) else False
+
         def _grad_vector(*gargs):
             out = f(*gargs)
             if not isinstance(out, TN) or out.ndim != 0:
@@ -940,18 +1086,16 @@ def hessian(func: Callable[..., TN],
                 return grads[0]
             return tuple(grads)
 
-        # 外层 jacrev 对全部参数求导，再按 argnums 取出对应块，
-        # 以兼容 argnums 为非连续位置（如 (0, 2)）的情况。
-        outer_argnums = tuple(range(len(args))) if len(args) > 1 else 0
-        result = jacrev(_grad_vector, argnums=outer_argnums,
-                        create_graph=create_graph,
-                        strict=effective_strict)(*args)
+        # 只对 argnums 所选输入求 Jacobian（未选中的参数既不参与 strict 检查，
+        # 也不产生多余反向遍历）。blocks[j][j] 即第 j 个梯度对第 an[j] 个输入的
+        # Hessian 块，因此非连续 argnums（如 (0, 2)）也能直接定位。
+        blocks, _ = _jacobian_via_vjp(_grad_vector, args, an,
+                                      create_graph=create_graph,
+                                      strict=effective_strict)
 
-        # 单个 argnums 位置：直接返回对应输入的 Hessian
         if len(an) == 1:
-            return result[an[0]] if isinstance(result, tuple) else result
-        # 多个 argnums 位置：取对角线块（第 j 个梯度对第 an[j] 个输入的导数）
-        return tuple(result[j][an[j]] for j in range(len(an)))
+            return blocks[0][0]
+        return tuple(blocks[j][j] for j in range(len(an)))
 
     return _wrapper
 

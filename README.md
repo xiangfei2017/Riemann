@@ -631,10 +631,10 @@ You can use the following commands to run all tests in batches:
 pytest tests
 
 # Run specific test files
-pytest tests/test_010_grad.py
+pytest tests/test_008_autograd.py
 
 # Run specific test classes or methods
-pytest tests/test_011_jacobian.py::TestJacobianFunctions::test_single_input_single_output
+pytest tests/test_008_autograd.py::TestAutograd::test_jacobian
 
 # Run tests and generate coverage report
 pytest --cov=riemann tests/
@@ -649,7 +649,7 @@ You can also run test scripts individually:
 
 ```bash
 cd tests
-python test_010_grad.py
+python test_008_autograd.py
 # Run other test scripts
 ```
 

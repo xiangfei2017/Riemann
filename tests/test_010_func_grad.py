@@ -1,5 +1,5 @@
 """
-tests/test_034_funcs_grad.py
+tests/test_010_func_grad.py
 ============================
 riemann.func 模块 —— torch.func 风格函数式自动微分接口测试。
 
@@ -172,6 +172,11 @@ def _close(a, b, atol=1e-6, rtol=1e-6):
     return a.shape == b.shape and np.allclose(a, b, atol=atol, rtol=rtol)
 
 
+def _rm_ctensor(arr, requires_grad=True):
+    """构造复数张量（dtype=complex128）。"""
+    return tensor(np.asarray(arr, dtype=np.complex128), requires_grad=requires_grad)
+
+
 def _run_case(case_name, fn):
     """执行单个测试用例，打印结果并返回 passed bool"""
     t0 = time.time()
@@ -247,6 +252,17 @@ class TestFuncs(unittest.TestCase):
         # create_graph=True 高阶可微
         _run_case("grad - create_graph_high_order", lambda: self._check_grad_create_graph())
 
+        # has_aux + 多 argnums
+        def f_aux_multi(x, y): return ((x * y).sum(), "aux")
+        _run_case("grad - has_aux_multi_argnums",
+                  lambda: self._check_grad_has_aux_multi(f_aux_multi))
+
+        # kwargs 透传
+        _run_case("grad - kwargs_passthrough", lambda: self._check_grad_kwargs())
+
+        # 返回顺序与 argnums 一致
+        _run_case("grad - argnums_order", lambda: self._check_grad_argnums_order())
+
     def _check_grad(self, func_def, inputs_rm, argnums, expected):
         df = func.grad(func_def, argnums=argnums)
         grad_val = df(*inputs_rm)
@@ -281,6 +297,25 @@ class TestFuncs(unittest.TestCase):
         # d1 本身还能再被 grad —— create_graph=True 保留计算图
         d2y = func.grad(lambda a: d1(a).sum())(_rm_tensor(np.array([1.0, 2.0, 3.0])))
         return _close(d2y, 12.0 * np.array([1.0, 4.0, 9.0]))
+
+    def _check_grad_has_aux_multi(self, f_aux):
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        g, aux = func.grad(f_aux, argnums=(0, 1), has_aux=True)(x, y)
+        return (aux == "aux" and isinstance(g, tuple) and len(g) == 2
+                and _close(g[0], np.array([3.0, 4.0]))    # d(x*y)/dx = y
+                and _close(g[1], np.array([1.0, 2.0])))
+
+    def _check_grad_kwargs(self):
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        g = func.grad(lambda a, scale=1.0: scale * (a ** 2).sum())(x, scale=3.0)
+        return _close(g, np.array([6.0, 12.0]))
+
+    def _check_grad_argnums_order(self):
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        g = func.grad(lambda a, b: (a * b).sum(), argnums=(1, 0))(x, y)
+        return _close(g[0], np.array([1.0, 2.0])) and _close(g[1], np.array([3.0, 4.0]))
 
     # ---------------------------------------------------------------
     # grad_and_value
@@ -370,6 +405,18 @@ class TestFuncs(unittest.TestCase):
         _run_case("jvp - create_graph",
                   lambda: self._check_jvp_create_graph())
 
+        # tangents=None：单输入时方向取标量 1.0
+        _run_case("jvp - default_tangent", lambda: self._check_jvp_default_tangent())
+
+        # 多输出 func
+        _run_case("jvp - multi_output", lambda: self._check_jvp_multi_output())
+
+        # 复数：两次转置需抵消共轭
+        _run_case("jvp - complex", lambda: self._check_jvp_complex())
+
+        # strict=True：输出与输入不连通应报错
+        _run_case("jvp - strict_independent_raises", lambda: self._check_jvp_strict())
+
     def _check_jvp(self, f, p_np, t_np, exp_out, exp_jvp):
         p = _rm_tensor(p_np)
         t = _rm_tensor(t_np, requires_grad=False)
@@ -408,6 +455,39 @@ class TestFuncs(unittest.TestCase):
         # jvp = 2x·v = 1 + 4 + 3 = 8
         return _close(jvp_res, 8.0)
 
+    def _check_jvp_default_tangent(self):
+        f = lambda x: (x ** 3).sum()
+        out, jvp_res = func.jvp(f, _rm_tensor(np.array([1.0, 2.0])), None)
+        # out = 1 + 8 = 9；jvp = 3*(1 + 4) = 15（方向取标量 1.0）
+        return _close(out, 9.0) and _close(jvp_res, 15.0)
+
+    def _check_jvp_multi_output(self):
+        f = lambda x: (x.sum(), (x ** 2).sum())
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        v = _rm_tensor(np.array([1.0, 0.0, 1.0]), requires_grad=False)
+        out, jvp_res = func.jvp(f, x, v)
+        # out = (6, 14)；jvp = (sum(v)=2, 2x·v=8)
+        return (isinstance(out, tuple) and isinstance(jvp_res, tuple)
+                and len(out) == 2 and len(jvp_res) == 2
+                and _close(out[0], 6.0) and _close(out[1], 14.0)
+                and _close(jvp_res[0], 2.0) and _close(jvp_res[1], 8.0))
+
+    def _check_jvp_complex(self):
+        z = _rm_ctensor(np.array([1.0 + 2.0j, 3.0 - 1.0j]))
+        v = _rm_ctensor(np.array([1.0 + 0.0j, 1.0 + 0.0j]), requires_grad=False)
+        out, jvp_res = func.jvp(lambda t: (t ** 2).sum(), z, v)
+        # sum(z^2) = 5 - 2j；J·v = 2z = 8 + 2j（两次共轭抵消）
+        return _close(out, 5.0 - 2.0j) and _close(jvp_res, 8.0 + 2.0j)
+
+    def _check_jvp_strict(self):
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        v = _rm_tensor(np.array([1.0, 1.0]), requires_grad=False)
+        try:
+            func.jvp(lambda _: tensor(3.0), x, v, strict=True)
+            return False
+        except RuntimeError:
+            return True
+
     # ---------------------------------------------------------------
     # vjp
     # ---------------------------------------------------------------
@@ -427,6 +507,18 @@ class TestFuncs(unittest.TestCase):
         # 向量输出 + 自定义 cotangents
         _run_case("vjp - vector_output_custom_cotangents",
                   lambda: self._check_vjp_vector_custom())
+
+        # 多输入：返回与输入一一对应的 tuple
+        _run_case("vjp - multi_input", lambda: self._check_vjp_multi_input())
+
+        # 多输出 + 多 cotangent：各输出贡献累加
+        _run_case("vjp - multi_output_cotangents", lambda: self._check_vjp_multi_output())
+
+        # cotangents 数量与输出不匹配
+        _run_case("vjp - cotangent_count_mismatch", lambda: self._check_vjp_cotangent_mismatch())
+
+        # 常量输出：strict=False 返回零块，strict=True 报错
+        _run_case("vjp - constant_output_zeros", lambda: self._check_vjp_constant())
 
     def _check_vjp(self, f, p_np, v, exp_out, exp_vjp):
         p = _rm_tensor(p_np)
@@ -448,6 +540,43 @@ class TestFuncs(unittest.TestCase):
         # out = [1,4,9]; vjp = 2*x * cot = [1, 4, 12]
         return _close(out, np.array([1.0, 4.0, 9.0])) and _close(vjp_res, np.array([1.0, 4.0, 12.0]))
 
+    def _check_vjp_multi_input(self):
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        out, res = func.vjp(lambda a, b: (a * b).sum(), (x, y))
+        # out = 11；∂f/∂x = y，∂f/∂y = x
+        return (_close(out, 11.0) and isinstance(res, tuple) and len(res) == 2
+                and _close(res[0], np.array([3.0, 4.0]))
+                and _close(res[1], np.array([1.0, 2.0])))
+
+    def _check_vjp_multi_output(self):
+        f = lambda x: (x.sum(), (x ** 2).sum())
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        out, res = func.vjp(f, x, (_rm_tensor(2.0, requires_grad=False),
+                                   _rm_tensor(3.0, requires_grad=False)))
+        # grad = 2*ones + 3*2x = [8, 14, 20]
+        return (isinstance(out, tuple) and _close(out[0], 6.0) and _close(out[1], 14.0)
+                and _close(res, np.array([8.0, 14.0, 20.0])))
+
+    def _check_vjp_cotangent_mismatch(self):
+        f = lambda x: (x.sum(), (x ** 2).sum())
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        try:
+            func.vjp(f, x, tensor(1.0))   # 单余切 vs 双输出
+            return False
+        except RuntimeError:
+            return True
+
+    def _check_vjp_constant(self):
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        out, res = func.vjp(lambda _: tensor(3.0), x)
+        zeros_ok = _close(out, 3.0) and _close(res, np.zeros(2))
+        try:
+            func.vjp(lambda _: tensor(3.0), x, strict=True)
+            return False
+        except RuntimeError:
+            return zeros_ok
+
     # ---------------------------------------------------------------
     # jacrev
     # ---------------------------------------------------------------
@@ -467,6 +596,23 @@ class TestFuncs(unittest.TestCase):
 
         # 2D 输入 -> 标量输出，Jacobian 形状应该是扁平化 input_shape
         _run_case("jacrev - 2d_input_shape", lambda: self._check_jacrev_2d_shape())
+
+        # 多输出：每个输出一个 Jacobian（tuple）
+        _run_case("jacrev - multi_output", lambda: self._check_jacrev_multi_output())
+
+        # 多输出 + 多输入：外层按输出、内层按 argnums
+        _run_case("jacrev - multi_output_multi_input",
+                  lambda: self._check_jacrev_multi_output_multi_input())
+
+        # 多输出 + 多输入 + 非连续 argnums 子集
+        _run_case("jacrev - multi_output_argnums_filter",
+                  lambda: self._check_jacrev_multi_output_argnums())
+
+        # 独立输入：strict=False 返回零块，strict=True 报错
+        _run_case("jacrev - independent_input", lambda: self._check_jacrev_independent())
+
+        # 0 维输入：Jacobian 为 0 维
+        _run_case("jacrev - scalar_input", lambda: self._check_jacrev_scalar_input())
 
     def _check_jacrev(self, f, x_np, argnums, expected):
         x = _rm_tensor(x_np)
@@ -492,6 +638,61 @@ class TestFuncs(unittest.TestCase):
         jac_arr = jac._array if hasattr(jac, '_array') else np.asarray(jac)
         return jac_arr.flatten().shape == expected_flat.shape and np.allclose(jac_arr.flatten(), expected_flat)
 
+    def _check_jacrev_multi_output(self):
+        f = lambda x: (x.sum(), (x ** 2).sum())
+        jac = func.jacrev(f)(_rm_tensor(np.array([1.0, 2.0, 3.0])))
+        # 两个输出各自的 Jacobian：ones 与 2x
+        return (isinstance(jac, tuple) and len(jac) == 2
+                and _close(jac[0], np.ones(3))
+                and _close(jac[1], np.array([2.0, 4.0, 6.0])))
+
+    def _check_jacrev_multi_output_multi_input(self):
+        # 结构约定与 torch.func.jacrev / jacfwd 一致：外层按输出、内层按 argnums
+        f = lambda x, y: ((x * y).sum(), (x * y ** 2).sum())
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        jac = func.jacrev(f, argnums=(0, 1))(x, y)
+        return (isinstance(jac, tuple) and len(jac) == 2
+                and all(isinstance(blk, tuple) and len(blk) == 2 for blk in jac)
+                # out0 = sum(x*y)：d/dx = y，d/dy = x
+                and _close(jac[0][0], np.array([3.0, 4.0]))
+                and _close(jac[0][1], np.array([1.0, 2.0]))
+                # out1 = sum(x*y^2)：d/dx = y^2，d/dy = 2*x*y
+                and _close(jac[1][0], np.array([9.0, 16.0]))
+                and _close(jac[1][1], np.array([6.0, 16.0])))
+
+    def _check_jacrev_multi_output_argnums(self):
+        # 每个输出都依赖 w，但 w 不在 argnums 中，用于验证内层按 argnums 过滤
+        f = lambda x, w, y: ((x * y).sum() + w.sum(), (x * y ** 2).sum() + w.sum())
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        w = _rm_tensor(np.array([1.0, 1.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        jac = func.jacrev(f, argnums=(0, 2))(x, w, y)
+        return (isinstance(jac, tuple) and len(jac) == 2
+                and all(isinstance(blk, tuple) and len(blk) == 2 for blk in jac)
+                and _close(jac[0][0], np.array([3.0, 4.0]))
+                and _close(jac[0][1], np.array([1.0, 2.0]))
+                and _close(jac[1][0], np.array([9.0, 16.0]))
+                and _close(jac[1][1], np.array([6.0, 16.0])))
+
+    def _check_jacrev_independent(self):
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        zeros_ok = _close(
+            func.jacrev(lambda a, b: (b ** 2).sum(), argnums=0, strict=False)(x, y),
+            np.zeros(2))
+        try:
+            func.jacrev(lambda a, b: (b ** 2).sum(), argnums=0, strict=True)(x, y)
+            return False
+        except RuntimeError:
+            return zeros_ok
+
+    def _check_jacrev_scalar_input(self):
+        x = _rm_tensor(2.0)
+        jac = func.jacrev(lambda t: (t ** 3).sum())(x)
+        # d(x^3)/dx = 3x^2 = 12，0 维输入对应 0 维 Jacobian
+        return _close(jac, 12.0)
+
     # ---------------------------------------------------------------
     # jacfwd
     # ---------------------------------------------------------------
@@ -509,6 +710,19 @@ class TestFuncs(unittest.TestCase):
 
         # 多输入场景
         _run_case("jacfwd - multi_input", lambda: self._check_jacfwd_multi_input())
+
+        # 多输出：每个输出一个 Jacobian（tuple）
+        _run_case("jacfwd - multi_output", lambda: self._check_jacfwd_multi_output())
+
+        # 多输出 + 多输入：与 jacrev 相同的嵌套约定（外层输出、内层 argnums）
+        _run_case("jacfwd - multi_output_multi_input",
+                  lambda: self._check_jacfwd_multi_output_multi_input())
+
+        # 复数前向：J·v 用 analytic Jacobian（.mH 两次共轭抵消）
+        _run_case("jacfwd - complex", lambda: self._check_jacfwd_complex())
+
+        # 0 维输入：Jacobian 为 0 维
+        _run_case("jacfwd - scalar_input", lambda: self._check_jacfwd_scalar_input())
 
     def _check_jacfwd(self, f, x_np, expected):
         x = _rm_tensor(x_np)
@@ -531,53 +745,35 @@ class TestFuncs(unittest.TestCase):
                 and _close(j[0], np.array([3.0, 4.0]))
                 and _close(j[1], np.array([1.0, 2.0])))
 
-    # ---------------------------------------------------------------
-    # derivative
-    # ---------------------------------------------------------------
-    def test_derivative(self):
-        _run_case("derivative - scalar_to_scalar", lambda: self._check_derivative_scalar())
-        _run_case("derivative - vector_to_vector", lambda: self._check_derivative_vector())
-        _run_case("derivative - two_inputs", lambda: self._check_derivative_two_inputs())
-        _run_case("derivative - create_graph_second_order",
-                  lambda: self._check_derivative_create_graph())
+    def _check_jacfwd_multi_output(self):
+        f = lambda x: (x.sum(), (x ** 2).sum())
+        jac = func.jacfwd(f)(_rm_tensor(np.array([1.0, 2.0, 3.0])))
+        return (isinstance(jac, tuple) and len(jac) == 2
+                and _close(jac[0], np.ones(3))
+                and _close(jac[1], np.array([2.0, 4.0, 6.0])))
 
-    @staticmethod
-    def _get_derivative():
-        from riemann.autograd.functional import derivative
-        return derivative
-
-    def _check_derivative_scalar(self):
-        derivative = self._get_derivative()
-        x = _rm_tensor(2.0)
-        res = derivative(lambda t: t ** 3)(x)
-        # 始终返回 tuple；标量输入/输出时元素为 0 维
-        return (isinstance(res, tuple) and len(res) == 1
-                and res[0].shape == () and _close(res[0], 12.0))
-
-    def _check_derivative_vector(self):
-        derivative = self._get_derivative()
+    def _check_jacfwd_multi_output_multi_input(self):
+        f = lambda x, y: ((x * y).sum(), (x * y ** 2).sum())
         x = _rm_tensor(np.array([1.0, 2.0]))
-        res = derivative(lambda t: t ** 2)(x)
-        return (isinstance(res, tuple) and len(res) == 1
-                and _close(res[0], np.diag([2.0, 4.0])))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        jac = func.jacfwd(f, argnums=(0, 1))(x, y)
+        return (isinstance(jac, tuple) and len(jac) == 2
+                and all(isinstance(blk, tuple) and len(blk) == 2 for blk in jac)
+                and _close(jac[0][0], np.array([3.0, 4.0]))
+                and _close(jac[0][1], np.array([1.0, 2.0]))
+                and _close(jac[1][0], np.array([9.0, 16.0]))
+                and _close(jac[1][1], np.array([6.0, 16.0])))
 
-    def _check_derivative_two_inputs(self):
-        derivative = self._get_derivative()
-        a = _rm_tensor(np.array([1.0, 2.0]))
-        b = _rm_tensor(np.array([3.0, 4.0]))
-        res = derivative(lambda x, y: (x * y).sum())(a, b)
-        # 每个输入对应一个导数：d/da = b，d/db = a
-        return (isinstance(res, tuple) and len(res) == 2
-                and _close(res[0], b._array) and _close(res[1], a._array))
+    def _check_jacfwd_complex(self):
+        z = _rm_ctensor(np.array([1.0 + 2.0j, 3.0 - 1.0j]))
+        jac = func.jacfwd(lambda t: (t ** 2).sum())(z)
+        # 解析 Jacobian：2z = [2+4j, 6-2j]
+        return _close(jac, np.array([2.0 + 4.0j, 6.0 - 2.0j]))
 
-    def _check_derivative_create_graph(self):
-        derivative = self._get_derivative()
+    def _check_jacfwd_scalar_input(self):
         x = _rm_tensor(2.0)
-        d = derivative(lambda t: t ** 3, create_graph=True)
-        first = d(x)[0]
-        second = func.grad(lambda t: d(t)[0])(x)
-        return (first.requires_grad and _close(first, 12.0)
-                and _close(second, 12.0))
+        jac = func.jacfwd(lambda t: (t ** 3).sum())(x)
+        return _close(jac, 12.0)
 
     # ---------------------------------------------------------------
     # hessian
@@ -599,6 +795,17 @@ class TestFuncs(unittest.TestCase):
 
         # 非标量函数应抛异常
         _run_case("hessian - non_scalar_raises", lambda: self._check_hessian_non_scalar())
+
+        # 多 argnums：返回各输入的 Hessian 块
+        _run_case("hessian - multi_argnums", lambda: self._check_hessian_multi_argnums())
+
+        # 非连续 argnums (0, 2)
+        _run_case("hessian - noncontiguous_argnums",
+                  lambda: self._check_hessian_noncontiguous())
+
+        # argnums 子集 + 与其余参数无关：strict 自动放宽
+        _run_case("hessian - strict_relaxed_subset",
+                  lambda: self._check_hessian_strict_relaxed())
 
     def _check_hessian(self, f, x_np, expected):
         x = _rm_tensor(x_np)
@@ -628,6 +835,32 @@ class TestFuncs(unittest.TestCase):
             return False
         except (RuntimeError, ValueError):
             return True
+
+    def _check_hessian_multi_argnums(self):
+        f = lambda x, y: (x ** 2 * y ** 2).sum()
+        h = func.hessian(f, argnums=(0, 1))(
+            _rm_tensor(np.array([1.0, 2.0])), _rm_tensor(np.array([3.0, 4.0])))
+        # H_xx = diag(2y²) = diag([18, 32])；H_yy = diag(2x²) = diag([2, 8])
+        return (isinstance(h, tuple) and len(h) == 2
+                and _close(h[0], np.diag([18.0, 32.0]))
+                and _close(h[1], np.diag([2.0, 8.0])))
+
+    def _check_hessian_noncontiguous(self):
+        f = lambda x, y, w: (x ** 2 * w).sum() + (w ** 3).sum()
+        h = func.hessian(f, argnums=(0, 2))(
+            _rm_tensor(np.array([1.0, 2.0])),     # x
+            _rm_tensor(np.array([3.0])),          # y（不参与求导）
+            _rm_tensor(np.array([4.0, 5.0])))     # w
+        # H_xx = diag(2w) = diag([8, 10])；H_ww = diag(6w) = diag([24, 30])
+        return (isinstance(h, tuple) and len(h) == 2
+                and _close(h[0], np.diag([8.0, 10.0]))
+                and _close(h[1], np.diag([24.0, 30.0])))
+
+    def _check_hessian_strict_relaxed(self):
+        # 梯度 ∂f/∂x = 3x² 与 y 无关；argnums=(0,) 时 strict 应自动放宽
+        h = func.hessian(lambda x, y: (x ** 3).sum() + (y ** 3).sum(), argnums=(0,))(
+            _rm_tensor(np.array([1.0, 2.0])), _rm_tensor(np.array([3.0, 4.0])))
+        return not isinstance(h, tuple) and _close(h, np.diag([6.0, 12.0]))
 
     # ---------------------------------------------------------------
     # vmap
@@ -660,6 +893,21 @@ class TestFuncs(unittest.TestCase):
 
         # 多输入 + in_dims=0 共享维度（标量输出）
         _run_case("vmap - multi_input_shared_dim", lambda: self._check_vmap_multi_shared())
+
+        # no_grad 下的纯前向路径（输出缓冲预分配）
+        _run_case("vmap - no_grad_pure_forward", lambda: self._check_vmap_no_grad())
+
+        # 梯度可穿过输出堆叠（有梯度时回退 stack）
+        _run_case("vmap - gradient_flows", lambda: self._check_vmap_grad_flow())
+
+        # 负 in_dims
+        _run_case("vmap - negative_in_dims", lambda: self._check_vmap_negative_dim())
+
+        # 多输出 + out_dims 元组
+        _run_case("vmap - out_dims_tuple", lambda: self._check_vmap_out_dims_tuple())
+
+        # 非张量参数透传
+        _run_case("vmap - non_tensor_arg", lambda: self._check_vmap_non_tensor_arg())
 
     def _check_vmap(self, f, inp_np, in_dims, expected):
         inp = _rm_tensor(inp_np)
@@ -711,6 +959,36 @@ class TestFuncs(unittest.TestCase):
         # 样本 1: 1*0.5+2*1 = 2.5; 样本 2: 3*2+4*3 = 18
         return _close(out, np.array([2.5, 18.0]))
 
+    def _check_vmap_no_grad(self):
+        x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
+        with rm.no_grad():
+            out = func.vmap(lambda row: (row ** 2).sum())(x)
+        return _close(out, np.array([5.0, 25.0]))
+
+    def _check_vmap_grad_flow(self):
+        x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
+        g = func.grad(lambda a: func.vmap(lambda row: (row ** 3).sum())(a).sum())(x)
+        # d(sum(a^3))/da = 3a²
+        return _close(g, 3.0 * np.array([[1.0, 4.0], [9.0, 16.0]]))
+
+    def _check_vmap_negative_dim(self):
+        x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]), requires_grad=False)
+        out = func.vmap(lambda col: (col ** 2).sum(), in_dims=-1)(x)
+        # 沿最后一维批处理：列 [1,3]->10，列 [2,4]->20
+        return _close(out, np.array([10.0, 20.0]))
+
+    def _check_vmap_out_dims_tuple(self):
+        x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
+        out = func.vmap(lambda row: (row.sum(), row * 2), out_dims=(0, 1))(x)
+        return (isinstance(out, tuple) and len(out) == 2
+                and _close(out[0], np.array([3.0, 7.0]))
+                and _close(out[1], np.array([[2.0, 6.0], [4.0, 8.0]])))
+
+    def _check_vmap_non_tensor_arg(self):
+        x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
+        out = func.vmap(lambda row, c: c * (row ** 2).sum())(x, 2.0)
+        return _close(out, np.array([10.0, 50.0]))
+
     # ---------------------------------------------------------------
     # functional_call
     # ---------------------------------------------------------------
@@ -726,6 +1004,18 @@ class TestFuncs(unittest.TestCase):
 
         # 多参数 named_parameters
         _run_case("functional_call - multi_params", lambda: self._check_fc_multi_params())
+
+        # 单个 TN 作为 parameter_values（免包 list）
+        _run_case("functional_call - single TN parameter_values",
+                  lambda: self._check_fc_single_tn())
+
+        # 前向抛异常时参数必须恢复（finally 分支）
+        _run_case("functional_call - restore_on_forward_error",
+                  lambda: self._check_fc_restore_on_error())
+
+        # 仅提供 _named_parameters 的旧式模块（setattr 回退分支）
+        _run_case("functional_call - _named_parameters fallback",
+                  lambda: self._check_fc_named_parameters_fallback())
 
         # ---- rm.nn.Module 真实 Module 场景（今天修复的 _parameters 分支） ----
         _run_case("functional_call - rm.nn.Linear default",
@@ -823,6 +1113,41 @@ class TestFuncs(unittest.TestCase):
         return (_close(y_custom, y_expected)
                 and _close(model.w, w0)
                 and _close(model.b, b0))
+
+    def _check_fc_single_tn(self):
+        Linear = self._make_linear_module()
+        w0 = _rm_tensor(np.random.randn(4, 5))
+        w_new = _rm_tensor(np.random.randn(4, 5))
+        x = _rm_tensor(np.random.randn(2, 4), requires_grad=False)
+        model = Linear(w0)
+        y = func.functional_call(model, w_new, (x,))
+        return _close(y, x @ w_new) and _close(model.w, w0)
+
+    def _check_fc_restore_on_error(self):
+        class Boom:
+            def __init__(self, w): self.w = w
+            def forward(self, x): raise RuntimeError("boom")
+            def named_parameters(self): yield "w", self.w
+        w0 = _rm_tensor(np.array([1.0]))
+        model = Boom(w0)
+        try:
+            func.functional_call(model, [_rm_tensor(np.array([2.0]))],
+                                 (_rm_tensor(np.array([1.0]), requires_grad=False),))
+            return False
+        except RuntimeError:
+            return _close(model.w, w0)   # finally 中已恢复
+
+    def _check_fc_named_parameters_fallback(self):
+        class Legacy:
+            def __init__(self, w): self.w = w
+            def forward(self, x): return x * self.w
+            def _named_parameters(self): yield "w", self.w
+        w0 = _rm_tensor(np.array([1.0, 2.0]))
+        w_new = _rm_tensor(np.array([3.0, 4.0]))
+        x = _rm_tensor(np.array([1.0, 1.0]), requires_grad=False)
+        model = Legacy(w0)
+        y = func.functional_call(model, [w_new], (x,))
+        return _close(y, np.array([3.0, 4.0])) and _close(model.w, w0)
 
     # ---- rm.nn.Module 真实 Module 场景 ----
     def _check_fc_rmnn_default(self):

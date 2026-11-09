@@ -11322,6 +11322,13 @@ class _IndexDescriptor:
     统一索引描述符类
     
     用于统一表示不同类型的索引（切片、数组、整数），便于进行索引合并计算。
+
+    - LINEAR：等差数列索引，元素映射为 f(i) = start + i*step，
+      其中 i ∈ [0, (stop-start)/step)；正负步长统一适用，合并时可直接做复合映射
+    - LOOKUP：显式离散位置表 indices；布尔索引已转为 True 所在位置，
+      负索引已按维度大小归一化
+    - NONE：保留类型；实际 None（np.newaxis）在 _normalize_index 中返回 Python None，
+      表示仅添加维度，不参与描述符合并
     
     属性:
         type: 索引类型（LINEAR、LOOKUP 或 NONE）
@@ -11365,7 +11372,16 @@ class _IndexDescriptor:
 
 
 def _normalize_index_to_tuple(index):
-    """将索引标准化为元组格式"""
+    """将单个索引或索引序列统一标准化为元组。
+
+    merge_indices 内部统一用元组表示索引，避免后续按位置取值时对
+    int/slice/list 等类型做分支判断。规则：
+      - 已是 tuple：原样返回
+      - 单个索引（slice/int/list/np.ndarray/cupy 数组）：包装为单元素元组
+      - 其他可迭代对象：tuple(index)
+
+    注意：None 索引会由调用方先转换为 (None,)，因此这里不单独处理 None。
+    """
     if isinstance(index, tuple):
         return index
     elif isinstance(index, (slice, int, list, np.ndarray)) or _is_cupy_array(index):
@@ -11375,7 +11391,14 @@ def _normalize_index_to_tuple(index):
 
 
 def _expand_ellipsis(index, target_ndim):
-    """展开索引中的 Ellipsis 为适当数量的 slice(None)"""
+    """展开索引中的 Ellipsis（...）为适当数量的 slice(None)。
+
+    语义与 NumPy/PyTorch 保持一致：
+      - target_ndim 表示“需要被索引的维度数”（对 current_index 而言是视图维度数）
+      - None（np.newaxis）只添加维度，不消耗维度，因此不计入 num_other
+      - 显式非 None 索引超过 target_ndim 时，Ellipsis 展开为 0 个切片
+      - 不含 Ellipsis 时原样返回；长度补全由调用方按需处理
+    """
     # 标准化为tuple
     if not isinstance(index, tuple):
         if index is Ellipsis:
@@ -11393,8 +11416,8 @@ def _expand_ellipsis(index, target_ndim):
         # 没有 Ellipsis，直接返回
         return index
     
-    # 计算需要填充的 slice(None) 数量
-    num_other = len(index) - 1
+    # 计算需要填充的 slice(None) 数量（None 仅添加维度，不消耗维度）
+    num_other = len([idx for idx in index if idx is not Ellipsis and idx is not None])
     num_slices_needed = target_ndim - num_other
     
     if num_slices_needed < 0:
@@ -11408,7 +11431,19 @@ def _expand_ellipsis(index, target_ndim):
 
 
 def _try_merge_special_base_index(base_index, current_index):
-    """尝试处理特殊的 base_index 情况（空元组、(None,)、全整数索引）"""
+    """尝试快速合并几类特殊的 base_index，无法直接合并时返回 None。
+
+    可快速处理的场景：
+      1. base_index 为空元组 ()：表示直接索引原始张量，无需合并，返回 current_index
+      2. base_index 为 (None,)：视图仅由一个 np.newaxis 构成。
+         对常见的单元素 current_index（int/None/slice）给出等价索引，
+         其他情况保留 None 并追加 current_index
+      3. base_index 全为整数索引：视图没有剩余维度，
+         将整数索引与 current_index 直接拼接即可
+
+    Returns:
+        tuple 或 None：合并结果；返回 None 表示需要走通用分阶段合并流程。
+    """
     # 处理 base_index 为空元组的情况（直接索引原始张量）
     # 注意：current_index 不会是 None，因为 _convert_TNindex_to_numpy 已将 None 转换为 (None,)
     if isinstance(base_index, tuple) and len(base_index) == 0:
@@ -11452,7 +11487,17 @@ def _try_merge_special_base_index(base_index, current_index):
 
 
 def _preprocess_base_index(base_index, base_shape):
-    """预处理基础索引：标准化为元组、展开 Ellipsis、计算 view_dims"""
+    """预处理基础索引，返回 (base_tuple, view_dims)。
+
+    - base_tuple：标准化后的元组索引，Ellipsis 已展开。这里刻意不补齐长度，
+      因为 base_index 可能只索引原始张量的前若干个维度（尾部维度隐式全切片）
+    - view_dims：真正构成视图维度的位置列表。只有切片、数组等索引会保留维度；
+      整数索引会把该维度消去，None 只添加新维度，二者都不计入 view_dims
+
+    例：
+        base_index=(slice(2, 8), 1)    -> view_dims=[0]
+        base_index=(None, slice(2, 8)) -> view_dims=[1]
+    """
     # 标准化为元组格式
     base_tuple = _normalize_index_to_tuple(base_index)
     
@@ -11463,13 +11508,21 @@ def _preprocess_base_index(base_index, base_shape):
     base_tuple = _expand_ellipsis(base_tuple, base_ndim)
     
     # 计算 view_dims（非整数索引的位置）
-    view_dims = [i for i, idx in enumerate(base_tuple) if not isinstance(idx, int)]
+    view_dims = [i for i, idx in enumerate(base_tuple)
+                 if not isinstance(idx, int) and idx is not None]
     
     return base_tuple, view_dims
 
 
 def _preprocess_current_index(current_index, view_dims):
-    """预处理当前索引：标准化为元组、展开 Ellipsis、填充长度"""
+    """预处理当前索引，使其与视图维度一一对应。
+
+    - 标准化为元组，并按视图维度数 len(view_dims) 展开 Ellipsis
+    - 只统计非 None 元素：None 不消耗视图维度
+    - 非 None 元素不足时在末尾补 slice(None)，等价于 Python 的隐式全切片
+
+    返回的元组仍保留 None 的位置，供 merge_indices 在组装阶段插入新维度。
+    """
     result = _normalize_index_to_tuple(current_index)
     
     ndim = len(view_dims)
@@ -11477,15 +11530,28 @@ def _preprocess_current_index(current_index, view_dims):
     # 展开 Ellipsis
     result = _expand_ellipsis(result, ndim)
     
-    # 填充长度以匹配 view_dims
-    if len(result) < ndim:
-        result = result + (slice(None),) * (ndim - len(result))
+    # 填充长度以匹配 view_dims（None 不消耗视图维度，不计入缺失数量）
+    non_none_count = len([idx for idx in result if idx is not None])
+    if non_none_count < ndim:
+        result = result + (slice(None),) * (ndim - non_none_count)
     
     return result
 
 
 def _normalize_index(index, dim_size: int):
-    """将索引转换为 IndexDescriptor（支持 slice、int、array 等类型）"""
+    """把单个索引转换为 _IndexDescriptor（统一表示线性切片/离散索引）。
+
+    - slice：正步长时 start/stop 缺省为 0/dim_size；负步长时 start 缺省为
+      dim_size-1、stop 缺省为 -dim_size-1（表示越过首元素）；负索引按 dim_size 归一化
+    - int：转为单元素 LOOKUP（负整数先加 dim_size）
+    - list/ndarray/cupy：布尔数组转为 True 所在位置的整数数组；
+      整数数组中的负数按 dim_size 归一化
+    - None：返回 None（np.newaxis 不参与描述符运算）
+
+    Args:
+        index: 单个索引元素
+        dim_size: 该维度在“被索引张量”中的大小（合并视图维度时为视图大小）
+    """
     
     if isinstance(index, slice):
         # 处理切片索引
@@ -11553,7 +11619,21 @@ def _normalize_index(index, dim_size: int):
 
 
 def _merge_descriptors(base_desc: _IndexDescriptor, current_desc: _IndexDescriptor) -> _IndexDescriptor:
-    """合并两个索引描述符（支持 LINEAR/LOOKUP 的组合）"""
+    """合并两个索引描述符，得到“在父张量上一步索引”的等价描述符。
+
+    参数含义：
+        base_desc:    视图维度到父维度的映射（由 base_index 标准化而来）
+        current_desc: 当前索引在该视图维度上的映射（dim_size 为视图大小）
+
+    支持四种组合（公式与推导见各分支注释）：
+        1. LINEAR + LINEAR = LINEAR：两个切片复合，新的起点/步长/终点按线性映射计算
+        2. LINEAR + LOOKUP = LOOKUP：离散索引经线性映射换算到父维度位置
+        3. LOOKUP + LINEAR = LOOKUP：从查找表中截取一段子区间
+        4. LOOKUP + LOOKUP = LOOKUP：用第二个查找表从第一个查找表中挑选元素
+
+    Returns:
+        合并后的 _IndexDescriptor，可直接交给 _descriptor_to_index 还原为索引对象。
+    """
     
     # 情况1: LINEAR + LINEAR = LINEAR
     # 组合两个切片，计算新的 start, stop, step
@@ -11739,7 +11819,15 @@ def _merge_descriptors(base_desc: _IndexDescriptor, current_desc: _IndexDescript
 
 
 def _descriptor_to_index(desc: _IndexDescriptor, original_type: type = None, keep_step_none: bool = False):
-    """将 IndexDescriptor 转换回原始索引类型（slice、int 或 array）"""
+    """把合并后的 _IndexDescriptor 转回可直接用于张量索引的 Python 对象。
+
+    Args:
+        desc: 合并结果描述符（LINEAR/LOOKUP/NONE）
+        original_type: 当前索引的原始类型；当 LOOKUP 只含一个元素且原始为 int 时，
+            转回 int 而不是数组，以保持索引语义一致
+        keep_step_none: 为 True 且 step==1 时，输出 slice(start, stop, None)，
+            保持与外部书写的切片形式一致（便于比较/打印）
+    """
     if desc.type == _IndexDescriptor.LINEAR:
         start = desc.params['start']
         stop = desc.params['stop']
@@ -11765,6 +11853,12 @@ def merge_indices(self, base_index, current_index):
     将视图索引链（base_index 和 current_index）合并为在原始张量上的等效索引。
     这是原地操作的核心函数，用于确定需要修改原始张量的哪些元素。
 
+    核心思想：
+        视图中每个保留的维度都能写成父维度上的线性映射（切片）或离散映射（数组）；
+        当前索引在该视图维度上再做一次选择，两次选择可以复合为一次映射
+        （详见 _merge_descriptors）。整数维度已被消去，None 维度只添加坐标轴，
+        二者都不参与复合运算，最后再按原始维度顺序组装结果。
+
     职责分层设计：
     ----------------
     本函数采用分层架构，各阶段职责清晰：
@@ -11782,17 +11876,22 @@ def merge_indices(self, base_index, current_index):
         调用 _preprocess_base_index 进行标准化：
         - 将各种格式（slice、int、tuple 等）统一转换为元组格式
         - 展开 Ellipsis（...），但不填充长度（因为 base_index 可能只索引部分维度）
-        - 计算 view_dims（非整数索引的位置）
+        - 计算 view_dims（真正构成视图维度的位置：切片/数组等，不含整数和 None）
 
     第三阶段 - 预处理 current_index：
         调用 _preprocess_current_index 进行标准化：
         - 转换为元组格式
         - 展开 Ellipsis
-        - 填充长度以匹配 view_dims
+        - 仅对非 None 元素补齐长度（None 不占视图维度），末尾补 slice(None)
 
-    第四阶段 - 逐个维度合并索引：
-        对每个视图维度，调用 _normalize_index 将索引转换为 _IndexDescriptor，
-        使用 _merge_descriptors 合并描述符，再通过 _descriptor_to_index 转回原始格式。
+    第四阶段 - 逐个视图维度合并索引：
+        将 current_index 中的非 None 元素与 view_dims 一一对应：调用 _normalize_index
+        转为 _IndexDescriptor，用 _merge_descriptors 合并，再经 _descriptor_to_index 转回原始格式。
+        该阶段只计算“每个视图维度映射到原始张量的哪个位置”，不处理 None。
+
+    第五阶段 - 组装结果：
+        按 base_index 的维度顺序输出结果：整数/None 维度原样保留，视图维度输出其合并结果；
+        并在第 j 个视图维度之前插入 current_index 中位于第 j 个非 None 元素之前的 None。
 
     支持的索引类型：
     ----------------
@@ -11800,7 +11899,16 @@ def merge_indices(self, base_index, current_index):
     - 整数索引：int，支持负索引
     - 数组索引：list、np.ndarray、cp.ndarray，支持布尔数组
     - 省略号：Ellipsis（...）自动展开
-    - None 索引：np.newaxis，添加新维度
+    - None 索引：np.newaxis，仅添加维度，不消耗视图维度
+
+    关键规则（None 的处理）：
+    ----------------
+    - None 不消耗视图维度，因此 current_index 的非 None 元素按顺序映射到 view_dims；
+      非 None 元素不足 view_dims 数量时，末尾用 slice(None) 补齐（等价于 Python 隐式全切片）。
+    - 合并结果是用于索引“原始张量”的，所以 None 新维度按其在 current_index 中的
+      相对位置插入：位于第 j 个非 None 元素之前的 None，插入到第 j 个视图维度之前；
+      j 等于视图维度数时追加到结果末尾。
+    - base_index 中的整数维度、None 维度均不参与合并，原样保留在结果中。
 
     Args:
         base_index: 基础索引，用于创建视图。可以是 slice、int、tuple、list 或 np.ndarray
@@ -11829,6 +11937,10 @@ def merge_indices(self, base_index, current_index):
         >>> # np.newaxis 特殊情况：x[None][0] 等价于 x[:]
         >>> merge_indices(self, (None,), (0,))
         (slice(None),)
+        >>>
+        >>> # 在视图上新增维度：x[2:8, 3:7][None, 1:3] 等价于 x[None, 3:5, 3:7]
+        >>> merge_indices(self, (slice(2, 8), slice(3, 7)), (None, slice(1, 3)))
+        (None, slice(3, 5, None), slice(3, 7, None))
     """
     
     # 第一阶段：尝试处理特殊情况    
@@ -11846,26 +11958,25 @@ def merge_indices(self, base_index, current_index):
     current_index = _preprocess_current_index(current_index, view_dims)
     
     # 第四阶段：逐个维度合并索引
-    result = list(base_index)  # 复制 base_index，用于存储合并结果
+    merged_dims = {}  # 视图维度位置 -> 合并后的索引
+    current_non_none = [idx for idx in current_index if idx is not None]
     
     for i, view_dim in enumerate(view_dims):
         base_idx = base_index[view_dim]
-        curr_idx = current_index[i]
+        curr_idx = current_non_none[i]
         
-        # 处理 None（np.newaxis）索引 - current_idx 为 None 会覆盖 base_idx
-        if curr_idx is None:
-            result[view_dim] = None
-            continue
+        # 第 i 个非 None 索引作用于第 i 个视图维度 view_dims[i]；
+        # None 已从当前索引序列中剔除，留到第五阶段按相对位置插入
         
-        # 获取当前维度在原始张量中的大小
+        # 获取该视图维度在原始张量中对应维度的大小（用于解析负索引/负步长）
         dim_size = base_shape[view_dim] if view_dim < len(base_shape) else 1
         
         # 标准化基础索引为 IndexDescriptor
         base_desc = _normalize_index(base_idx, dim_size)
 
-        # 处理 None 索引（np.newaxis）- base_idx 为 None 时保持原样
+        # 防御性处理：base_tuple 中若残留 None（理论上已被 view_dims 排除），保持原样
         if base_desc is None:
-            result[view_dim] = base_idx
+            merged_dims[view_dim] = base_idx
             continue
 
         # 计算视图大小（该维度在视图中的元素数量）
@@ -11878,8 +11989,31 @@ def merge_indices(self, base_index, current_index):
         # 标准化当前索引、合并、转回原始格式
         current_desc = _normalize_index(curr_idx, view_size)
         merged = _merge_descriptors(base_desc, current_desc)
-        result[view_dim] = _descriptor_to_index(merged, type(curr_idx), keep_step_none=True)
+        merged_dims[view_dim] = _descriptor_to_index(merged, type(curr_idx), keep_step_none=True)
     
+    # 第五阶段：组装结果
+    # 统计每个 None 前面有多少个非 None 元素：none_before[j] 表示需要插到
+    # 第 j 个视图维度之前的 None 数量；j == 视图维度数时表示追加到末尾
+    none_before = {}
+    seen = 0
+    for idx in current_index:
+        if idx is None:
+            none_before[seen] = none_before.get(seen, 0) + 1
+        else:
+            seen += 1
+
+    # 按 base_index 的维度顺序输出，保证整数维度（已被消去）和原始维度顺序不变
+    result = []
+    ordinal = 0  # 已处理的视图维度序号，用于查 none_before
+    for pos, base_idx in enumerate(base_index):
+        if pos in merged_dims:
+            result.extend([None] * none_before.get(ordinal, 0))
+            result.append(merged_dims[pos])
+            ordinal += 1
+        else:
+            result.append(base_idx)
+    result.extend([None] * none_before.get(ordinal, 0))
+
     return tuple(result)
 
 

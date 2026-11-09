@@ -114,6 +114,12 @@ def grad(outputs:TN,
         grad_outputs (TN | None, 可选): 输出张量的梯度
             - None: 默认值，要求输出张量是标量，梯度将设置为1.0
             - TN: 用户提供的梯度张量，必须与输出张量形状相同
+            - 与 torch.autograd.grad 一致，不对 grad_outputs 做 detach：
+              create_graph=True 时返回的梯度对 grad_outputs 本身可微（VJP 关于
+              余切线性，前向模式转置高阶导数依赖这条连接）；create_graph=False
+              时反传在无梯度模式下进行，返回的梯度 requires_grad=False
+            - 与 torch 一致，grad_outputs 必须与输出同设备，跨设备直接抛
+              RuntimeError（不做隐式搬运）
         retain_graph (bool, 可选): 该参数用于与PyTorch兼容，
                 riemann反向传播不依赖此参数，
                 无论为True还是False，riemann都支持多次grad调用
@@ -195,8 +201,18 @@ def grad(outputs:TN,
     
     elif isinstance(grad_outputs,TN):
         if grad_outputs._array.shape == outputs._array.shape:
+            # 与 torch.autograd.grad 一致：grad_outputs 必须与输出同设备，
+            # 不做隐式搬运（torch 报 invalid gradient at index 0 - expected device ...）
+            if grad_outputs.device != outputs.device:
+                raise RuntimeError(
+                    f"invalid gradient at index 0 - expected device {outputs.device} "
+                    f"but got {grad_outputs.device}")
             outputs._init_calc_graph()
-            outputs.grad_value = grad_outputs.to(outputs.device).detach().requires_grad_(create_graph)
+            # 与 torch.autograd.grad 一致，不 detach grad_outputs：
+            # create_graph=True 时梯度结果对余切本身可微（func.jvp 对局部 VJP
+            # 做转置时需要这条依赖）；create_graph=False 时下面的反向遍历在
+            # set_grad_enabled(False) 下进行，保存的梯度同样不带计算图。
+            outputs.grad_value = grad_outputs
         else:
             raise RuntimeError('shape of grad_outputs need to be same as the shape of outputs')
     else:

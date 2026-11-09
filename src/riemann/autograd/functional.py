@@ -253,7 +253,12 @@ def hessian(func: Callable[..., TN],
         if output._array.ndim > 0:
             raise RuntimeError("Hessian only supports scalar-valued functions")
         grads = grad(output, args, create_graph=True, allow_unused=not strict)  # type: ignore
-        return tuple(g if g is not None else tensor(0.0, device=output.device, requires_grad=True) for g in grads)
+        # 未参与计算的输入返回与输入同形状、同 dtype 的零张量：否则标量 0.0 会让
+        # 对应 Hessian 块的形状退化为 (numel,) 且 dtype 变成 float32（torch 保持
+        # input.shape + input.shape）。
+        return tuple(
+            g if g is not None else zeros_like(inp, requires_grad=True)
+            for g, inp in zip(grads, args))
 
     # Hessian = Jacobian(gradient)，即对梯度函数求雅可比
     hessian_results = jacobian(gradient_fn, inputs, create_graph=create_graph, strict=strict)

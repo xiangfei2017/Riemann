@@ -628,10 +628,10 @@ Riemann项目文件夹中tests目录下包括覆盖所有功能的测试用例�
 pytest tests
 
 # 运行特定测试文件
-pytest tests/test_010_grad.py
+pytest tests/test_008_autograd.py
 
 # 运行特定测试类或方法
-pytest tests/test_011_jacobian.py::TestJacobianFunctions::test_single_input_single_output
+pytest tests/test_008_autograd.py::TestAutograd::test_jacobian
 
 # 运行测试并生成覆盖率报告
 pytest --cov=riemann tests/
@@ -646,7 +646,7 @@ pytest tests/test_052_vision.py
 
 ```bash
 cd tests
-python test_010_grad.py
+python test_008_autograd.py
 # 运行其他测试脚本
 ```
 
