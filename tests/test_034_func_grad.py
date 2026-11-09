@@ -1062,6 +1062,119 @@ class TestFuncs(unittest.TestCase):
                 and _close(res_none[0], res_both[0])
                 and _close(res_none[1], res_both[1]))
 
+    # ---------------------------------------------------------------
+    # 高阶导数（对同一函数反复应用本模块原语）
+    # ---------------------------------------------------------------
+    def test_high_order_derivatives(self):
+        cases = [
+            ("grad - 3rd order",                lambda: self._ho_grad_3rd()),
+            ("grad_and_value - 2nd order",      lambda: self._ho_gav_2nd()),
+            ("jvp - 2nd order",                 lambda: self._ho_jvp_2nd()),
+            ("vjp - 2nd order",                 lambda: self._ho_vjp_2nd()),
+            ("jacrev - 2nd order",              lambda: self._ho_jacrev_2nd()),
+            ("jacfwd - 2nd order",              lambda: self._ho_jacfwd_2nd()),
+            ("jacfwd(jacrev) - equals hessian", lambda: self._ho_jacfwd_jacrev()),
+            ("jacrev(jacfwd) - equals hessian", lambda: self._ho_jacrev_jacfwd()),
+            ("hessian - 3rd order",             lambda: self._ho_hessian_3rd()),
+            ("vmap(grad) - 2nd order",          lambda: self._ho_vmap_grad_2nd()),
+            ("vmap(jacrev) - 2nd order",        lambda: self._ho_vmap_jacrev_2nd()),
+            ("functional_call - 2nd order",     lambda: self._ho_functional_call_2nd()),
+        ]
+        for desc, fn in cases:
+            _run_case(f"high_order - {desc}", fn)
+
+    def _ho_grad_3rd(self):
+        # f = sum(x^4): f'=4x^3, f''=12x^2, f'''=24x
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        d1 = func.grad(lambda a: (a ** 4).sum(), create_graph=True)
+        d2 = func.grad(lambda a: d1(a).sum(), create_graph=True)
+        d3 = func.grad(lambda a: d2(a).sum())(x)
+        return _close(d3, 24.0 * np.array([1.0, 2.0, 3.0]))
+
+    def _ho_gav_2nd(self):
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        gav = func.grad_and_value(lambda a: (a ** 4).sum(), create_graph=True)
+        _, v = gav(x)
+        d2 = func.grad(lambda a: gav(a)[0].sum())(x)
+        return _close(v, 98.0) and _close(d2, 12.0 * np.array([1.0, 4.0, 9.0]))
+
+    def _ho_jvp_2nd(self):
+        # h(a) = jvp(sum(z^3), a, v)[1] = 3*sum(a^2*v); jvp(h, x, v)[1] = 6*sum(x*v^2)
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        v = _rm_tensor(np.array([1.0, 1.0, 1.0]), requires_grad=False)
+        h = lambda a: func.jvp(lambda z: (z ** 3).sum(), (a,), (v,), create_graph=True)[1]
+        _, res = func.jvp(h, (x,), (v,), create_graph=True)
+        return _close(res, 36.0)
+
+    def _ho_vjp_2nd(self):
+        # vjp 结果为 4x^3，再对输入求导应得 12x^2
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        _, g = func.vjp(lambda z: (z ** 4).sum(), (x,),
+                        _rm_tensor(np.array(1.0), requires_grad=False), create_graph=True)
+        d2 = func.grad(lambda a: g.sum())(x)
+        return _close(d2, 12.0 * np.array([1.0, 4.0, 9.0]))
+
+    def _ho_jacrev_2nd(self):
+        # jacrev(jacrev(sum(x^3)) 对输入求导 = 6*diag(x)
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        f = lambda b: (b ** 3).sum()
+        h = func.jacrev(lambda a: func.jacrev(f, create_graph=True)(a), create_graph=True)(x)
+        return _close(h, np.diag(6.0 * x._array))
+
+    def _ho_jacfwd_2nd(self):
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        f = lambda b: (b ** 3).sum()
+        h = func.jacfwd(lambda a: func.jacfwd(f, create_graph=True)(a), create_graph=True)(x)
+        return _close(h, np.diag(6.0 * x._array))
+
+    def _ho_jacfwd_jacrev(self):
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        f = lambda b: (b ** 3).sum()
+        return _close(func.jacfwd(lambda a: func.jacrev(f, create_graph=True)(a),
+                                  create_graph=True)(x), np.diag(6.0 * x._array))
+
+    def _ho_jacrev_jacfwd(self):
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        f = lambda b: (b ** 3).sum()
+        return _close(func.jacrev(lambda a: func.jacfwd(f, create_graph=True)(a),
+                                  create_graph=True)(x), np.diag(6.0 * x._array))
+
+    def _ho_hessian_3rd(self):
+        # hessian(sum(x^3)) = 6*diag(x)，对其和再求导得 6*ones
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        f = lambda b: (b ** 3).sum()
+        d3 = func.jacrev(lambda a: func.hessian(f, create_graph=True)(a).sum(),
+                         create_graph=True)(x)
+        return _close(d3, 6.0 * np.ones(3))
+
+    def _ho_vmap_grad_2nd(self):
+        # 逐样本 grad of sum(z^3) = 3z^2，再对输入求导得 6z
+        z = _rm_tensor(np.array([1.0, 2.0]))
+        per_sample = lambda v: (v ** 3).sum()
+        res = func.grad(lambda a: func.vmap(func.grad(per_sample, create_graph=True))(a).sum())(z)
+        return _close(res, 6.0 * z._array)
+
+    def _ho_vmap_jacrev_2nd(self):
+        x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
+        f = lambda b: (b ** 3).sum()
+        res = func.jacrev(lambda p: func.vmap(lambda r: func.jacrev(f, create_graph=True)(r))(p).sum())(x)
+        return _close(res, 6.0 * x._array)
+
+    def _ho_functional_call_2nd(self):
+        # y = x @ W, f = sum(y^3) => H = 6 * W diag(x @ W) W^T
+        class Linear:
+            def __init__(self, w): self.w = w
+            def forward(self, x): return x @ self.w
+            def named_parameters(self): yield "w", self.w
+
+        W = np.array([[1.0, 2.0], [3.0, 4.0]])
+        model = Linear(_rm_tensor(W, requires_grad=False))
+        w = _rm_tensor(W)
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        f = lambda a: (func.functional_call(model, [w], (a,)) ** 3).sum()
+        h = func.jacrev(lambda a: func.grad(f, create_graph=True)(a), create_graph=True)(x)
+        return _close(h, np.array([[282.0, 606.0], [606.0, 1338.0]]))
+
 
 # ---------------------------------------------------------------------------
 # 主入口（独立脚本运行）

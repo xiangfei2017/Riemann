@@ -1319,9 +1319,11 @@ or ``(grad_result, value, aux)`` when ``has_aux=True``. The form of
 ``jvp()`` — Jacobian-Vector Product
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Computes the product of the Jacobian matrix with a given vector. Performs
-one forward + one backward pass, which is more efficient than explicitly
-constructing the full Jacobian and then multiplying.
+Computes the product of the Jacobian matrix with a given vector. ``jvp`` is a
+true forward-mode primitive: it performs one forward evaluation, then propagates
+the tangent forward through the computation graph without any backward pass,
+which is more efficient than explicitly constructing the full Jacobian and then
+multiplying.
 
 **Function Signature**:
 
@@ -1420,12 +1422,14 @@ to ``grad(f)(x)`` (with default all-ones cotangent).
 
 Two ways to compute the Jacobian matrix:
 
-- **``jacrev``**: Reverse-mode autodiff. Performs ``m`` backward passes for
-  ``m``-dimensional output. Best when input dimension is small and output
-  dimension is large
-- **``jacfwd``**: Forward mode. Implemented via vmap+jvp (Riemann currently
-  has no forward autodiff). Performs ``n`` JVPs for ``n`` input dimensions.
-  Best when input dimension is large and output dimension is small
+- **``jacrev``**: Reverse-mode autodiff, implemented via vmap(vjp). Performs
+  ``m`` backward passes for ``m``-dimensional output. Best when input dimension
+  is small and output dimension is large
+- **``jacfwd``**: Forward-mode autodiff, implemented via per-column jvp
+  (equivalent to vmap(jvp), but shares a single forward evaluation and the
+  per-node local VJP graph cache). Performs
+  ``n`` forward propagations for ``n`` input dimensions. Best when input
+  dimension is large and output dimension is small
 
 **Function Signature**:
 
@@ -1462,8 +1466,9 @@ Two ways to compute the Jacobian matrix:
 
 **Notes**:
 
-- ``jacfwd`` in Riemann is implemented via repeated ``jvp``; time complexity
-  is proportional to input dimension. Use ``jacrev`` when output dimension
+- ``jacfwd`` in Riemann is implemented via per-column ``jvp`` (sharing one
+  forward evaluation and the local VJP graph cache, equivalent to ``vmap(jvp)``);
+  time complexity is proportional to input dimension. Use ``jacrev`` when output dimension
   is much larger than input dimension
 - Multi-input (``argnums=(0, 1)``) returns a tuple, one Jacobian per input
 
@@ -1471,7 +1476,12 @@ Two ways to compute the Jacobian matrix:
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Computes the Hessian matrix (second-order partial derivatives) of a
-scalar-valued function.
+scalar-valued function. Implemented as ``jacrev(grad(func))``: reverse-mode
+``grad`` first produces the gradient, then reverse-mode ``jacrev``
+differentiates that gradient. (This library emulates forward mode via transposed
+local VJPs, so ``jacrev(jacfwd(func))`` would create one column subgraph per
+basis vector and make each outer reverse pass O(n²); reverse-over-reverse avoids
+that.)
 
 **Function Signature**:
 

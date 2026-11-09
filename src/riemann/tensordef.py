@@ -2424,7 +2424,7 @@ class TN:
             left_tensor=as_tensor(
                 left_obj,
                 dtype = infer_dtype_in_binoper(left_obj,self.dtype),
-                device = dev
+                device = self.device
             )
         return left_tensor.__matmul__(self) #归一到左值'@'函数
     
@@ -8201,6 +8201,32 @@ def _getitem_backward(result_tensor: TN, i: int) -> TN:
     # 将out_grad中的梯度值根据index反向添加到ret_grad中
     ret_grad = ret_grad.addat(index,out_grad)
     return ret_grad
+
+def _batch_slice(tensor: TN, index: tuple) -> TN:
+    """vmap 专用快速切片，等价于 tensor[index] 但跳过通用索引分派。
+
+    仅用于基础索引（slice / 整数）且索引已由调用方归一化为非负的情形：
+    直接取底层数组的视图，并在需要梯度时保留到原张量的梯度边
+    （fromvars / parms / gradfuncs 与 __getitem__ 完全一致）。
+    """
+    ret = TN()
+    data = tensor._array[index]
+    # 标量索引可能返回 numpy/cupy 标量而非 0 维数组，
+    # 统一转成数组，保持与 __getitem__ 的一致性（否则 ndim/_get_array_lib 会失效）
+    arrlib = tensor._get_array_lib()
+    if not isinstance(data, arrlib.ndarray):
+        data = arrlib.asarray(data)
+    ret._array = data
+    ret.requires_grad = is_grad_enabled() and tensor.requires_grad
+    ret._is_view = True
+    ret._base = tensor
+    ret._view_index = index
+    if ret.requires_grad:
+        ret.fromvars = (tensor,)
+        ret.parms = (index,)
+        ret.gradfuncs = (_getitem_backward,)
+    return ret
+
 
 def _add_grad_left(result_tensor:TN, i:int)->TN:
     left_tensor = result_tensor.fromvars[i]
