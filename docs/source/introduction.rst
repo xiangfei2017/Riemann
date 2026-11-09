@@ -209,147 +209,107 @@ Riemann provides some features that PyTorch does not have:
 Installation Guide
 ------------------
 
-Riemann installation includes the following parts:
+Riemann has **not** been published on PyPI, so ``pip install riemann`` does **not** work. Please install from source.
 
-1. **Core Package**: Riemann main library, including core functions such as tensor computation, automatic differentiation, and neural networks
-2. **Core Dependencies**: NumPy, Pillow, tqdm, and other required dependencies
-3. **CUDA Dependencies** (optional): CuPy library for GPU acceleration
-4. **Test Dependencies** (optional): pytest and other testing frameworks
+**Python version**: Riemann requires Python >= 3.9 and supports Python 3.9 ~ 3.14.
 
-Installing with Conda (Recommended)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Conda better manages complex dependencies, especially CUDA-related packages:
-
-.. code-block:: bash
-
-    # Create a new conda environment
-    conda create -n riemann python=3.10
-    conda activate riemann
-
-    # Install core dependencies
-    conda install numpy pillow tqdm
-
-    # Install Riemann from source (choose GitHub or Gitee mirror)
-    # GitHub source (international access)
-    git clone https://github.com/xiangfei2017/Riemann.git
-    # Or Gitee source (faster for China users)
-    # git clone https://gitee.com/xfcode2021/Riemann.git
-    cd Riemann
-    pip install -e .
-
-    # Install test dependencies (optional)
-    pip install -e .[tests]
-
-    # Install CUDA dependencies (optional)
-    pip install -e .[cuda]
-
-Installing with pip
-~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: bash
-
-    # Get Riemann library source (choose GitHub or Gitee mirror)
-    # GitHub source (international access)
-    git clone https://github.com/xiangfei2017/Riemann.git
-    # Or Gitee source (faster for China users)
-    # git clone https://gitee.com/xfcode2021/Riemann.git
-    cd Riemann
-    
-    # Install package and its core dependencies in development mode
-    pip install -e .
-
-    # Install test dependencies
-    pip install -e .[tests]
-
-CUDA Support Installation Notes
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. important::
-
-    To enable CUDA acceleration in Riemann, the following **three conditions** must be met, all are required:
-
-    1. **NVIDIA GPU Hardware**: The computer must be equipped with an NVIDIA graphics card
-    2. **CUDA Driver**: NVIDIA CUDA driver compatible with the GPU must be installed
-    3. **CuPy Library**: CuPy library matching the CUDA version must be installed
-
-    Installing CuPy alone does not enable CUDA support in Riemann. Hardware and drivers must be properly installed first.
-
-**CUDA Installation Steps:**
-
-1. **Check GPU Hardware**
-   Confirm that the computer is equipped with an NVIDIA graphics card that supports CUDA.
-
-2. **Install CUDA Driver**
-
-   - **Windows/Linux**: Visit `NVIDIA website <https://developer.nvidia.com/cuda-toolkit-archive>`_ to download and install the appropriate CUDA Toolkit version
-   - Verification after installation: Run ``nvcc --version`` to check CUDA version
-   - Note: ``nvidia-smi`` shows the highest CUDA version supported by the driver, while ``nvcc --version`` shows the actually installed version
-
-3. **Install CuPy Library**
-
-   Select the appropriate CuPy package based on your installed CUDA version:
-
-   .. code-block:: bash
-
-       # Install CUDA dependencies (auto-detect CUDA version and install matching CuPy)
-       pip install -e .[cuda]
-
-       # Or install specific CUDA version dependencies
-       pip install -e .[cuda13]  # CUDA 13.x
-       pip install -e .[cuda12]  # CUDA 12.x
-       pip install -e .[cuda11]  # CUDA 11.x
-       pip install -e .[cuda10]  # CUDA 10.x (Linux only)
-
-**Version Compatibility:**
-
-- CuPy version must match the CUDA Toolkit version
-- Different CUDA versions are not compatible; ensure you select the correct version
-- CUDA 11.x or 12.x is recommended for better compatibility
-
-Dependency Notes
-~~~~~~~~~~~~~~~~
-
-**Core Dependencies** (automatically installed):
-
-- **numpy>=1.20.0**: Core numerical computing library
-- **pillow>=8.0.0**: Image processing functionality
-- **tqdm>=4.0.0**: Progress bar display
-
-**CUDA Dependencies** (require explicit installation, and CUDA driver must be installed first):
-
-- **cupy-cuda13x**: For CUDA 13.x
-- **cupy-cuda12x**: For CUDA 12.x
-- **cupy-cuda11x**: For CUDA 11.x
-- **cupy-cuda10x**: For CUDA 10.x (Linux only)
-
-Platform Compatibility
-~~~~~~~~~~~~~~~~~~~~~~
+Dependencies
+~~~~~~~~~~~~
 
 .. list-table::
    :header-rows: 1
-   :widths: 20 20 20 40
+   :widths: 16 34 50
+
+   * - Category
+     - Dependencies
+     - Notes
+   * - Base
+     - numpy>=1.20.0, pillow>=8.0.0, tqdm>=4.0.0
+     - Required to run Riemann
+   * - Test
+     - pytest>=7.0.0, torch>=2.0.0, torchvision>=0.15.0
+     - Only needed to run the test suite
+   * - CUDA
+     - cupy-cuda12x (default), cupy-cuda13x, cupy-cuda11x, cupy-cuda10x
+     - Only needed for NVIDIA GPU acceleration
+
+Installing from Source
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: bash
+
+    git clone https://github.com/xiangfei2017/Riemann.git
+    cd Riemann
+
+    # Base install (-e is editable mode: no reinstall after code changes)
+    pip install -e .
+
+    # Optional: test dependencies
+    pip install -e .[tests]
+
+    # Optional: CUDA dependencies (CUDA 12.x by default; cuda13 / cuda11 / cuda10 also available)
+    pip install -e .[cuda]
+
+Installing Dependencies Manually
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If pip/conda fails due to network or dependency resolution issues, install packages one by one:
+
+.. code-block:: bash
+
+    # Base dependencies
+    pip install numpy pillow tqdm
+    # Test dependencies
+    pip install pytest torch torchvision
+    # CUDA dependencies (choose by the version shown by nvcc --version)
+    pip install cupy-cuda12x
+
+- On a system-wide environment the OS package manager also works (e.g. ``apt install python3-numpy``, ``brew install numpy``); **a virtual environment can only use pip**;
+- Install torch separately with the command from the `PyTorch website <https://pytorch.org/get-started/locally/>`_;
+- Conda users can create the env with ``conda create -n riemann python=3.10``, but CuPy is still best installed via pip.
+
+Then finish the Riemann install with ``pip install -e . --no-deps``.
+
+CUDA Dependencies and Platform Compatibility
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CUDA dependencies are not installed automatically. Install them explicitly with ``pip install -e .[cuda]`` and make sure a matching NVIDIA driver is installed.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 18 18 46
 
    * - Platform
      - Architecture
      - CUDA Support
-     - Installation Method
+     - Notes
    * - Linux
      - x86_64/AMD64
      - ✅ Supported
-     - ``pip install -e .[cuda]``
+     - Use ``pip install cupy-cudaXX``
    * - Windows
      - x86_64/AMD64
      - ✅ Supported
-     - ``pip install -e .[cuda]``
+     - Use ``pip install cupy-cudaXX``
    * - macOS
      - x86_64/ARM64
-     - ❌ Not Supported
-     - No NVIDIA GPU driver, use CPU mode
+     - ❌ Not supported
+     - No NVIDIA driver; CPU mode is used automatically
    * - Linux (ARM64)
      - aarch64/arm64
      - ⚠️ Source compilation required
-     - NVIDIA Jetson, etc. require CuPy compilation from source
+     - NVIDIA Jetson, etc. require CuPy compiled from source
+   * - Windows (ARM64)
+     - aarch64/arm64
+     - ❌ Not supported
+     - CUDA is not supported yet
+
+Installing the CUDA Driver
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+1. Run ``nvcc --version`` to check the installed CUDA Toolkit version (``nvidia-smi`` shows the highest version supported by the driver, which may differ from the installed one).
+2. Download and install the matching driver/toolkit from the `CUDA Toolkit Archive <https://developer.nvidia.com/cuda-toolkit-archive>`_.
+3. Reboot and run ``nvcc --version`` again to confirm.
 
 Verifying Installation
 ~~~~~~~~~~~~~~~~~~~~~~

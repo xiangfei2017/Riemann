@@ -140,109 +140,72 @@ The `examples/` directory contains various example codes that demonstrate how to
 - **mnist_demo.py**: MNIST handwritten digit recognition GUI application
 
 
-## Installation Method
+## Installation
 
-**Python Version**: Riemann requires Python >= 3.9, supports Python 3.9 ~ 3.13.
+Riemann is **not** published on PyPI, so `pip install riemann` will not work. Install it from source.
 
-### Source Installation and Development Environment Configuration
+**Python Version**: Riemann requires Python >= 3.9, supports Python 3.9 ~ 3.14.
 
-#### Using Conda (Recommended)
+### Dependencies
 
-Conda can better manage complex dependencies, especially for CUDA-related packages:
+| Category | Packages | Notes |
+|----------|----------|-------|
+| Core | numpy>=1.20.0, pillow>=8.0.0, tqdm>=4.0.0 | Required to run Riemann |
+| Tests | pytest>=7.0.0, torch>=2.0.0, torchvision>=0.15.0 | Only needed to run the test suite |
+| CUDA | cupy-cuda12x (default), cupy-cuda13x, cupy-cuda11x, cupy-cuda10x | Only needed for NVIDIA GPU acceleration |
+
+### Install from Source
 
 ```bash
-# Create a new conda environment
-conda create -n riemann python=3.10
-conda activate riemann
-
-# Install core dependencies
-conda install numpy pillow tqdm
-
-# Install Riemann from source
 git clone https://github.com/xiangfei2017/Riemann.git
 cd Riemann
+
+# Base install (-e is editable mode; no reinstall after code changes)
 pip install -e .
 
-# Install test dependencies (optional)
+# Optional: test dependencies
 pip install -e .[tests]
 
-# Install CUDA dependencies (optional, see platform compatibility table below)
+# Optional: CUDA dependencies (defaults to CUDA 12.x; or cuda13 / cuda11 / cuda10)
 pip install -e .[cuda]
 ```
 
-#### Using pip
+### Installing Dependencies Manually
+
+If pip/conda fails due to network or dependency resolution issues, install packages one by one:
 
 ```bash
-# Get Riemann library source code from GitHub
-git clone https://github.com/xiangfei2017/Riemann.git
-cd Riemann
-# Install package and its core dependencies in development mode (-e means editable mode, no need to reinstall after modifying code)
-pip install -e .
-
-# Install test dependencies
-pip install -e .[tests]
-
-# Install CUDA dependencies
-# Note: Before using CUDA acceleration, please ensure you have installed the corresponding version of CUDA driver
-pip install -e .[cuda]
-
-# Install specific CUDA version dependencies
-# CUDA 13.x
-pip install -e .[cuda13]
-# CUDA 12.x
-pip install -e .[cuda12]
-# CUDA 11.x
-pip install -e .[cuda11]
-# CUDA 10.x (Linux only)
-pip install -e .[cuda10]
+# Core
+pip install numpy pillow tqdm
+# Tests
+pip install pytest torch torchvision
+# CUDA (pick the version matching `nvcc --version`)
+pip install cupy-cuda12x
 ```
 
-### Dependency Description
+- On a system-wide environment the OS package manager also works (e.g. `apt install python3-numpy`, `brew install numpy`); **a virtual environment can only use pip**;
+- Install torch separately with the command from the [PyTorch website](https://pytorch.org/get-started/locally/);
+- Conda users can create the env with `conda create -n riemann python=3.10`, but CuPy is still best installed via pip.
 
-#### Core Dependencies
+Then finish the Riemann install with `pip install -e . --no-deps`.
 
-Running `pip install riemann` will automatically install the following core dependencies:
-- **numpy>=1.20.0**: Core numerical computation library
-- **pillow>=8.0.0**: Used for image processing functionality in computer vision
-- **tqdm>=4.0.0**: Used for progress bar display in neural network training
+### CUDA Dependencies and Platform Compatibility
 
-#### CUDA Dependencies
+CUDA support is not installed automatically; use `pip install -e .[cuda]` and make sure a matching NVIDIA driver is installed.
 
-CUDA dependencies are not automatically installed and need to be explicitly specified:
-- **cupy-cuda13x**: For CUDA 13.x on Linux and Windows x86_64/AMD64 platforms
-- **cupy-cuda12x**: For CUDA 12.x on Linux and Windows x86_64/AMD64 platforms
-- **cupy-cuda11x**: For CUDA 11.x on Linux and Windows x86_64/AMD64 platforms
-- **cupy-cuda10x**: For CUDA 10.x on Linux x86_64/AMD64 platforms
+| Platform | Architecture | CUDA Support | Notes |
+|----------|--------------|--------------|-------|
+| Linux | x86_64/AMD64 | ✅ Supported | `pip install cupy-cudaXX` |
+| Windows | x86_64/AMD64 | ✅ Supported | `pip install cupy-cudaXX` |
+| macOS | x86_64/ARM64 | ❌ Not supported | No NVIDIA drivers; falls back to CPU |
+| Linux (ARM64) | aarch64/arm64 | ⚠️ Build from source | NVIDIA Jetson needs CuPy built from source |
+| Windows (ARM64) | aarch64/arm64 | ❌ Not supported | Not supported yet |
 
-#### Platform Compatibility
+### Installing the CUDA Driver
 
-| Platform | Architecture | CUDA Support | Installation Method |
-|----------|-------------|--------------|---------------------|
-| Linux | x86_64/AMD64 | ✅ Supported | `pip install -e .[cuda]` |
-| Windows | x86_64/AMD64 | ✅ Supported | `pip install -e .[cuda]` |
-| macOS | x86_64/ARM64 | ❌ Not supported | No NVIDIA GPU drivers; uses CPU mode |
-| Linux (ARM64) | aarch64/arm64 | ⚠️ Build from source | NVIDIA Jetson: build CuPy from source |
-| Windows (ARM64) | aarch64/arm64 | ❌ Not supported | No CUDA support |
-
-**Detailed Notes:**
-- **macOS**: NVIDIA CUDA is not supported on macOS due to lack of NVIDIA GPU drivers. Riemann will automatically use CPU mode.
-- **Linux ARM64** (e.g., NVIDIA Jetson Nano, AGX Xavier): CUDA is supported, but you need to build CuPy from source. See [CuPy Installation Guide](https://docs.cupy.dev/en/stable/install.html) for instructions.
-- **Windows ARM64**: Currently does not support CUDA.
-
-### CUDA Driver Installation Instructions
-
-1. **Check CUDA Version**
-   - Windows/Linux: Run `nvcc --version` in terminal to check installed CUDA Toolkit version
-   - Note: `nvidia-smi` shows the maximum CUDA version supported by the GPU driver, while `nvcc --version` shows the actually installed CUDA Toolkit version. The driver is backward compatible with multiple CUDA Toolkit versions.
-
-2. **Download and Install Corresponding CUDA Driver**
-   - Visit NVIDIA official website: https://developer.nvidia.com/cuda-toolkit-archive
-   - Select appropriate driver version based on your GPU model and operating system
-   - Follow the wizard instructions to complete the installation
-
-3. **Verify CUDA Driver Installation**
-   - After installation, restart your computer and run `nvcc --version`
-   - Confirm that the output shows the correct CUDA version information
+1. Run `nvcc --version` to check the installed CUDA Toolkit version (`nvidia-smi` shows the maximum version supported by the driver, not the installed one).
+2. Download and install a matching driver/toolkit from the [CUDA Toolkit Archive](https://developer.nvidia.com/cuda-toolkit-archive).
+3. Restart and run `nvcc --version` again to verify.
 
 ### Verify Installation
 

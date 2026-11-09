@@ -141,107 +141,70 @@ Riemann/
 
 ## 安装方法
 
-**Python版本**: Riemann 要求 Python >= 3.9，支持 Python 3.9 ~ 3.13。
+Riemann 尚未发布到 PyPI，**无法**通过 `pip install riemann` 安装，请从源码安装。
 
-### 源码安装与开发环境配置
+**Python版本**: Riemann 要求 Python >= 3.9，支持 Python 3.9 ~ 3.14。
 
-#### 使用Conda（推荐）
+### 依赖一览
 
-Conda能更好地管理复杂依赖，特别是CUDA相关包：
+| 类别 | 依赖 | 说明 |
+|------|------|------|
+| 基础依赖 | numpy>=1.20.0、pillow>=8.0.0、tqdm>=4.0.0 | 运行 Riemann 必需 |
+| 测试依赖 | pytest>=7.0.0、torch>=2.0.0、torchvision>=0.15.0 | 仅运行测试时需要 |
+| CUDA依赖 | cupy-cuda12x（默认）、cupy-cuda13x、cupy-cuda11x、cupy-cuda10x | 仅 NVIDIA GPU 加速时需要 |
+
+### 源码安装
 
 ```bash
-# 创建新的conda环境
-conda create -n riemann python=3.10
-conda activate riemann
-
-# 安装核心依赖
-conda install numpy pillow tqdm
-
-# 从源码安装Riemann
 git clone https://gitee.com/xfcode2021/Riemann.git
 cd Riemann
+
+# 基础安装（-e 为可编辑模式，修改代码后无需重装）
 pip install -e .
 
-# 安装测试依赖（可选）
+# 可选：测试依赖
 pip install -e .[tests]
 
-# 安装CUDA依赖（可选，参考下方平台兼容性表格）
+# 可选：CUDA 依赖（默认 CUDA 12.x，也可指定 cuda13 / cuda11 / cuda10）
 pip install -e .[cuda]
 ```
 
-#### 使用pip
+### 手动安装依赖
+
+若 pip/conda 因网络或依赖解析失败，可手动逐个安装：
 
 ```bash
-# 从Gitee获取Riemann库源码
-git clone https://gitee.com/xfcode2021/Riemann.git
-cd Riemann
-# 使用开发模式安装包及其核心依赖（-e表示可编辑模式，修改代码后无需重新安装）
-pip install -e .
-
-# 安装测试依赖
-pip install -e .[tests]
-
-# 安装CUDA依赖
-# 注意：使用CUDA加速前，请确保已安装对应版本的CUDA驱动
-pip install -e .[cuda]
-
-# 安装特定版本的CUDA依赖
-# CUDA 13.x
-pip install -e .[cuda13]
-# CUDA 12.x
-pip install -e .[cuda12]
-# CUDA 11.x
-pip install -e .[cuda11]
-# CUDA 10.x (仅Linux)
-pip install -e .[cuda10]
+# 基础依赖
+pip install numpy pillow tqdm
+# 测试依赖
+pip install pytest torch torchvision
+# CUDA 依赖（按 nvcc --version 显示的版本选择）
+pip install cupy-cuda12x
 ```
 
-### 依赖说明
+- 系统环境可用操作系统包管理器安装（如 `apt install python3-numpy`、`brew install numpy`）；**自建虚拟环境只能用 pip 安装**；
+- torch 请按 [PyTorch 官网](https://pytorch.org/get-started/locally/) 给出的命令单独安装；
+- Conda 环境可用 `conda create -n riemann python=3.10` 创建，但 CuPy 仍建议用 pip 安装。
 
-#### 核心依赖
+装好依赖后执行 `pip install -e . --no-deps` 完成 Riemann 本体安装。
 
-直接运行`pip install riemann`会自动安装以下核心依赖：
-- **numpy>=1.20.0**: 核心数值计算库
-- **pillow>=8.0.0**: 用于计算机视觉中的图像处理功能
-- **tqdm>=4.0.0**: 用于神经网络训练中的进度条显示
+### CUDA 依赖与平台兼容性
 
-#### CUDA依赖
+CUDA 依赖不会自动安装，需用 `pip install -e .[cuda]` 显式安装，并保证已装对应版本的 NVIDIA 驱动。
 
-CUDA依赖不会自动安装，需要显式指定：
-- **cupy-cuda13x**: 适用于CUDA 13.x的Linux和Windows x86_64/AMD64平台
-- **cupy-cuda12x**: 适用于CUDA 12.x的Linux和Windows x86_64/AMD64平台
-- **cupy-cuda11x**: 适用于CUDA 11.x的Linux和Windows x86_64/AMD64平台
-- **cupy-cuda10x**: 适用于CUDA 10.x的Linux x86_64/AMD64平台
+| 平台 | 架构 | CUDA支持 | 说明 |
+|------|------|----------|------|
+| Linux | x86_64/AMD64 | ✅ 支持 | 用 `pip install cupy-cudaXX` |
+| Windows | x86_64/AMD64 | ✅ 支持 | 用 `pip install cupy-cudaXX` |
+| macOS | x86_64/ARM64 | ❌ 不支持 | 无 NVIDIA 驱动，自动使用 CPU 模式 |
+| Linux (ARM64) | aarch64/arm64 | ⚠️ 需源码编译 | NVIDIA Jetson 等需从源码编译 CuPy |
+| Windows (ARM64) | aarch64/arm64 | ❌ 不支持 | 暂不支持 CUDA |
 
-#### 平台兼容性
+### CUDA 驱动安装
 
-| 平台 | 架构 | CUDA支持 | 安装方式 |
-|------|------|----------|----------|
-| Linux | x86_64/AMD64 | ✅ 支持 | `pip install -e .[cuda]` |
-| Windows | x86_64/AMD64 | ✅ 支持 | `pip install -e .[cuda]` |
-| macOS | x86_64/ARM64 | ❌ 不支持 | 无NVIDIA GPU驱动，使用CPU模式 |
-| Linux (ARM64) | aarch64/arm64 | ⚠️ 需源码编译 | NVIDIA Jetson等需从源码编译CuPy |
-| Windows (ARM64) | aarch64/arm64 | ❌ 不支持 | 暂不支持CUDA |
-
-**详细说明：**
-- **macOS**: 由于缺少NVIDIA GPU驱动，不支持NVIDIA CUDA。Riemann将自动使用CPU模式。
-- **Linux ARM64**（如NVIDIA Jetson Nano、AGX Xavier）: 支持CUDA，但需要从源码编译安装CuPy。详见 [CuPy安装指南](https://docs.cupy.dev/en/stable/install.html)。
-- **Windows ARM64**: 目前不支持CUDA。
-
-### CUDA驱动安装说明
-
-1. **检查CUDA版本**
-   - Windows/Linux: 终端运行 `nvcc --version` 查看已安装的CUDA Toolkit版本
-   - 注意：`nvidia-smi`显示的是GPU驱动支持的最高CUDA版本，而`nvcc --version`显示的是实际安装的CUDA Toolkit版本。驱动程序向后兼容多个CUDA Toolkit版本。
-
-2. **下载并安装对应版本的CUDA驱动**
-   - 访问NVIDIA官方网站：https://developer.nvidia.com/cuda-toolkit-archive
-   - 根据你的GPU型号和操作系统选择合适的驱动版本
-   - 安装过程中请按照向导提示完成
-
-3. **验证CUDA驱动安装**
-   - 安装完成后，重启电脑并运行 `nvcc --version`
-   - 确认输出中显示正确的CUDA版本信息
+1. 运行 `nvcc --version` 查看已安装的 CUDA Toolkit 版本（`nvidia-smi` 显示的是驱动支持的最高版本，不等于已安装版本）。
+2. 从 [CUDA Toolkit Archive](https://developer.nvidia.com/cuda-toolkit-archive) 下载并安装匹配版本的驱动/工具包。
+3. 重启后再次运行 `nvcc --version` 确认版本。
 
 ### 验证安装
 

@@ -209,147 +209,107 @@ Riemann 提供了一些 PyTorch 没有的功能：
 安装指南
 --------
 
-Riemann 安装包括以下几个部分：
+Riemann 尚未发布到 PyPI，**不支持** ``pip install riemann`` 安装方式，请从源码安装。
 
-1. **核心包**：Riemann 主库，包含张量计算、自动求导、神经网络等核心功能
-2. **核心依赖**：NumPy、Pillow、tqdm 等必需依赖
-3. **CUDA 依赖** (可选)：CuPy 库，用于 GPU 加速
-4. **测试依赖** (可选)：pytest 等测试框架
+**Python 版本**：Riemann 要求 Python >= 3.9，支持 Python 3.9 ~ 3.14。
 
-使用 Conda 安装（推荐）
-~~~~~~~~~~~~~~~~~~~~~~~
-
-Conda 能更好地管理复杂依赖，特别是 CUDA 相关包：
-
-.. code-block:: bash
-
-    # 创建新的 conda 环境
-    conda create -n riemann python=3.10
-    conda activate riemann
-
-    # 安装核心依赖
-    conda install numpy pillow tqdm
-
-    # 从源码安装 Riemann（可选择 GitHub 或 Gitee 源）
-    # GitHub 源（国际访问）
-    git clone https://github.com/xiangfei2017/Riemann.git
-    # 或 Gitee 源（国内访问更快）
-    # git clone https://gitee.com/xfcode2021/Riemann.git
-    cd Riemann
-    pip install -e .
-
-    # 安装测试依赖（可选）
-    pip install -e .[tests]
-
-    # 安装 CUDA 依赖（可选）
-    pip install -e .[cuda]
-
-使用 pip 安装
-~~~~~~~~~~~~~
-
-.. code-block:: bash
-
-    # 获取 Riemann 库源码（可选择 GitHub 或 Gitee 源）
-    # GitHub 源（国际访问）
-    git clone https://github.com/xiangfei2017/Riemann.git
-    # 或 Gitee 源（国内访问更快）
-    # git clone https://gitee.com/xfcode2021/Riemann.git
-    cd Riemann
-    
-    # 使用开发模式安装包及其核心依赖
-    pip install -e .
-
-    # 安装测试依赖
-    pip install -e .[tests]
-
-CUDA 支持安装说明
-~~~~~~~~~~~~~~~~~
-
-.. important::
-
-    要使 Riemann 支持 CUDA 加速，必须满足以下 **三个条件**，缺一不可：
-
-    1. **NVIDIA GPU 硬件**：计算机必须配备 NVIDIA 显卡
-    2. **CUDA 驱动**：必须安装与 GPU 兼容的 NVIDIA CUDA 驱动程序
-    3. **CuPy 库**：必须安装与 CUDA 版本匹配的 CuPy 库
-
-    仅安装 CuPy 并不能使 Riemann 支持 CUDA，必须先确保硬件和驱动已正确安装。
-
-**CUDA 安装步骤：**
-
-1. **检查 GPU 硬件**
-   确认计算机配备 NVIDIA 显卡，且显卡支持 CUDA。
-
-2. **安装 CUDA 驱动**
-
-   - **Windows/Linux**: 访问 `NVIDIA 官网 <https://developer.nvidia.com/cuda-toolkit-archive>`_ 下载并安装对应版本的 CUDA Toolkit
-   - 安装后验证：运行 ``nvcc --version`` 查看 CUDA 版本
-   - 注意：``nvidia-smi`` 显示的是驱动支持的最高 CUDA 版本，``nvcc --version`` 显示的是实际安装的版本
-
-3. **安装 CuPy 库**
-
-   根据已安装的 CUDA 版本，选择对应的 CuPy 包：
-
-   .. code-block:: bash
-
-       # 安装 CUDA 依赖（自动检测 CUDA 版本并安装对应 CuPy）
-       pip install -e .[cuda]
-
-       # 或安装特定版本的 CUDA 依赖
-       pip install -e .[cuda13]  # CUDA 13.x
-       pip install -e .[cuda12]  # CUDA 12.x
-       pip install -e .[cuda11]  # CUDA 11.x
-       pip install -e .[cuda10]  # CUDA 10.x (仅 Linux)
-
-**版本配套关系：**
-
-- CuPy 版本必须与 CUDA Toolkit 版本匹配
-- 不同 CUDA 版本之间不兼容，请确保选择正确的版本
-- 建议使用 CUDA 11.x 或 12.x 以获得更好的兼容性
-
-依赖说明
+依赖一览
 ~~~~~~~~
-
-**核心依赖** (自动安装)：
-
-- **numpy>=1.20.0**: 核心数值计算库
-- **pillow>=8.0.0**: 图像处理功能
-- **tqdm>=4.0.0**: 进度条显示
-
-**CUDA 依赖** (需显式安装，且需要先安装 CUDA 驱动)：
-
-- **cupy-cuda13x**: 适用于 CUDA 13.x
-- **cupy-cuda12x**: 适用于 CUDA 12.x
-- **cupy-cuda11x**: 适用于 CUDA 11.x
-- **cupy-cuda10x**: 适用于 CUDA 10.x (仅 Linux)
-
-平台兼容性
-~~~~~~~~~~
 
 .. list-table::
    :header-rows: 1
-   :widths: 20 20 20 40
+   :widths: 16 34 50
+
+   * - 类别
+     - 依赖
+     - 说明
+   * - 基础依赖
+     - numpy>=1.20.0、pillow>=8.0.0、tqdm>=4.0.0
+     - 运行 Riemann 必需
+   * - 测试依赖
+     - pytest>=7.0.0、torch>=2.0.0、torchvision>=0.15.0
+     - 仅运行测试时需要
+   * - CUDA 依赖
+     - cupy-cuda12x（默认）、cupy-cuda13x、cupy-cuda11x、cupy-cuda10x
+     - 仅 NVIDIA GPU 加速时需要
+
+源码安装
+~~~~~~~~
+
+.. code-block:: bash
+
+    git clone https://gitee.com/xfcode2021/Riemann.git
+    cd Riemann
+
+    # 基础安装（-e 为可编辑模式，修改代码后无需重装）
+    pip install -e .
+
+    # 可选：测试依赖
+    pip install -e .[tests]
+
+    # 可选：CUDA 依赖（默认 CUDA 12.x，也可指定 cuda13 / cuda11 / cuda10）
+    pip install -e .[cuda]
+
+手动安装依赖
+~~~~~~~~~~~~
+
+若 pip/conda 因网络或依赖解析失败，可手动逐个安装：
+
+.. code-block:: bash
+
+    # 基础依赖
+    pip install numpy pillow tqdm
+    # 测试依赖
+    pip install pytest torch torchvision
+    # CUDA 依赖（按 nvcc --version 显示的版本选择）
+    pip install cupy-cuda12x
+
+- 系统环境可用操作系统包管理器安装（如 ``apt install python3-numpy``、``brew install numpy``）；**自建虚拟环境只能用 pip 安装**；
+- torch 请按 `PyTorch 官网 <https://pytorch.org/get-started/locally/>`_ 给出的命令单独安装；
+- Conda 环境可用 ``conda create -n riemann python=3.10`` 创建，但 CuPy 仍建议用 pip 安装。
+
+装好依赖后执行 ``pip install -e . --no-deps`` 完成 Riemann 本体安装。
+
+CUDA 依赖与平台兼容性
+~~~~~~~~~~~~~~~~~~~~~
+
+CUDA 依赖不会自动安装，需用 ``pip install -e .[cuda]`` 显式安装，并保证已装对应版本的 NVIDIA 驱动。
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 18 18 46
 
    * - 平台
      - 架构
      - CUDA 支持
-     - 安装方式
+     - 说明
    * - Linux
      - x86_64/AMD64
      - ✅ 支持
-     - ``pip install -e .[cuda]``
+     - 用 ``pip install cupy-cudaXX``
    * - Windows
      - x86_64/AMD64
      - ✅ 支持
-     - ``pip install -e .[cuda]``
+     - 用 ``pip install cupy-cudaXX``
    * - macOS
      - x86_64/ARM64
      - ❌ 不支持
-     - 无 NVIDIA GPU 驱动，使用 CPU 模式
+     - 无 NVIDIA 驱动，自动使用 CPU 模式
    * - Linux (ARM64)
      - aarch64/arm64
      - ⚠️ 需源码编译
      - NVIDIA Jetson 等需从源码编译 CuPy
+   * - Windows (ARM64)
+     - aarch64/arm64
+     - ❌ 不支持
+     - 暂不支持 CUDA
+
+CUDA 驱动安装
+~~~~~~~~~~~~~
+
+1. 运行 ``nvcc --version`` 查看已安装的 CUDA Toolkit 版本（``nvidia-smi`` 显示的是驱动支持的最高版本，不等于已安装版本）。
+2. 从 `CUDA Toolkit Archive <https://developer.nvidia.com/cuda-toolkit-archive>`_ 下载并安装匹配版本的驱动/工具包。
+3. 重启后再次运行 ``nvcc --version`` 确认版本。
 
 验证安装
 ~~~~~~~~
