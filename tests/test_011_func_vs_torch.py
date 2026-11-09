@@ -42,10 +42,17 @@ from riemann import func, tensor
 
 try:
     with warnings.catch_warnings():
-        # Python 3.14 下 import torch 会触发 torch.jit.script 的 FutureWarning
+        # 屏蔽导入 torch 及其内部初始化阶段的一次性弃用告警
         warnings.simplefilter("ignore")
         import torch
         import torch.nn as tnn
+
+        # 预热 torch.func 的 JVP 分解缓存：首次调用 JVP 路径会懒加载
+        # torch._decomp 的 JVP 分解，并在内部批量调用 torch.jit.script，
+        # 从而产生与测试无关的 FutureWarning（Python 3.11 为 "deprecated"，
+        # 3.14+ 为 "not supported"）。在此一次性触发，后续用例不再告警。
+        _warmup_x = torch.tensor([0.0])
+        torch.func.jvp(lambda t: t * 2, (_warmup_x,), (_warmup_x,))
     TORCH_AVAILABLE = True
 except ImportError:
     torch = None
@@ -248,14 +255,6 @@ class TestFuncVsTorch(unittest.TestCase):
 
     def setUp(self):
         self.current_test_name = self._testMethodName
-        # torch.jit 是懒加载的，首次调用 torch.func 时会告警；在用例内屏蔽
-        self._warn_ctx = warnings.catch_warnings()
-        self._warn_ctx.__enter__()
-        warnings.filterwarnings(
-            "ignore",
-            message="`torch.jit.script` is not supported in Python 3.14+",
-            category=FutureWarning,
-        )
         if IS_RUNNING_AS_SCRIPT:
             stats.start_function(self.current_test_name)
             print(f"\n{Colors.HEADER}开始测试: {self.current_test_name}{Colors.ENDC}")
@@ -263,7 +262,6 @@ class TestFuncVsTorch(unittest.TestCase):
     def tearDown(self):
         if IS_RUNNING_AS_SCRIPT:
             stats.end_function()
-        self._warn_ctx.__exit__(None, None, None)
 
     # ---------------------------------------------------------------
     # grad / grad_and_value
