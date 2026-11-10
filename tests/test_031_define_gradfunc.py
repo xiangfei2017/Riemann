@@ -26,6 +26,30 @@ except ImportError:
     TORCH_AVAILABLE = False
 CUDA_AVAILABLE = getattr(getattr(rm, "cuda", None), "CUPY_AVAILABLE", False)
 
+
+def _devices():
+    """本次运行覆盖的设备列表：CUDA 可用时同时覆盖 CPU 与 CUDA"""
+    return ["cpu", "cuda"] if CUDA_AVAILABLE else ["cpu"]
+
+
+def _arr(t):
+    """把 TN 张量/梯度转成 numpy，兼容 CPU 与 CUDA"""
+    return t.detach().cpu().numpy()
+
+
+def _mk(value, device=None, requires_grad=True):
+    """构造 gradcheck 用的双精度输入张量"""
+    return rm.tensor(value, dtype=rm.float64, device=device, requires_grad=requires_grad)
+
+
+def _raises_runtime_error(call):
+    """调用 call，若抛出 RuntimeError 则返回 True"""
+    try:
+        call()
+    except RuntimeError:
+        return True
+    return False
+
 # 定义颜色类用于美化输出
 class Colors:
     HEADER = '\033[95m'
@@ -582,220 +606,394 @@ class TestDefineGradFunc(unittest.TestCase):
                 # 断言传导：确保 unittest/pytest 将失败判为测试失败
                 self.assertTrue(passed, full_name + (f": {error_msg}" if error_msg else ""))
     
-    def test_gradcheck_function(self):
-        """测试 gradcheck 函数的功能"""
-        
-        # 测试场景列表
-        test_cases = [
-            {
-                "name": "简单乘法测试",
-                "func": lambda x, y: x * y,
-                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True), rm.tensor(3.0, dtype=rm.float64, requires_grad=True)],
-                "description": "测试两个标量的乘法运算"
-            },
-            {
-                "name": "线性函数测试",
-                "func": lambda x, w, b: (x * w).sum() + b,
-                "inputs": lambda: [
-                    rm.tensor([1.0, 2.0, 3.0], dtype=rm.float64, requires_grad=True),
-                    rm.tensor([0.5, 0.5, 0.5], dtype=rm.float64, requires_grad=True),
-                    rm.tensor(1.0, dtype=rm.float64, requires_grad=True)
-                ],
-                "description": "测试带权重和偏置的线性函数"
-            },
-            {
-                "name": "Sigmoid激活函数测试",
-                "func": lambda x: 1.0 / (1.0 + (-x).exp()),
-                "inputs": lambda: [rm.tensor([-1.0, 0.0, 1.0], dtype=rm.float64, requires_grad=True)],
-                "description": "测试sigmoid非线性激活函数"
-            },
-            {
-                "name": "快速模式测试",
-                "func": lambda x, y: x * y,
-                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True), rm.tensor(3.0, dtype=rm.float64, requires_grad=True)],
-                "description": "测试快速模式下的梯度检查",
-                "fast_mode": True
-            },
-            {
-                "name": "高维输入测试",
-                "func": lambda x: x.sum(),
-                "inputs": lambda: [rm.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=rm.float64, requires_grad=True)],
-                "description": "测试高维张量的梯度检查"
-            },
-            {
-                "name": "多个输出测试",
-                "func": lambda x, y: (x * y, x + y),
-                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True), rm.tensor(3.0, dtype=rm.float64, requires_grad=True)],
-                "description": "测试函数返回多个张量的情况"
-            },
-            {
-                "name": "复杂函数测试",
-                "func": lambda x: (x * x + x).sin(),
-                "inputs": lambda: [rm.tensor(1.0, dtype=rm.float64, requires_grad=True)],
-                "description": "测试包含多个操作的复杂函数"
-            },
-            {
-                "name": "不同误差容限测试",
-                "func": lambda x: x * x,
-                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True)],
-                "description": "测试不同的误差容限参数",
-                "eps": 1e-5,
-                "atol": 1e-4,
-                "rtol": 1e-2
-            },
-            {
-                "name": "矩阵乘法测试",
-                "func": lambda x, y: x @ y,
-                "inputs": lambda: [
-                    rm.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=rm.float64, requires_grad=True),
-                    rm.tensor([[5.0, 6.0], [7.0, 8.0]], dtype=rm.float64, requires_grad=True)
-                ],
-                "description": "测试矩阵乘法的梯度计算"
-            },
-            {
-                "name": "自定义Function类测试",
-                "func": None,  # 特殊处理，使用自定义Function类
-                "inputs": lambda: [rm.tensor(2.0, dtype=rm.float64, requires_grad=True), rm.tensor(3.0, dtype=rm.float64, requires_grad=True)],
-                "description": "测试使用自定义Function类的函数"
-            }
-        ]
-        
-        for case in test_cases:
+    def test_gradcheck(self):
+        """gradcheck 用例组：基础功能、错误检出、fast_mode、边界与参数校验"""
+        for device in _devices():
+            self._run_gradcheck_group(device)
+
+    def _run_gradcheck_group(self, device):
+        """执行 gradcheck 用例组内的全部子用例，并输出每个子用例的执行结果"""
+        for case_name, case_fn in self._gradcheck_cases(device):
+            full_name = f"{case_name} - {device}"
+            start_time = time.time()
             error_msg = None
             try:
-                # 特殊处理自定义Function类测试
-                if case["name"] == "自定义Function类测试":
-                    # 定义自定义乘法函数
-                    class MulFunction(Function):
-                        """自定义乘法函数类"""
-                        
-                        @staticmethod
-                        def forward(ctx, x, y):
-                            """前向传播"""
-                            ctx.save_for_backward(x, y)
-                            return x * y
-                        
-                        @staticmethod
-                        def backward(ctx, grad_output):
-                            """反向传播"""
-                            x, y = ctx.saved_tensors
-                            return grad_output * y, grad_output * x
-                    
-                    # 创建使用自定义Function的函数
-                    def custom_mul(x, y):
-                        return MulFunction.apply(x, y)
-                    
-                    func = custom_mul
-                else:
-                    func = case["func"]
-                
-                inputs = case["inputs"]()  # 调用工厂函数获取输入
-                
-                # 调用gradcheck函数
-                fast_mode = case.get("fast_mode", False)
-                eps = case.get("eps", 1e-6)
-                atol = case.get("atol", 1e-5)
-                rtol = case.get("rtol", 1e-3)
-                result = gradcheck(func, inputs, eps=eps, atol=atol, rtol=rtol, fast_mode=fast_mode)
-                
-                passed = result == True
-                if passed:
-                    print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} {case['name']}: {case['description']}")
-                else:
-                    print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} {case['name']}: 梯度检查失败")
+                passed = bool(case_fn())
             except Exception as e:
                 passed = False
                 error_msg = str(e)
-                print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} {case['name']}: 错误 - {str(e)}")
-            # 统计在两种运行模式下均完整工作
-            stats.add_result(case['name'], passed)
-            # 断言传导：确保 unittest/pytest 将梯度检查失败判为测试失败
-            self.assertTrue(passed, case['name'] + (f": {error_msg}" if error_msg else ""))
+            stats.add_result(full_name, passed)
+            if IS_SCRIPT_MODE:
+                color = Colors.OKGREEN if passed else Colors.FAIL
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {full_name} - {color}{status}{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+            # 断言传导：确保 unittest/pytest 将子用例失败判为测试失败
+            self.assertTrue(passed, full_name + (f": {error_msg}" if error_msg else ""))
+
+    def _gradcheck_cases(self, device):
+        """构造 gradcheck 用例组的全部子用例：[(子用例名, 返回 bool 的检查函数), ...]"""
+        d = device
+        cases = []
+
+        # ==================== 基础功能 ====================
+        cases.append(("基础-简单乘法", lambda: gradcheck(lambda x, y: x * y, (_mk(2.0, d), _mk(3.0, d)))))
+        cases.append(("基础-线性函数", lambda: gradcheck(
+            lambda x, w, b: (x * w).sum() + b,
+            (_mk([1.0, 2.0, 3.0], d), _mk([0.5, 0.5, 0.5], d), _mk(1.0, d)))))
+        cases.append(("基础-Sigmoid激活", lambda: gradcheck(
+            lambda x: 1.0 / (1.0 + (-x).exp()), (_mk([-1.0, 0.0, 1.0], d),))))
+        cases.append(("基础-高维输入", lambda: gradcheck(
+            lambda x: x.sum(), (_mk([[1.0, 2.0], [3.0, 4.0]], d),))))
+        cases.append(("基础-复杂函数", lambda: gradcheck(
+            lambda x: (x * x + x).sin(), (_mk(1.0, d),))))
+        cases.append(("基础-矩阵乘法", lambda: gradcheck(
+            lambda x, y: x @ y,
+            (_mk([[1.0, 2.0], [3.0, 4.0]], d), _mk([[5.0, 6.0], [7.0, 8.0]], d)))))
+        cases.append(("基础-多输出", lambda: gradcheck(
+            lambda x, y: (x * y, x + y), (_mk(2.0, d), _mk(3.0, d)))))
+        cases.append(("基础-自定义容差", lambda: gradcheck(
+            lambda x: x * x, (_mk(2.0, d),), eps=1e-5, atol=1e-4, rtol=1e-2)))
+
+        class MulFunction(Function):
+            """自定义乘法函数类"""
+
+            @staticmethod
+            def forward(ctx, x, y):
+                ctx.save_for_backward(x, y)
+                return x * y
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                x, y = ctx.saved_tensors
+                return grad_output * y, grad_output * x
+
+        cases.append(("基础-自定义Function", lambda: gradcheck(
+            lambda x, y: MulFunction.apply(x, y), (_mk(2.0, d), _mk(3.0, d)))))
+
+        # ==================== 错误梯度检出 ====================
+        class BadMul(Function):
+            """乘法前向正确，但 dx 被错误放大 1.5 倍的 Function"""
+
+            @staticmethod
+            def forward(ctx, x, y):
+                ctx.save_for_backward(x, y)
+                return x * y
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                x, y = ctx.saved_tensors
+                return grad_output * y * 1.5, grad_output * x
+
+        cases.append(("错误检出-返回False", lambda: gradcheck(
+            lambda x, y: BadMul.apply(x, y), (_mk(2.0, d), _mk(3.0, d)),
+            raise_exception=False) is False))
+
+        def _bad_grad_raises():
+            try:
+                gradcheck(lambda x, y: BadMul.apply(x, y), (_mk(2.0, d), _mk(3.0, d)),
+                          raise_exception=True)
+            except RuntimeError:
+                return True
+            return False
+
+        cases.append(("错误检出-抛出RuntimeError", _bad_grad_raises))
+
+        # ==================== fast_mode ====================
+        class FirstOnlyBadSquare(Function):
+            """首元素梯度正确、次元素梯度错误的平方函数"""
+
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_backward(x)
+                return x * x
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                x, = ctx.saved_tensors
+                factor = rm.tensor([1.0, 2.0], dtype=rm.float64, device=x.device)
+                return (grad_output * 2.0 * x * factor,)
+
+        cases.append(("fast_mode-正确函数通过", lambda: gradcheck(
+            lambda a: (a.exp() * a.sin()).sum(), (_mk([1.0, 2.0], d),), fast_mode=True)))
+        # 与 torch 一致：fast_mode 用随机投影，但仍覆盖完整 Jacobian，
+        # 因此非首元素的梯度错误同样能被检出
+        cases.append(("fast_mode-检出非首元素错误", lambda: gradcheck(
+            lambda a: FirstOnlyBadSquare.apply(a), (_mk([1.0, 2.0], d),),
+            fast_mode=True, raise_exception=False) is False))
+        cases.append(("fast_mode-close模式同样检出", lambda: gradcheck(
+            lambda a: FirstOnlyBadSquare.apply(a), (_mk([1.0, 2.0], d),),
+            fast_mode=False, raise_exception=False) is False))
+        # 多元素多输出场景下 fast_mode 也应通过
+        cases.append(("fast_mode-多元素多输出通过", lambda: gradcheck(
+            lambda x, y: (x.exp() * y, x.sin() + y * y),
+            (_mk([[1.0, 2.0], [3.0, 4.0]], d), _mk([[0.5, 1.5], [2.5, 3.5]], d)),
+            fast_mode=True)))
+        # fast_mode 失败时应抛出 RuntimeError（内部会回退到全量模式定位元素）
+        cases.append(("fast_mode-失败抛RuntimeError", lambda: _raises_runtime_error(
+            lambda: gradcheck(lambda a: FirstOnlyBadSquare.apply(a),
+                              (_mk([1.0, 2.0], d),), fast_mode=True))))
+
+        # ==================== 多元素 + 多输出 ====================
+        cases.append(("多元素多输出", lambda: gradcheck(
+            lambda x, y: (x.exp() * y, x.sin() + y * y),
+            (_mk([[1.0, 2.0], [3.0, 4.0]], d), _mk([[0.5, 1.5], [2.5, 3.5]], d)))))
+
+        # ==================== 边界与副作用 ====================
+        def _input_unchanged():
+            x = _mk([[1.0, 2.0], [3.0, 4.0]], d)
+            backup = np.array(_arr(x), copy=True)
+            ok = gradcheck(lambda a: (a.exp() * a.sin()).sum(), (x,))
+            return ok and np.array_equal(_arr(x), backup)
+
+        cases.append(("边界-输入不被修改", _input_unchanged))
+        cases.append(("边界-空张量输入", lambda: gradcheck(
+            lambda a: a.sum(), (rm.tensor([], dtype=rm.float64, device=d, requires_grad=True),))))
+        cases.append(("边界-未使用输入零梯度", lambda: gradcheck(
+            lambda p, q: (p * p).sum(), (_mk([1.0, 2.0], d), _mk([3.0, 4.0], d)))))
+
+        # ==================== Jacobian 逐元素校验 ====================
+        class BadJacobian(Function):
+            """前向 x @ ones(2,2)；反向乘一个行和正确但元素错误的矩阵。
+
+            对 x 的每一行，错误雅可比的行和与真实雅可比的行和相同，
+            因此"把输出求和后比较"的弱校验会漏检，只有逐输出元素比较才能发现。
+            """
+
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_backward(x)
+                arrlib = x._get_array_lib()
+                w = arrlib.ones((2, 2))
+                return rm.tensor(x.detach().array() @ w, device=x.device, dtype=x.dtype)
+
+            @staticmethod
+            def backward(ctx, g):
+                x, = ctx.saved_tensors
+                # 真实雅可比全为 1，这里用 [[1.5,0.5],[0.5,1.5]]：
+                # 每行行和 1.5+0.5 == 1+1，求和校验无法察觉
+                arrlib = x._get_array_lib()
+                w_wrong = arrlib.array([[1.5, 0.5], [0.5, 1.5]])
+                return rm.tensor(g.detach().array() @ w_wrong.T,
+                                 device=x.device, dtype=x.dtype)
+
+        cases.append(("Jacobian-检出输出元素间抵消的错误", lambda: gradcheck(
+            lambda a: BadJacobian.apply(a), (_mk([1.0, 2.0], d),),
+            raise_exception=False) is False))
+        cases.append(("Jacobian-同一错误抛RuntimeError", lambda: _raises_runtime_error(
+            lambda: gradcheck(lambda a: BadJacobian.apply(a), (_mk([1.0, 2.0], d),)))))
+        cases.append(("Jacobian-nondet_tol容忍小误差", lambda: gradcheck(
+            lambda a: BadJacobian.apply(a), (_mk([1.0, 2.0], d),),
+            nondet_tol=1.0, raise_exception=False) is True))
+        # 非标量单输出：逐元素检查（旧实现会先 sum 成标量）
+        cases.append(("Jacobian-非标量单输出", lambda: gradcheck(
+            lambda a: a * a, (_mk([[1.0, 2.0], [3.0, 4.0]], d),))))
+        # 多输出且形状不同
+        cases.append(("Jacobian-多输出不同形状", lambda: gradcheck(
+            lambda a, b: (a * b, (a + b).sum()), (_mk([1.0, 2.0], d), _mk([3.0, 4.0], d)))))
+        # check_grad_dtypes 打开时，梯度 dtype 与输入一致的正常用例应通过
+        cases.append(("Jacobian-check_grad_dtypes通过", lambda: gradcheck(
+            lambda a: (a * a).sum(), (_mk([1.0, 2.0], d),), check_grad_dtypes=True)))
+
+        # ==================== 参数/输入校验（与设备无关，各设备均执行）====================
+        def _expect_value_error(call):
+            try:
+                call()
+            except ValueError:
+                return True
+            return False
+
+        def _expect_not_implemented(call):
+            try:
+                call()
+            except NotImplementedError:
+                return True
+            return False
+
+        x = _mk([1.0, 2.0], d)
+        cases.append(("校验-单个TN作为inputs可用", lambda: gradcheck(
+            lambda a: (a * a).sum(), _mk([1.0, 2.0], d))))
+        cases.append(("校验-list形式inputs可用", lambda: gradcheck(
+            lambda a: (a * a).sum(), [_mk([1.0, 2.0], d)])))
+        cases.append(("校验-inputs非TN/序列", lambda: _expect_value_error(
+            lambda: gradcheck(lambda a: a.sum(), 123))))
+        cases.append(("校验-空inputs", lambda: _expect_value_error(
+            lambda: gradcheck(lambda a: a.sum(), ()))))
+        cases.append(("校验-输入非TN", lambda: _expect_value_error(
+            lambda: gradcheck(lambda a: a.sum(), ([1.0, 2.0],)))))
+        cases.append(("校验-requires_grad为False", lambda: _expect_value_error(
+            lambda: gradcheck(lambda a: a.sum(), (_mk([1.0, 2.0], d, requires_grad=False),)))))
+        cases.append(("校验-输入float32", lambda: _expect_value_error(
+            lambda: gradcheck(lambda a: a.sum(),
+                              (rm.tensor([1.0, 2.0], dtype=rm.float32, device=d, requires_grad=True),)))))
+        cases.append(("校验-func不可调用", lambda: _expect_value_error(
+            lambda: gradcheck(1.0, (x,)))))
+        cases.append(("校验-func返回空tuple", lambda: _expect_value_error(
+            lambda: gradcheck(lambda a: (), (x,)))))
+        cases.append(("校验-func返回非TN", lambda: _expect_value_error(
+            lambda: gradcheck(lambda a: 1.0, (x,)))))
+        cases.append(("校验-tuple内含非TN", lambda: _expect_value_error(
+            lambda: gradcheck(lambda a: (a.sum(), 1.0), (x,)))))
+
+        # 与 torch 签名对齐：未实现的选项应显式报错而不是被静默忽略
+        cases.append(("校验-check_forward_ad=True", lambda: _expect_not_implemented(
+            lambda: gradcheck(lambda a: a.sum(), (x,), check_forward_ad=True))))
+        cases.append(("校验-check_batched_grad=True", lambda: _expect_not_implemented(
+            lambda: gradcheck(lambda a: a.sum(), (x,), check_batched_grad=True))))
+        cases.append(("校验-check_batched_forward_grad=True", lambda: _expect_not_implemented(
+            lambda: gradcheck(lambda a: a.sum(), (x,), check_batched_forward_grad=True))))
+        cases.append(("校验-check_backward_ad=False", lambda: _expect_not_implemented(
+            lambda: gradcheck(lambda a: a.sum(), (x,), check_backward_ad=False))))
+        cases.append(("校验-masked非None", lambda: _expect_not_implemented(
+            lambda: gradcheck(lambda a: a.sum(), (x,), masked=True))))
+
+        # 关键参数只能按关键字传入（torch 中 inputs 之后有 *）
+        def _positional_rejected():
+            try:
+                gradcheck(lambda a: a.sum(), (x,), 1e-6)
+            except TypeError:
+                return True
+            return False
+
+        cases.append(("校验-eps必须关键字传入", _positional_rejected))
+
+        try:
+            xc = rm.tensor([1.0 + 0j, 2.0 + 0j], dtype=rm.complex128, device=d, requires_grad=True)
+            cases.append(("校验-输入complex128", lambda: _expect_value_error(
+                lambda: gradcheck(lambda a: a.sum(), (xc,)))))
+        except Exception:
+            pass
+
+        # ==================== 设备相关场景 ====================
+        if d != "cpu":
+            # 非连续（转置）输入：扰动写回需要正确处理非 C 连续内存
+            cases.append(("设备-非连续(转置)输入", lambda: gradcheck(
+                lambda a: (a.exp() * a.sin()).sum(),
+                (rm.tensor(np.array([[1.0, 2.0], [3.0, 4.0]]).T, dtype=rm.float64,
+                           device=d, requires_grad=True),))))
+
+            # 较大张量走完全部元素的数值梯度循环
+            def _large_tensor():
+                big = rm.tensor(np.arange(36.0).reshape(6, 6) / 10 + 0.5,
+                                dtype=rm.float64, device=d, requires_grad=True)
+                return gradcheck(lambda a: (a.sin() * a).sum(), (big,))
+
+            cases.append(("设备-大张量全元素检查", _large_tensor))
+
+            # 同一输入连续调用两次，验证扰动缓冲区复用不会污染输入
+            def _repeat_calls():
+                same = _mk([1.0, 2.0], d)
+                first = gradcheck(lambda a: (a * a).sum(), (same,))
+                second = gradcheck(lambda a: (a * a).sum(), (same,))
+                return first and second and np.array_equal(_arr(same), np.array([1.0, 2.0]))
+
+            cases.append(("设备-重复调用同一输入", _repeat_calls))
+
+            # 解析梯度必须与输入同设备，不能隐式回落到 CPU
+            def _grad_stays_on_device():
+                t = _mk([1.0, 2.0], d)
+                g, = rm.autograd.grad((t * t).sum(), [t])
+                return d in str(g.device) and np.allclose(_arr(g), np.array([2.0, 4.0]))
+
+            cases.append(("设备-梯度保持cuda设备", _grad_stays_on_device))
+
+            # CPU 与 CUDA 混合输入应在计算时报错，而不是静默产生错误结果
+            def _mixed_device_rejected():
+                a_cuda = _mk([1.0, 2.0], "cuda")
+                a_cpu = _mk([1.0, 2.0], "cpu")
+                try:
+                    gradcheck(lambda p, q: (p * q).sum(), (a_cuda, a_cpu))
+                except RuntimeError:
+                    return True
+                return False
+
+            cases.append(("设备-混合设备输入报错", _mixed_device_rejected))
+
+        return cases
 
     def test_function_class(self):
-        """测试 Function 类的自定义梯度功能"""
-        
+        """测试 Function 类的自定义梯度功能（CPU + CUDA）"""
+
         # 定义一个自定义的乘法函数
         class MulFunction(Function):
             """自定义乘法函数类"""
-            
+
             @staticmethod
             def forward(ctx, x, y):
                 """前向传播"""
                 ctx.save_for_backward(x, y)
                 return x * y
-            
+
             @staticmethod
             def backward(ctx, grad_output):
                 """反向传播"""
                 x, y = ctx.saved_tensors
                 return grad_output * y, grad_output * x
-        
-        # 定义一个自定义的ReLU函数
+
+        # 定义一个自定义的ReLU函数（设备无关写法：零常量与掩码都建在输入所在设备上）
         class ReLUFunction(Function):
             """自定义ReLU函数类"""
-            
+
             @staticmethod
             def forward(ctx, x):
                 """前向传播"""
                 ctx.save_for_backward(x)
-                return rm.maximum(x, rm.tensor(0.0))
-            
+                return rm.maximum(x, rm.tensor(0.0, device=x.device))
+
             @staticmethod
             def backward(ctx, grad_output):
                 """反向传播"""
                 x, = ctx.saved_tensors
-                return grad_output * rm.tensor(x.detach().numpy() > 0)
-        
-        # 测试用例列表
+                arr = x.detach().array()
+                return grad_output * rm.tensor((arr > 0).astype(arr.dtype), device=x.device)
+
+        # 测试用例列表（make_inputs 接收设备参数，便于在 CPU/CUDA 上分别构造）
         test_cases = [
             {
                 "name": "MulFunction 梯度计算",
                 "func": MulFunction.apply,
-                "inputs": [rm.tensor(2.0, requires_grad=True), rm.tensor(3.0, requires_grad=True)],
-                "expected_grads": [3.0, 2.0]
+                "make_inputs": lambda d: [rm.tensor(2.0, device=d, requires_grad=True),
+                                          rm.tensor(3.0, device=d, requires_grad=True)],
+                "expected": [[3.0], [2.0]],
             },
             {
                 "name": "ReLUFunction 梯度计算",
                 "func": ReLUFunction.apply,
-                "inputs": [rm.tensor(-1.0, requires_grad=True)],
-                "expected_grad": 0.0
-            }
+                "make_inputs": lambda d: [rm.tensor([-1.0, 2.0], device=d, requires_grad=True)],
+                "expected": [[0.0, 1.0]],
+            },
         ]
-        
-        for case in test_cases:
-            error_msg = None
-            try:
-                inputs = case["inputs"]
-                result = case["func"](*inputs)
-                # 反向传播
-                result.backward()
-                
-                if len(inputs) == 1:
-                    # 单输入情况
-                    x = inputs[0]
-                    passed = abs(x.grad.detach().numpy() - case["expected_grad"]) < 1e-8
-                    if passed:
-                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} ReLUFunction 梯度计算: x.grad = {x.grad.detach().numpy()}, 预期值 = {case['expected_grad']}")
-                    else:
-                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} ReLUFunction 梯度计算: x.grad = {x.grad.detach().numpy()}, 预期值 = {case['expected_grad']}")
-                else:
-                    # 多输入情况
-                    x, y = inputs
-                    expected_grads = case["expected_grads"]
-                    passed = abs(x.grad.detach().numpy() - expected_grads[0]) < 1e-8 and abs(y.grad.detach().numpy() - expected_grads[1]) < 1e-8
-                    if passed:
-                        print(f"{Colors.OKGREEN}[PASS]{Colors.ENDC} MulFunction 梯度计算: x.grad = {x.grad.detach().numpy()}, y.grad = {y.grad.detach().numpy()}")
-                    else:
-                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} MulFunction 梯度计算: x.grad = {x.grad.detach().numpy()}, y.grad = {y.grad.detach().numpy()}, 预期值 = {expected_grads}")
-            except Exception as e:
-                passed = False
-                error_msg = str(e)
-                print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} {case['name']}: 错误 - {str(e)}")
-            # 统计在两种运行模式下均完整工作
-            stats.add_result(case['name'], passed)
-            # 断言传导：确保 unittest/pytest 将比较失败判为测试失败
-            self.assertTrue(passed, case['name'] + (f": {error_msg}" if error_msg else ""))
+
+        for device in _devices():
+            for case in test_cases:
+                full_name = f"{case['name']} - {device}"
+                error_msg = None
+                try:
+                    inputs = case["make_inputs"](device)
+                    result = case["func"](*inputs)
+                    # 反向传播
+                    result.sum().backward()
+
+                    actuals = [_arr(t.grad) for t in inputs]
+                    expecteds = [np.asarray(e, dtype=a.dtype)
+                                 for a, e in zip(actuals, case["expected"])]
+                    passed = len(actuals) == len(expecteds) and all(
+                        np.allclose(a, e, atol=1e-8, rtol=0) for a, e in zip(actuals, expecteds))
+                    if IS_SCRIPT_MODE:
+                        color = Colors.OKGREEN if passed else Colors.FAIL
+                        status = "PASS" if passed else "FAIL"
+                        detail = ", ".join(
+                            f"in{i}.grad={_arr(t.grad).tolist()}" for i, t in enumerate(inputs))
+                        print(f"{color}[{status}]{Colors.ENDC} [{device}] {case['name']}: "
+                              f"{detail}, 预期={[e.tolist() for e in expecteds]}")
+                except Exception as e:
+                    passed = False
+                    error_msg = str(e)
+                    if IS_SCRIPT_MODE:
+                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} [{device}] {case['name']}: 错误 - {str(e)}")
+                # 统计在两种运行模式下均完整工作
+                stats.add_result(full_name, passed)
+                # 断言传导：确保 unittest/pytest 将比较失败判为测试失败
+                self.assertTrue(passed, full_name + (f": {error_msg}" if error_msg else ""))
 
 if __name__ == "__main__":
     print("\n开始测试自定义梯度功能...")

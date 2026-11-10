@@ -667,6 +667,14 @@ class IndexOperTestBase(unittest.TestCase):
     group_name = ""
     requires_torch = False
 
+    # 这些 kind 的用例在 CUDA 上跳过（PyTorch CUDA 对非法索引触发 device-side assert，
+    # 不抛 Python 异常且永久损坏 CUDA context，无法正常测试"是否抛异常"的行为）
+    _SKIP_CUDA_KINDS = frozenset([
+        "range_error", "index_ndim_error", "mask_dtype_error",
+        "mask_broadcast_error", "out_grad_error", "leaf_error",
+        "index_range_error", "values_shape_error", "dtype_error",
+    ])
+
     def setUp(self):
         # 导入或依赖缺失时跳过
         if not RIEMANN_AVAILABLE:
@@ -872,7 +880,11 @@ class IndexOperTestBase(unittest.TestCase):
 
         for case in cases:
             payload = prepare(case) if prepare else case
-            for device in devices:
+            # error 类型用例在 CUDA 上跳过（PyTorch CUDA 非法索引触发 device-side assert）
+            case_devices = devices
+            if case.get("kind") in self._SKIP_CUDA_KINDS and "cuda" in devices:
+                case_devices = [d for d in devices if d != "cuda"]
+            for device in case_devices:
                 subcase_name = f"{case['name']} [{device.upper()}]"
                 start_time = time.time()
                 try:

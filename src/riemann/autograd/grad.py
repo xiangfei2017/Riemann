@@ -260,75 +260,127 @@ def grad(outputs:TN,
 #end of grad
 
 
-def _sum_all(tensors):
-    """辅助函数：累加多个TN张量"""
-    if not tensors:
+def _as_output_list(result):
+    """辅助函数：把 func 的返回值统一成输出张量列表（单个TN / tuple / list）"""
+    if isinstance(result, TN):
+        return [result]
+    if not isinstance(result, (tuple, list)):
+        raise ValueError("func must return a TN tensor or a tuple/list of TN tensors")
+    if not result:
         raise ValueError("Empty tensor list/tuple")
-    result = tensors[0]
-    for ts in tensors[1:]:
-        result = result + ts
-    return result
+    for i, t in enumerate(result):
+        if not isinstance(t, TN):
+            raise ValueError(f"Output {i} must be a TN tensor")
+    return list(result)
 
 
-def gradcheck(func: Callable[..., Any], inputs: tuple[TN, ...], eps: float = 1e-6, atol: float = 1e-5, rtol: float = 1e-3, raise_exception: bool = True, check_sparse_nnz: bool = False, fast_mode: bool = False) -> bool:
+def _flatten_outputs(outputs, arrlib):
+    """辅助函数：把一组输出张量展平并拼接成一维数组，用于按输出元素比对 Jacobian"""
+    flats = [t._array.ravel() for t in outputs]
+    if len(flats) == 1:
+        return flats[0]
+    return arrlib.concatenate(flats)
+
+
+def _to_host(arr):
+    """把设备数组转成 numpy（CUDA 下 cupy 数组需要先取回主机端）"""
+    if hasattr(arr, "get"):
+        return arr.get()
+    return np.asarray(arr)
+
+
+def gradcheck(func: Callable[..., Any],
+              inputs: TN | tuple[TN, ...] | list[TN],
+              *,
+              eps: float = 1e-6,
+              atol: float = 1e-5,
+              rtol: float = 1e-3,
+              raise_exception: bool = True,
+              nondet_tol: float = 0.0,
+              check_undefined_grad: bool = True,
+              check_grad_dtypes: bool = False,
+              check_batched_grad: bool = False,
+              check_batched_forward_grad: bool = False,
+              check_forward_ad: bool = False,
+              check_backward_ad: bool = True,
+              fast_mode: bool = False,
+              masked: bool = None) -> bool:
     """
-    验证给定函数的梯度计算是否正确，通过比较数值梯度和解析梯度。
+    验证给定函数的梯度计算是否正确，通过逐元素比较数值 Jacobian 和解析 Jacobian。
 
-    该函数通过在输入参数上添加微小扰动来计算数值梯度（有限差分法），
-    并将其与使用自动微分计算的解析梯度进行比较。
+    与 PyTorch 行为一致：不再把多个输出求和成一个标量后比较，而是对每个输出元素分别
+    计算解析梯度并与中心差分得到的数值梯度逐元素比对。因此“不同输出元素的梯度互相
+    抵消”这类错误也能被检出。
 
     参数：
-        func (Callable[..., Any]): 需要验证梯度的函数，该函数应接受一个或多个TN张量作为输入，
-                                  并返回一个或多个TN张量作为输出。
-        inputs (tuple[TN, ...]): 用于测试的输入张量元组，所有张量必须设置requires_grad=True，
-                               且必须是双精度（float64）类型。
-        eps (float, 可选): 用于计算数值梯度的微小扰动，默认为1e-6。
+        func (Callable[..., Any]): 需要验证梯度的函数，返回单个 TN 张量或多输出的元组/列表。
+        inputs (TN | tuple[TN, ...] | list[TN]): 输入张量或其序列，必须 requires_grad=True
+                                  且为双精度（float64）。单个 TN 会自动包装为长度为1的元组。
+        eps (float, 可选): 中心差分扰动步长，默认为1e-6。
         atol (float, 可选): 绝对误差容限，默认为1e-5。
         rtol (float, 可选): 相对误差容限，默认为1e-3。
-        raise_exception (bool, 可选): 如果梯度检查失败，是否抛出异常，默认为True。
-        check_sparse_nnz (bool, 可选): 是否检查稀疏张量的非零元素，默认为False。
-        fast_mode (bool, 可选): 是否使用快速模式（只检查每个张量的一个元素），默认为False。
+        raise_exception (bool, 可选): 检查失败时是否抛出 RuntimeError，默认 True。
+        nondet_tol (float, 可选): 非确定性容限。绝对误差小于该值时视为通过（用于容忍
+                                 非确定性算子带来的抖动），默认为0.0。
+        check_undefined_grad (bool, 可选): 解析梯度为 None（输出与输入无关）时按零梯度
+                                 参与比较，默认 True。
+        check_grad_dtypes (bool, 可选): 是否额外校验解析梯度的 dtype 与输入一致，默认 False。
+        check_batched_grad (bool, 可选): 未实现，置 True 抛 NotImplementedError。
+        check_batched_forward_grad (bool, 可选): 未实现，置 True 抛 NotImplementedError。
+        check_forward_ad (bool, 可选): 未实现（仅支持反向模式），置 True 抛 NotImplementedError。
+        check_backward_ad (bool, 可选): 是否执行反向模式检查，仅支持 True。
+        fast_mode (bool, 可选): 快速模式。用随机方向投影比较 v^T(Ju) 与 (v^T J)u，
+                               数值侧每个输入只需 2 次前向，但依旧覆盖完整 Jacobian，
+                               默认为 False（逐元素全量检查）。
+        masked (bool, 可选): 稀疏张量掩码检查，未实现，非 None 抛 NotImplementedError。
 
     返回：
-        bool: 如果梯度检查通过，返回True；否则返回False（或抛出异常，取决于raise_exception参数）。
+        bool: 检查通过返回 True；失败且 raise_exception=False 时返回 False。
 
     异常：
-        RuntimeError: 当梯度检查失败且raise_exception为True时抛出。
-        ValueError: 当输入参数不符合要求时抛出。
+        RuntimeError: 梯度检查失败且 raise_exception=True 时抛出。
+        ValueError: 输入参数不符合要求时抛出。
+        NotImplementedError: 使用了当前尚未实现的检查选项时抛出。
 
     示例：
-        >>> # 定义一个简单的函数
         >>> def f(x, y):
         >>>     return x * y
-        >>> 
-        >>> # 准备输入（必须是双精度类型）
         >>> x = tensor(2.0, requires_grad=True, dtype=np.float64)
         >>> y = tensor(3.0, requires_grad=True, dtype=np.float64)
-        >>> 
-        >>> # 验证梯度
-        >>> result = gradcheck(f, (x, y))
-        >>> print(result)  # 输出: True
+        >>> gradcheck(f, (x, y))
+        True
 
     注意：
-        1. 该函数要求输入张量必须是双精度（float64）类型，以确保数值梯度计算的精度。
-        2. 该函数目前仅支持实值函数和实值输入。
-        3. 对于具有多个输出的函数，梯度将被求和。
-        4. 小的误差是正常的，尤其是对于复杂函数或使用较大eps值时。
-        5. fast_mode=True可以加速检查，但会降低验证的全面性。
+        1. 输入张量必须是双精度（float64）实值类型，以保证数值梯度精度。
+        2. 多输出函数会逐个输出元素检查，不再退化为“输出求和”的弱校验。
+        3. fast_mode=True 会显著加速，但只覆盖每个输入的首个元素。
     """
-        
-    # 验证输入参数
+    # ---------------- 参数校验（与 torch 签名保持一致的选项行为） ----------------
     if not callable(func):
         raise ValueError("func must be a callable")
-    
-    if not isinstance(inputs, (tuple, list)):
-        raise ValueError("inputs must be a tuple or list of tensors")
-    
-    # 检查是否支持稀疏张量检查
-    if check_sparse_nnz:
-        raise ValueError("check_sparse_nnz is not supported in current version of Riemann (sparse tensors are not implemented)")
-    
-    # 检查所有输入是否为TN张量且requires_grad=True，以及是否为双精度类型
+
+    if masked is not None:
+        raise NotImplementedError("masked is not supported in current version of Riemann")
+    if check_forward_ad:
+        raise NotImplementedError("check_forward_ad requires forward-mode AD which is not supported")
+    if check_batched_grad:
+        raise NotImplementedError("check_batched_grad is not supported in current version of Riemann")
+    if check_batched_forward_grad:
+        raise NotImplementedError("check_batched_forward_grad is not supported in current version of Riemann")
+    if not check_backward_ad:
+        raise NotImplementedError("only backward-mode AD is supported, check_backward_ad must be True")
+
+    # 与 torch 一致：inputs 允许单个 Tensor，也允许序列
+    if isinstance(inputs, TN):
+        inputs = (inputs,)
+    elif isinstance(inputs, (tuple, list)):
+        inputs = tuple(inputs)
+    else:
+        raise ValueError("inputs must be a TN tensor or a tuple/list of TN tensors")
+
+    if not inputs:
+        raise ValueError("inputs must contain at least one tensor")
+
     for i, inp in enumerate(inputs):
         if not isinstance(inp, TN):
             raise ValueError(f"Input {i} must be a TN tensor")
@@ -338,155 +390,246 @@ def gradcheck(func: Callable[..., Any], inputs: tuple[TN, ...], eps: float = 1e-
             raise ValueError(f"Input {i} must be double precision (float64), got {inp.dtype}")
         if np.issubdtype(inp.dtype, np.complexfloating):
             raise ValueError(f"Input {i} is complex, but gradcheck only supports real inputs")
-    
-    inputs = tuple(inputs)
-    
-    # 计算解析梯度（使用自动微分）
-    outputs = func(*inputs)
-    
-    # 处理多个输出的情况
-    if isinstance(outputs, (tuple, list)):
-        outputs = _sum_all(outputs)
-    elif not isinstance(outputs, TN):
-        raise ValueError("func must return a TN tensor or a tuple/list of TN tensors")
-    
-    # 确保输出是标量
-    if outputs._array.ndim > 0:
-        outputs = outputs.sum()
-    
-    # 计算解析梯度
-    analytical_grads = grad(outputs, list(inputs), create_graph=False)
-    
-    # 计算数值梯度（有限差分法）
-    numerical_grads = []
-    
-    for i, input_tensor in enumerate(inputs):
-        # 创建与输入相同形状的零张量来存储数值梯度
-        numerical_grad = zeros_like(input_tensor, dtype=input_tensor.dtype)
-        
-        # 遍历张量的每个元素或只检查一个元素（快速模式）
-        if fast_mode:
-            # 只检查第一个元素
-            idx = tuple([0] * input_tensor._array.ndim)
-            
-            # 创建输入副本列表
-            inputs_pos = list(inputs)
-            inputs_neg = list(inputs)
-            
-            # 计算正向扰动的输出
-            # 为正向扰动创建全新的输入张量
-            x_pos_data = input_tensor._array.copy()
-            x_pos_data[idx] += eps
-            x_pos = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
-            x_pos._array = x_pos_data
-            x_pos.requires_grad = input_tensor.requires_grad
-            inputs_pos[i] = x_pos
-            outputs_pos = func(*inputs_pos)
-            if isinstance(outputs_pos, (tuple, list)):
-                outputs_pos = _sum_all(outputs_pos)
-            if outputs_pos._array.ndim > 0:
-                outputs_pos = outputs_pos.sum()
-            
-            # 计算负向扰动的输出
-            # 为负向扰动创建全新的输入张量
-            x_neg_data = input_tensor._array.copy()
-            x_neg_data[idx] -= eps
-            x_neg = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
-            x_neg._array = x_neg_data
-            x_neg.requires_grad = input_tensor.requires_grad
-            inputs_neg[i] = x_neg
-            outputs_neg = func(*inputs_neg)
-            if isinstance(outputs_neg, (tuple, list)):
-                outputs_neg = _sum_all(outputs_neg)
-            if outputs_neg._array.ndim > 0:
-                outputs_neg = outputs_neg.sum()
-            
-            # 计算数值梯度（中心差分）
-            numerical_grad._array[idx] = (outputs_pos._array - outputs_neg._array) / (2 * eps)
-        else:
-            # 遍历所有元素
-            # 统一使用索引迭代方法，适用于CUDA和CPU张量
-            # 获取张量形状
-            shape = input_tensor._array.shape
-            # 计算总元素数
-            num_elements = input_tensor._array.size
-            # 遍历每个元素的线性索引
-            for linear_idx in range(num_elements):
-                # 将线性索引转换为多维索引
-                idx = np.unravel_index(linear_idx, shape)
-                
-                # 创建输入副本列表
-                inputs_pos = list(inputs)
-                inputs_neg = list(inputs)
-                
-                # 计算正向扰动的输出
-                # 为正向扰动创建全新的输入张量
-                x_pos_data = input_tensor._array.copy()
-                x_pos_data[idx] += eps
-                x_pos = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
-                x_pos._array = x_pos_data
-                x_pos.requires_grad = input_tensor.requires_grad
-                inputs_pos[i] = x_pos
-                outputs_pos = func(*inputs_pos)
-                if isinstance(outputs_pos, (tuple, list)):
-                    outputs_pos = _sum_all(outputs_pos)
-                if outputs_pos._array.ndim > 0:
-                    outputs_pos = outputs_pos.sum()
-                
-                # 计算负向扰动的输出
-                # 为负向扰动创建全新的输入张量
-                x_neg_data = input_tensor._array.copy()
-                x_neg_data[idx] -= eps
-                x_neg = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
-                x_neg._array = x_neg_data
-                x_neg.requires_grad = input_tensor.requires_grad
-                inputs_neg[i] = x_neg
-                outputs_neg = func(*inputs_neg)
-                if isinstance(outputs_neg, (tuple, list)):
-                    outputs_neg = _sum_all(outputs_neg)
-                if outputs_neg._array.ndim > 0:
-                    outputs_neg = outputs_neg.sum()
-                
-                # 计算数值梯度（中心差分）
-                numerical_grad._array[idx] = (outputs_pos._array - outputs_neg._array) / (2 * eps)
-        
-        numerical_grads.append(numerical_grad)
-    
-    # 比较数值梯度和解析梯度
-    for i, (num_grad, an_grad) in enumerate(zip(numerical_grads, analytical_grads)):
-        if num_grad is None or an_grad is None:
-            if raise_exception:
-                raise RuntimeError(f"Gradient {i} is None")
-            return False
-        
-        # 计算绝对误差和相对误差
-        abs_error = np.abs(num_grad._array - an_grad._array)
-        rel_error = abs_error / (np.abs(num_grad._array) + np.abs(an_grad._array) + 1e-10)
-        
-        # 检查误差是否在容限范围内
-        if fast_mode:
-            # 快速模式下只检查第一个元素
-            idx = tuple([0] * num_grad._array.ndim)
-            if abs_error[idx] > atol and rel_error[idx] > rtol:
-                if raise_exception:
-                    raise RuntimeError(f"Gradient check failed for input {i} (fast mode): "
-                                      f"absolute error {abs_error[idx]:.6f} at {idx}, "
-                                      f"relative error {rel_error[idx]:.6f} at {idx}")
-                return False
-        else:
-            # 正常模式下检查所有元素
-            if (abs_error > atol).any() and (rel_error > rtol).any():
-                if raise_exception:
-                    # 增强错误信息，显示最大误差位置
-                    max_abs_error_idx = np.unravel_index(abs_error.argmax(), abs_error.shape)
-                    max_rel_error_idx = np.unravel_index(rel_error.argmax(), rel_error.shape)
-                    raise RuntimeError(f"Gradient check failed for input {i}: "
-                                      f"max absolute error {abs_error.max():.6f} at {max_abs_error_idx}, "
-                                      f"max relative error {rel_error.max():.6f} at {max_rel_error_idx}")
-                return False
-    
-    return True
+
+    arrlib = inputs[0]._get_array_lib()
+
+    # ---------------- 前向：保留计算图用于求解析梯度 ----------------
+    outputs = _as_output_list(func(*inputs))
+
+    out_sizes = [int(t._array.size) for t in outputs]
+    # 注意：模块级 sum 被 tensordef 的归约函数覆盖，这里用 np.sum
+    nout = int(np.sum(out_sizes))
+    if nout == 0:
+        # 输出为空张量：没有任何元素可以校验
+        return True
+
+    if fast_mode:
+        return _fast_gradcheck(func, inputs, outputs, eps, atol, rtol, nondet_tol,
+                               check_grad_dtypes, check_undefined_grad, raise_exception)
+
+    return _slow_gradcheck(func, inputs, outputs, out_sizes, eps, atol, rtol, nondet_tol,
+                           check_grad_dtypes, check_undefined_grad, raise_exception)
 # end of gradcheck
+
+
+def _slow_gradcheck(func, inputs, outputs, out_sizes, eps, atol, rtol, nondet_tol,
+                    check_grad_dtypes, check_undefined_grad, raise_exception):
+    """全量模式：逐输出元素比较完整 Jacobian（与 torch 的 slow mode 语义一致）"""
+    arrlib = inputs[0]._get_array_lib()
+    nout = int(np.sum(out_sizes))
+
+    # 每个输出张量在展平后的一维数组中的起始偏移
+    offsets = np.cumsum([0] + out_sizes[:-1]).tolist()
+
+    # ---------------- 数值 Jacobian（中心差分） ----------------
+    # 数值梯度只需要函数输出的数值，不参与求导，因此在禁用梯度模式下执行，
+    # 避免每个扰动点都构建并丢弃一整张 autograd 图
+    numerical_jacs = []
+    for i, input_tensor in enumerate(inputs):
+        nin = int(input_tensor._array.size)
+        jac = arrlib.zeros((nin, nout), dtype=input_tensor.dtype)
+
+        # 复用同一份扰动缓冲区：逐元素只改一个位置，避免整块拷贝数组并新建张量对象
+        original_data = input_tensor._array
+        perturbed_data = original_data.copy()
+        x_perturbed = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
+        x_perturbed._array = perturbed_data
+        x_perturbed.requires_grad = input_tensor.requires_grad
+        perturbed_inputs = list(inputs)
+        perturbed_inputs[i] = x_perturbed
+
+        with set_grad_enabled(False):
+            for r in range(nin):
+                idx = np.unravel_index(r, original_data.shape) if original_data.ndim else ()
+                # 正向扰动与负向扰动都从原始元素取值，避免浮点累加漂移
+                perturbed_data[idx] = original_data[idx] + eps
+                outputs_pos = _flatten_outputs(_as_output_list(func(*perturbed_inputs)), arrlib)
+
+                perturbed_data[idx] = original_data[idx] - eps
+                outputs_neg = _flatten_outputs(_as_output_list(func(*perturbed_inputs)), arrlib)
+
+                # 该行即输入元素 r 对所有输出元素的一阶偏导
+                jac[r] = (outputs_pos - outputs_neg) / (2 * eps)
+
+        numerical_jacs.append(jac)
+
+    # ---------------- 解析 Jacobian 与逐元素比对 ----------------
+    # 复用掩码张量：每个输出张量一个，逐元素置1求导后再置0
+    masks = [zeros_like(t, dtype=t.dtype, device=t.device) for t in outputs]
+
+    failures = []
+    for j in range(nout):
+        # 定位输出元素 j 属于哪个输出张量及其局部下标
+        k = 0
+        while j >= offsets[k] + out_sizes[k]:
+            k += 1
+        local_idx = j - offsets[k]
+
+        mask = masks[k]
+        mask._array[np.unravel_index(local_idx, outputs[k]._array.shape)] = 1.0
+        try:
+            # 取第 j 个输出元素构成的标量，求其对各输入的梯度
+            scalar = (outputs[k] * mask).sum()
+            analytical_grads = grad(scalar, list(inputs), retain_graph=True, allow_unused=True)
+        finally:
+            mask._array[np.unravel_index(local_idx, outputs[k]._array.shape)] = 0.0
+
+        for i, (num_jac, an_grad) in enumerate(zip(numerical_jacs, analytical_grads)):
+            num_col = num_jac[:, j]
+
+            if an_grad is None:
+                if not check_undefined_grad:
+                    invalids = abs(num_col) > (atol + nondet_tol)
+                    if np.any(invalids):
+                        failures.append(
+                            f"input {i}, output element {j}: analytical grad is undefined "
+                            f"but numerical grad is non-zero")
+                    continue
+                an_col = arrlib.zeros((num_jac.shape[0],), dtype=inputs[i].dtype)
+            else:
+                an_col = an_grad._array.ravel()
+
+            if check_grad_dtypes and an_grad is not None and an_grad.dtype != inputs[i].dtype:
+                failures.append(
+                    f"input {i}, output element {j}: grad dtype {an_grad.dtype} "
+                    f"does not match input dtype {inputs[i].dtype}")
+
+            abs_error = np.abs(num_col - an_col)
+            rel_error = abs_error / (np.abs(num_col) + np.abs(an_col) + 1e-10)
+            # 逐元素判定：绝对误差与相对误差同时超限、且超出非确定性容限才算失败
+            exceeded = (abs_error > atol) & (rel_error > rtol) & (abs_error > nondet_tol)
+
+            if np.any(exceeded):
+                pos = int(np.argmax(np.where(exceeded, abs_error, -1)))
+                idx = np.unravel_index(pos, inputs[i]._array.shape) if inputs[i]._array.ndim else ()
+                failures.append(
+                    f"input {i}, output element {j} at {idx}: "
+                    f"absolute error {float(abs_error[pos]):.6e}, "
+                    f"relative error {float(rel_error[pos]):.6e}")
+                if len(failures) >= 8:
+                    break
+
+        if len(failures) >= 8:
+            break
+
+    if failures:
+        if raise_exception:
+            raise RuntimeError("Gradient check failed:\n" + "\n".join(failures))
+        return False
+
+    return True
+
+
+def _random_direction(shape, arrlib, dtype, rng, normalize=False):
+    """生成指定形状的随机方向：numpy 生成后转到目标数组库（CPU/CUDA 通用）"""
+    arr = rng.standard_normal(shape) if shape else rng.standard_normal(())
+    if normalize:
+        norm = np.linalg.norm(arr)
+        arr = arr / (norm if norm else 1.0)
+    return arrlib.asarray(arr.astype(dtype))
+
+
+def _fast_gradcheck(func, inputs, outputs, eps, atol, rtol, nondet_tol,
+                    check_grad_dtypes, check_undefined_grad, raise_exception):
+    """快速模式：随机方向投影校验（与 torch 的 fast_mode 语义一致）。
+
+    对每个输入生成随机单位方向 u、每个输出生成随机方向 v，比较
+        v^T (J u)   —— 由中心差分沿方向 u 求得（每个输入只需 2 次前向）
+        (v^T J) u   —— 由一次反向传播求得（每个输出只需 1 次反向）
+    二者对正确梯度恒等。相比逐元素的慢速模式，前向次数与输入元素数无关，
+    同时仍覆盖整个 Jacobian（随机投影，漏检概率为零测度）。
+    """
+    arrlib = inputs[0]._get_array_lib()
+    # 固定种子，保证反复运行结果一致（不影响投影的有效性）
+    rng = np.random.default_rng(0)
+    n_in = len(inputs)
+    n_out = len(outputs)
+
+    us = [_random_direction(inp._array.shape, arrlib, inp.dtype, rng, normalize=True)
+          for inp in inputs]
+    vs = [_random_direction(out._array.shape, arrlib, out.dtype, rng) for out in outputs]
+
+    # ---------------- 数值侧：v^T (J u) ----------------
+    numerical = [[0.0] * n_out for _ in range(n_in)]
+    for i, input_tensor in enumerate(inputs):
+        perturbed_inputs = list(inputs)
+        x_perturbed = zeros_like(input_tensor, dtype=input_tensor.dtype, device=input_tensor.device)
+        x_perturbed.requires_grad = input_tensor.requires_grad
+        perturbed_inputs[i] = x_perturbed
+
+        with set_grad_enabled(False):
+            x_perturbed._array = input_tensor._array + eps * us[i]
+            pos = [t._array for t in _as_output_list(func(*perturbed_inputs))]
+
+            x_perturbed._array = input_tensor._array - eps * us[i]
+            neg = [t._array for t in _as_output_list(func(*perturbed_inputs))]
+
+        for j in range(n_out):
+            if outputs[j]._array.size == 0:
+                continue
+            ju = (pos[j] - neg[j]) / (2 * eps)  # J_ij u_i
+            numerical[i][j] = float(arrlib.sum(vs[j] * ju))
+
+    # ---------------- 解析侧：(v^T J) u ----------------
+    analytical = [[0.0] * n_out for _ in range(n_in)]
+    failures = []
+    for j, out in enumerate(outputs):
+        v_tensor = zeros_like(out, dtype=out.dtype, device=out.device)
+        v_tensor._array = vs[j]
+        analytical_grads = grad(out, list(inputs), retain_graph=True,
+                                grad_outputs=v_tensor, allow_unused=True)
+
+        for i, an_grad in enumerate(analytical_grads):
+            if an_grad is None:
+                if check_undefined_grad:
+                    analytical[i][j] = 0.0
+                continue
+            if check_grad_dtypes and an_grad.dtype != inputs[i].dtype:
+                failures.append(
+                    f"input {i}, output {j}: grad dtype {an_grad.dtype} "
+                    f"does not match input dtype {inputs[i].dtype}")
+            if inputs[i]._array.size == 0:
+                continue
+            analytical[i][j] = float(arrlib.sum(an_grad._array * us[i]))
+
+    # ---------------- 比对投影后的标量 ----------------
+    for i in range(n_in):
+        # 与 torch 一致：atol 需要按 |Σu| * |Σv| 缩放，才能和逐元素容限可比
+        sum_u = float(np.abs(np.sum(_to_host(us[i]))))
+        for j in range(n_out):
+            if outputs[j]._array.size == 0:
+                continue
+            sum_v = float(np.abs(np.sum(_to_host(vs[j]))))
+            effective_atol = atol * sum_u * sum_v
+
+            num_val, an_val = numerical[i][j], analytical[i][j]
+            abs_error = abs(num_val - an_val)
+            rel_error = abs_error / (abs(num_val) + abs(an_val) + 1e-10)
+
+            if abs_error > effective_atol + rtol * abs(an_val) and abs_error > nondet_tol:
+                failures.append(
+                    f"input {i}, output {j}: projected absolute error {abs_error:.6e}, "
+                    f"relative error {rel_error:.6e}")
+
+    if not failures:
+        return True
+
+    if not raise_exception:
+        return False
+
+    # 快速模式失败时用全量模式定位具体元素，给出可操作的报错信息
+    try:
+        _slow_gradcheck(func, inputs, outputs, [int(t._array.size) for t in outputs],
+                        eps, atol, rtol, nondet_tol, check_grad_dtypes,
+                        check_undefined_grad, raise_exception=True)
+    except RuntimeError as exc:
+        raise RuntimeError("Fast gradient check failed:\n" + str(exc)) from None
+
+    raise RuntimeError(
+        "Fast gradient check failed but element-wise differences are small; "
+        "the same check passes in slow mode. The function's gradient may be "
+        "non-deterministic or numerically unstable. Details:\n" + "\n".join(failures))
+# end of _fast_gradcheck
 
 class Function:
     """

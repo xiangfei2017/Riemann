@@ -9,8 +9,9 @@ riemann.func 模块 —— torch.func 风格函数式自动微分接口测试。
     hessian, vmap, functional_call
 
 风格与 test_005_shape_operations.py 一致：
-    - 一个 TestFuncs 类，每个被测函数对应一个 test_xxx 方法
-    - StatisticsCollector 按方法名（= 函数名）分组统计
+    - 一个用例类 _TestFuncsCases，每个被测函数对应一个 test_xxx 方法；
+      由 TestFuncsCPU / TestFuncsCUDA 两个设备子类继承，分别在 CPU / CUDA 上跑一遍
+    - StatisticsCollector 按方法名（= 函数名 + 设备）分组统计
     - 独立脚本运行 → 详细打印 + 统计表
     - pytest 运行 → 仅断言，无噪声
 """
@@ -158,23 +159,36 @@ IS_RUNNING_AS_SCRIPT = False
 # 内部辅助
 # ---------------------------------------------------------------------------
 
-def _rm_tensor(arr, requires_grad=True):
-    return tensor(np.asarray(arr, dtype=np.float64), requires_grad=requires_grad)
+# 当前用例使用的设备：由测试类在 setUp 中设置，None 表示 CPU
+_CURRENT_DEVICE = None
+
+_CUDA_AVAILABLE = rm.cuda.is_available()
+
+
+def _to_np(v):
+    """把 TN / cupy 数组 / numpy 数组统一转成 numpy 数组，便于跨设备比较"""
+    if hasattr(v, "_array"):
+        v = v._array
+    if hasattr(v, "get"):  # cupy.ndarray
+        v = v.get()
+    return np.asarray(v)
+
+
+def _rm_tensor(arr, requires_grad=True, device=None):
+    return tensor(np.asarray(arr, dtype=np.float64), requires_grad=requires_grad,
+                  device=_CURRENT_DEVICE if device is None else device)
 
 
 def _close(a, b, atol=1e-6, rtol=1e-6):
-    if hasattr(a, "_array"):
-        a = a._array
-    if hasattr(b, "_array"):
-        b = b._array
-    a = np.asarray(a)
-    b = np.asarray(b)
+    a = _to_np(a)
+    b = _to_np(b)
     return a.shape == b.shape and np.allclose(a, b, atol=atol, rtol=rtol)
 
 
-def _rm_ctensor(arr, requires_grad=True):
+def _rm_ctensor(arr, requires_grad=True, device=None):
     """构造复数张量（dtype=complex128）。"""
-    return tensor(np.asarray(arr, dtype=np.complex128), requires_grad=requires_grad)
+    return tensor(np.asarray(arr, dtype=np.complex128), requires_grad=requires_grad,
+                  device=_CURRENT_DEVICE if device is None else device)
 
 
 def _run_case(case_name, fn):
@@ -203,14 +217,21 @@ def _run_case(case_name, fn):
 
 
 # ---------------------------------------------------------------------------
-# TestFuncs
+# TestFuncs 用例实现（由 CPU / CUDA 设备子类继承）
 # ---------------------------------------------------------------------------
 
-class TestFuncs(unittest.TestCase):
+class _TestFuncsCases:
     """riemann.func 模块测试 —— 每个被测函数对应一个 test_xxx 方法"""
 
+    device = None  # None 表示 CPU，子类可设置为 'cuda'
+
+    def device_label(self):
+        return 'CPU' if self.device is None else 'CUDA'
+
     def setUp(self):
-        self.current_test_name = self._testMethodName
+        global _CURRENT_DEVICE
+        _CURRENT_DEVICE = self.device
+        self.current_test_name = f"{self._testMethodName} [{self.device_label()}]"
         if IS_RUNNING_AS_SCRIPT:
             stats.start_function(self.current_test_name)
             print(f"\n{Colors.HEADER}开始测试: {self.current_test_name}{Colors.ENDC}")
@@ -635,7 +656,7 @@ class TestFuncs(unittest.TestCase):
         jac = func.jacrev(f)(x)
         expected_flat = np.array([2.0, 4.0, 6.0, 8.0])
         # jac 可能是 (4,) 也可能是 (2,2)，取决于底层 flatten 策略
-        jac_arr = jac._array if hasattr(jac, '_array') else np.asarray(jac)
+        jac_arr = _to_np(jac)
         return jac_arr.flatten().shape == expected_flat.shape and np.allclose(jac_arr.flatten(), expected_flat)
 
     def _check_jacrev_multi_output(self):
@@ -1152,7 +1173,7 @@ class TestFuncs(unittest.TestCase):
     # ---- rm.nn.Module 真实 Module 场景 ----
     def _check_fc_rmnn_default(self):
         """rm.nn.Linear 使用自身参数调用（parameter_values=None）"""
-        layer = rm.nn.Linear(4, 5)
+        layer = rm.nn.Linear(4, 5, device=_CURRENT_DEVICE)
         x = _rm_tensor(np.random.randn(2, 4), requires_grad=False)
         # functional_call 不替换参数
         y_fc = func.functional_call(layer, None, (x,))
@@ -1161,7 +1182,7 @@ class TestFuncs(unittest.TestCase):
 
     def _check_fc_rmnn_custom(self):
         """rm.nn.Linear 用替代参数调用，验证 _parameters 分支替换 + 恢复"""
-        layer = rm.nn.Linear(4, 5)
+        layer = rm.nn.Linear(4, 5, device=_CURRENT_DEVICE)
         orig_weight = layer.weight.clone()
         orig_bias = layer.bias.clone()
 
@@ -1179,7 +1200,7 @@ class TestFuncs(unittest.TestCase):
 
     def _check_fc_rmnn_single_args(self):
         """args 直接传单个 TN（非 tuple），验证不会被错误解包"""
-        layer = rm.nn.Linear(4, 5)
+        layer = rm.nn.Linear(4, 5, device=_CURRENT_DEVICE)
         x = _rm_tensor(np.random.randn(2, 4), requires_grad=False)
         # 单 TN 作为 args（不是 (x,)）
         y_fc = func.functional_call(layer, None, x)
@@ -1189,7 +1210,7 @@ class TestFuncs(unittest.TestCase):
     # ---- functional_call + func.grad 组合 ----
     def _check_fc_grad_combo(self):
         """functional_call 与 func.grad_and_value 组合，对替代参数求梯度"""
-        layer = rm.nn.Linear(4, 5)
+        layer = rm.nn.Linear(4, 5, device=_CURRENT_DEVICE)
         x = _rm_tensor(np.random.randn(2, 4), requires_grad=False)
 
         alt_w = _rm_tensor(np.random.randn(5, 4), requires_grad=True)
@@ -1239,7 +1260,7 @@ class TestFuncs(unittest.TestCase):
         d1f = func.grad(f, create_graph=True)
         grad_norm = lambda a: d1f(a).sum()
         d2y = func.grad(grad_norm)(x)
-        return _close(d2y, 12.0 * x._array ** 2)
+        return _close(d2y, 12.0 * _to_np(x) ** 2)
 
     def _check_comp_hess_chain(self):
         f = lambda x: (x ** 4 + x ** 2).sum()
@@ -1444,25 +1465,25 @@ class TestFuncs(unittest.TestCase):
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         f = lambda b: (b ** 3).sum()
         h = func.jacrev(lambda a: func.jacrev(f, create_graph=True)(a), create_graph=True)(x)
-        return _close(h, np.diag(6.0 * x._array))
+        return _close(h, np.diag(6.0 * _to_np(x)))
 
     def _ho_jacfwd_2nd(self):
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         f = lambda b: (b ** 3).sum()
         h = func.jacfwd(lambda a: func.jacfwd(f, create_graph=True)(a), create_graph=True)(x)
-        return _close(h, np.diag(6.0 * x._array))
+        return _close(h, np.diag(6.0 * _to_np(x)))
 
     def _ho_jacfwd_jacrev(self):
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         f = lambda b: (b ** 3).sum()
         return _close(func.jacfwd(lambda a: func.jacrev(f, create_graph=True)(a),
-                                  create_graph=True)(x), np.diag(6.0 * x._array))
+                                  create_graph=True)(x), np.diag(6.0 * _to_np(x)))
 
     def _ho_jacrev_jacfwd(self):
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         f = lambda b: (b ** 3).sum()
         return _close(func.jacrev(lambda a: func.jacfwd(f, create_graph=True)(a),
-                                  create_graph=True)(x), np.diag(6.0 * x._array))
+                                  create_graph=True)(x), np.diag(6.0 * _to_np(x)))
 
     def _ho_hessian_3rd(self):
         # hessian(sum(x^3)) = 6*diag(x)，对其和再求导得 6*ones
@@ -1477,13 +1498,13 @@ class TestFuncs(unittest.TestCase):
         z = _rm_tensor(np.array([1.0, 2.0]))
         per_sample = lambda v: (v ** 3).sum()
         res = func.grad(lambda a: func.vmap(func.grad(per_sample, create_graph=True))(a).sum())(z)
-        return _close(res, 6.0 * z._array)
+        return _close(res, 6.0 * _to_np(z))
 
     def _ho_vmap_jacrev_2nd(self):
         x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
         f = lambda b: (b ** 3).sum()
         res = func.jacrev(lambda p: func.vmap(lambda r: func.jacrev(f, create_graph=True)(r))(p).sum())(x)
-        return _close(res, 6.0 * x._array)
+        return _close(res, 6.0 * _to_np(x))
 
     def _ho_functional_call_2nd(self):
         # y = x @ W, f = sum(y^3) => H = 6 * W diag(x @ W) W^T
@@ -1501,6 +1522,17 @@ class TestFuncs(unittest.TestCase):
         return _close(h, np.array([[282.0, 606.0], [606.0, 1338.0]]))
 
 
+class TestFuncsCPU(_TestFuncsCases, unittest.TestCase):
+    """CPU 设备下的 riemann.func 测试"""
+
+
+@unittest.skipUnless(_CUDA_AVAILABLE, "CUDA 不可用，跳过 CUDA 场景")
+class TestFuncsCUDA(_TestFuncsCases, unittest.TestCase):
+    """CUDA 设备下的 riemann.func 测试"""
+
+    device = 'cuda'
+
+
 # ---------------------------------------------------------------------------
 # 主入口（独立脚本运行）
 # ---------------------------------------------------------------------------
@@ -1515,9 +1547,14 @@ if __name__ == "__main__":
 
     print(f"{Colors.HEADER}{Colors.BOLD}===== 开始运行 riemann.func 模块测试 ====={Colors.ENDC}")
     print(f"{Colors.OKBLUE}测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}{Colors.ENDC}")
+    print(f"{Colors.OKBLUE}Riemann CUDA 可用: {_CUDA_AVAILABLE}{Colors.ENDC}")
     print()
 
-    suite = unittest.TestLoader().loadTestsFromTestCase(TestFuncs)
+    loader = unittest.TestLoader()
+    suite = unittest.TestSuite()
+    suite.addTests(loader.loadTestsFromTestCase(TestFuncsCPU))
+    if _CUDA_AVAILABLE:
+        suite.addTests(loader.loadTestsFromTestCase(TestFuncsCUDA))
     runner = unittest.TextTestRunner(verbosity=0)
     result = runner.run(suite)
 
