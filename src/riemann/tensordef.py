@@ -968,19 +968,11 @@ class TN:
                 else:
                     source_data = self._array
                 
-                # 处理non_blocking参数（数组与流都需在目标设备上创建）
-                with cp.cuda.Device(target_device.index):
-                    if non_blocking and cp is not None:
-                        # 使用异步流传输
-                        # 创建非阻塞流进行异步数据传输
-                        stream = cp.cuda.Stream(non_blocking=True)
-                        with stream:
-                            ret._array = cp.asarray(source_data, dtype=target_dtype)
-                        # 注意：异步传输后，如果需要立即使用数据，应调用 stream.synchronize()
-                        # 这里不立即同步，让调用者决定何时同步
-                    else:
-                        # 同步传输（默认）
-                        ret._array = cp.asarray(source_data, dtype=target_dtype)
+                # 拷贝统一走当前流：cupy 的拷贝都排在当前流上，与后续同流操作天然有序。
+                # 旧实现为 non_blocking 单独创建了一条流，该流与默认流之间没有同步点，
+                # 返回后立即使用数据会产生竞态。non_blocking 只有在源数据位于固定
+                # (pinned) 内存时才会真正异步，且异步拷贝同样排在当前流上，因此无需建流。
+                ret._array = _to_device_array(source_data, target_device.index, target_dtype)
             else:
                 # CUDA -> CPU
                 # 注意：non_blocking 参数主要适用于 CPU -> GPU 传输
@@ -5238,6 +5230,27 @@ def _get_device(device:str|int|Device=None)->Device:
 
     return return_device
 
+def _get_dlpack_device(data:any)->tuple[int,int]|None:
+    """
+    按 __dlpack_device__ 协议获取数据的来源设备，无法获取时返回 None。
+
+    该协议通用且不依赖任何框架库，torch/jax/cupy 等张量均实现，返回
+    (device_type, device_id)；kDLCUDA=2、kDLCPU=1、kDLROCM=3 等。
+    注意 numpy 2.x 也实现了该协议（返回 kDLCPU），调用方需按需排除。
+
+    参数:
+        data: 任意输入数据。
+
+    返回值:
+        tuple[int,int]|None: (设备类型, 设备索引)，无法获取时为None。
+    """
+    if not hasattr(data, '__dlpack_device__'):
+        return None
+    try:
+        return data.__dlpack_device__()
+    except (TypeError, AttributeError, ValueError):
+        return None  # __dlpack_device__ 签名异常或返回值非法
+
 def _get_device_for_input(device:str|int|Device|None, data:any)->Device:
     """
     为有数据来源的张量创建函数（tensor/as_tensor）解析目标设备。
@@ -5270,16 +5283,16 @@ def _get_device_for_input(device:str|int|Device|None, data:any)->Device:
     
     # 对于TN/torch/Jax等张量或cupy数组等类型的“有源数据”，
     # 通过 __dlpack_device__ 获取 device，该方法通用且不依赖任何框架库，就可以获得device
-    if hasattr(data, '__dlpack_device__'):
-        try:
-            dev_type, dev_id = data.__dlpack_device__()
-            if dev_type == 2:  # kDLCUDA
-                device = f'cuda:{dev_id}' if dev_id > 0 else 'cuda'
-            elif dev_type == 1:  # kDLCPU
-                device = 'cpu'
-            # 其他 dev_type（如 kDLROCM=3、kDLMetal=5）不识别，保持 None 走默认设备
-        except (TypeError, AttributeError, ValueError):
-            pass  # __dlpack_device__ 签名异常或返回值非法
+    dl_dev = _get_dlpack_device(data)
+    if dl_dev is not None:
+        dev_type, dev_id = dl_dev
+        if dev_type == 2:  # kDLCUDA
+            # 必须写全索引：'cuda' 会被 Device 解析成 current_device()，
+            # 当当前设备不是0时会把源设备误判成当前设备（多卡下数据被隐式迁移）
+            device = f'cuda:{dev_id}'
+        elif dev_type == 1:  # kDLCPU
+            device = 'cpu'
+        # 其他 dev_type（如 kDLROCM=3、kDLMetal=5）不识别，保持 None 走默认设备
     
     # 其他情况，device is None，_get_device(None)返回当前默认设备
     return _get_device(device)
@@ -5335,6 +5348,23 @@ def _numpy_for_cuda(data, dtype):
     return arr
 
 
+def _to_device_array(data, target_index:int, dtype=None, copy:bool=False):
+    """
+    把数据搬到 target_index 指定的 GPU，并保证结果确实落在该设备上。
+
+    cp.array/cp.asarray 的跨设备拷贝依赖 CuPy 的实现细节（copy=False 且 dtype
+    相同时是否感知设备并不由文档严格保证），一旦某版本直接返回源数组，结果就会
+    静默停留在原设备。这里显式校验结果所在设备，不一致时用主机中转兜底。
+    copy=True 强制新建数组（tensor 语义），copy=False 允许同设备共享内存。
+    """
+    with cp.cuda.Device(target_index):
+        result = cp.array(data, dtype=dtype) if copy else cp.asarray(data, dtype=dtype)
+        if result.device.id != target_index:
+            # CuPy 未执行跨设备拷贝：经主机中转，确保结果位于目标设备
+            result = cp.array(cp.asnumpy(data), dtype=dtype)
+    return result
+
+
 def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, requires_grad:bool|None = False)->TN:
     """
     创建一个新的张量对象，与输入数据永不共享内存。
@@ -5388,16 +5418,20 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
         except TypeError:
             dtype = None  # infer 也无法识别时兜底，交给 np.array/cp.array 处理
 
+    # torch 等框架的张量在 requires_grad=True 时不提供 __cuda_array_interface__/__array__，
+    # 先 detach 再走协议转换；TN 自身的协议接口不区分 requires_grad，保持原样
+    if not isinstance(data, TN) and getattr(data, 'requires_grad', False) and hasattr(data, 'detach'):
+        data = data.detach()
+
     if target_device.type == 'cuda':
         # GPU 目标设备：GPU 来源（cupy 数组 / CAI 张量）用 cp.asarray，同设备零拷贝共享、
         # 跨设备迁移；CPU 来源先在本地物化为 dtype 对齐的 numpy 数组再上推（必然新建
         # GPU 内存），这样 cupy 只走 ndarray 分支，避开旧版 cupy 的 numpy 回退路径
         # 以 copy=False 调 numpy（numpy 2.x 下抛 ValueError）
-        with cp.cuda.Device(target_device.index):
-            if isinstance(data, cp.ndarray) or hasattr(data, '__cuda_array_interface__'):
-                arr = cp.array(data, dtype=dtype)
-            else:
-                arr = cp.array(_numpy_for_cuda(data, dtype), copy=False)
+        if isinstance(data, cp.ndarray) or hasattr(data, '__cuda_array_interface__'):
+            arr = _to_device_array(data, target_device.index, dtype, copy=True)
+        else:
+            arr = _to_device_array(_numpy_for_cuda(data, dtype), target_device.index, dtype, copy=False)
     else:
         # CPU 目标设备
         if cp is not None and isinstance(data, cp.ndarray):
@@ -5405,6 +5439,11 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
             # asnumpy 已产生全新 CPU 数组，asarray 不再拷贝
             arr = np.asarray(cp.asnumpy(data), dtype=dtype)
         elif hasattr(data, '__array__') and not isinstance(data, np.ndarray):
+            # 跨框架的 GPU 张量（如 torch cuda）不能直接转 numpy，先搬回主机内存；
+            # 来源设备用 __dlpack_device__ 判断（与 _get_device_for_input 同一协议）
+            dl_dev = _get_dlpack_device(data)
+            if dl_dev is not None and dl_dev[0] == 2 and hasattr(data, 'cpu'):  # kDLCUDA
+                data = data.cpu()
             # TN/torch/jax 等协议对象：np.array 会探测 __array__(dtype, copy) 的 copy 形参，
             # torch 等旧式实现只接受 dtype，numpy 2.x 下会告警，故改用 asarray + astype
             arr = np.asarray(data)
@@ -5491,16 +5530,20 @@ def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = Non
         except TypeError:
             dtype = None  # infer 也无法识别时兜底，交给 np.asarray/cp.asarray 处理
 
+    # torch 等框架的张量在 requires_grad=True 时不提供 __cuda_array_interface__/__array__，
+    # 先 detach 再走协议转换；TN 自身的协议接口不区分 requires_grad，保持原样
+    if not isinstance(data, TN) and getattr(data, 'requires_grad', False) and hasattr(data, 'detach'):
+        data = data.detach()
+
     if target_device.type == 'cuda':
         # GPU 目标设备：GPU 来源（cupy 数组 / CAI 张量）用 cp.asarray，同设备零拷贝共享、
         # 跨设备迁移；CPU 来源先在本地物化为 dtype 对齐的 numpy 数组再上推（必然新建
         # GPU 内存），这样 cupy 只走 ndarray 分支，避开旧版 cupy 的 numpy 回退路径
         # 以 copy=False 调 numpy（numpy 2.x 下抛 ValueError）
-        with cp.cuda.Device(target_device.index):
-            if isinstance(data, cp.ndarray) or hasattr(data, '__cuda_array_interface__'):
-                arr = cp.asarray(data, dtype=dtype)
-            else:
-                arr = cp.asarray(_numpy_for_cuda(data, dtype))
+        if isinstance(data, cp.ndarray) or hasattr(data, '__cuda_array_interface__'):
+            arr = _to_device_array(data, target_device.index, dtype, copy=False)
+        else:
+            arr = _to_device_array(_numpy_for_cuda(data, dtype), target_device.index, dtype, copy=False)
     else:
         # CPU 目标设备
         # 裸 cp.ndarray 没有返回 CPU numpy 数组的 __array__，需显式拉回；
@@ -5509,6 +5552,11 @@ def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = Non
         if cp is not None and isinstance(data, cp.ndarray):
             arr = np.asarray(cp.asnumpy(data), dtype=dtype)
         else:
+            # 跨框架的 GPU 张量（如 torch cuda）不能直接转 numpy，先搬回主机内存；
+            # 来源设备用 __dlpack_device__ 判断（与 _get_device_for_input 同一协议）
+            dl_dev = _get_dlpack_device(data)
+            if dl_dev is not None and dl_dev[0] == 2 and hasattr(data, 'cpu'):  # kDLCUDA
+                data = data.cpu()
             arr = np.asarray(data, dtype=dtype)
 
     tsobj = TN()

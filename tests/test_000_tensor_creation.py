@@ -1206,6 +1206,27 @@ class TestTensorCreationFunctions(unittest.TestCase):
                 self.assertEqual(c.dtype, rm.float32)
             self._run_subcase(doc, "torch张量输入-独立拷贝并沿用源设备", _torch_copy)
 
+        if TORCH_AVAILABLE and CUDA_AVAILABLE:
+            # 8. torch CUDA张量（requires_grad=True）：先detach再经CAI协议独立拷贝
+            def _torch_cuda_grad():
+                t = torch.tensor([2.0, 3.0], dtype=torch.float32, device='cuda', requires_grad=True)
+                b = rm.tensor(t)
+                self.assertEqual(b.device.type, 'cuda', "requires_grad的torch CUDA张量应沿用源设备")
+                self.assertEqual(b.device.index, 0)
+                self.assertEqual(b.dtype, rm.float32, "应保留源dtype")
+                self.assertNotEqual(b.array().data.ptr, t.data_ptr(), "tensor(torch CUDA张量)不应共享内存")
+                t.data[0] = 99.0
+                self.assertTrue(np.allclose(b.to('cpu').numpy(), [2.0, 3.0]), "tensor(torch CUDA张量)应为独立拷贝")
+            self._run_subcase(doc, "torch CUDA张量(requires_grad)-独立拷贝并沿用源设备", _torch_cuda_grad)
+
+            # 9. torch CUDA张量 → 显式device='cpu'：需先搬回主机才能转numpy
+            def _torch_cuda_to_cpu():
+                t = torch.tensor([2.0, 3.0], dtype=torch.float32, device='cuda')
+                b = rm.tensor(t, device='cpu')
+                self.assertEqual(b.device.type, 'cpu', "显式device='cpu'应覆盖CUDA源设备")
+                self.assertTrue(np.allclose(b.numpy(), [2.0, 3.0]), "torch CUDA张量应可迁移到CPU")
+            self._run_subcase(doc, "torch CUDA张量-显式device迁移到CPU", _torch_cuda_to_cpu)
+
     def test_as_tensor(self):
         """测试as_tensor函数"""
         # 构建测试用例列表
@@ -1432,6 +1453,27 @@ class TestTensorCreationFunctions(unittest.TestCase):
                 self.assertEqual(b.dtype, rm.float64, "as_tensor指定dtype应生效")
                 self.assertFalse(np.shares_memory(b.numpy(), t.numpy()), "dtype不同时as_tensor(torch张量)不应共享内存")
             self._run_subcase(doc, "torch张量输入-dtype不同则不共享内存", _torch_dtype_change)
+
+        if TORCH_AVAILABLE and CUDA_AVAILABLE:
+            # 8. torch CUDA张量（requires_grad=True）：detach后经CAI协议同设备同dtype共享内存
+            def _torch_cuda_shared():
+                t = torch.tensor([1.0, 2.0], dtype=torch.float32, device='cuda', requires_grad=True)
+                b = rm.as_tensor(t)
+                self.assertEqual(b.device.type, 'cuda', "requires_grad的torch CUDA张量应沿用源设备")
+                self.assertEqual(b.device.index, 0)
+                self.assertEqual(b.dtype, rm.float32, "应保留源dtype")
+                self.assertEqual(b.array().data.ptr, t.data_ptr(), "同设备同dtype时应与torch共享内存")
+                t.data[0] = 42.0
+                self.assertEqual(float(b.to('cpu').numpy()[0]), 42.0, "as_tensor应与torch CUDA张量共享内存")
+            self._run_subcase(doc, "torch CUDA张量(requires_grad)-同设备同dtype共享内存", _torch_cuda_shared)
+
+            # 9. torch CUDA张量 → 显式device='cpu'：需先搬回主机才能转numpy
+            def _torch_cuda_to_cpu():
+                t = torch.tensor([5.0], dtype=torch.float32, device='cuda')
+                b = rm.as_tensor(t, device='cpu')
+                self.assertEqual(b.device.type, 'cpu', "显式device='cpu'应覆盖CUDA源设备")
+                self.assertTrue(np.allclose(b.numpy(), [5.0]), "torch CUDA张量应可迁移到CPU")
+            self._run_subcase(doc, "torch CUDA张量-显式device迁移到CPU", _torch_cuda_to_cpu)
 
 # 如果作为独立脚本运行
 if __name__ == '__main__':

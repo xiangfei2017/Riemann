@@ -132,6 +132,12 @@ class Device:
     def __ne__(self, other):
         return not self.__eq__(other)
 
+    def __hash__(self):
+        # 哈希只基于规范化后的 (type, index)，相同设备的哈希值一致，可作为 dict 键/集合元素。
+        # 注意：__eq__ 允许与 str/int 比较，但这里无法为这些临时转换出来的等价对象
+        # 提供一致的哈希（如 'cuda' 的解析结果依赖当前设备），故哈希仅保证 Device 之间一致。
+        return hash((self.type, self.index))
+
     def __str__(self):
         if self.type == 'cuda':
             return f'cuda:{self.index}'
