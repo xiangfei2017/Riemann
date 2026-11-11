@@ -1127,18 +1127,24 @@ class TN:
     
     def __setitem__(self, index, val):
         """
-        实现原地赋值操作（如 a[index] = val, a[index] += val 等）
-        
-        处理流程：
-        1. 检查叶子节点保护（原地操作不能直接在叶子节点上执行）
-        2. 快速路径：非张量值或来自其他张量的视图，直接赋值
-        3. 复杂场景：处理来自 self 的索引视图的原地操作
-        
-        原地操作执行流程示例（a[index] += b）：
-        1. a.__getitem__(index) 创建临时张量 temp
-        2. temp.__iadd__(b) 执行原地操作，记录到 temp 的计算图
-        3. a.__setitem__(index, temp) 被触发，需要处理 temp 的计算图
-        
+        原地赋值入口，负责 a[index] = val 以及 Python 展开后的 a[index] op= val。
+
+        `a[index] op= val` 在 Python 中会拆成三步：
+        1. temp = a.__getitem__(index)：基本切片得到视图，整数/花式索引得到副本；
+        2. temp op= val：原地操作只作用于 temp；若 temp 是视图，_inplace_oper_at_
+           会合并索引后重定向到 a 上直接执行，此时 a 的数据已被改写；
+        3. a.__setitem__(index, temp)：把结果落回 a，即本函数。
+
+        按 temp 的形态分四种处理：
+        - 右值不是张量：直接 setat_；
+        - 张量但 _base 不是 self：直接 setat_，不涉及原地操作语义；
+        - 视图且索引一致（场景 A）：第 2 步已改写 a，直接返回 self；
+        - 副本（场景 B）：第 2 步只改了副本，需要把副本上的原地操作重放到 a。
+
+        重放依赖两个前提：副本取自同一索引、且所有原地操作都作用于整个副本；
+        否则退化为按数据赋值（_assign_without_cycle）。这样数据始终正确，代价是
+        不可重放的场景中“副本 → self”这条梯度路径会被切断。
+
         参数:
             index: 索引，可以是切片、整数、数组等
             val: 右值，可能是张量或标量
@@ -1179,57 +1185,86 @@ class TN:
             if _indexes_are_equal(val._view_index, index_val):
                 # 索引匹配，原地操作已在 self 上执行，直接返回
                 return self
-        else:
-            # 场景 B：非视图对象
-            # 需要遍历 val 的计算图，找到最近的原地操作并应用到 self
-            # 
-            # val 的计算图结构示例（执行 a[[0,4]] += 10 后）：
-            # gradfuncs: (_addat_inplace_backward, _getitem_backward)
-            # parms:     ((target_copy, ()), array([0, 4]))
-            # fromvars:  (right_val, a)
-            #
-            # 注意：parms 中混合了两种格式：
-            # - 原地操作：元组 (target_copy, index_val)，index_val 为 () 表示全量操作
-            # - 非原地操作：单个 index_val（如 array([0, 4])）
-            gradfuncs = val.gradfuncs
-            parms = val.parms
-            fromvars = val.fromvars
-            
-            # 倒序遍历，优先处理最近的操作（原地操作在计算图前面插入）
-            for i in range(len(gradfuncs) - 1, -1, -1):
-                parm = parms[i]
-                
-                # 区分原地操作和非原地操作的 parms 格式
-                if isinstance(parm, tuple) and len(parm) >= 2:
-                    # 原地操作格式：(target_copy, stored_index, ...)
-                    # stored_index 为 () 表示对整个张量执行原地操作
-                    stored_index = parm[1]
-                else:
-                    # 非原地操作（如 __getitem__）：parms[i] 就是 index_val
-                    # 这种操作不需要在 __setitem__ 中处理，跳过
-                    stored_index = parm
-                
-                # 检查是否是全量原地操作（stored_index 为空元组）
-                # 使用 isinstance + len 而不是 ==，避免与 numpy 数组比较时出错
-                is_empty_tuple = isinstance(stored_index, tuple) and len(stored_index) == 0
-                if not is_empty_tuple:
-                    continue
-                
-                # 找到匹配的原地操作，应用到 self 上
-                # 使用 index_val 作为操作索引（即 __setitem__ 接收到的索引）
-                funcname = gradfuncs[i].__name__
-                if funcname == '_addat_inplace_backward':
-                    return self.addat_(index_val, fromvars[i])
-                elif funcname == '_subat_inplace_backward':
-                    return self.subat_(index_val, fromvars[i])
-                elif funcname == '_mulat_inplace_backward':
-                    return self.mulat_(index_val, fromvars[i])
-                elif funcname == '_divat_inplace_backward':
-                    return self.divat_(index_val, fromvars[i])
-                elif funcname == '_powat_inplace_backward':
-                    return self.powat_(index_val, fromvars[i])
+            return self._assign_without_cycle(index, val)
 
-        # 默认情况：执行普通赋值
+        # 场景 B：非视图对象（如整数数组索引 a[[0,4]] += 1）
+        # 副本记录着它相对 self 做过的原地操作，按时间顺序全部重放即可完整还原数据，
+        # 且不会在计算图中引入环路。重放的成立条件是：副本取自同一索引，且所有
+        # 原地操作都作用于整个副本（见 _collect_replay_ops）。
+        replay_ops = self._collect_replay_ops(val, index_val)
+        if replay_ops:
+            # 记录按“最新在前”存放，重放必须按“最早在前”的顺序执行
+            for op_name, right_val in reversed(replay_ops):
+                getattr(self, op_name)(index_val, right_val)
+            return self
+
+        # 无法安全重放：按数据赋值。若副本的计算图依赖 self，需先断开环路，
+        # 否则 self 与副本互相引用，反向传播无法收敛（梯度会整体丢失）。
+        return self._assign_without_cycle(index, val)
+
+    def _collect_replay_ops(self, val, index_val):
+        """收集 val 上记录的原地操作，供 __setitem__ 按时间顺序重放到 self。
+
+        场景：a[[0,4]] += 1 时 __getitem__ 返回副本 val，原地操作只改了 val，
+        因此 self 需要“重演”这些操作才能得到相同数据。重演等价于直接在 self 上
+        执行 a[idx] op= 右值，既不改动副本、也不会产生 self 与 val 的循环依赖。
+
+        两个前提缺一不可，否则重演结果与 val 的实际数据不一致：
+        1. val 必须取自同一索引（val._view_index == index_val）；
+        2. 每条原地操作都必须作用于整个副本（stored_index 为 ()）。
+           若副本上做过局部原地操作（如 t[0] += 1），重演需要再合并一层索引，
+           这里不做该推导，直接放弃重演。
+
+        原地操作记录连续插入在计算图首部且“最新在前”，遇到第一条非原地记录即停止；
+        返回的列表同样保持“最新在前”，调用方需 reversed 后按时间顺序执行。
+
+        参数:
+            val: __getitem__ 返回的副本张量。
+            index_val: 本次赋值使用的索引（已规范化为 numpy 索引）。
+
+        返回值:
+            list: [(method_name, right_val), ...]，无可用重放时为空列表
+        """
+        if not _indexes_are_equal(getattr(val, '_view_index', None), index_val):
+            return []
+
+        ops = []
+        for i, func in enumerate(val.gradfuncs):
+            op_name = _INPLACE_AT_METHODS.get(getattr(func, '__name__', ''))
+            if op_name is None:
+                # 原地操作记录连续插入在计算图首部，遇到非原地操作即可停止
+                break
+            parm = val.parms[i]
+            # 原地操作的 parms 为 (target_copy, stored_index)，stored_index 为 ()
+            # 表示该操作作用于整个副本；否则说明副本上还做过局部原地操作
+            if not (isinstance(parm, tuple) and len(parm) >= 2
+                    and isinstance(parm[1], tuple) and len(parm[1]) == 0):
+                return []
+            ops.append((op_name, val.fromvars[i]))
+        return ops
+
+    def _assign_without_cycle(self, index, val):
+        """按数据把 val 写入 self，必要时断开 val 对 self 的计算图依赖。
+
+        用于无法重放的场景，例如：
+        - t = a[[0,4]]; t += 1; a[1:3] = t（索引不一致）；
+        - a[[0,4]] = a[[4,0]]（副本直接回写，没有原地操作记录）。
+
+        直接 setat_ 会让 self.fromvars 包含 val、而 val 的图又包含 self，形成环路。
+        反向传播按“消费者梯度到齐才调度”的方式推进，环内节点互相等待，导致整条
+        链路的梯度都算不出来（不是算错，而是全丢）。因此检测到依赖时先 detach：
+        数据写入仍然正确，只是“副本 → self”这条回传路径被截断。
+
+        注意：detach 只影响该副本回传到 self 的梯度，self 的其他来源（如 x → a）
+        不受影响。这也是本实现与 torch 的已知差异，torch 通过不可变的图节点
+        天然避免该环。
+
+        参数:
+            index: 写入索引
+            val: 要写入的右值张量
+        """
+        if isinstance(val, TN) and val.requires_grad and _graph_contains(val, self):
+            val = val.detach()
         return self.setat_(index, val)
         
     def merge_indices(self, base_index, current_index):
@@ -1274,7 +1309,25 @@ class TN:
 
         return right_val
 
-    def _inplace_oper_at_(self, index, val, oper_func, backward_func):
+    def _inplace_oper_at_(self, index, val, oper_func, backward_func, vector_func=None):
+        """在指定索引位置对 self 执行原地运算，并记录反向传播所需的依赖。
+
+        参数:
+            index: 目标索引；空元组 () 表示整个张量
+            val: 右值，标量或张量
+            oper_func: 通用执行函数，签名 (数组, 索引, 右值数组)；
+                       必须是 ufunc.at 一类支持重复索引累加的实现
+            backward_func: 该操作对应的梯度回调，写入 self.gradfuncs
+            vector_func: 可选的全量索引加速函数，签名 (数组, 右值数组)；
+                         仅当 index 为 () 时使用，为 None 时全部走 oper_func
+
+        视图重定向：若 self 是视图，先合并视图索引与 index，再在 self._base 上执行，
+        保证写入落到真实存储；返回值仍是视图对象本身，调用方无需区分。
+
+        计算图记录顺序“最新在前”：每次原地操作把右值、索引（含左值副本）、梯度回调
+        分别插入 fromvars/parms/gradfuncs 的首部，反向传播按逆序处理，从而实现
+        “后做的原地操作先处理梯度”。
+        """
         # 将索引规范化为numpy索引
         index_val = _convert_TNindex_to_numpy(index)
         
@@ -1287,7 +1340,7 @@ class TN:
             combined_index = self.merge_indices(base_index, index_val)
             
             # self是视图时，直接在原张量self._base上执行操作
-            self._base._inplace_oper_at_(combined_index, val, oper_func, backward_func)
+            self._base._inplace_oper_at_(combined_index, val, oper_func, backward_func, vector_func)
             
             # 返回视图对象本身
             return self
@@ -1296,32 +1349,47 @@ class TN:
         target_data = self._array[index_val]
         right_val= self._adjust_right_val(target_data,val)
 
+        # 是否记录计算图：no_grad 下既不记录依赖，也不改动 requires_grad，
+        # 与 torch 保持一致（梯度开关不应永久改变张量的属性）
+        need_grad = is_grad_enabled() and (self.requires_grad or right_val.requires_grad)
+
         # target 的来源有两种：
         # 1、基本切片返回视图，与self共享内存
         # 2、整数/花式索引返回副本或numpy标量，本就不共享，但形状/维度信息仍需保留
         # 对于共享内存的视图，必须在改动self前备份一份独立且无依赖的副本：
-        # 因为向右值传播梯度时需要用到左值，而原地操作后self对应位置的数据已被覆盖，左值已消失
-        if target_data.base is not None:
-            target_data = target_data.copy()  # 复制共享内存的视图，确保独立性
-        target_copy = _wrap_tensor_from_numpy(target_data)
-        oper_func(self._array, index_val, right_val._array)  # 执行原地操作
+        # 因为反向传播要用到左值，而原地操作后 self 对应位置的数据已被覆盖
+        # 只有 mul/div/pow 的反向需要左值（_LEFT_VALUE_BACKWARD_NAMES），
+        # add/sub/set 的反向只用索引，可省去这次整块内存拷贝
+        if need_grad and getattr(backward_func, '__name__', '') in _LEFT_VALUE_BACKWARD_NAMES:
+            if target_data.base is not None:
+                target_data = target_data.copy()  # 复制共享内存的视图，确保独立性
+            target_copy = _wrap_tensor_from_numpy(target_data)
+        else:
+            target_copy = None
 
-        self.requires_grad = (is_grad_enabled() and (self.requires_grad or right_val.requires_grad))
+        # 空元组索引表示对整个张量操作，不存在重复索引，可直接用向量化版本，
+        # 避免 ufunc.at 的逐元素慢路径；其余索引保持 ufunc.at 的累加语义
+        if vector_func is not None and isinstance(index_val, tuple) and len(index_val) == 0:
+            vector_func(self._array, right_val._array)
+        else:
+            oper_func(self._array, index_val, right_val._array)  # 执行原地操作
         
-        if self.requires_grad:
+        if need_grad:
             # 原地赋值时，须在self的现有计算图上增加依赖关系，注意:
             # 1、只能记录右值的依赖关系，不能记录self，避免依赖循环
             # 2、右值的梯度回调函数里同时传递右值梯度和更新self的梯度，所以右值requires_grad=False时，
             #    需要复制一个右值的副本用于跟踪梯度，将副本的requires_grad置True，以便backward里副本的梯度跟踪函数被调用
             # 3、原地赋值依赖关系需要优先处理，须插入到fromvars元组前面
             # 4、多次原地赋值时，遵循先赋值的右值后处理梯度跟踪原则，要从0位置插入右值、索引、梯度回调函数
-            # 5、如果右值已经依赖于self，需要特殊处理以避免循环依赖
+            # 5、若右值依赖 self（如 t = a[[0,4]]; a[1:3] = t），这里会形成环；
+            #    该情况由 __setitem__ 的 _assign_without_cycle 提前拦截，不会走到这里
             if right_val.requires_grad == False:
                 # 需要一个用于传播梯度的右值变量，但又不要改动右值的属性，detach一个新变量是一个经济、可行的办法
                 right_val = right_val.detach().requires_grad_(True)
-            
+
+            self.requires_grad = True
             self.fromvars = (right_val,) + self.fromvars
-            # 注意(target_copy,index_val)必须以元组的形似整体插入到parms元组前面
+            # 注意(target_copy,index_val)必须以元组的形式整体插入到parms元组前面
             self.parms = ((target_copy,index_val),) + self.parms
             self.gradfuncs = (backward_func, ) + self.gradfuncs
 
@@ -1348,12 +1416,19 @@ class TN:
 
         return ret
 
+    # 原地/非原地成对接口：xxxat_ 直接在 self 上执行并记录依赖、返回 self；
+    # xxxat 在副本上执行、返回新张量，self 不变。
+    # 每对接口都提供两种执行函数，由 _inplace_oper_at_ 按索引选择：
+    # - oper_func：通用路径，基于 ufunc.at，保证花式索引“重复索引累加”的语义；
+    # - vector_func：仅用于 index 为 () 的全量操作，走向量化原地运算符
+    #   （见文件末尾 _iadd_full 等），避免 ufunc.at 的逐元素慢路径。
     def setat_(self, index, val):
+        """原地执行 self[index] = val（覆盖写），返回 self。"""
         def _set_numpy_item(numpy_arr, index, right_numpy_arr):
             numpy_arr[index] = right_numpy_arr
             return numpy_arr
         
-        return self._inplace_oper_at_(index, val, _set_numpy_item, _setat_inplace_backward)
+        return self._inplace_oper_at_(index, val, _set_numpy_item, _setat_inplace_backward, _iset_full)
 
     def setat(self, index, val):
         def _set_numpy_item(numpy_arr, index, right_numpy_arr):
@@ -1363,14 +1438,19 @@ class TN:
         return self._non_inplace_oper_at(index, val, _set_numpy_item, _setat_backward_left, _setat_backward_right)
 
     def addat_(self,index,val):
+        """原地执行 self[index] += val（重复索引累加），返回 self。"""
         arrlib = self._get_array_lib()
-        return self._inplace_oper_at_(index, val, arrlib.add.at, _addat_inplace_backward)
+        return self._inplace_oper_at_(index, val, arrlib.add.at, _addat_inplace_backward, _iadd_full)
 
     def addat(self,index,val):
         arrlib = self._get_array_lib()
         return self._non_inplace_oper_at(index, val, arrlib.add.at, _addat_backward_left, _addat_backward_right)
 
     def subat_(self,index,val):
+        """原地执行 self[index] -= val（重复索引累加），返回 self。
+
+        cupy 的 subtract.at 支持不完整，故 cupy 分支改用切片原地运算。
+        """
         arrlib = self._get_array_lib()
         if arrlib == cp:
             def _subat_numpy_item(numpy_arr, index, right_numpy_arr):
@@ -1379,7 +1459,7 @@ class TN:
             oper_func = _subat_numpy_item
         else:
             oper_func = np.subtract.at
-        return self._inplace_oper_at_(index, val, oper_func, _subat_inplace_backward)
+        return self._inplace_oper_at_(index, val, oper_func, _subat_inplace_backward, _isub_full)
 
     def subat(self,index,val):
         arrlib = self._get_array_lib()
@@ -1393,6 +1473,10 @@ class TN:
         return self._non_inplace_oper_at(index, val, oper_func, _subat_backward_left, _subat_backward_right)
     
     def mulat_(self,index,val):
+        """原地执行 self[index] *= val（重复索引累加），返回 self。
+
+        反向传播需要操作前的左值，target_copy 会在这里被备份。
+        """
         arrlib = self._get_array_lib()
         if arrlib == cp:
             def _mulat_numpy_item(numpy_arr, index, right_numpy_arr):
@@ -1402,7 +1486,7 @@ class TN:
         else:
             oper_func = np.multiply.at
             
-        return self._inplace_oper_at_(index, val, oper_func, _mulat_inplace_backward)
+        return self._inplace_oper_at_(index, val, oper_func, _mulat_inplace_backward, _imul_full)
 
     def mulat(self,index,val):
         arrlib = self._get_array_lib()
@@ -1417,6 +1501,10 @@ class TN:
         return self._non_inplace_oper_at(index, val, oper_func, _mulat_backward_left, _mulat_backward_right)
 
     def divat_(self,index,val):
+        """原地执行 self[index] /= val（重复索引累加），返回 self。
+
+        反向传播需要操作前的左值，target_copy 会在这里被备份。
+        """
         arrlib = self._get_array_lib()
         if arrlib == cp:
             def _divat_numpy_item(numpy_arr, index, right_numpy_arr):
@@ -1425,7 +1513,7 @@ class TN:
             oper_func = _divat_numpy_item
         else:
             oper_func = np.divide.at
-        return self._inplace_oper_at_(index, val, oper_func, _divat_inplace_backward)
+        return self._inplace_oper_at_(index, val, oper_func, _divat_inplace_backward, _idiv_full)
 
     def divat(self,index,val):
         arrlib = self._get_array_lib()
@@ -1439,6 +1527,10 @@ class TN:
         return self._non_inplace_oper_at(index, val, oper_func, _divat_backward_left, _divat_backward_right)
 
     def powat_(self,index,val):
+        """原地执行 self[index] **= val（重复索引累加），返回 self。
+
+        反向传播需要操作前的左值，target_copy 会在这里被备份。
+        """
         arrlib = self._get_array_lib()
         if arrlib == cp:
             def _powat_numpy_item(numpy_arr, index, right_numpy_arr):
@@ -1447,7 +1539,7 @@ class TN:
             oper_func = _powat_numpy_item
         else:
             oper_func = np.power.at
-        return self._inplace_oper_at_(index, val, oper_func, _powat_inplace_backward)
+        return self._inplace_oper_at_(index, val, oper_func, _powat_inplace_backward, _ipow_full)
 
     def powat(self,index,val):
         arrlib = self._get_array_lib()
@@ -5230,27 +5322,6 @@ def _get_device(device:str|int|Device=None)->Device:
 
     return return_device
 
-def _get_dlpack_device(data:any)->tuple[int,int]|None:
-    """
-    按 __dlpack_device__ 协议获取数据的来源设备，无法获取时返回 None。
-
-    该协议通用且不依赖任何框架库，torch/jax/cupy 等张量均实现，返回
-    (device_type, device_id)；kDLCUDA=2、kDLCPU=1、kDLROCM=3 等。
-    注意 numpy 2.x 也实现了该协议（返回 kDLCPU），调用方需按需排除。
-
-    参数:
-        data: 任意输入数据。
-
-    返回值:
-        tuple[int,int]|None: (设备类型, 设备索引)，无法获取时为None。
-    """
-    if not hasattr(data, '__dlpack_device__'):
-        return None
-    try:
-        return data.__dlpack_device__()
-    except (TypeError, AttributeError, ValueError):
-        return None  # __dlpack_device__ 签名异常或返回值非法
-
 def _get_device_for_input(device:str|int|Device|None, data:any)->Device:
     """
     为有数据来源的张量创建函数（tensor/as_tensor）解析目标设备。
@@ -5283,13 +5354,19 @@ def _get_device_for_input(device:str|int|Device|None, data:any)->Device:
     
     # 对于TN/torch/Jax等张量或cupy数组等类型的“有源数据”，
     # 通过 __dlpack_device__ 获取 device，该方法通用且不依赖任何框架库，就可以获得device
-    dl_dev = _get_dlpack_device(data)
-    if dl_dev is not None:
-        dev_type, dev_id = dl_dev
+    # 返回值形如 (device_type, device_id)，kDLCUDA=2、kDLCPU=1、kDLROCM=3 等
+    dlpack_device = getattr(data, '__dlpack_device__', None)
+    if dlpack_device is not None:
+        try:
+            dev_type, dev_id = dlpack_device()
+        except (TypeError, AttributeError, ValueError):
+            # 协议签名异常或返回值非法，按无源数据处理
+            dev_type, dev_id = None, None
         if dev_type == 2:  # kDLCUDA
-            # 必须写全索引：'cuda' 会被 Device 解析成 current_device()，
-            # 当当前设备不是0时会把源设备误判成当前设备（多卡下数据被隐式迁移）
-            device = f'cuda:{dev_id}'
+            # 直接给整数索引：_get_device 会解析为 Device('cuda', dev_id)，既保留显式
+            # 设备索引（不能写 'cuda'，那会被解析成 current_device()，多卡下误判源设备），
+            # 又省去 f-string 拼接
+            device = dev_id
         elif dev_type == 1:  # kDLCPU
             device = 'cpu'
         # 其他 dev_type（如 kDLROCM=3、kDLMetal=5）不识别，保持 None 走默认设备
@@ -5418,11 +5495,6 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
         except TypeError:
             dtype = None  # infer 也无法识别时兜底，交给 np.array/cp.array 处理
 
-    # torch 等框架的张量在 requires_grad=True 时不提供 __cuda_array_interface__/__array__，
-    # 先 detach 再走协议转换；TN 自身的协议接口不区分 requires_grad，保持原样
-    if not isinstance(data, TN) and getattr(data, 'requires_grad', False) and hasattr(data, 'detach'):
-        data = data.detach()
-
     if target_device.type == 'cuda':
         # GPU 目标设备：GPU 来源（cupy 数组 / CAI 张量）用 cp.asarray，同设备零拷贝共享、
         # 跨设备迁移；CPU 来源先在本地物化为 dtype 对齐的 numpy 数组再上推（必然新建
@@ -5439,11 +5511,6 @@ def tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = None, 
             # asnumpy 已产生全新 CPU 数组，asarray 不再拷贝
             arr = np.asarray(cp.asnumpy(data), dtype=dtype)
         elif hasattr(data, '__array__') and not isinstance(data, np.ndarray):
-            # 跨框架的 GPU 张量（如 torch cuda）不能直接转 numpy，先搬回主机内存；
-            # 来源设备用 __dlpack_device__ 判断（与 _get_device_for_input 同一协议）
-            dl_dev = _get_dlpack_device(data)
-            if dl_dev is not None and dl_dev[0] == 2 and hasattr(data, 'cpu'):  # kDLCUDA
-                data = data.cpu()
             # TN/torch/jax 等协议对象：np.array 会探测 __array__(dtype, copy) 的 copy 形参，
             # torch 等旧式实现只接受 dtype，numpy 2.x 下会告警，故改用 asarray + astype
             arr = np.asarray(data)
@@ -5530,11 +5597,6 @@ def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = Non
         except TypeError:
             dtype = None  # infer 也无法识别时兜底，交给 np.asarray/cp.asarray 处理
 
-    # torch 等框架的张量在 requires_grad=True 时不提供 __cuda_array_interface__/__array__，
-    # 先 detach 再走协议转换；TN 自身的协议接口不区分 requires_grad，保持原样
-    if not isinstance(data, TN) and getattr(data, 'requires_grad', False) and hasattr(data, 'detach'):
-        data = data.detach()
-
     if target_device.type == 'cuda':
         # GPU 目标设备：GPU 来源（cupy 数组 / CAI 张量）用 cp.asarray，同设备零拷贝共享、
         # 跨设备迁移；CPU 来源先在本地物化为 dtype 对齐的 numpy 数组再上推（必然新建
@@ -5552,11 +5614,6 @@ def as_tensor(data, dtype:np.dtype|None = None, device:str|int|Device|None = Non
         if cp is not None and isinstance(data, cp.ndarray):
             arr = np.asarray(cp.asnumpy(data), dtype=dtype)
         else:
-            # 跨框架的 GPU 张量（如 torch cuda）不能直接转 numpy，先搬回主机内存；
-            # 来源设备用 __dlpack_device__ 判断（与 _get_device_for_input 同一协议）
-            dl_dev = _get_dlpack_device(data)
-            if dl_dev is not None and dl_dev[0] == 2 and hasattr(data, 'cpu'):  # kDLCUDA
-                data = data.cpu()
             arr = np.asarray(data, dtype=dtype)
 
     tsobj = TN()
@@ -6995,8 +7052,98 @@ def _is_boolean_index(idx):
         return False
 
 
+# 全量索引（index 为 ()）时使用的向量化原地操作。
+# 与 ufunc.at 的分工：
+# - oper_func（ufunc.at）面向任意索引，必须保证重复索引“累加”的语义，
+#   但在全量索引下会退化成逐元素循环（实测慢两个数量级）；
+# - 全量索引不存在重复元素，可直接使用原地运算符，语义与 ufunc.at 等价。
+# 传入的右值已由 _adjust_right_val 转成 self 的 dtype 并完成形状对齐，
+# 因此这里不会引入额外的类型转换差异，cupy 数组同样适用。
+def _iadd_full(numpy_arr, right):
+    numpy_arr += right
+    return numpy_arr
+
+
+def _isub_full(numpy_arr, right):
+    numpy_arr -= right
+    return numpy_arr
+
+
+def _imul_full(numpy_arr, right):
+    numpy_arr *= right
+    return numpy_arr
+
+
+def _idiv_full(numpy_arr, right):
+    numpy_arr /= right
+    return numpy_arr
+
+
+def _ipow_full(numpy_arr, right):
+    numpy_arr **= right
+    return numpy_arr
+
+
+def _iset_full(numpy_arr, right):
+    numpy_arr[...] = right
+    return numpy_arr
+
+
+# 反向传播需要“左值”的原地操作回调。
+# mul/div/pow 的反向要用操作前的左值，因此必须在覆盖数据之前备份 target_copy；
+# add/sub/set 的反向只用索引和梯度，不需要备份，可省去一次整块内存拷贝。
+# 用回调函数名而不是函数对象做判断，避免这些函数定义在本类之后造成前向引用问题。
+_LEFT_VALUE_BACKWARD_NAMES = {
+    '_mulat_inplace_backward',
+    '_divat_inplace_backward',
+    '_powat_inplace_backward',
+}
+
+
+# 原地操作梯度回调函数名 -> 对应的原地操作方法名，__setitem__ 据此重放副本上的操作。
+# 只收录复合赋值运算（+=、-=、*=、/=、**=）；setat_ 不在此列——它本身是覆盖写，
+# 直接按数据 setat 即可得到相同结果，无需重放。
+_INPLACE_AT_METHODS = {
+    '_addat_inplace_backward': 'addat_',
+    '_subat_inplace_backward': 'subat_',
+    '_mulat_inplace_backward': 'mulat_',
+    '_divat_inplace_backward': 'divat_',
+    '_powat_inplace_backward': 'powat_',
+}
+
+
+def _graph_contains(var, target):
+    """判断 target 是否出现在 var 的计算图来源中（含 var 自身）。
+
+    仅沿 requires_grad 为 True 的节点遍历：不需要梯度的节点不会继续向上游传播，
+    其祖先也就不参与判断，同时能剪掉大部分无关子图。
+    用 id 记录访问过的节点，避免共享子图重复遍历和潜在环路导致的死循环。
+
+    只在 __setitem__ 无法重放的兜底路径上调用，属于低频操作，不做额外优化。
+    """
+    stack = [var]
+    visited = set()
+    while stack:
+        item = stack.pop()
+        if item is target:
+            return True
+        if id(item) in visited:
+            continue
+        visited.add(id(item))
+        if not item.requires_grad:
+            continue
+        stack.extend(item.fromvars)
+    return False
+
+
 def _indexes_are_equal(idx1, idx2):
-    """比较两个索引是否相同，仅支持简单索引类型"""
+    """判断两个索引是否表示同一选择，用于确认视图/副本索引与回写索引是否一致。
+
+    只做保守判断：
+    - 布尔索引直接视为不同，避免布尔数组逐元素比较的歧义；
+    - 元组索引逐项比较，数组项用 np.array_equal，任一项不同即返回 False；
+    - 无法比较的类型返回 False，让调用方走更安全的赋值路径。
+    """
     try:
         # 跳过布尔索引比较
         if _is_boolean_index(idx1) or _is_boolean_index(idx2):
@@ -7008,9 +7155,11 @@ def _indexes_are_equal(idx1, idx2):
                 return False
             for a, b in zip(idx1, idx2):
                 try:
-                    # 对数组类型进行特殊处理
-                    if hasattr(a, 'shape') and hasattr(b, 'shape'):
-                        return bool(np.array_equal(a, b))
+                    # 数组类型用逐元素比较，注意不能提前 return，需继续比较剩余元素
+                    if hasattr(a, 'shape') or hasattr(b, 'shape'):
+                        if not np.array_equal(np.asarray(a), np.asarray(b)):
+                            return False
+                        continue
                     # 简单类型直接比较
                     if a != b:
                         return False
