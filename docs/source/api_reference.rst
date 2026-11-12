@@ -1026,6 +1026,66 @@ In-place Operators
 Mathematical Operations
 ~~~~~~~~~~~~~~~~~~~~~~~
 
+.. function:: riemann.add(input, other, *, alpha=1)
+
+   Element-wise addition, equivalent to ``input + alpha * other``; the ``input + other``
+   operator calls this function internally.
+
+   :param input: Left operand (tensor, array, sequence, or scalar)
+   :param other: Right operand (tensor, array, sequence, or scalar)
+   :param alpha: Multiplier of the right operand, keyword-only, defaults to 1
+   :return: Element-wise sum
+   :rtype: riemann.TN
+
+.. function:: riemann.sub(input, other, *, alpha=1)
+
+   Element-wise subtraction, equivalent to ``input - alpha * other``; the ``input - other``
+   operator calls this function internally.
+
+   :param input: Minuend (tensor, array, sequence, or scalar)
+   :param other: Subtrahend (tensor, array, sequence, or scalar)
+   :param alpha: Multiplier of the subtrahend, keyword-only, defaults to 1
+   :return: Element-wise difference
+   :rtype: riemann.TN
+
+.. function:: riemann.mul(input, other)
+
+   Element-wise multiplication, equivalent to ``input * other``.
+
+   :param input: Left operand (tensor, array, sequence, or scalar)
+   :param other: Right operand (tensor, array, sequence, or scalar)
+   :return: Element-wise product
+   :rtype: riemann.TN
+
+.. function:: riemann.div(input, other)
+
+   Element-wise true division, equivalent to ``input / other``.
+
+   :param input: Dividend (tensor, array, sequence, or scalar)
+   :param other: Divisor (tensor, array, sequence, or scalar)
+   :return: Element-wise quotient
+   :rtype: riemann.TN
+
+.. function:: riemann.floor_divide(input, other)
+
+   Element-wise floor division, equivalent to ``input // other``. As in PyTorch, this
+   operation does not provide a backward gradient.
+
+   :param input: Dividend (tensor, array, sequence, or scalar)
+   :param other: Divisor (tensor, array, sequence, or scalar)
+   :return: Element-wise floor division result
+   :rtype: riemann.TN
+
+.. function:: riemann.remainder(input, other)
+
+   Element-wise remainder, equivalent to ``input % other``; the sign of the result follows
+   the divisor.
+
+   :param input: Dividend (tensor, array, sequence, or scalar)
+   :param other: Divisor (tensor, array, sequence, or scalar)
+   :return: Element-wise remainder
+   :rtype: riemann.TN
+
 .. function:: riemann.matmul(input, other)
 
    Matrix multiplication of two tensors.
@@ -1251,6 +1311,51 @@ Mathematical Operations
    :type out: riemann.TN, optional
    :return: Indices of minimum values
    :rtype: riemann.TN
+
+.. function:: riemann.neg(input)
+
+   Element-wise negation, equivalent to ``-input``.
+
+   Boolean tensors are not supported (raises ``NotImplementedError``); unsigned integer
+   types wrap around modulo the bit width and keep their dtype.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: Element-wise negation
+   :rtype: riemann.TN
+
+.. function:: riemann.neg_(input)
+
+   In-place negation (equivalent to ``torch.neg_``): modifies the input tensor directly
+   and returns it.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: The modified input tensor (same object as the input)
+   :rtype: riemann.TN
+   :raises RuntimeError: If the input is a leaf tensor that requires grad
+   :raises NotImplementedError: If the input is a boolean tensor
+
+.. function:: riemann.positive(input)
+
+   Element-wise positive, returns the input tensor itself, equivalent to ``+input``.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: The input tensor
+   :rtype: riemann.TN
+
+.. function:: riemann.abs_(input)
+
+   In-place absolute value (equivalent to ``torch.abs_``): modifies the input tensor
+   directly and returns it.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: The modified input tensor (same object as the input)
+   :rtype: riemann.TN
+   :raises RuntimeError: If the input is a leaf tensor that requires grad, or a complex tensor
+   :raises NotImplementedError: If the input is a boolean tensor
 
 .. function:: riemann.abs(x)
 
@@ -1777,6 +1882,51 @@ Comparison Operations
    :type b: riemann.TN
    :return: Boolean tensor indicating inequality
    :rtype: bool
+
+.. function:: riemann.lt(input, other)
+              riemann.le(input, other)
+              riemann.gt(input, other)
+              riemann.ge(input, other)
+              riemann.eq(input, other)
+              riemann.ne(input, other)
+
+   Element-wise comparisons, equivalent to ``<``, ``<=``, ``>``, ``>=``, ``==`` and ``!=``
+   respectively, returning a boolean tensor.
+
+   :param input: Left operand (tensor, array, sequence, or scalar)
+   :param other: Right operand (tensor, array, sequence, or scalar)
+   :return: Boolean tensor of comparison results
+   :rtype: riemann.TN
+
+.. function:: riemann.bitwise_and(input, other)
+              riemann.bitwise_or(input, other)
+              riemann.bitwise_xor(input, other)
+
+   Element-wise bitwise AND / OR / XOR, equivalent to ``&``, ``|`` and ``^`` respectively.
+
+   :param input: Left operand (tensor, array, sequence, or scalar)
+   :param other: Right operand (tensor, array, sequence, or scalar)
+   :return: Result of the bitwise operation
+   :rtype: riemann.TN
+
+.. function:: riemann.bitwise_not(input)
+
+   Element-wise bitwise NOT, equivalent to ``~input``.
+
+   :param input: Input tensor
+   :type input: riemann.TN
+   :return: Result of the bitwise NOT
+   :rtype: riemann.TN
+
+.. function:: riemann.bitwise_left_shift(input, other)
+              riemann.bitwise_right_shift(input, other)
+
+   Element-wise left / right shift, equivalent to ``<<`` and ``>>`` respectively.
+
+   :param input: Left operand (tensor, array, sequence, or scalar)
+   :param other: Number of bits to shift (tensor, array, sequence, or scalar)
+   :return: Result of the shift operation
+   :rtype: riemann.TN
 
 .. function:: riemann.allclose(a, b, rtol=1e-5, atol=1e-8, equal_nan=False)
 

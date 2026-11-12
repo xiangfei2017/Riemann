@@ -1026,6 +1026,62 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
 数学运算
 ~~~~~~~~
 
+.. function:: riemann.add(input, other, *, alpha=1)
+
+   逐元素加法，等价于 ``input + alpha * other``；运算符 ``input + other`` 内部调用该函数。
+
+   :param input: 左操作数（张量、数组、序列或标量）
+   :param other: 右操作数（张量、数组、序列或标量）
+   :param alpha: 右操作数的乘数，关键字参数，默认 1
+   :return: 逐元素相加的结果
+   :rtype: riemann.TN
+
+.. function:: riemann.sub(input, other, *, alpha=1)
+
+   逐元素减法，等价于 ``input - alpha * other``；运算符 ``input - other`` 内部调用该函数。
+
+   :param input: 被减数（张量、数组、序列或标量）
+   :param other: 减数（张量、数组、序列或标量）
+   :param alpha: 减数的乘数，关键字参数，默认 1
+   :return: 逐元素相减的结果
+   :rtype: riemann.TN
+
+.. function:: riemann.mul(input, other)
+
+   逐元素乘法，等价于 ``input * other``。
+
+   :param input: 左操作数（张量、数组、序列或标量）
+   :param other: 右操作数（张量、数组、序列或标量）
+   :return: 逐元素相乘的结果
+   :rtype: riemann.TN
+
+.. function:: riemann.div(input, other)
+
+   逐元素真除法，等价于 ``input / other``。
+
+   :param input: 被除数（张量、数组、序列或标量）
+   :param other: 除数（张量、数组、序列或标量）
+   :return: 逐元素相除的结果
+   :rtype: riemann.TN
+
+.. function:: riemann.floor_divide(input, other)
+
+   逐元素向下取整除法，等价于 ``input // other``。与 PyTorch 一致，该运算不提供反向梯度。
+
+   :param input: 被除数（张量、数组、序列或标量）
+   :param other: 除数（张量、数组、序列或标量）
+   :return: 逐元素向下取整除法的结果
+   :rtype: riemann.TN
+
+.. function:: riemann.remainder(input, other)
+
+   逐元素取余，等价于 ``input % other``，余数符号与除数一致。
+
+   :param input: 被除数（张量、数组、序列或标量）
+   :param other: 除数（张量、数组、序列或标量）
+   :return: 逐元素取余的结果
+   :rtype: riemann.TN
+
 .. function:: riemann.matmul(input, other)
 
    两个张量的矩阵乘法。
@@ -1251,6 +1307,48 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type out: riemann.TN, optional
    :return: 最小值索引
    :rtype: riemann.TN
+
+.. function:: riemann.neg(input)
+
+   逐元素取负，等价于 ``-input``。
+
+   布尔张量不支持取负（抛 ``NotImplementedError``）；无符号整型按位宽回绕并保持 dtype。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :return: 逐元素取负的结果
+   :rtype: riemann.TN
+
+.. function:: riemann.neg_(input)
+
+   就地取负（等价于 ``torch.neg_``）：直接修改输入张量并返回它本身。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :return: 修改后的输入张量（与输入是同一对象）
+   :rtype: riemann.TN
+   :raises RuntimeError: 输入是需要梯度的叶子节点
+   :raises NotImplementedError: 输入是布尔张量
+
+.. function:: riemann.positive(input)
+
+   逐元素取正，返回输入张量本身，等价于 ``+input``。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :return: 输入张量
+   :rtype: riemann.TN
+
+.. function:: riemann.abs_(input)
+
+   就地取绝对值（等价于 ``torch.abs_``）：直接修改输入张量并返回它本身。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :return: 修改后的输入张量（与输入是同一对象）
+   :rtype: riemann.TN
+   :raises RuntimeError: 输入是需要梯度的叶子节点，或复数张量
+   :raises NotImplementedError: 输入是布尔张量
 
 .. function:: riemann.abs(x)
 
@@ -1777,6 +1875,50 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type b: riemann.TN
    :return: 指示不等性的布尔张量
    :rtype: bool
+
+.. function:: riemann.lt(input, other)
+              riemann.le(input, other)
+              riemann.gt(input, other)
+              riemann.ge(input, other)
+              riemann.eq(input, other)
+              riemann.ne(input, other)
+
+   逐元素比较，分别等价于 ``<``、``<=``、``>``、``>=``、``==``、``!=``，返回布尔张量。
+
+   :param input: 左操作数（张量、数组、序列或标量）
+   :param other: 右操作数（张量、数组、序列或标量）
+   :return: 比较结果的布尔张量
+   :rtype: riemann.TN
+
+.. function:: riemann.bitwise_and(input, other)
+              riemann.bitwise_or(input, other)
+              riemann.bitwise_xor(input, other)
+
+   逐元素按位与/或/异或，分别等价于 ``&``、``|``、``^``。
+
+   :param input: 左操作数（张量、数组、序列或标量）
+   :param other: 右操作数（张量、数组、序列或标量）
+   :return: 按位运算的结果
+   :rtype: riemann.TN
+
+.. function:: riemann.bitwise_not(input)
+
+   逐元素按位取反，等价于 ``~input``。
+
+   :param input: 输入张量
+   :type input: riemann.TN
+   :return: 按位取反的结果
+   :rtype: riemann.TN
+
+.. function:: riemann.bitwise_left_shift(input, other)
+              riemann.bitwise_right_shift(input, other)
+
+   逐元素左移/右移，分别等价于 ``<<``、``>>``。
+
+   :param input: 左操作数（张量、数组、序列或标量）
+   :param other: 位移位数（张量、数组、序列或标量）
+   :return: 位移运算的结果
+   :rtype: riemann.TN
 
 .. function:: riemann.allclose(a, b, rtol=1e-5, atol=1e-8, equal_nan=False)
 

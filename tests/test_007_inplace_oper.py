@@ -275,6 +275,8 @@ INDEX_CASES = [
     {"name": "布尔索引", "index": (np.array([True, False, True, False, False]),)},  # 第1和第3行
     # dot索引
     {"name": "dot索引", "index": (..., 1)},  # 最后一个维度的第2列
+    # 纯省略号索引（整张量）
+    {"name": "纯省略号索引", "index": (...,)},
     # 复杂的混合索引
     {"name": "复杂的混合索引", "index": (1, slice(0, 3))},  # 第2行，前3列
     # 链式索引（这里用元组表示，实际测试中会分两步执行）
@@ -619,6 +621,20 @@ INDEX_MERGE_CASES = [
             "current_index": (..., 2),
             "expected": (slice(0, 5, None), 3),
             "description": "x[:,1:4][...,2] -> x[:,3] (省略号+整数索引)"
+        },
+        {
+            "name": "纯省略号索引",
+            "base_index": (slice(None), slice(1, 4)),
+            "current_index": (...,),
+            "expected": (slice(0, 5, None), slice(1, 4, None)),
+            "description": "x[:,1:4][...] -> x[:,1:4] (纯省略号保持所有维度)"
+        },
+        {
+            "name": "视图链上的纯省略号索引",
+            "base_index": (slice(1, 4),),
+            "current_index": (Ellipsis,),
+            "expected": (slice(1, 4, None), slice(0, 4, None)),
+            "description": "x[1:4][...] -> x[1:4] (一维视图上的纯省略号，补齐隐式尾部维度)"
         },
         {
             "name": "多层负索引",
@@ -1096,7 +1112,7 @@ class TestInplaceOperations(unittest.TestCase):
 
     # ==================== 通用单张量原地操作测试 ====================
     _IPOW_METHODS = {"+=": "__iadd__", "-=": "__isub__", "*=": "__imul__",
-                     "/=": "__itruediv__", "**=": "__ipow__"}
+                     "/=": "__itruediv__", "**=": "__ipow__", "%=": "__imod__"}
 
     def _apply_simple_op(self, tensor, index, op, value, is_torch=False):
         """对张量执行一次原地操作；链式索引以元组嵌套表示"""
@@ -1217,14 +1233,307 @@ class TestInplaceOperations(unittest.TestCase):
              "ops": [(((slice(2, 8), slice(3, 7)), (None, slice(1, 3))), "+=", 5)]},
         ])
 
+    def test_ellipsis_inplace(self):
+        """测试 Ellipsis（...）作为索引的原地操作：整张量、混合索引、视图与 0 维"""
+        base1 = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        base2 = np.arange(12.0).reshape(3, 4) + 1.0
+        self._run_simple_cases([
+            {"name": "整体省略号赋值", "base": base1, "ops": [(..., "=", 99.0)]},
+            {"name": "整体省略号加法", "base": base1, "ops": [(..., "+=", 10.0)]},
+            {"name": "整体省略号乘法", "base": base1, "ops": [(..., "*=", 2.0)]},
+            {"name": "整体省略号除法", "base": base1, "ops": [(..., "/=", 2.0)]},
+            {"name": "二维整体省略号加法", "base": base2, "ops": [(..., "+=", 1.5)]},
+            {"name": "二维整体省略号数组赋值", "base": base2,
+             "ops": [(..., "=", np.arange(12.0).reshape(3, 4))]},
+            {"name": "二维整体取余", "base": base2, "ops": [(..., "%=", 3.0)]},
+            {"name": "视图整体取余", "base": base2,
+             "view": (slice(None), slice(1, 3)), "ops": [(..., "%=", 2.0)]},
+            {"name": "省略号与切片混合", "base": base2, "ops": [((..., slice(0, 2)), "+=", 5.0)]},
+            {"name": "视图上的整体省略号加法", "base": base2,
+             "view": (slice(1, 3), slice(None)), "ops": [(..., "+=", 3.0)]},
+            {"name": "视图上的省略号混合索引", "base": base2,
+             "view": (slice(None), slice(1, 3)), "ops": [((..., 1), "*=", 2.0)]},
+            {"name": "0维张量省略号赋值", "base": np.array(5.0), "ops": [(..., "=", 9.0)]},
+            {"name": "0维张量省略号加法", "base": np.array(5.0), "ops": [(..., "+=", 1.0)]},
+        ])
+
+    def test_ellipsis_copy(self):
+        """测试 copy_ 通过 Ellipsis 的整张量写入（视图 / 0 维），与 PyTorch 对比"""
+        base_2d = np.arange(12.0).reshape(3, 4)
+        src_2d = np.ones((2, 4), dtype=np.float64) * 7.0
+
+        for device in self._devices():
+            def view_body(base=base_2d, src=src_2d, dev=device):
+                rm_x = rm.tensor(base, requires_grad=True, device=dev).clone()
+                rm_x.retain_grad()
+                rm_src = rm.tensor(src, requires_grad=True, device=dev).clone()
+                rm_src.retain_grad()
+                rm_x[1:3].copy_(rm_src)
+
+                torch_x = torch.tensor(base, requires_grad=True, device=dev).clone()
+                torch_x.retain_grad()
+                torch_src = torch.tensor(src, requires_grad=True, device=dev).clone()
+                torch_src.retain_grad()
+                torch_x[1:3].copy_(torch_src)
+
+                rm_x.sum().backward()
+                torch_x.sum().backward()
+                details = {
+                    "前向传播比较": compare_values(rm_x, torch_x),
+                    "目标梯度比较": compare_grads(rm_x, torch_x),
+                    "源梯度比较": compare_grads(rm_src, torch_src),
+                }
+                return all(details.values()), details
+
+            self._run_case(f"Ellipsis copy_ - 视图写入 - {device}", view_body)
+
+            def scalar_body(dev=device):
+                rm_s = rm.tensor(np.array(1.0), requires_grad=True, device=dev) * 1
+                rm_s.retain_grad()
+                rm_v = rm.tensor(np.array(2.0), requires_grad=True, device=dev) * 1
+                rm_v.retain_grad()
+                rm_s.copy_(rm_v)
+
+                torch_s = torch.tensor(1.0, requires_grad=True, device=dev) * 1
+                torch_s.retain_grad()
+                torch_v = torch.tensor(2.0, requires_grad=True, device=dev) * 1
+                torch_v.retain_grad()
+                torch_s.copy_(torch_v)
+
+                rm_s.sum().backward()
+                torch_s.sum().backward()
+                details = {
+                    "前向传播比较": compare_values(rm_s, torch_s),
+                    "目标梯度比较": compare_grads(rm_s, torch_s),
+                    "源梯度比较": compare_grads(rm_v, torch_v),
+                }
+                return all(details.values()), details
+
+            self._run_case(f"Ellipsis copy_ - 0维写入 - {device}", scalar_body)
+
     def test_scalar_tensor_inplace(self):
         """测试 0 维（标量）张量的原地操作"""
         base = np.array(5.0)
         self._run_simple_cases([
             {"name": "标量张量原地加法", "base": base, "ops": [(self.WHOLE, "+=", 10)]},
+            {"name": "标量张量原地减法", "base": base, "ops": [(self.WHOLE, "-=", 2)]},
             {"name": "标量张量原地乘法", "base": base, "ops": [(self.WHOLE, "*=", 2)]},
+            {"name": "标量张量原地除法", "base": base, "ops": [(self.WHOLE, "/=", 5)]},
             {"name": "标量张量原地赋值", "base": base, "ops": [((), "=", 99.0)]},
         ])
+
+    def test_neg_abs_inplace(self):
+        """测试一元原地操作 neg_ / abs_：整张量、视图、0维、dtype，与 PyTorch 对比"""
+        base = np.array([-1.5, 2.0, -3.5, 0.5])
+        base2d = np.arange(12.0).reshape(3, 4) - 5.5
+        base_scalar = np.array(-4.0)
+
+        for device in self._devices():
+            def whole_body(dev=device):
+                rm_x, torch_x = self._new_pair(base, dev)
+                rm_y = rm_x * 2
+                rm_y.retain_grad()
+                torch_y = torch_x * 2
+                torch_y.retain_grad()
+                rm_y.neg_()
+                torch_y.neg_()
+                rm_y.abs_()
+                torch_y.abs_()
+                rm_y.sum().backward()
+                torch_y.sum().backward()
+                details = {
+                    "前向传播比较": compare_values(rm_y, torch_y),
+                    "输入梯度比较": compare_grads(rm_x, torch_x),
+                    "结果梯度比较": compare_grads(rm_y, torch_y),
+                }
+                return all(details.values()), details
+
+            self._run_case(f"neg_ + abs_ - 整张量 - {device}", whole_body)
+
+            def view_body(dev=device):
+                rm_x, torch_x = self._new_pair(base2d, dev)
+                rm_y = rm_x * 2
+                rm_y.retain_grad()
+                torch_y = torch_x * 2
+                torch_y.retain_grad()
+                rm_y[1:3].neg_()
+                torch_y[1:3].neg_()
+                rm_y[:, 1:3].abs_()
+                torch_y[:, 1:3].abs_()
+                rm_y.sum().backward()
+                torch_y.sum().backward()
+                details = {
+                    "前向传播比较": compare_values(rm_y, torch_y),
+                    "输入梯度比较": compare_grads(rm_x, torch_x),
+                }
+                return all(details.values()), details
+
+            self._run_case(f"neg_ + abs_ - 视图 - {device}", view_body)
+
+            def scalar_body(dev=device):
+                rm_x, torch_x = self._new_pair(base_scalar, dev)
+                rm_y = rm_x * 2
+                torch_y = torch_x * 2
+                rm_y.neg_()
+                torch_y.neg_()
+                rm_y.sum().backward()
+                torch_y.sum().backward()
+                details = {
+                    "前向传播比较": compare_values(rm_y, torch_y),
+                    "输入梯度比较": compare_grads(rm_x, torch_x),
+                }
+                return all(details.values()), details
+
+            self._run_case(f"neg_ - 0维 - {device}", scalar_body)
+
+            def dtype_body(dev=device):
+                details = {}
+                # 无符号整型取负按位宽回绕并保持 dtype，与 torch 一致
+                for name, data in (("uint8", np.array([0, 1, 2], dtype=np.uint8)),
+                                   ("int8", np.array([0, -1, 2], dtype=np.int8))):
+                    rm_t = rm.neg_(rm.tensor(data, device=dev))
+                    details[f"{name} neg_"] = compare_values(
+                        rm_t, torch.neg_(torch.tensor(data, device=dev)))
+                # 无符号整型取绝对值为恒等操作
+                data = np.array([0, 1, 2], dtype=np.uint8)
+                details["uint8 abs_"] = compare_values(
+                    rm.abs_(rm.tensor(data, device=dev)),
+                    torch.abs_(torch.tensor(data, device=dev)))
+                return all(details.values()), details
+
+            self._run_case(f"neg_ / abs_ - dtype - {device}", dtype_body)
+
+    def test_neg_abs_inplace_exceptions(self):
+        """测试 neg_ / abs_ 的类型限制、叶子张量保护与返回同一对象"""
+        # 布尔张量：neg_ / abs_ 均不支持（与 torch 一致）
+        bool_t = rm.tensor(np.array([True, False]))
+        for fn, name in ((rm.neg_, "neg_"), (rm.abs_, "abs_")):
+            with self.assertRaises(NotImplementedError, msg=f"{name} 应拒绝布尔张量"):
+                fn(bool_t)
+
+        # 复数张量：abs_ 不支持（与 torch 一致），neg_ 支持
+        complex_t = rm.tensor(np.array([1 + 2j]))
+        with self.assertRaises(RuntimeError, msg="abs_ 应拒绝复数张量"):
+            rm.abs_(complex_t)
+        self.assertTrue(compare_values(rm.neg_(complex_t), torch.neg_(torch.tensor(np.array([1 + 2j])))))
+
+        # 需要梯度的叶子张量：原地操作应报错
+        leaf = rm.tensor(np.array([1.0]), requires_grad=True)
+        for fn, name in ((rm.neg_, "neg_"), (rm.abs_, "abs_")):
+            with self.assertRaises(RuntimeError, msg=f"{name} 应拒绝需要梯度的叶子张量"):
+                fn(leaf)
+
+        # 模块函数就地修改并返回同一对象
+        t = rm.tensor(np.array([1.0, -2.0]))
+        self.assertIs(rm.neg_(t), t)
+        self.assertIs(rm.abs_(t), t)
+
+    def test_floordiv_mod_forward(self):
+        """测试 // 与 % 的前向运算、% 的梯度，以及与 torch 对齐的 // 反向报错"""
+        a = np.array([5.0, -7.0, 8.0, -9.5])
+        b = np.array([2.0, 3.0, -3.0, 2.5])
+        ai = np.array([5, -7, 8, -9])
+        bi = np.array([2, 3, -3, 2])
+
+        for device in self._devices():
+            def forward_body(a=a, b=b, ai=ai, bi=bi, dev=device):
+                rm_a, rm_b = rm.tensor(a, device=dev), rm.tensor(b, device=dev)
+                t_a, t_b = torch.tensor(a, device=dev), torch.tensor(b, device=dev)
+                rm_ai, rm_bi = rm.tensor(ai, device=dev), rm.tensor(bi, device=dev)
+                t_ai, t_bi = torch.tensor(ai, device=dev), torch.tensor(bi, device=dev)
+                details = {
+                    "x // y": compare_values(rm_a // rm_b, t_a // t_b),
+                    "x % y": compare_values(rm_a % rm_b, t_a % t_b),
+                    "x // 2": compare_values(rm_a // 2, t_a // 2),
+                    "5 // x": compare_values(5 // rm_a, 5 // t_a),
+                    "5 % x": compare_values(5 % rm_a, 5 % t_a),
+                    "整数 x // y": compare_values(rm_ai // rm_bi, t_ai // t_bi),
+                    "整数 x % y": compare_values(rm_ai % rm_bi, t_ai % t_bi),
+                }
+                return all(details.values()), details
+
+            self._run_case(f"// 与 % 前向 - {device}", forward_body)
+
+            def grad_body(a=a, b=b, dev=device):
+                rm_a = rm.tensor(a, requires_grad=True, device=dev)
+                rm_b = rm.tensor(b, requires_grad=True, device=dev)
+                (rm_a % rm_b).sum().backward()
+                t_a = torch.tensor(a, requires_grad=True, device=dev)
+                t_b = torch.tensor(b, requires_grad=True, device=dev)
+                (t_a % t_b).sum().backward()
+                details = {
+                    "左值梯度": compare_grads(rm_a, t_a),
+                    "右值梯度": compare_grads(rm_b, t_b),
+                }
+                return all(details.values()), details
+
+            self._run_case(f"% 梯度 - {device}", grad_body)
+
+            def floordiv_grad_body(a=a, dev=device):
+                rm_a = rm.tensor(a, requires_grad=True, device=dev)
+                try:
+                    (rm_a // 2).sum().backward()
+                    return False, {"// backward 应报未实现": False}
+                except RuntimeError as e:
+                    ok = 'floor_divide' in str(e)
+                    return ok, {"// backward 报未实现（与 torch 一致）": ok}
+
+            self._run_case(f"// 反向未实现 - {device}", floordiv_grad_body)
+
+    def test_floordiv_mod_inplace(self):
+        """测试 //= 与 %= 的原地操作（含视图、省略号、0 维与 %= 梯度）"""
+        base = np.array([5.0, -7.0, 8.0, -9.5])
+        base2 = np.arange(12.0).reshape(3, 4) + 1.0
+
+        for device in self._devices():
+            def body(dev=device):
+                details = {}
+
+                # 一维 //=、%=
+                rm_x, t_x = rm.tensor(base, device=dev), torch.tensor(base, device=dev)
+                rm_x //= 2
+                t_x //= 2
+                rm_x %= 3
+                t_x %= 3
+                details["一维 //= 与 %="] = compare_values(rm_x, t_x)
+
+                # 二维视图 + 省略号
+                rm_y, t_y = rm.tensor(base2, device=dev), torch.tensor(base2, device=dev)
+                rm_y[:, 1:3] //= 2
+                t_y[:, 1:3] //= 2
+                rm_y[..., 1] %= 2
+                t_y[..., 1] %= 2
+                details["二维视图"] = compare_values(rm_y, t_y)
+
+                # 0 维
+                rm_s, t_s = rm.tensor(np.array(7.0), device=dev), torch.tensor(7.0, device=dev)
+                rm_s //= 2
+                t_s //= 2
+                rm_s %= 3
+                t_s %= 3
+                details["0维"] = compare_values(rm_s, t_s)
+
+                return all(details.values()), details
+
+            self._run_case(f"//= 与 %= 原地 - {device}", body)
+
+            def mod_grad_body(dev=device):
+                rm_x = rm.tensor(base2, requires_grad=True, device=dev) * 1
+                rm_x.retain_grad()
+                rm_x[:, 1:3] %= 3
+                rm_x.sum().backward()
+
+                t_x = torch.tensor(base2, requires_grad=True, device=dev) * 1
+                t_x.retain_grad()
+                t_x[:, 1:3] %= 3
+                t_x.sum().backward()
+
+                grad_ok = compare_grads(rm_x, t_x)
+                value_ok = compare_values(rm_x, t_x)
+                details = {"原地 %= 前向": value_ok, "原地 %= 梯度": grad_ok}
+                return all(details.values()), details
+
+            self._run_case(f"原地 %= 梯度 - {device}", mod_grad_body)
 
     def test_non_contiguous_inplace(self):
         """测试非连续内存张量（步长切片视图）的原地操作"""

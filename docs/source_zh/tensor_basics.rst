@@ -1022,9 +1022,19 @@ Riemann 的跨框架互转能力全部建立在 Python 生态的数组交换协�
   * - ``x ** y``
     - ``rm.pow(x, y)``
     - 逐元素幂运算
+  * - ``x // y``
+    - ``rm.floor_divide(x, y)``
+    - 逐元素向下取整除法（无反向梯度，与 PyTorch 一致）
+  * - ``x % y``
+    - ``rm.remainder(x, y)``
+    - 逐元素取余（余数符号与除数一致）
   * - ``x @ y``
     - ``rm.matmul(x, y)``
     - 矩阵乘法
+
+运算符只是上述模块级函数的薄封装；``rm.add`` / ``rm.sub`` 还支持关键字参数 ``alpha``，
+计算 ``x + alpha * y`` / ``x - alpha * y``（``alpha`` 为关键字参数，位置传参会抛 ``TypeError``，
+与 PyTorch 一致）。
 
 .. code-block:: python
 
@@ -1042,6 +1052,13 @@ Riemann 的跨框架互转能力全部建立在 Python 生态的数组交换协�
     
     # 除法
     z = x / y
+    
+    # 向下取整除法与取余
+    z = x // y
+    z = x % y
+    
+    # 带 alpha 的加法，等价于 x + 2 * y
+    z = rm.add(x, y, alpha=2)
     
     # 矩阵乘法
     a = rm.tensor([[1, 2], [3, 4]])
@@ -3317,6 +3334,22 @@ Riemann 支持以下原地操作函数和运算符：
     - 原地幂运算
     - ``**=``
     - ``x.pow_(y)`` 或 ``x **= y``
+  * - ``floor_divide_``
+    - 原地向下取整除法
+    - ``//=``
+    - ``x.floor_divide_(y)`` 或 ``x //= y``
+  * - ``remainder_``
+    - 原地取余
+    - ``%=``
+    - ``x.remainder_(y)`` 或 ``x %= y``
+  * - ``neg_``
+    - 原地取负（布尔张量不支持，无符号整型按位宽回绕）
+    - 无
+    - ``x.neg_()``
+  * - ``abs_``
+    - 原地取绝对值（布尔与复数张量不支持）
+    - 无
+    - ``x.abs_()``
   * - ``zero_``
     - 原地将所有元素置为0
     - 无
@@ -3377,6 +3410,12 @@ Riemann 支持以下原地操作函数和运算符：
     - 原地按索引元组写入值
     - 无
     - ``x.index_put_(indices, values, accumulate=False)``
+
+.. note::
+
+   ``neg_()`` / ``abs_()`` 是一元原地操作：布尔张量均不支持（抛 ``NotImplementedError``）；
+   ``abs_()`` 不支持复数张量（抛 ``RuntimeError``，与 PyTorch 一致）；``neg_()`` 对无符号整型按位宽回绕。
+   二者都直接修改数据并返回张量本身，可链式调用。
 
 .. note::
 

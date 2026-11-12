@@ -191,18 +191,10 @@ class Parameter(TN):
             >>> weight.requires_grad  # True
             >>> weight.is_leaf        # True
         """
-        super().__init__()
-        # 处理空参数情况 - 与PyTorch一致，创建空tensor而不是None
-        if data is None:
-            # 使用默认dtype，与PyTorch的get_default_dtype()行为一致
-            self._array = np.array([], dtype=get_default_dtype())
-        else:
-            # 确保输入是张量
-            if not isinstance(data, TN):
-                raise TypeError(f"Expected a TN tensor, got {type(data)}")
-            self._array = data._array
-            
-        self.requires_grad = requires_grad
+        # 与PyTorch一致：只接受 TN 张量或 None（空参数）
+        if data is not None and not isinstance(data, TN):
+            raise TypeError(f"Expected a TN tensor, got {type(data)}")
+        super().__init__(data._array if data is not None else None, requires_grad)
         
     def __str__(self):
         """

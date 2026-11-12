@@ -1024,9 +1024,20 @@ Tensors support standard arithmetic operations, each with a corresponding functi
   * - ``x ** y``
     - ``rm.pow(x, y)``
     - Element-wise power
+  * - ``x // y``
+    - ``rm.floor_divide(x, y)``
+    - Element-wise floor division (no backward gradient, as in PyTorch)
+  * - ``x % y``
+    - ``rm.remainder(x, y)``
+    - Element-wise remainder (the sign follows the divisor)
   * - ``x @ y``
     - ``rm.matmul(x, y)``
     - Matrix multiplication
+
+Operators are thin wrappers around these module-level functions; ``rm.add`` / ``rm.sub``
+additionally accept the keyword-only ``alpha`` parameter and compute
+``x + alpha * y`` / ``x - alpha * y`` (passing ``alpha`` positionally raises ``TypeError``,
+consistent with PyTorch).
 
 .. code-block:: python
 
@@ -1044,6 +1055,13 @@ Tensors support standard arithmetic operations, each with a corresponding functi
     
     # Division
     z = x / y
+    
+    # Floor division and remainder
+    z = x // y
+    z = x % y
+    
+    # Addition with alpha, equivalent to x + 2 * y
+    z = rm.add(x, y, alpha=2)
     
     # Matrix multiplication
     a = rm.tensor([[1, 2], [3, 4]])
@@ -3320,6 +3338,22 @@ Riemann supports the following in-place operations functions and operators:
     - In-place power operation
     - ``**=``
     - ``x.pow_(y)`` or ``x **= y``
+  * - ``floor_divide_``
+    - In-place floor division
+    - ``//=``
+    - ``x.floor_divide_(y)`` or ``x //= y``
+  * - ``remainder_``
+    - In-place remainder
+    - ``%=``
+    - ``x.remainder_(y)`` or ``x %= y``
+  * - ``neg_``
+    - In-place negation (boolean tensors are not supported; unsigned integers wrap around)
+    - None
+    - ``x.neg_()``
+  * - ``abs_``
+    - In-place absolute value (boolean and complex tensors are not supported)
+    - None
+    - ``x.abs_()``
   * - ``zero_``
     - In-place set all elements to 0
     - None
@@ -3380,6 +3414,13 @@ Riemann supports the following in-place operations functions and operators:
     - In-place write values according to an index tuple
     - None
     - ``x.index_put_(indices, values, accumulate=False)``
+
+.. note::
+
+   ``neg_()`` / ``abs_()`` are unary in-place operations: boolean tensors are not supported
+   (raises ``NotImplementedError``); ``abs_()`` does not support complex tensors
+   (raises ``RuntimeError``, consistent with PyTorch); ``neg_()`` wraps unsigned integers
+   modulo the bit width. Both modify the data in place, return the tensor itself, and can be chained.
 
 .. note::
 

@@ -326,25 +326,6 @@ def _vjp_with_output(out: TN, inputs, cotangent: TN,
     return [zeros_like(inp, requires_grad=create_graph) if gv is None else gv
             for inp, gv in zip(inputs, grads)]
 
-
-def _share_data_leaf(data) -> TN:
-    """构造不参与求导、与给定数组共享底层数据的叶子张量。
-
-    影子节点的入参与 jacfwd 的 tangent 基向量都只作为余切参与局部 JVP，
-    从不被原地修改，因此无需视图元数据，直接共享 _array 即可。
-
-    参数:
-        data: 底层数组（numpy / cupy），不做拷贝。
-
-    返回:
-        requires_grad=False、无 fromvars 的叶子 TN。
-    """
-    leaf = TN()
-    leaf._array = data
-    leaf.requires_grad = False
-    return leaf
-
-
 def _make_shadow(node: TN, leaf_map: dict) -> TN:
     """构造计算图节点的"局部影子"。
 
@@ -359,15 +340,13 @@ def _make_shadow(node: TN, leaf_map: dict) -> TN:
     返回:
         影子节点：共享 node._array 与 node.parms，fromvars 均为无计算图的叶子。
     """
-    shadow = TN()
-    shadow._array = node._array
-    shadow.requires_grad = False
+    shadow = TN(node._array, requires_grad=False)
     shadow.parms = node.parms
     fromvars = []
     for var in node.fromvars:
         var_shadow = leaf_map.get(id(var))
         if var_shadow is None:
-            var_shadow = _share_data_leaf(var._array)
+            var_shadow = TN(var._array, requires_grad=False)
             leaf_map[id(var)] = var_shadow
         fromvars.append(var_shadow)
     shadow.fromvars = tuple(fromvars)
@@ -849,7 +828,7 @@ def _basis_row(basis: TN, k: int) -> TN:
     arrlib = basis._get_array_lib()
     if not isinstance(data, arrlib.ndarray):
         data = arrlib.asarray(data)
-    return _share_data_leaf(data)
+    return TN(data, requires_grad=False)
 
 
 def _jacobian_via_jvp(func, args, positions, create_graph: bool):

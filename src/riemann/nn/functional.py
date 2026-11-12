@@ -86,9 +86,7 @@ support automatic differentiation through properly implemented backward function
 """
 
 from __future__ import annotations
-
 from ..tensordef import *
-from ..tensordef import _wrap_tensor_from_numpy
 
 def linear(input: TN, weight: TN, bias: TN | None = None) -> TN:
     """
@@ -198,7 +196,7 @@ def sigmoid(x: TN) -> TN:
                    arrlib.where(x_data < -20, 0.0, 
                            1. / (1. + arrlib.exp(-x_data))))
     
-    ret = _wrap_tensor_from_numpy(data, 
+    ret = TN(data, 
         requires_grad = is_grad_enabled() and x.requires_grad
     )
     
@@ -284,7 +282,7 @@ def softmax(x:TN, dim:int)->TN:
     ret_data = ex / ex.sum(axis=dim, keepdims=True)
 
     requires_grad = is_grad_enabled() and x.requires_grad
-    ret = _wrap_tensor_from_numpy(ret_data, requires_grad=requires_grad)
+    ret = TN(ret_data, requires_grad=requires_grad)
     
     if ret.requires_grad:
         ret.fromvars = (x,)
@@ -340,7 +338,7 @@ def log_softmax(x: TN, dim: int = -1) -> TN:
     ret_data = shifted - lse
 
     requires_grad = is_grad_enabled() and x.requires_grad
-    ret = _wrap_tensor_from_numpy(ret_data, requires_grad=requires_grad)
+    ret = TN(ret_data, requires_grad=requires_grad)
 
     if ret.requires_grad:
         ret.fromvars = (x,)
@@ -381,7 +379,7 @@ def relu(x: TN) -> TN:
     
     arrlib = x._get_array_lib()
     data = arrlib.maximum(0, x._array)
-    ret = _wrap_tensor_from_numpy(
+    ret = TN(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
     )
@@ -420,7 +418,7 @@ def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
     """
     arrlib = x._get_array_lib()
     data = arrlib.where(x._array > 0, x._array, alpha * x._array)
-    ret = _wrap_tensor_from_numpy(
+    ret = TN(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
     )
@@ -446,7 +444,7 @@ def prelu(x: TN, alpha: TN) -> TN:
     # 前向计算：alpha为可训练参数，用于控制负值的缩放
     arrlib = x._get_array_lib()
     data = arrlib.where(x._array > 0, x._array, alpha._array * x._array)
-    ret = _wrap_tensor_from_numpy(
+    ret = TN(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
     )
@@ -485,7 +483,7 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
 
     # 前向计算
     data = arrlib.where(x._array > 0, x._array, alpha * x._array)
-    ret = _wrap_tensor_from_numpy(
+    ret = TN(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
     )
@@ -538,7 +536,7 @@ def elu(x: TN, alpha: float = 1.0) -> TN:
     negative_part = alpha * (arrlib.exp(x_data) - 1.0)
     data = arrlib.where(x_data > 0, positive_part, negative_part)
     
-    ret = _wrap_tensor_from_numpy(
+    ret = TN(
         data,
         requires_grad=is_grad_enabled() and x.requires_grad
     )
@@ -602,7 +600,7 @@ def celu(x: TN, alpha: float = 1.0) -> TN:
     negative_part = alpha * (arrlib.exp(x_data / alpha) - 1.0)
     data = arrlib.where(x_data > 0, positive_part, negative_part)
     
-    ret = _wrap_tensor_from_numpy(
+    ret = TN(
         data,
         requires_grad=is_grad_enabled() and x.requires_grad
     )
@@ -656,7 +654,7 @@ def tanh(input: TN) -> TN:
     # 计算 tanh
     data = arrlib.tanh(input._array)
     
-    ret = _wrap_tensor_from_numpy(
+    ret = TN(
         data,
         requires_grad=is_grad_enabled() and input.requires_grad
     )
@@ -717,7 +715,7 @@ def selu(x: TN) -> TN:
     negative_part = scale * alpha * (arrlib.exp(x_data) - 1.0)
     data = arrlib.where(x_data > 0, positive_part, negative_part)
     
-    ret = _wrap_tensor_from_numpy(
+    ret = TN(
         data,
         requires_grad=is_grad_enabled() and x.requires_grad
     )
@@ -770,7 +768,7 @@ def gelu(x: TN) -> TN:
     c = arrlib.sqrt(2.0 / arrlib.pi, dtype=x.dtype)
     x_data = x._array
     data = 0.5 * x_data * (1.0 + arrlib.tanh(c * (x_data + 0.044715 * x_data**3.0)))
-    ret = _wrap_tensor_from_numpy(
+    ret = TN(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
     )
@@ -2295,7 +2293,7 @@ def max_pool1d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         input_l = arrlib.clip(input_l, 0, L_in - 1)
         
         flattened_indices = input_l.reshape(N, C, L_out)
-        flattened_indices = _wrap_tensor_from_numpy(flattened_indices)
+        flattened_indices = TN(flattened_indices)
         return output, flattened_indices
     else:
         return output
@@ -2393,7 +2391,7 @@ def max_pool2d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         # 将输入坐标转换为展平的索引 (H*W)        
         flattened_indices = input_y * W_in + input_x
         flattened_indices = flattened_indices.reshape(N, C, H_out, W_out)
-        indices_output = _wrap_tensor_from_numpy(flattened_indices)
+        indices_output = TN(flattened_indices)
         return output, indices_output
     else:
         return output
@@ -2501,7 +2499,7 @@ def max_pool3d(input: TN, kernel_size, stride=None, padding=0, dilation=1, ceil_
         indices_output = input_indices.reshape(N, C, D_out, H_out, W_out)
         
         # 将indices_output转换为TN张量
-        indices_output = _wrap_tensor_from_numpy(indices_output)
+        indices_output = TN(indices_output)
         
         return output, indices_output
     
@@ -3270,7 +3268,7 @@ def embedding(
     
     # 创建输出张量
     requires_grad = (is_grad_enabled() and weight.requires_grad)
-    output = _wrap_tensor_from_numpy(output_data, requires_grad =requires_grad )
+    output = TN(output_data, requires_grad =requires_grad )
     
     # 如果需要跟踪梯度
     if requires_grad:

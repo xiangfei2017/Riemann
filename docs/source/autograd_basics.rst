@@ -553,6 +553,8 @@ In-place operations can affect gradient computation. Here are important consider
 
 1. **Leaf Variables with Gradient Tracking**: In-place operations are NOT allowed on leaf tensors that require gradient tracking, as this would destroy the computational graph necessary for backpropagation.
 2. **Non-Leaf Variables with Gradient Tracking**: In-place operations are allowed on non-leaf tensors (intermediate results) that require gradient tracking.
+3. **Unary in-place operations**: the backward of ``neg_()`` negates the gradient flowing to the history; the backward of ``abs_()`` scales the gradient by the sign of the pre-operation element (the gradient is 0 where the element is 0).
+4. **Remainder and floor division**: ``%=`` (``remainder_``) supports gradients, where the gradient w.r.t. the right operand is ``-grad * floor(x / y)``; ``//=`` matches PyTorch and raises ``RuntimeError`` in backward (floor_divide has no derivative).
 
 Examples:
 
