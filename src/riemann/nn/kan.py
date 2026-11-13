@@ -56,7 +56,7 @@ KAN是一种新型神经网络架构，使用可学习的激活函数替代传�
 import math
 import builtins
 from . import functional as F
-from ..tensordef import TN, rand, empty, arange, linspace, no_grad, concatenate, sort, float32, int64
+from ..core import TN, rand, empty, arange, linspace, no_grad, concatenate, sort, float32, int64
 from .module import Module, Parameter, ModuleList
 from . import init
 from .activation import SiLU

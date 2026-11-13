@@ -94,6 +94,12 @@ Riemann Package Module Structure
     riemann                  # Main package
     ├── autograd             # Automatic differentiation module
     │   └── functional       # Automatic differentiation functional interface
+    ├── core                 # Core tensor subpackage
+    │   ├── tensordef        # Tensor definition (TN class), dynamic graph and autograd
+    │   ├── tensorfuncs      # Functional tensor operations (one-way dependency on tensordef)
+    │   ├── dtype            # Data type definitions
+    │   ├── gradmode         # Gradient mode control
+    │   └── serialization    # Object saving and loading
     ├── func                 # torch.func-style functional autodiff API
     ├── linalg               # Linear algebra module
     ├── nn                   # Neural network module

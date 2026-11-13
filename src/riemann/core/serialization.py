@@ -64,8 +64,8 @@ import sys
 import struct
 from typing import Any
 from .tensordef import as_tensor
-from .nn.module import Parameter
-from .cuda import Device, cp
+from ..nn.module import Parameter
+from ..cuda import Device, cp
 
 # Magic number for Riemann serialization format
 # This unique identifier is used to verify the validity of serialized files

@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 # 导入riemann模块
 try:
     import riemann as rm
-    from riemann.tensordef import clamp
+    from riemann.core import clamp
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)

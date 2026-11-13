@@ -54,18 +54,21 @@ Riemann/
 ├── src/
 │   └── riemann/              # 核心源代码
 │       ├── autograd/         # 自动求导相关模块
+│       ├── core/             # 核心张量子包（张量定义、函数式运算、数据类型、梯度模式、序列化）
+│       │   ├── __init__.py       # core 子包聚合导出
+│       │   ├── tensordef.py      # 张量定义（TN 类）、动态计算图与自动微分
+│       │   ├── tensorfuncs.py    # 函数式张量运算（仅单向依赖 tensordef）
+│       │   ├── dtype.py          # 数据类型定义
+│       │   ├── gradmode.py       # 梯度模式控制
+│       │   └── serialization.py  # 对象保存与加载
 │       ├── nn/               # 神经网络模块
 │       ├── optim/            # 优化器模块
 │       ├── utils/            # 工具函数
 │       ├── vision/           # 计算机视觉模块
 │       ├── __init__.py       # 包配置文件
 │       ├── cuda.py           # CUDA/GPU 支持
-│       ├── dtype.py          # 数据类型定义
 │       ├── func.py           # 函数式自动求导接口
-│       ├── gradmode.py       # 梯度模式控制
-│       ├── linalg.py         # 线性代数函数
-│       ├── serialization.py  # 对象保存与加载
-│       └── tensordef.py      # 张量定义和核心操作
+│       └── linalg.py         # 线性代数函数
 ├── data/                     # 训练测试数据集文件目录
 ├── docs/                     # 项目文档目录
 ├── tests/                    # 测试文件
@@ -88,12 +91,18 @@ Riemann/
 代码目录 `src/riemann/` 是Riemann库的核心源代码所在地，包含了所有主要功能模块：
 
 - **autograd/**: 实现自动求导功能，包括反向传播算法和梯度计算
+- **core/**: 核心张量子包，统一对外暴露张量 API
+  - `tensordef.py`: 张量定义（TN 类）、动态计算图与自动微分
+  - `tensorfuncs.py`: 函数式张量运算（三角函数、索引选择、随机数、einsum 等），仅单向依赖 `tensordef.py`
+  - `dtype.py`: 数据类型定义
+  - `gradmode.py`: 梯度模式控制
+  - `serialization.py`: 对象保存与加载
 - **nn/**: 神经网络相关组件，如各种层、激活函数和损失函数
 - **optim/**: 优化器模块，如SGD、Adam等优化器，以及学习率调度器
 - **utils/**: 工具函数，包括数据集Dataset类和数据加载器Dataloader类等
 - **vision/**: 计算机视觉相关功能，包括数据集和图像变换
 - **`func`**: 函数式自动求导接口，参考 torch.func 设计。提供柯里化的纯函数式 API，如 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``hvp``、``vmap``、``functional_call``，适合链式高阶求导
-- **核心文件**: 如 `tensordef.py`（张量定义）、`linalg.py`（线性代数）、`dtype.py`（数据类型）、`cuda.py`（GPU 支持）等
+- **核心文件**: 如 `linalg.py`（线性代数）、`cuda.py`（GPU 支持）等
 
 ### tests目录
 

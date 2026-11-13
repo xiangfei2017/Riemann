@@ -55,8 +55,8 @@ hessian 复用 _jacobian_via_vjp 内核，对 grad 的结果再求一次 Jacobia
 
 import builtins
 from typing import Callable, Any, Optional, Union
-from .tensordef import *
-from .tensordef import _batch_slice
+from .core import *
+from .core import _batch_slice
 from .autograd.grad import grad as _grad
 
 

@@ -52,7 +52,7 @@ processing capabilities.
 """
 
 import numpy as np
-from ..tensordef import *
+from ..core import *
 import multiprocessing
 from queue import Empty
 import atexit,sys

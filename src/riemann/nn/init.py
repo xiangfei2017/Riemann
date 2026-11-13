@@ -39,7 +39,7 @@ from typing import Literal, Optional, Union
 
 import numpy as np
 
-from ..tensordef import TN, no_grad, device_context
+from ..core import TN, no_grad, device_context
 from ..cuda import cp
 
 

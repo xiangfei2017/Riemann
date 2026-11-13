@@ -865,7 +865,7 @@ def test_transforms(stats=None):
             stats.add_result("PILToTensor-值范围", rm_result.max() > 1.0,
                             f"最大值: {rm_result.max():.2f} (应该>1.0，因为不缩放)")
             # 检查是否为TN类型（从riemann导入的tensor类型）
-            from riemann.tensordef import TN
+            from riemann.core import TN
             stats.add_result("PILToTensor-类型", isinstance(rm_result, TN),
                             f"类型: {type(rm_result)}")
         except Exception as e:
@@ -958,7 +958,7 @@ def test_transforms(stats=None):
         # 测试RandomErasing
         print("测试RandomErasing...")
         try:
-            from riemann.tensordef import TN
+            from riemann.core import TN
             # RandomErasing需要TN张量作为输入
             test_tensor = rm.tensor(np.random.rand(3, 64, 64).astype(np.float32))
             rm_erasing = RandomErasing(p=1.0, scale=(0.1, 0.3), value='random')

@@ -48,9 +48,7 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import numpy as np
-from ..tensordef import *
-from ..gradmode import set_grad_enabled
-
+from ..core import *
 
 def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, create_graph: bool = False):
         """执行反向模式自动微分（反向传播）。
@@ -76,6 +74,7 @@ def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, crea
         """
         return self.backward(gradient=gradient, create_graph=create_graph)
 
+@api_registry.register("grad")
 def grad(outputs:TN,
          inputs:TN|list[TN]|tuple[TN],
          retain_graph: bool = False,

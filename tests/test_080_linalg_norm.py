@@ -7,7 +7,7 @@ import time
 # 添加项目根目录到sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))
 from riemann.linalg import norm
-from riemann.tensordef import tensor
+from riemann.core import tensor
 import riemann as rm
 
 # 定义颜色类用于美化输出

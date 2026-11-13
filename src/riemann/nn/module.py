@@ -67,7 +67,7 @@ from __future__ import annotations
 from typing import Any
 import copy
 import numpy as np
-from ..tensordef import *
+from ..core import *
 from ..cuda import cp, Device
 from .functional import *
 
@@ -281,7 +281,7 @@ class Parameter(TN):
         返回:
             tuple: 包含构造函数和参数的元组
         """
-        from ..serialization import _parameter_constructor
+        from ..core import _parameter_constructor
         
         if self._array is None:
             return (_parameter_constructor, (None, self.requires_grad))

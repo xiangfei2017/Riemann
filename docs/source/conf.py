@@ -22,7 +22,7 @@ copyright = '2025, Fei Xiang'
 author = 'Fei Xiang'
 
 # The full version, including alpha/beta/rc tags
-release = '0.6.88'
+release = '0.6.89'
 
 # -- General configuration ---------------------------------------------------
 

@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 try:
     import riemann as rm
     from riemann import tensor, set_grad_enabled
-    from riemann.dtype import float32, float64, int32, int64, bool_ as riemann_bool, complex64, complex128
+    from riemann.core import float32, float64, int32, int64, bool_ as riemann_bool, complex64, complex128
 except ImportError as e:
     print(f"无法导入riemann模块: {e}")
     print("请确保项目路径设置正确")

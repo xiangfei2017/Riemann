@@ -61,8 +61,8 @@ from __future__ import annotations
 
 import contextlib
 import numpy as np
-from .tensordef import *
-from .tensordef import _apply_out, _apply_out_tuple
+from .core import *
+from .core import _apply_out, _apply_out_tuple, api_registry
 import builtins
 
 def matmul(A, B, *, out=None):
@@ -229,6 +229,7 @@ def _cross_grad_right(result_tensor, i):
     grad = result_tensor.grad_value
     return cross(grad, a, dim=dim)
 
+@api_registry.register('norm')
 def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtype=None):
     """计算张量的向量范数、矩阵范数或多轴范数
     
@@ -1125,6 +1126,7 @@ def svdvals(A: TN) -> TN:
     return S
 
 # - det ：计算方阵的行列式
+@api_registry.register('det')
 def det(A:TN):
     """计算方阵的行列式。
     
@@ -1180,6 +1182,7 @@ def _matdet_backward(result_tensor:TN, i:int)->TN:
     grad = grad_value * new_result * inv_trans
     return grad
 
+@api_registry.register('inv')
 def inv(A:TN):
     """计算方阵的逆矩阵。
     
@@ -1498,6 +1501,7 @@ def _svd_backward_s(result_tensor, i: int):
     
     return grad_A
 
+@api_registry.register('pinv')
 def pinv(A, atol=None, rtol=None, hermitian=False, out=None):
     """
     计算矩阵的Moore-Penrose伪逆。

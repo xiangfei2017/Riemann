@@ -17,7 +17,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 # 导入riemann模块
 try:
     import riemann as rm
-    from riemann.tensordef import tensor as rm_tensor
+    from riemann.core import tensor as rm_tensor
     from riemann.autograd.grad import grad
     from riemann.autograd.functional import hessian as rm_hessian
     # 从rm.cuda获取cupy引用和CUDA可用性

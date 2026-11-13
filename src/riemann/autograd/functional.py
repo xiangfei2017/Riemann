@@ -56,7 +56,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Callable, Any
 import builtins
-from ..tensordef import *
+from ..core import *
 from .grad import *
 
 def _ensure_traceable(tensors):

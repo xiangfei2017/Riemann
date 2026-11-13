@@ -64,7 +64,7 @@ from __future__ import annotations
 import numpy as np
 from collections import defaultdict
 from typing import Any, Callable, Iterable
-from ..tensordef import *
+from ..core import *
 from ..nn import *
 from ..cuda import cp
 

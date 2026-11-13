@@ -55,18 +55,21 @@ Riemann/
 ├── src/
 │   └── riemann/              # Core source code
 │       ├── autograd/         # Automatic differentiation related modules
+│       ├── core/             # Core tensor subpackage (tensor definition, functional ops, dtype, grad mode, serialization)
+│       │   ├── __init__.py       # Aggregated exports of the core subpackage
+│       │   ├── tensordef.py      # Tensor definition (TN class), dynamic graph and autograd
+│       │   ├── tensorfuncs.py    # Functional tensor operations (one-way dependency on tensordef)
+│       │   ├── dtype.py          # Data type definitions
+│       │   ├── gradmode.py       # Gradient mode control
+│       │   └── serialization.py  # Object saving and loading
 │       ├── nn/               # Neural network modules
 │       ├── optim/            # Optimizers
 │       ├── utils/            # Utility functions
 │       ├── vision/           # Computer vision modules
 │       ├── __init__.py       # Package configuration file
 │       ├── cuda.py           # CUDA/GPU support
-│       ├── dtype.py          # Data type definitions
 │       ├── func.py           # Functional autodiff API
-│       ├── gradmode.py       # Gradient mode control
-│       ├── linalg.py         # Linear algebra functions
-│       ├── serialization.py  # Object saving and loading
-│       └── tensordef.py      # Tensor definition and core operations
+│       └── linalg.py         # Linear algebra functions
 ├── data/                     # Training and testing dataset directory
 ├── docs/                     # Project documentation directory
 ├── tests/                    # Test files
@@ -89,12 +92,18 @@ Riemann/
 The code directory `src/riemann/` is the location of Riemann library's core source code, containing all major functional modules:
 
 - **autograd/**: Implements automatic differentiation functionality, including backpropagation algorithm and gradient calculation
+- **core/**: Core tensor subpackage exposing the tensor API as a whole
+  - `tensordef.py`: Tensor definition (TN class), dynamic graph and autograd
+  - `tensorfuncs.py`: Functional tensor operations (trigonometric functions, index selection, random generators, einsum, etc.), with a one-way dependency on `tensordef.py`
+  - `dtype.py`: Data type definitions
+  - `gradmode.py`: Gradient mode control
+  - `serialization.py`: Object saving and loading
 - **nn/**: Neural network-related components, such as various layers, activation functions, and loss functions
 - **optim/**: Optimizers, such as SGD, Adam, etc., and learning rate schedulers
 - **utils/**: Utility functions, including Dataset class and Dataloader class for data loading, etc.
 - **vision/**: Computer vision-related functionality, including datasets and image transforms
 - **`func`**: Functional-style autodiff interface, reference `torch.func`. Provides curried, pure-function APIs such as ``grad``, ``jvp``, ``vjp``, ``jacrev``, ``jacfwd``, ``hessian``, ``hvp``, ``vmap``, ``functional_call`` — suitable for chained higher-order derivatives
-- **Core files**: Such as `tensordef.py` (tensor definition), `linalg.py` (linear algebra), `dtype.py` (data type), `cuda.py` (GPU support), etc.
+- **Core files**: Such as `linalg.py` (linear algebra), `cuda.py` (GPU support), etc.
 
 ### tests Directory
 

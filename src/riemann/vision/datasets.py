@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import Callable, Optional, Tuple, Union, List, Any, Dict, cast
 from tqdm import tqdm
 from PIL import Image
-from ..tensordef import *
+from ..core import *
 from ..utils.data import *
 from .transforms import *
 

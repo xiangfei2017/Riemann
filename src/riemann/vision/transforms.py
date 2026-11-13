@@ -78,7 +78,7 @@ from typing import Callable, Any
 from enum import Enum
 import numpy as np
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter
-from ..tensordef import as_tensor
+from ..core import as_tensor
 
 # 处理PIL库版本兼容性问题
 try:
@@ -137,8 +137,8 @@ def _interpolation_mode_to_pil(mode: InterpolationMode) -> int:
     # 对于不直接支持的类型，使用默认值
     return BILINEAR
 
-from ..tensordef import TN, tensor
-from ..dtype import get_default_dtype
+from ..core import TN, tensor
+from ..core import get_default_dtype
 
 
 class Transform:

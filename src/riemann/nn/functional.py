@@ -86,7 +86,7 @@ support automatic differentiation through properly implemented backward function
 """
 
 from __future__ import annotations
-from ..tensordef import *
+from ..core import *
 
 def linear(input: TN, weight: TN, bias: TN | None = None) -> TN:
     """

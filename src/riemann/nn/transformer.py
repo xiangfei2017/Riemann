@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import math
 import copy
-from ..tensordef import *
+from ..core import *
 from .module import Module, Parameter, Linear, Dropout, LayerNorm, ModuleList
 from .activation import ReLU, GELU
 from .functional import linear, softmax, dropout

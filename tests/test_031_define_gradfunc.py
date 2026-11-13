@@ -11,8 +11,8 @@ try:
     import riemann as rm
     from riemann import TN
     from riemann.autograd import gradcheck
-    from riemann.tensordef import track_grad
-    from riemann.gradmode import set_grad_enabled
+    from riemann.core import track_grad
+    from riemann.core import set_grad_enabled
     from riemann.autograd.grad import Function  # 正确导入Function类
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
