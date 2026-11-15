@@ -55,9 +55,8 @@ from .dtype import *
 from .gradmode import *
 from .tensordef import *
 from .tensordef import (
-    _validate_shape,
-    _get_broadcast_axis, _apply_out, _apply_out_tuple, 
-    _as_tn, _get_device, _is_array_type
+    _validate_shape, _as_tn, _get_device, _is_array_type,
+    _get_broadcast_axis, _apply_out, _apply_out_tuple    
 )
 
 def from_numpy(arr: np.ndarray | cp.ndarray) -> TN:
@@ -2757,6 +2756,93 @@ def prod(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     return ret
 
 
+def _cumsum_backward(result_tensor: TN, i: int) -> TN:
+    """
+    cumsum函数的反向传播实现。
+    累积和的梯度是反向累积和。
+    """
+    dim, dtype_param = result_tensor.parms[i]  # 直接使用转换后的dtype
+    
+    # 获取梯度值，使用Riemann的张量操作保持计算图
+    grad_value = result_tensor.grad_value
+    
+    # 反向累积和：从后向前累积
+    # 例如：[g1, g2, g3, g4] -> [g1+g2+g3+g4, g2+g3+g4, g3+g4, g4]
+    reversed_grad = flip(grad_value, [dim])
+    reversed_cumsum = cumsum(reversed_grad, dim=dim)  # 使用Riemann的cumsum函数，不是递归调用
+    input_grad = flip(reversed_cumsum, [dim])
+    
+    # 如果指定了dtype，转换回原始数据类型
+    if dtype_param != input_grad.dtype:
+        input_grad = input_grad.type(dtype_param)
+    
+    return input_grad
+
+
+@api_registry.register('cumsum')
+def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN | None = None) -> TN:
+    """
+    对输入张量沿指定维度进行累积求和。
+    
+    参数:
+        input: 输入张量
+        dim: 要计算累积和的维度
+        dtype: 可选，输出张量的数据类型。如果为None，则使用输入张量的数据类型。支持字符串或numpy dtype
+        out: 可选，输出张量，用于存储结果。注意：out参数不支持梯度跟踪
+    
+    返回:
+        TN: 累积求和结果张量，与输入张量形状相同
+    
+    示例:
+        >>> x = tensor([[1, 2, 3], [4, 5, 6]])
+        >>> cumsum(x, dim=0)
+        tensor([[1, 2, 3], [5, 7, 9]])
+        >>> cumsum(x, dim=1)
+        tensor([[1, 3, 6], [4, 9, 15]])
+        >>> x = tensor([1, 2, 3])  # 1D向量
+        >>> cumsum(x, dim=0)
+        tensor([1, 3, 6])
+        >>> x = tensor(5.0)  # 0D标量
+        >>> cumsum(x, dim=0)
+        tensor(5.0)
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    # 处理dtype参数 - 支持字符串格式或numpy dtype
+    if dtype is None:
+        result_dtype = input.dtype
+    elif isinstance(dtype, str):
+        result_dtype = np.dtype(dtype)
+    else:
+        result_dtype = dtype
+    
+    # 处理0D标量情况
+    if input.ndim == 0:
+        # 0D标量的累积和就是它自身
+        ret = input.type(result_dtype)
+        return _apply_out(out, ret, (input,), "cumsum")
+
+    # 处理1D向量情况，验证dim参数的有效性
+    if input.ndim == 1:
+        # 1D向量只支持dim=0或dim=-1
+        if dim not in [0, -1]:
+            raise IndexError(f"Dimension out of range (expected to be in range of [-1, 0], but got {dim})")
+    
+    # 前向计算 - 使用numpy.cumsum
+    result_data = input._array.cumsum(axis=dim, dtype=result_dtype)
+    
+    # 创建结果张量
+    ret = TN(result_data, requires_grad=(is_grad_enabled() and input.requires_grad))
+    
+    # 注册梯度函数
+    if ret.requires_grad:
+        ret.fromvars = (input,)
+        ret.parms = ((dim, result_dtype),)
+        ret.gradfuncs = (_cumsum_backward,)
+    
+    return _apply_out(out, ret, (input,), "cumsum")
+
 @api_registry.register('index_select')
 def index_select(input: TN, dim: int, index: TN, *, out = None) -> TN:
     """
@@ -4148,3 +4234,449 @@ def share_grad_map(tensors:tuple|list):
             target_list.append(t)
 
     return type(tensors)(target_list)
+
+@api_registry.register('tril')
+def tril(input_tensor: TN, diagonal: int = 0) -> TN:
+    """
+    返回矩阵的下三角部分
+    
+    参数:
+        input_tensor: 输入张量
+        diagonal: 对角线偏移量，默认为0
+                 diagonal > 0: 包括主对角线以上的diagonal条对角线
+                 diagonal = 0: 仅包括主对角线
+                 diagonal < 0: 仅包括主对角线以下的部分
+    
+    返回:
+        包含输入矩阵下三角部分的新张量
+    """
+    if not isinstance(input_tensor, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input_tensor)}")
+       
+    # 前向计算
+    arrlib = input_tensor._get_array_lib()
+    data = arrlib.tril(input_tensor._array, k=diagonal)
+    ret = TN(data, requires_grad = (is_grad_enabled() and input_tensor.requires_grad))
+    
+    # 注册梯度函数
+    if ret.requires_grad:
+        ret.fromvars = (input_tensor,)
+        ret.parms = (diagonal,)
+        ret.gradfuncs = (_tril_backward,)
+    
+    return ret
+
+def _tril_backward(result_tensor: TN, i: int) -> TN:
+    """
+    tril函数的反向传播实现。
+    下三角矩阵的梯度是保留结果梯度的下三角部分。
+    """
+    diagonal = result_tensor.parms[i]
+    # 重要：使用tril函数获取梯度的下三角部分，而不是numpy.tril
+    return tril(result_tensor.grad_value, diagonal)
+
+@api_registry.register('triu')
+def triu(input_tensor: TN, diagonal: int = 0) -> TN:
+    """
+    返回矩阵的上三角部分
+    
+    参数:
+        input_tensor: 输入张量
+        diagonal: 对角线偏移量，默认为0
+                 diagonal > 0: 仅包括主对角线以上的部分
+                 diagonal = 0: 仅包括主对角线
+                 diagonal < 0: 包括主对角线以下的-diagonal条对角线
+    
+    返回:
+        包含输入矩阵上三角部分的新张量
+    """
+    if not isinstance(input_tensor, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input_tensor)}")
+    
+    # 前向计算
+    arrlib = input_tensor._get_array_lib()
+    data = arrlib.triu(input_tensor._array, k=diagonal)
+    ret = TN(data, requires_grad = (is_grad_enabled() and input_tensor.requires_grad))
+    
+    # 注册梯度函数
+    if ret.requires_grad:
+        ret.fromvars = (input_tensor,)
+        ret.parms = (diagonal,)
+        ret.gradfuncs = (_triu_backward,)
+    
+    return ret
+
+def _triu_backward(result_tensor: TN, i: int) -> TN:
+    """
+    triu函数的反向传播实现。
+    上三角矩阵的梯度是保留结果梯度的上三角部分。
+    """
+    diagonal = result_tensor.parms[i]
+    # 重要：使用triu函数获取梯度的上三角部分，而不是numpy.triu
+    return triu(result_tensor.grad_value, diagonal)
+
+
+def _get_diagonal_len_start_pop(m:int, n:int, offset:int):
+    ''' 根据矩阵长宽、对角线偏移值，计算对角线长度和起点位置的坐标'''
+
+    if offset >= 0:
+        # 主对角线以上
+        new_n = n - offset
+        new_n = new_n if new_n > 0 else 0
+        diagonal_len = m if m < new_n else new_n
+        start_row, start_col = 0, offset  # 计算起始索引
+    else:
+        # 主对角线以下
+        new_m = m + offset
+        new_m = new_m if new_m > 0 else 0
+        diagonal_len = n if n < new_m else new_m
+        start_row, start_col = -offset, 0 # 计算起始索引
+
+    return diagonal_len,start_row,start_col
+
+@api_registry.register('diagonal')
+def diagonal(
+    input: TN, 
+    offset: int = 0, 
+    dim1: int = 0, 
+    dim2: int = 1
+) -> TN:
+    """
+    从输入张量中提取对角线元素
+    
+    该函数从指定的两个维度之间提取对角线元素。对于高维张量，函数会保留
+    其他维度，并在提取对角线的维度上生成一个新的张量，其形状为：
+    将dim1和dim2替换为一个新维度，该维度的大小等于对角线长度。
+    
+    参数:
+        input (TN): 输入张量，必须至少是2维的。如果是高维张量，
+                   则在指定的两个维度间提取对角线。
+        offset (int, 可选): 要考虑的对角线偏移量，默认为0（主对角线）。
+            - 如果offset > 0，则提取主对角线以上的对角线
+            - 如果offset < 0，则提取主对角线以下的对角线
+            - 如果offset = 0，则提取主对角线
+        dim1 (int, 可选): 相对于其提取对角线的第一个维度，默认为0。
+            支持负索引（-1表示最后一个维度）。
+        dim2 (int, 可选): 相对于其提取对角线的第二个维度，默认为1。
+            支持负索引（-1表示最后一个维度）。
+    
+    返回:
+        TN: 包含对角线元素的新张量。对于形状为(*, a, b, *)的输入张量，
+            如果从dim1和dim2维度提取对角线，则输出形状为(*, 对角线长度, *)
+    
+    异常:
+        TypeError: 当输入不是TN类型时
+        ValueError: 当输入张量维度小于2，或dim1等于dim2时
+        IndexError: 当指定的维度超出有效范围时
+    
+    示例:
+        >>> x = tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+        >>> diagonal(x)  # 提取主对角线
+        tensor([1, 5, 9])
+        >>> diagonal(x, offset=1)  # 提取主对角线以上的对角线
+        tensor([2, 6])
+        >>> diagonal(x, offset=-1)  # 提取主对角线以下的对角线
+        tensor([4, 8])
+        >>> y = tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
+        >>> diagonal(y, dim1=1, dim2=2)  # 从高维张量中提取对角线
+        tensor([[1, 4], [5, 8]])
+    """
+    # 检查输入是否为TN类型
+    if not isinstance(input, TN):
+        raise TypeError("Input must be a tensor")
+    
+    # 检查输入是否至少是2维的
+    if input._array.ndim < 2:
+        raise ValueError("Input tensor must be at least 2-dimensional")
+    
+    # 检查dim1和dim2是否有效
+    if dim1 == dim2:
+        raise ValueError(f"dim1 and dim2 cannot be the same value ({dim1})")
+    
+    # 处理负维度
+    if dim1 < 0:
+        dim1 = input._array.ndim + dim1
+    if dim2 < 0:
+        dim2 = input._array.ndim + dim2
+    
+    # 检查维度是否在有效范围内
+    if dim1 < 0 or dim1 >= input._array.ndim:
+        raise IndexError(f"Dimension out of range (expected to be in range of [-{input._array.ndim}, {input._array.ndim-1}], but got {dim1})")
+    if dim2 < 0 or dim2 >= input._array.ndim:
+        raise IndexError(f"Dimension out of range (expected to be in range of [-{input._array.ndim}, {input._array.ndim-1}], but got {dim2})")
+    
+    # 计算对角线长度
+    m, n = input.shape[dim1], input.shape[dim2]
+    diagonal_len, start1, start2 = _get_diagonal_len_start_pop(m,n,offset)
+    
+    # 如果对角线长度为0，返回空张量
+    if diagonal_len == 0:
+        output_shape = list(input.shape)
+        output_shape.pop(builtins.max(dim1, dim2))
+        output_shape[builtins.min(dim1, dim2)] = 0
+        # 将列表转换为元组并解包传递给zeros函数
+        return zeros(*tuple(output_shape), dtype=input.dtype, device=input.device, requires_grad=input.requires_grad)
+    
+    
+    # 创建对角线索引
+    indices = [slice(None)] * input.ndim
+    
+    # 创建对角线位置的索引数组（使用numpy即可，索引值不依赖于设备）
+    idx = np.arange(diagonal_len, dtype=int)
+    
+    # 设置dim1和dim2维度的索引
+    indices[dim1] = start1 + idx
+    indices[dim2] = start2 + idx
+    
+    # 直接使用TN张量的索引操作获取对角线元素
+    result = input[tuple(indices)]
+    
+    return result    
+# end of diagonal
+
+@api_registry.register('diag')
+def diag(input: TN, offset: int = 0) -> TN:
+    """
+    提取张量的对角线元素或从1D张量创建对角矩阵。
+    
+    此函数有两种行为模式：
+    1. 当输入是1D张量时：返回一个以输入为对角线元素的2D对角矩阵
+    2. 当输入是2D或更高维张量时：返回指定对角线的元素，作为1D张量
+    
+    参数:
+        input (TN): 输入张量。如果是1D张量，则创建对角矩阵；如果是2D或更高维张量，则提取对角线元素
+        offset (int, 可选): 对角线偏移量，默认为0（主对角线）
+            - 对于2D及以上输入：如果diagonal > 0，则提取主对角线以上的对角线；如果diagonal < 0，则提取主对角线以下的对角线
+            - 对于1D输入：此参数被忽略，始终创建主对角矩阵
+    
+    返回:
+        TN: 
+            - 如果输入是1D张量，返回形状为(n, n)的2D对角矩阵
+            - 如果输入是2D或更高维张量，返回形状为(...)的1D张量，包含指定对角线的元素
+    
+    异常:
+        TypeError: 当输入不是TN类型时
+    
+    示例:
+        >>> import riemann as rm
+        >>> # 从1D张量创建对角矩阵
+        >>> x = rm.array([1, 2, 3])
+        >>> diag_x = rm.diag(x)
+        >>> # diag_x 是: [[1, 0, 0], [0, 2, 0], [0, 0, 3]]
+        >>> 
+        >>> # 提取2D张量的对角线元素
+        >>> y = rm.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+        >>> diag_y = rm.diag(y)
+        >>> # diag_y 是: [1, 5, 9]
+        >>> 
+        >>> # 提取偏移对角线
+        >>> diag_y_offset = rm.diag(y, diagonal=1)
+        >>> # diag_y_offset 是: [2, 6]
+    """
+    # 检查输入是否为TN类型
+    if not isinstance(input, TN):
+        raise TypeError("Input must be a tensor")
+    
+    # 处理1D输入 - 创建对角矩阵
+    if input.ndim == 1:
+        n = input._array.shape[0]
+        
+        # 创建单位矩阵模板
+        identity_tensor = eye(n, device = input.device, dtype = input.dtype)
+        
+        # 使用广播机制生成对角矩阵
+        # 将输入张量扩展维度，然后与单位矩阵相乘
+        result = input.unsqueeze(-1) * identity_tensor
+        
+        return result
+    # 处理2D或更高维输入 - 提取对角线元素
+    elif input.ndim == 2:
+        return diagonal(input, offset=offset, dim1=0, dim2=1)
+    else:
+        raise RuntimeError('diag(): Supports 1D or 2D tensors. Got {input.ndim}D')
+
+# end of diag
+
+@api_registry.register('fill_diagonal')
+def fill_diagonal(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int = -1) -> TN:
+    """
+    用指定值填充张量指定维度之间的对角线元素，返回新张量。
+    
+    参数:
+        input (TN): 输入张量，必须至少是2维的
+        value: 用于填充对角线的值，可以是标量或与对角线长度相同的1D张量
+        offset (int, 可选): 对角线偏移量，默认为0（主对角线）
+            - 如果offset > 0，则填充主对角线以上的对角线
+            - 如果offset < 0，则填充主对角线以下的对角线
+        dim1 (int, 可选): 要考虑的第一个维度，默认为-2（倒数第二个维度）
+        dim2 (int, 可选): 要考虑的第二个维度，默认为-1（最后一个维度）
+    
+    返回:
+        TN: 填充对角线后的新张量
+    
+    异常:
+        TypeError: 当输入不是TN类型时
+        ValueError: 当输入张量维度小于2，或dim1等于dim2时
+        IndexError: 当指定的维度超出有效范围时
+    """
+    # 检查输入是否为TN类型
+    if not isinstance(input, TN):
+        raise TypeError("Input must be a tensor")
+    
+    # 检查输入是否至少是2维的
+    if input.ndim < 2:
+        raise ValueError("Input tensor must be at least 2-dimensional")
+    
+    # 处理负维度
+    if dim1 < 0:
+        dim1 = input.ndim + dim1
+    if dim2 < 0:
+        dim2 = input.ndim + dim2
+    
+    # 检查维度是否在有效范围内
+    if dim1 < 0 or dim1 >= input.ndim:
+        raise IndexError(f"Dimension1 out of range (expected to be in range of [-{input.ndim}, {input.ndim-1}], but got {dim1})")
+    if dim2 < 0 or dim2 >= input.ndim:
+        raise IndexError(f"Dimension2 out of range (expected to be in range of [-{input.ndim}, {input.ndim-1}], but got {dim2})")
+    
+    # 检查dim1和dim2是否不同
+    if dim1 == dim2:
+        raise ValueError(f"dim1 and dim2 cannot be the same value ({dim1})")
+    
+    m, n = input.shape[dim1], input.shape[dim2]
+    diagonal_len, start1, start2 = _get_diagonal_len_start_pop(m,n,offset)
+    
+    # 如果对角线长度为0，则直接返回输入的副本
+    if diagonal_len == 0:
+        return input.clone()
+    
+    # 创建对角线索引
+    indices = [slice(None)] * input.ndim
+    
+    # 创建对角线位置的索引数组（使用numpy即可，索引值不依赖于设备）
+    idx = np.arange(diagonal_len, dtype=int)
+    
+    # 设置dim1和dim2维度的索引，与diagonal函数保持一致
+    indices[dim1] = start1 + idx
+    indices[dim2] = start2 + idx
+ 
+    # 准备填充值
+    if not isinstance(value, TN):
+        fill_value = as_tensor(value, dtype = input.dtype, device=input.device)
+    else:
+        fill_value = value
+
+    # 按索引赋值input张量，setat返回创建的新张量
+    result = input.setat(tuple(indices), fill_value)    
+    return result
+
+# end of fill_diagonal
+
+@api_registry.register('fill_diagonal_')
+def fill_diagonal_(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int = -1) -> TN:
+    """
+    用指定值原地填充张量指定维度之间的对角线元素，返回原张量。
+    
+    参数:
+        input (TN): 输入张量，必须至少是2维的
+        value: 用于填充对角线的值，可以是标量或与对角线长度相同的1D张量
+        offset (int, 可选): 对角线偏移量，默认为0（主对角线）
+            - 如果offset > 0，则填充主对角线以上的对角线
+            - 如果offset < 0，则填充主对角线以下的对角线
+        dim1 (int, 可选): 要考虑的第一个维度，默认为-2（倒数第二个维度）
+        dim2 (int, 可选): 要考虑的第二个维度，默认为-1（最后一个维度）
+    
+    返回:
+        TN: 原张量
+    
+    异常:
+        TypeError: 当输入不是TN类型时
+        ValueError: 当输入张量维度小于2，或dim1等于dim2时
+        IndexError: 当指定的维度超出有效范围时
+    """
+    # 检查输入是否为TN类型
+    if not isinstance(input, TN):
+        raise TypeError("Input must be a tensor")
+    
+    # 检查输入是否至少是2维的
+    if input.ndim < 2:
+        raise ValueError("Input tensor must be at least 2-dimensional")
+    
+    # 处理负维度
+    if dim1 < 0:
+        dim1 = input.ndim + dim1
+    if dim2 < 0:
+        dim2 = input.ndim + dim2
+    
+    # 检查维度是否在有效范围内
+    if dim1 < 0 or dim1 >= input.ndim:
+        raise IndexError(f"Dimension1 out of range (expected to be in range of [-{input.ndim}, {input.ndim-1}], but got {dim1})")
+    if dim2 < 0 or dim2 >= input.ndim:
+        raise IndexError(f"Dimension2 out of range (expected to be in range of [-{input.ndim}, {input.ndim-1}], but got {dim2})")
+    
+    # 检查dim1和dim2是否不同
+    if dim1 == dim2:
+        raise ValueError(f"dim1 and dim2 cannot be the same value ({dim1})")
+    
+    m, n = input.shape[dim1], input.shape[dim2]
+    diagonal_len, start1, start2 = _get_diagonal_len_start_pop(m,n,offset)
+    
+    # 如果对角线长度为0，则直接返回输入张量
+    if diagonal_len == 0:
+        return input
+    
+    # 创建对角线索引
+    indices = [slice(None)] * input.ndim
+    
+    # 创建对角线位置的索引数组（使用numpy即可，索引值不依赖于设备）
+    idx = np.arange(diagonal_len, dtype=int)
+    
+    # 设置dim1和dim2维度的索引，与diagonal函数保持一致
+    indices[dim1] = start1 + idx
+    indices[dim2] = start2 + idx
+ 
+    # 准备填充值
+    if not isinstance(value, TN):
+        fill_value = as_tensor(value, dtype = input.dtype, device=input.device)
+    else:
+        fill_value = value
+
+    # 按索引原地赋值input张量
+    result = input.setat_(tuple(indices), fill_value)    
+    return result
+
+# end of fill_diagonal_
+
+# 从批量1D张量生成批量对角矩阵的函数
+@api_registry.register('batch_diag')
+def batch_diag(v):
+    """从批量1D张量生成批量对角矩阵
+    
+    参数:
+        v: 输入张量，形状为(*, n)，其中*表示任意数量的批处理维度
+        
+    返回:
+        形状为(*, n, n)的对角矩阵，对角线元素为输入张量的值
+    """
+    # 验证输入
+    if not isinstance(v, TN):
+        raise TypeError(f"Input must be TN type, got {type(v)}")
+    
+    # 获取输入形状
+    shape = v.shape
+    n = shape[-1]  # 最后一维的大小
+    
+    # 创建单位矩阵模板，确保与输入张量的数据类型一致
+    identity_tensor = eye(n, device=v.device, dtype=v.dtype)
+    
+    # 使用广播机制生成对角矩阵
+    # 将输入张量扩展维度，然后与单位矩阵相乘
+    # 形状变化：(*, n) -> (*, 1, n) -> (*, n, n)
+    batch_eye = identity_tensor.expand(shape[:-1] + (n, n))
+    v_expanded = v.unsqueeze(-2)  # 扩展为 (*, 1, n)
+    
+    # 逐元素相乘，利用广播机制
+    result = v_expanded * batch_eye
+    return result
+
+# end of batch_diag

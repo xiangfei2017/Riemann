@@ -978,7 +978,7 @@ class TestInplaceOperations(unittest.TestCase):
                 start_time = time.time()
                 print(f"Test case: {case_name}")
                 try:
-                    merged_index = rm_x.merge_indices(scenario['base_index'], scenario['current_index'])
+                    merged_index = rm.merge_indices(rm_x, scenario['base_index'], scenario['current_index'])
                     print(f"Merged index: {merged_index}")
 
                     view1 = rm_x[scenario['base_index']]
@@ -1078,7 +1078,7 @@ class TestInplaceOperations(unittest.TestCase):
     # ==================== 索引合并测试 ====================
     def _index_merge_body(self, base_tensor, scenario, device):
         rm_x = rm.tensor(base_tensor, requires_grad=True, device=device)
-        merged_index = rm_x.merge_indices(scenario['base_index'], scenario['current_index'])
+        merged_index = rm.merge_indices(rm_x, scenario['base_index'], scenario['current_index'])
         index_passed = safe_compare_index(merged_index, scenario['expected'])
 
         view_passed = True

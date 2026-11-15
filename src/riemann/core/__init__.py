@@ -50,13 +50,11 @@ core.tensordef 先完成加载，避免循环导入。
 
 from .tensordef import *
 from .tensorfuncs import *
-# from .dtype import *
-# from .gradmode import *
 
 # tensordef 的内部辅助函数必须在 serialization 之前重导出：
 # serialization -> nn.module -> nn.kan -> linalg 的导入链会在本包尚未完成
 # 初始化时通过 `from ..core import _apply_out` 等取用这些名字
-from .tensordef import _batch_slice, _apply_out, _apply_out_tuple
+from .tensordef import _apply_out, _apply_out_tuple, _getitem_backward
 
 from .serialization import *
 from .serialization import _parameter_constructor

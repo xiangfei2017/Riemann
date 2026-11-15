@@ -56,7 +56,7 @@ hessian 复用 _jacobian_via_vjp 内核，对 grad 的结果再求一次 Jacobia
 import builtins
 from typing import Callable, Any, Optional, Union
 from .core import *
-from .core import _batch_slice
+from .core import _getitem_backward
 from .autograd.grad import grad as _grad
 
 
@@ -1082,6 +1082,29 @@ def hessian(func: Callable[..., TN],
 # ---------------------------------------------------------------------------
 # vmap
 # ---------------------------------------------------------------------------
+def _batch_slice(tensor: TN, index: tuple) -> TN:
+    """vmap 专用快速切片，等价于 tensor[index] 但跳过通用索引分派。
+
+    仅用于基础索引（slice / 整数）且索引已由调用方归一化为非负的情形：
+    直接取底层数组的视图，并在需要梯度时保留到原张量的梯度边
+    （fromvars / parms / gradfuncs 与 __getitem__ 完全一致）。
+    """
+    data = tensor._array[index]
+    # 标量索引可能返回 numpy/cupy 标量而非 0 维数组，
+    # 统一转成数组，保持与 __getitem__ 的一致性（否则 ndim/_get_array_lib 会失效）
+    arrlib = tensor._get_array_lib()
+    if not isinstance(data, arrlib.ndarray):
+        data = arrlib.asarray(data)
+
+    ret = TN(data, requires_grad=is_grad_enabled() and tensor.requires_grad)
+    ret._is_view = True
+    ret._base = tensor
+    ret._view_index = index
+    if ret.requires_grad:
+        ret.fromvars = (tensor,)
+        ret.parms = (index,)
+        ret.gradfuncs = (_getitem_backward,)
+    return ret
 
 def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
          in_dims: Union[int, tuple[int, ...], list[Optional[int]]] = 0,
