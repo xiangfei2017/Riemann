@@ -57,7 +57,8 @@ from .tensordef import *
 from .tensordef import (
     _validate_shape, _require_tn, _get_device,
     _get_broadcast_axis, _apply_out, _apply_out_tuple,
-    _convert_TNindex_to_numpy, _floordiv_grad_left, _floordiv_grad_right
+    _convert_TNindex_to_numpy, _floordiv_grad_left, _floordiv_grad_right,
+    _same_device
 )
 
 
@@ -67,7 +68,7 @@ from .tensordef import (
 #   1. 模块常量
 #   2. 张量创建与转换（from_numpy / from_dlpack / arange / linspace）
 #   3. 随机数（随机种子、均匀/正态分布、随机整数与排列、多项式采样）
-#   4. 基础逐元素数学（取整、平方、三角函数、双曲函数及其梯度）
+#   4. 基础逐元素数学（取整、平方、指数/对数、最值、三角函数、双曲函数及其梯度）
 #   5. 归约与统计（逻辑运算、求和、方差、乘积、累积和、排序、topk）
 #   6. 索引合并（视图索引链 -> 原始张量索引）
 #   7. 原地索引操作（_i*_full 全量向量化、反向回调、*at_/*at 接口、abs_/neg_）
@@ -672,9 +673,29 @@ def multinomial(input: TN, num_samples: int, replacement: bool = False, *, gener
 
 
 # ===========================================================================
-# 4. 基础逐元素数学（取整、平方、三角函数、双曲函数及其梯度）
+# 4. 基础逐元素数学（取整、平方、指数/对数、最值、三角函数、双曲函数及其梯度）
 # ===========================================================================
 
+
+def _sign_derivative(result:TN, x:TN)->tuple[TN]:
+    # sign函数在x=0处不可导，在其他点处梯度为0
+    # 梯度为零，与上游梯度相乘后仍为零
+    return (result.grad_value * zeros_like(x),)
+
+@api_registry.register
+@track_grad(_sign_derivative)
+def sign(x:TN)->TN:
+    """计算张量的符号函数
+    
+    对于复数 z = a + bi:
+    - 如果 z ≠ 0: sign(z) = z / |z| = (a + bi) / √(a² + b²)
+    - 如果 z = 0: sign(z) = 0
+    
+    该函数支持实数和复数张量，并正确处理反向传播。
+    """
+    _require_tn(x, 'sign')
+    arrlib = x._get_array_lib()
+    return TN(arrlib.sign(x._array))
 
 def exp2(x:TN)->TN:
     _require_tn(x, 'exp2')
@@ -1174,6 +1195,401 @@ def arctanh(x:TN)->TN:
     return TN(arrlib.arctanh(x._array))
 
 
+@api_registry.register
+def sqrt(x:TN)->TN:
+    """
+    计算张量的平方根。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的平方根。
+    
+    Args:
+        x (TN): 输入张量，元素必须为非负数
+        
+    Returns:
+        TN: 包含输入张量平方根的新张量
+        
+    Examples:
+        >>> a = tensor([1, 4, 9])
+        >>> sqrt(a)  # 返回[1, 2, 3]
+        
+        >>> b = tensor([[4.0, 9.0], [16.0, 25.0]])
+        >>> sqrt(b)  # 返回[[2.0, 3.0], [4.0, 5.0]]
+    """
+    _require_tn(x, 'sqrt')
+    return x ** 0.5
+
+
+def _log_grad(result_tensor:TN, i:int)->TN:
+    x = result_tensor.fromvars[i]
+    return result_tensor.grad_value * (1. / x.conj())
+
+
+@api_registry.register
+def log(x:TN)->TN:
+    """
+    计算张量的自然对数。
+
+    返回一个新张量，其中每个元素是输入张量对应元素的自然对数(ln(x))。
+
+    Args:
+        x (TN): 输入张量，元素必须为正数
+
+    Returns:
+        TN: 包含输入张量自然对数的新张量
+
+    Examples:
+        >>> a = tensor([1, e, e^2])  # e是自然常数
+        >>> log(a)  # 返回[0, 1, 2]
+
+        >>> b = tensor([[1.0, 2.718], [7.389, 20.086]])
+        >>> log(b)  # 返回[[0.0, 1.0], [2.0, 3.0]]
+    """
+    _require_tn(x, 'log')
+    arrlib = x._get_array_lib()
+    result_data = arrlib.log(x._array)
+    requires_grad = (is_grad_enabled() and x.requires_grad)
+    ret = TN(result_data, requires_grad)
+    
+    if requires_grad:
+        ret.fromvars = (x,)
+        ret.gradfuncs = (_log_grad,)
+
+    return ret
+
+
+@api_registry.register
+def log1p(x: TN) -> TN:    
+    """
+    计算张量的log(1+x)。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素加1后的自然对数，即log(1+x)。
+    对于x接近0的小值，这个函数比直接计算log(1+x)更精确。
+    
+    Args:
+        x (TN): 输入张量，元素必须大于-1
+        
+    Returns:
+        TN: 包含输入张量log(1+x)的新张量
+        
+    Examples:
+        >>> a = tensor([0, 1, 2])
+        >>> log1p(a)  # 返回[log(1), log(2), log(3)] ≈ [0, 0.693, 1.099]
+        
+        >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
+        >>> log1p(b)  # 返回[[0.0, 0.693], [1.099, 1.386]]
+    """
+    return log(x + 1.0)  # 复用现有log函数
+
+
+@api_registry.register
+def log2(x:TN)->TN:
+    """
+    计算张量的二进制对数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的二进制对数(log2(x))。
+    
+    Args:
+        x (TN): 输入张量，元素必须为正数
+        
+    Returns:
+        TN: 包含输入张量二进制对数的新张量
+    """
+    return log(x) / np.log(2.0)
+
+
+@api_registry.register
+def log10(x:TN)->TN:
+    """
+    计算张量的十进制对数。
+    
+    返回一个新张量，其中每个元素是输入张量对应元素的十进制对数(log10(x))。
+    
+    Args:
+        x (TN): 输入张量，元素必须为正数
+        
+    Returns:
+        TN: 包含输入张量十进制对数的新张量
+    """
+    return log(x) / np.log(10.0)
+    
+
+def _exp_grad(result_tensor:TN, i:int)->TN:
+    return result_tensor.grad_value * result_tensor.conj()
+
+
+@api_registry.register
+def exp(x:TN)->TN:
+    """
+    计算张量的指数函数。
+
+    返回一个新张量，其中每个元素是输入张量对应元素的自然指数(e^x)。
+
+    Args:
+        x (TN): 输入张量
+
+    Returns:
+        TN: 包含输入张量指数函数值的新张量
+
+    Examples:
+        >>> a = tensor([0, 1, 2])
+        >>> exp(a)  # 返回[e^0, e^1, e^2] ≈ [1, 2.718, 7.389]
+
+        >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
+        >>> exp(b)  # 返回[[1.0, 2.718], [7.389, 20.086]]
+    """
+    _require_tn(x, 'exp')
+    arrlib = x._get_array_lib()
+    ret = TN(arrlib.exp(x._array), is_grad_enabled() and x.requires_grad)
+    
+    if ret.requires_grad:
+        ret.fromvars = (x,)
+        ret.gradfuncs = (_exp_grad,)
+
+    return ret
+
+
+@api_registry.register
+def maximum(input: TN, other: TN) -> TN:
+    """
+    计算两个张量的逐元素最大值
+    
+    参数:
+        input (TN): 第一个输入张量
+        other (TN): 第二个输入张量，可以是标量或与input广播兼容的张量
+        
+    返回:
+        TN: 包含两个张量逐元素最大值的新张量
+        
+    异常:
+        TypeError: 当输入不是TN张量时抛出
+        
+    示例:
+        >>> a = rm.tensor([[1, 2], [3, 4]])
+        >>> b = rm.tensor([[2, 1], [1, 5]])
+        >>> rm.maximum(a, b)
+        tensor([[2, 2],
+                [3, 5]])
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input to be TN tensor, got {type(input)}")
+    
+    arrlib = input._get_array_lib()
+    dev = input.device
+
+    if not isinstance(other, TN):
+        other = as_tensor(other,device=dev)
+    
+    if not _same_device(input, other):
+        raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
+    
+    # 前向计算：使用numpy的maximum
+    value = arrlib.maximum(input._array, other._array)
+    ret = TN(value, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
+    
+    # 注册梯度函数
+    if ret.requires_grad:
+        ret.fromvars = (input, other)
+        ret.gradfuncs = (_maximum_backward_input, _maximum_backward_other)
+    
+    return ret
+
+def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
+    """
+    maximum函数对第一个输入的梯度计算
+    
+    梯度规则：
+    - 当input > other时，梯度为1（传递梯度）
+    - 当input < other时，梯度为0（阻断梯度）
+    - 当input == other时，梯度为0.5（与PyTorch行为一致，平均分配）
+    """
+    input_tensor = result_tensor.fromvars[i]  # 第一个输入
+    other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
+    
+    
+    # 计算梯度掩码
+    # input > other: 1.0
+    # input == other: 0.5  # 与PyTorch一致
+    # input < other: 0.0
+    # 使用riemann的where函数，自动处理设备上下文
+    mask = where(
+        input_tensor > other_tensor, 
+        1.0, 
+        where(input_tensor < other_tensor, 0.0, 0.5)
+    ).type(input_tensor.dtype)
+    
+    # 应用梯度掩码
+    grad = result_tensor.grad_value * mask
+    
+    # 处理广播情况
+    input_shape = input_tensor.shape
+    result_shape = result_tensor.shape
+    
+    if input_shape != result_shape:
+        # 获取需要缩减的广播轴
+        broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
+        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
+    
+    return grad
+
+def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
+    """
+    maximum函数对第二个输入的梯度计算
+    
+    梯度规则：
+    - 当other > input时，梯度为1（传递梯度）
+    - 当other <= input时，梯度为0（阻断梯度）
+    - 当other == input时，梯度为0.5（平均分配）
+    """
+    other_tensor = result_tensor.fromvars[i]  # 第二个输入
+    input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
+    
+    
+    # 计算梯度掩码
+    # other > input: 1.0
+    # other == input: 0.5  # 与PyTorch一致
+    # other < input: 0.0
+    # 使用riemann的where函数，自动处理设备上下文
+    mask = where(
+        other_tensor > input_tensor, 
+        1.0,
+        where(other_tensor < input_tensor, 0.0, 0.5)
+    ).type(other_tensor.dtype)
+    
+    # 应用梯度掩码
+    grad = result_tensor.grad_value * mask
+    
+    # 处理广播情况
+    other_shape = other_tensor.shape
+    result_shape = result_tensor.shape
+    
+    if other_shape != result_shape:
+        # 获取需要缩减的广播轴
+        broadcast_axes = _get_broadcast_axis(result_shape, other_shape)
+        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(other_shape)
+    
+    return grad
+
+
+@api_registry.register
+def minimum(input: TN, other: TN) -> TN:
+    """
+    计算两个张量的逐元素最小值
+    
+    参数:
+        input (TN): 第一个输入张量
+        other (TN): 第二个输入张量，可以是标量或与input广播兼容的张量
+        
+    返回:
+        TN: 包含两个张量逐元素最小值的新张量
+        
+    异常:
+        TypeError: 当输入不是TN张量时抛出
+        
+    示例:
+        >>> a = rm.tensor([[1, 2], [3, 4]])
+        >>> b = rm.tensor([[2, 1], [1, 5]])
+        >>> rm.minimum(a, b)
+        tensor([[1, 1],
+                [1, 4]])
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input to be TN tensor, got {type(input)}")
+    
+    arrlib = input._get_array_lib()
+    dev = input.device
+
+    if not isinstance(other, TN):
+        other = as_tensor(other,device=dev)
+    
+    if not _same_device(input, other):
+        raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
+        
+    # 前向计算：使用numpy的minimum
+    value = arrlib.minimum(input._array, other._array)
+    ret = TN(value, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
+    
+    # 注册梯度函数
+    if ret.requires_grad:
+        ret.fromvars = (input, other)
+        ret.gradfuncs = (_minimum_grad_input, _minimum_grad_other)
+    
+    return ret
+
+def _minimum_grad_input(result_tensor: TN, i: int) -> TN:
+    """
+    minimum函数对第一个输入的梯度计算
+    
+    梯度规则：
+    - 当input < other时，梯度为1（传递梯度）
+    - 当input >= other时，梯度为0（阻断梯度）
+    - 当input == other时，梯度为0.5（平均分配）
+    """
+    input_tensor = result_tensor.fromvars[i]  # 第一个输入
+    other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
+    
+    # 计算梯度掩码
+    # input < other: 1.0
+    # input == other: 0.5  
+    # input > other: 0.0
+    # 使用riemann的where函数，自动处理设备上下文
+    mask = where(
+        input_tensor < other_tensor, 
+        1.0, 
+        where(input_tensor > other_tensor, 0.0, 0.5)
+    ).type(input_tensor.dtype)
+    
+    # 应用梯度掩码
+    grad = result_tensor.grad_value * mask
+    
+    # 处理广播情况
+    input_shape = input_tensor.shape
+    result_shape = result_tensor.shape
+    
+    if input_shape != result_shape:
+        # 获取需要缩减的广播轴
+        broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
+        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
+    
+    return grad
+
+def _minimum_grad_other(result_tensor: TN, i: int) -> TN:
+    """
+    minimum函数对第二个输入的梯度计算
+    
+    梯度规则：
+    - 当other < input时，梯度为1（传递梯度）
+    - 当other >= input时，梯度为0（阻断梯度）
+    - 当other == input时，梯度为0.5（平均分配）
+    """
+    other_tensor = result_tensor.fromvars[i]  # 第二个输入
+    input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
+    
+    # 计算梯度掩码
+    # other < input: 1.0
+    # other == input: 0.5
+    # other > input: 0.0
+    # 使用riemann的where函数，自动处理设备上下文
+    mask = where(
+        other_tensor < input_tensor, 
+        1.0,
+        where(other_tensor > input_tensor, 0.0, 0.5)
+    ).type(other_tensor.dtype)
+    
+    # 应用梯度掩码
+    grad = result_tensor.grad_value * mask
+    
+    # 处理广播情况
+    other_shape = other_tensor.shape
+    result_shape = result_tensor.shape
+    
+    if other_shape != result_shape:
+        # 获取需要缩减的广播轴
+        broadcast_axes = _get_broadcast_axis(result_shape, other_shape)
+        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(other_shape)
+    
+    return grad
+
+
 # ===========================================================================
 # 5. 归约与统计（逻辑运算、求和、方差、乘积、累积和、排序、topk）
 # ===========================================================================
@@ -1194,7 +1610,7 @@ def logical_and(input:TN, other:TN|int|float|bool)->TN:
         raise TypeError('input must be a tensor')
 
     if isinstance(other, TN):
-        if other.device != input.device:
+        if not _same_device(input, other):
             raise ValueError(f"Expected all tensors to be on the same device, "
                              f"but found devices: input={input.device}, other={other.device}")
         other_data = other._array
@@ -1221,7 +1637,7 @@ def logical_or(input:TN, other:TN|int|float|bool)->TN:
         raise TypeError('input must be a tensor')
 
     if isinstance(other, TN):
-        if other.device != input.device:
+        if not _same_device(input, other):
             raise ValueError(f"Expected all tensors to be on the same device, "
                              f"but found devices: input={input.device}, other={other.device}")
         other_data = other._array
@@ -1248,7 +1664,7 @@ def logical_xor(input:TN, other:TN|int|float|bool)->TN:
         raise TypeError('input must be a tensor')
 
     if isinstance(other, TN):
-        if other.device != input.device:
+        if not _same_device(input, other):
             raise ValueError(f"Expected all tensors to be on the same device, "
                              f"but found devices: input={input.device}, other={other.device}")
         other_data = other._array
@@ -1329,7 +1745,7 @@ def sumall(*args) -> TN:
     target_device = tensor_args[0].device if tensor_args else _get_device(None)
 
     # 所有张量必须在同一设备上
-    bad_arg = next((arg for arg in tensor_args if arg.device != target_device), None)
+    bad_arg = next((arg for arg in tensor_args if not _same_device(arg, tensor_args[0])), None)
     if bad_arg is not None:
         raise ValueError(
             f"All tensor arguments must be on the same device, "
@@ -2019,36 +2435,122 @@ def nonzero(input: TN, *, as_tuple: bool = False) -> TN | tuple[TN, ...]:
     return result
 
 
+def _var_backward(result_tensor:TN, i:int)->TN:
+    dim,unbiased,keepdim = result_tensor.parms[i]     
+    x=result_tensor.fromvars[i]
+    
+    # 计算样本数量n
+    if dim is None:
+        n = x.numel()
+    elif isinstance(dim, int):
+        n = x.shape[dim]
+    elif isinstance(dim, tuple):
+        # 对于多维度，我们需要计算每个维度的大小的乘积
+        n = 1
+        for d in dim:
+            n *= x.shape[d]
+    else:
+        raise TypeError(f"dim must be int, tuple or None, got {type(dim)}")
+    
+    # 计算自由度调整
+    ddof = 1 if unbiased else 0
+    denom = builtins.max(n - ddof, 1)  # 避免除以0
+    
+    # 计算(x - mean(x))的梯度因子
+    x_mean = mean(x, dim=dim, keepdim=True)  # 始终使用keepdim=True以保持广播正确
+    diff = x - x_mean
+    factor = x.dtype.type(2.0 / denom)       # 确保因子与输入张量的dtype一致，避免计算时导致数据类型提升
+
+    # 如果keepdim为False，需要扩展梯度维度以匹配diff的维度
+    # unsqueeze支持int、tuple和None，dim=None时直接返回原张量
+    if not keepdim:
+        grad_value = result_tensor.grad_value.unsqueeze(dim)
+    else:
+        grad_value = result_tensor.grad_value
+    
+    # 计算最终梯度
+    grad = grad_value * diff * factor
+    return grad
+
+
+@api_registry.register
+def var(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->TN:
+    if not isinstance(x,TN):
+        raise SyntaxError('x must be a tensor')
+    
+    if dim == ():
+        dim = None
+    ddof = 1 if unbiased == True else 0
+
+    value = x._array.var(axis=dim, ddof=ddof, keepdims=keepdim)
+    ret = TN(value, requires_grad = (is_grad_enabled() and x.requires_grad))
+    
+    if ret.requires_grad:
+        ret.fromvars=(x,)
+        ret.parms=((dim,unbiased,keepdim),)
+        ret.gradfuncs=(_var_backward,)
+    
+    return ret
+
+
+@api_registry.register
+def std(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->TN:
+    return sqrt(var(x,dim,unbiased,keepdim))
+
+
 # ===========================================================================
 # 6. 索引合并（视图索引链 -> 原始张量索引）
+# ===========================================================================
+#
+# x[base_index][current_index] 等价于 x[merge_indices(x, base_index, current_index)]：
+# 把两段索引复合为一次，用于原地操作定位到原始张量中的真实元素。
+#
+# 调用关系（按 merge_indices 的五个阶段）：
+#   merge_indices(self, base_index, current_index)
+#     ├─ 阶段1 _try_merge_special_base_index
+#     │        空元组 / (None,) / 全整数三类特例，命中直接返回，否则继续
+#     ├─ 阶段2 _preprocess_base_index
+#     │        └─ _normalize_index_to_tuple、_expand_ellipsis
+#     │        → (base_tuple, view_dims)  view_dims 为保留维度的位置
+#     ├─ 阶段3 _preprocess_current_index
+#     │        └─ _normalize_index_to_tuple、_expand_ellipsis
+#     │        → 与 view_dims 等长的当前索引（保留 None 的位置）
+#     ├─ 阶段4 逐个视图维度复合：
+#     │        base_idx ─_normalize_index→ base_desc
+#     │        curr_idx ─_normalize_index→ current_desc（dim_size 取视图大小）
+#     │        两者 ─_merge_descriptors→ merged ─_descriptor_to_index→ 索引对象
+#     └─ 阶段5 按 base_index 的维度顺序组装：整数/None 维度原样保留，
+#              视图维度输出阶段4结果，并按相对位置插入 current 的 None
+#
+# 数据表示：_IndexDescriptor 统一描述“一个维度上的选择”
+#   LINEAR  f(i) = start + i*step   切片，正负步长通用，可直接复合
+#   LOOKUP  indices[i]              整数/数组/布尔，负索引已归一化
+#   None    仅添加维度、不消耗视图维度，不进入描述符
 # ===========================================================================
 
 
 class _IndexDescriptor:
-    """
-    统一索引描述符类
-    
-    用于统一表示不同类型的索引（切片、数组、整数），便于进行索引合并计算。
-    调用者: _normalize_index、_merge_descriptors、_descriptor_to_index、merge_indices
-    （构造实例并按类型分派）
+    """统一索引描述符：用一个维度上的“选择”表示切片/整数/数组索引。
 
-    - LINEAR：等差数列索引，元素映射为 f(i) = start + i*step，
-      其中 i ∈ [0, (stop-start)/step)；正负步长统一适用，合并时可直接做复合映射
+    索引合并需要“两次选择复合为一次”，因此把各类索引归约为两种可复合形式：
+
+    - LINEAR：等差数列 f(i) = start + i*step，i ∈ [0, (stop-start)/step)；
+      正负步长统一适用，两个切片复合后仍是切片
     - LOOKUP：显式离散位置表 indices；布尔索引已转为 True 所在位置，
-      负索引已按维度大小归一化
-    - NONE：保留类型；实际 None（np.newaxis）在 _normalize_index 中返回 Python None，
-      表示仅添加维度，不参与描述符合并
-    
+      负索引已按维度大小归一化，两个查找表复合后仍是查找表
+    - NONE：保留类型，仅表示 np.newaxis 语义；实际 None 在 _normalize_index
+      中直接返回 Python None，不进入描述符运算
+
     属性:
         type: 索引类型（LINEAR、LOOKUP 或 NONE）
-        params: 类型特定的参数字典
-    
+        params: 类型特定参数，LINEAR 为 {start, stop, step}，LOOKUP 为 {indices}
+
     示例:
-        >>> # 表示切片 slice(2, 10, 2)
-        >>> desc = _IndexDescriptor(_IndexDescriptor.LINEAR, start=2, stop=10, step=2)
-        >>> 
-        >>> # 表示数组索引 [0, 2, 4]
-        >>> desc = _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=np.array([0, 2, 4]))
+        >>> _IndexDescriptor(_IndexDescriptor.LINEAR, start=2, stop=10, step=2)
+        >>> _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=np.array([0, 2, 4]))
+
+    调用者: _normalize_index（构造）、_merge_descriptors（复合）、
+    _descriptor_to_index（还原为可直接索引的对象）
     """
     
     LINEAR = 'LINEAR'  # 线性切片索引，如 slice(start, stop, step)
@@ -2580,116 +3082,60 @@ def _descriptor_to_index(desc: _IndexDescriptor, original_type: type = None, kee
 
 @api_registry.register
 def merge_indices(self, base_index, current_index):
-    """
-    基于 _IndexDescriptor 的索引合并函数
+    """把视图索引链 base_index → current_index 复合为原始张量上的一次索引。
 
-    将视图索引链（base_index 和 current_index）合并为在原始张量上的等效索引。
-    这是原地操作的核心函数，用于确定需要修改原始张量的哪些元素。
+    用于原地操作：求出 x[base_index][current_index] 实际命中的原始张量元素，
+    返回可直接用于 x 的索引元组。整数维度已在视图中消去，None 维度只添加
+    坐标轴，二者都不参与复合，最后按原始维度顺序组装。
 
-    核心思想：
-        视图中每个保留的维度都能写成父维度上的线性映射（切片）或离散映射（数组）；
-        当前索引在该视图维度上再做一次选择，两次选择可以复合为一次映射
-        （详见 _merge_descriptors）。整数维度已被消去，None 维度只添加坐标轴，
-        二者都不参与复合运算，最后再按原始维度顺序组装结果。
+    五个阶段（调用关系图见本节顶部）：
+        1. _try_merge_special_base_index：空元组 / (None,) / 全整数三类特例
+        2. _preprocess_base_index：标准化 base_index、展开 Ellipsis，得到 view_dims
+        3. _preprocess_current_index：标准化 current_index，按视图维度数展开并补齐
+        4. 逐视图维度复合：_normalize_index ×2 → _merge_descriptors → _descriptor_to_index
+        5. 组装：按 base_index 顺序输出，并插入 current_index 中的 None
 
-    职责分层设计：
-    ----------------
-    本函数采用分层架构，各阶段职责清晰：
-
-    第一阶段 - 尝试处理特殊情况：
-        调用 _try_merge_special_base_index 处理可以快速合并的情况：
-        - base_index 为空元组（直接索引原始张量）
-        - base_index 为 (None,)（np.newaxis 创建的视图）
-        - base_index 全是整数索引（链式索引）
-        如果可以合并，直接返回结果，跳过后续阶段。
-        
-        注意：base_index 不会为 None，因为 _convert_TNindex_to_numpy 已将 None 转换为 (None,)
-
-    第二阶段 - 预处理 base_index：
-        调用 _preprocess_base_index 进行标准化：
-        - 将各种格式（slice、int、tuple 等）统一转换为元组格式
-        - 展开 Ellipsis（...），但不填充长度（因为 base_index 可能只索引部分维度）
-        - 计算 view_dims（真正构成视图维度的位置：切片/数组等，不含整数和 None）
-
-    第三阶段 - 预处理 current_index：
-        调用 _preprocess_current_index 进行标准化：
-        - 转换为元组格式
-        - 展开 Ellipsis
-        - 仅对非 None 元素补齐长度（None 不占视图维度），末尾补 slice(None)
-
-    第四阶段 - 逐个视图维度合并索引：
-        将 current_index 中的非 None 元素与 view_dims 一一对应：调用 _normalize_index
-        转为 _IndexDescriptor，用 _merge_descriptors 合并，再经 _descriptor_to_index 转回原始格式。
-        该阶段只计算“每个视图维度映射到原始张量的哪个位置”，不处理 None。
-
-    第五阶段 - 组装结果：
-        按 base_index 的维度顺序输出结果：整数/None 维度原样保留，视图维度输出其合并结果；
-        并在第 j 个视图维度之前插入 current_index 中位于第 j 个非 None 元素之前的 None。
-
-    支持的索引类型：
-    ----------------
-    - 切片索引：slice(start, stop, step)，支持正负步长
-    - 整数索引：int，支持负索引
-    - 数组索引：list、np.ndarray、cp.ndarray，支持布尔数组
-    - 省略号：Ellipsis（...）自动展开
-    - None 索引：np.newaxis，仅添加维度，不消耗视图维度
-
-    关键规则（None 的处理）：
-    ----------------
-    - None 不消耗视图维度，因此 current_index 的非 None 元素按顺序映射到 view_dims；
-      非 None 元素不足 view_dims 数量时，末尾用 slice(None) 补齐（等价于 Python 隐式全切片）。
-    - 合并结果是用于索引“原始张量”的，所以 None 新维度按其在 current_index 中的
-      相对位置插入：位于第 j 个非 None 元素之前的 None，插入到第 j 个视图维度之前；
-      j 等于视图维度数时追加到结果末尾。
-    - base_index 中的整数维度、None 维度均不参与合并，原样保留在结果中。
+    关键规则（None）：
+        - None 不消耗视图维度，current 的非 None 元素依次对应 view_dims[0..]
+        - 非 None 元素不足时末尾补 slice(None)，等价于 Python 的隐式全切片
+        - 结果中的 None 插入到对应视图维度之前；j == len(view_dims) 时追加到末尾
 
     Args:
-        base_index: 基础索引，用于创建视图。可以是 slice、int、tuple、list 或 np.ndarray
-        current_index: 当前索引，用于在视图上进行索引。可以是 slice、int、tuple 等
+        base_index: 创建视图时的索引（slice/int/tuple/list/ndarray）
+        current_index: 在视图上继续索引时的索引
 
     Returns:
-        tuple: 合并后的索引元组，可以直接用于原始张量的索引
+        tuple: 可直接用于原始张量的索引
 
     示例:
-        >>> # 基本切片合并：x[2:8][1:3] 等价于 x[3:5]
-        >>> merge_indices(self, slice(2, 8), slice(1, 3))
+        >>> merge_indices(self, slice(2, 8), slice(1, 3))        # x[2:8][1:3] == x[3:5]
         (slice(3, 5, None),)
-        >>>
-        >>> # 负步长切片：x[::-1][1:4] 在 1D 张量 [0..9] 上
-        >>> merge_indices(self, slice(None, None, -1), slice(1, 4))
-        (slice(8, 5, -1),)  # 选取元素 [8, 7, 6]
-        >>>
-        >>> # 多维索引合并：x[2:8, 3:7][1:3, 0:2] 等价于 x[3:5, 3:5]
+        >>> merge_indices(self, slice(None, None, -1), slice(1, 4))   # 负步长：取 [8, 7, 6]
+        (slice(8, 5, -1),)
         >>> merge_indices(self, (slice(2, 8), slice(3, 7)), (slice(1, 3), slice(0, 2)))
         (slice(3, 5, None), slice(3, 5, None))
-        >>>
-        >>> # 数组索引合并：x[[0,2,4]][[0,2]] 等价于 x[[0,4]]
-        >>> merge_indices(self, [0, 2, 4], [0, 2])
+        >>> merge_indices(self, [0, 2, 4], [0, 2])              # x[[0,2,4]][[0,2]] == x[[0,4]]
         (array([0, 4]),)
-        >>>
-        >>> # np.newaxis 特殊情况：x[None][0] 等价于 x[:]
-        >>> merge_indices(self, (None,), (0,))
+        >>> merge_indices(self, (None,), (0,))                  # x[None][0] == x[:]
         (slice(None),)
-        >>>
-        >>> # 在视图上新增维度：x[2:8, 3:7][None, 1:3] 等价于 x[None, 3:5, 3:7]
         >>> merge_indices(self, (slice(2, 8), slice(3, 7)), (None, slice(1, 3)))
         (None, slice(3, 5, None), slice(3, 7, None))
 
-    调用者: _inplace_unary_at_、_inplace_oper_at_（视图索引重定向时合并视图索引与当前索引）；
-    同时也是对外接口，供 rm.merge_indices 直接调用
+    调用者: _inplace_unary_at_、_inplace_oper_at_（视图索引重定向时合并两段索引）；
+    同时作为对外接口供 rm.merge_indices 调用
     """
     
-    # 第一阶段：尝试处理特殊情况    
+    # 阶段1：特例快速合并（空元组 / (None,) / 全整数），命中即返回
     result = _try_merge_special_base_index(base_index, current_index)
     if result is not None:
         return result
-    
-    # 提前获取基础张量形状，后续多个阶段复用
+
+    # 基础张量形状：后续阶段解析负索引/负步长时复用
     base_shape = self._base.shape if (hasattr(self, '_base') and self._base is not None) else self.shape
-    
-    # 第二阶段：预处理 base_index    
+
+    # 阶段2：预处理 base_index → (标准化元组, view_dims)
     base_index, view_dims = _preprocess_base_index(base_index, base_shape)
-    
+
     # 视图由部分索引创建时（尾部维度隐式全切片），base_index 不含这些维度。
     # 若当前索引显式作用于这些尾部维度（如 v[..., 1]，或 current 元素数超过
     # view_dims 数量），需先把 base_index 补齐为全维，否则省略号展开的维度数
@@ -2704,27 +3150,26 @@ def merge_indices(self, base_index, current_index):
             view_dims = [i for i, idx in enumerate(base_index)
                          if not isinstance(idx, int) and idx is not None]
     
-    # 第三阶段：预处理 current_index    
+    # 阶段3：预处理 current_index → 与 view_dims 等长的索引序列
     current_index = _preprocess_current_index(current_index, view_dims)
-    
-    # 第四阶段：逐个维度合并索引
+
+    # 阶段4：逐个视图维度复合 base/current 两个描述符
     merged_dims = {}  # 视图维度位置 -> 合并后的索引
     current_non_none = [idx for idx in current_index if idx is not None]
-    
+
     for i, view_dim in enumerate(view_dims):
+        # 第 i 个非 None 索引对应第 i 个视图维度；None 不参与合并，
+        # 留到阶段5按相对位置插入
         base_idx = base_index[view_dim]
         curr_idx = current_non_none[i]
-        
-        # 第 i 个非 None 索引作用于第 i 个视图维度 view_dims[i]；
-        # None 已从当前索引序列中剔除，留到第五阶段按相对位置插入
-        
-        # 获取该视图维度在原始张量中对应维度的大小（用于解析负索引/负步长）
+
+        # 该视图维度在原始张量中对应维度的大小（用于解析负索引/负步长）
         dim_size = base_shape[view_dim] if view_dim < len(base_shape) else 1
         
         # 标准化基础索引为 IndexDescriptor
         base_desc = _normalize_index(base_idx, dim_size)
 
-        # 防御性处理：base_tuple 中若残留 None（理论上已被 view_dims 排除），保持原样
+        # view_dims 已排除 None，这里仅作防御：无法标准化时保持原索引
         if base_desc is None:
             merged_dims[view_dim] = base_idx
             continue
@@ -2741,7 +3186,7 @@ def merge_indices(self, base_index, current_index):
         merged = _merge_descriptors(base_desc, current_desc)
         merged_dims[view_dim] = _descriptor_to_index(merged, type(curr_idx), keep_step_none=True)
     
-    # 第五阶段：组装结果
+    # 阶段5：组装结果
     # 统计每个 None 前面有多少个非 None 元素：none_before[j] 表示需要插到
     # 第 j 个视图维度之前的 None 数量；j == 视图维度数时表示追加到末尾
     none_before = {}
@@ -3221,7 +3666,7 @@ def _adjust_right_val(input:TN, target_data, val):
     if isinstance(val, TN):
         right_val = val
         # 检查设备一致性
-        if right_val.device != input.device:
+        if not _same_device(right_val, input):
             raise ValueError(f"Right value device {right_val.device} does not match target device {input.device}")
         # 检查并转换dtype
         if right_val.dtype != input.dtype:
@@ -3957,7 +4402,7 @@ def _compute_to_direct_indices(input:TN, dim:int, index_data:np.ndarray):
 
 
 @api_registry.register
-def setitem(input: TN, index, val):
+def _setitem(input: TN, index, val):
     """
     原地赋值入口，负责 a[index] = val 以及 Python 展开后的 a[index] op= val。
 
@@ -3989,11 +4434,11 @@ def setitem(input: TN, index, val):
 
     # 2. 快速路径：简单赋值（右值不是张量，没有 _is_view 属性）
     if not hasattr(val, '_is_view'):
-        return input.setat_(index, val)
+        return setat_(input, index, val)
 
     # 3. 快速路径：视图但基础不是 self（来自其他张量的视图）
     if val._base is not input:
-        return input.setat_(index, val)
+        return setat_(input, index, val)
 
     # 4. 复杂原地操作场景：视图且基础是 self
     # 这种情况发生在 a[index] += b 这样的原地操作中
@@ -4158,8 +4603,8 @@ def index_put_(input, indices, values, accumulate: bool = False) -> 'TN':
     if isinstance(indices, list):
         indices = tuple(indices)
     if accumulate:
-        return input.addat_(indices, values)
-    return input.setat_(indices, values)
+        return addat_(input, indices, values)
+    return setat_(input, indices, values)
 
 
 @api_registry.register
@@ -4292,7 +4737,7 @@ def scatter_(input, dim, index, src=None, *, value=None):
     full_index = _compute_to_direct_indices(input, dim, index._array)
     
     # 使用setat进行赋值
-    return input.setat_(full_index, fill_value)
+    return setat_(input, full_index, fill_value)
 # end of scatter_
 
 
@@ -4447,7 +4892,7 @@ def scatter_add_(input, dim, index, src):
     full_index = _compute_to_direct_indices(input, dim, index._array)
     
     # 直接调用原地操作的addat_函数
-    return input.addat_(full_index, src)
+    return addat_(input, full_index, src)
 # end of scatter_add_
 
 
@@ -4507,6 +4952,111 @@ def scatter_add(input, dim, index, src):
 # 9. 形状变换与拼接（split / stack / concatenate / unfold / fold / repeat）
 # ===========================================================================
 
+@api_registry.register
+def broadcast_to(input: TN, size: tuple[int, ...]) -> TN:
+    """
+    将输入张量广播到指定的形状。
+    
+    返回一个原始张量的视图，广播到新的形状。原始张量和新张量共享相同的数据，
+    但新张量的形状可能不同。广播遵循NumPy的广播规则。
+    
+    Args:
+        input (TN): 要广播的输入张量
+        size (tuple[int, ...]): 目标形状，必须与输入形状兼容
+        
+    Returns:
+        TN: 广播后的张量
+        
+    Raises:
+        TypeError: 如果输入不是TN张量或size不是元组/列表
+        RuntimeError: 如果广播失败
+        
+    Examples:
+        >>> x = tensor([[1, 2, 3]])  # 形状(1, 3)
+        >>> y = broadcast_to(x, (4, 3))  # 形状(4, 3)，每行都是[1, 2, 3]
+        >>> z = tensor([1, 2, 3])  # 形状(3,)
+        >>> w = broadcast_to(z, (2, 3))  # 形状(2, 3)，每行都是[1, 2, 3]
+    """
+    # 验证输入类型
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    # 确保size是元组（支持列表输入）
+    size = tuple(size) if isinstance(size, list) else size
+    
+    # _expand 内部会检查形状相等并返回自身，无需重复检查
+    # _expand 内部使用 numpy/cupy 的 broadcast_to，返回视图不复制数据
+    try:
+        return input._expand(size)
+    except ValueError as e:
+        raise RuntimeError(f"Failed to broadcast tensor from shape {input.shape} to shape {size}: {e}")
+
+
+def broadcast_tensors(*tensors: TN) -> tuple[TN, ...]:
+    """
+    将多个张量广播到相同的形状
+    
+    按照NumPy的广播规则，将多个输入张量广播到相同的形状。
+    如果张量的形状已经兼容，则返回原始张量；否则返回广播后的张量。
+    
+    Args:
+        *tensors: 要广播的张量，至少需要两个张量
+        type *tensors: TN
+        
+    Returns:
+        广播后的张量元组，所有张量具有相同的形状
+        rtype: tuple[TN, ...]
+        
+    Raises:
+        TypeError: 如果输入不是TN张量
+        RuntimeError: 如果广播失败
+        
+    Examples:
+        >>> a = tensor([1, 2, 3])  # 形状(3,)
+        >>> b = tensor([[4], [5]])  # 形状(2, 1)
+        >>> a_broadcast, b_broadcast = broadcast_tensors(a, b)
+        >>> a_broadcast.shape  # (2, 3)
+        >>> b_broadcast.shape  # (2, 3)
+        
+        >>> c = tensor([1, 2, 3])  # 形状(3,)
+        >>> d = tensor([[4], [5]])  # 形状(2, 1)
+        >>> e = tensor([[[6]]])  # 形状(1, 1, 1)
+        >>> c_broadcast, d_broadcast, e_broadcast = broadcast_tensors(c, d, e)
+        >>> c_broadcast.shape  # (1, 2, 3)
+        >>> d_broadcast.shape  # (1, 2, 3)
+        >>> e_broadcast.shape  # (1, 2, 3)
+    """
+    if len(tensors) < 2:
+        raise ValueError(f"broadcast_tensors requires at least 2 tensors, got {len(tensors)}")
+    
+    # 验证所有输入都是TN类型
+    for i, t in enumerate(tensors):
+        if not isinstance(t, TN):
+            raise TypeError(f"Expected tensor {i} to be TN type, got {type(t)}")
+    
+    # 使用对应的数组库计算广播后的形状
+    # 获取第一个张量的数组库（所有张量应该在同一个库中）
+    arrlib = tensors[0]._get_array_lib()
+    
+    try:
+        # 使用对应数组库的 broadcast 函数获取广播后的形状
+        broadcast_obj = arrlib.broadcast(*[t._array for t in tensors])
+        broadcast_shape = broadcast_obj.shape
+    except ValueError as e:
+        # 广播失败，抛出更清晰的错误信息
+        raise RuntimeError(f"Cannot broadcast tensors with incompatible shapes: {[t.shape for t in tensors]}") from e
+    
+    # 广播所有张量
+    broadcasted_tensors = []
+    for t in tensors:
+        if t.shape == broadcast_shape:
+            # 形状已经匹配，直接返回
+            broadcasted_tensors.append(t)
+        else:
+            # 需要广播
+            broadcasted_tensors.append(broadcast_to(t, broadcast_shape))
+    
+    return tuple(broadcasted_tensors)
 
 def _split_backward(result_tensor: TN, i: int) -> TN:
     split_sizes, dim, split_pos = result_tensor.parms[i]
@@ -5168,7 +5718,7 @@ def fold(tensor_obj:TN, dimension: int, size: int, step: int = None, output_size
         window = window.view(tuple(window_shape))
 
         # 将窗口贡献添加到输出张量（原地操作）
-        output.addat_(tuple(output_idx),window)
+        addat_(output, tuple(output_idx),window)
 
     return output
 
@@ -5176,18 +5726,50 @@ def fold(tensor_obj:TN, dimension: int, size: int, step: int = None, output_size
 # ===========================================================================
 # 10. einsum（方程解析、批量对角线辅助、梯度计算与入口）
 # ===========================================================================
+#
+# 前向
+#   einsum(equation, *operands)
+#     ├─ _parse_einsum_equation      隐式输出转显式 → (input_eq, input_eqs, output_eq)
+#     ├─ _same_device                多操作数设备一致性检查
+#     ├─ _einsum_use_optimize        GEMM 型缩并走 optimize（BLAS），否则 naive
+#     └─ _precompute_grad_info       需要梯度时逐输入预分类
+#          └─ _has_duplicate_indices
+#
+# 反向（所有操作数共享 _einsum_backward，参数 i 指定当前求导的输入）
+#   _einsum_backward(result_tensor, i)   依据 grad_infos[i]['grad_type'] 路由
+#     ├─ 'simple'       → _compute_simple_einsum_grad    一次梯度方程
+#     ├─ 'trace'        → _compute_trace_grad            → batch_diag / eye
+#     │                     └─ _ellipsis_after_indices
+#     ├─ 'diag_extract' → _compute_diag_extract_grad     → batch_diag / eye
+#     │                     └─ _ellipsis_after_indices
+#     └─ 'complex'      → _compute_complex_einsum_grad
+#                           ├─ 偏梯度 einsum(grad_value, 其他操作数 -> 可用索引)
+#                           ├─ _reorder_partial_grad    省略号维按目标真实顺序重排
+#                           ├─ _expand_grad_dimensions  广播回目标完整形状
+#                           │    └─ _broadcast_expand_shape
+#                           └─ _restore_diagonal_tensor 重复索引施加对角线约束
+#                                └─ _has_duplicate_indices / batch_diag
+#     统一收尾：_unbroadcast_grad（前向发生广播的维度按 torch 语义求和还原）
+#
+# 数据约定：parms = (equation, input_eqs, output_eq, grad_infos)，
+#           grad_infos[i] = {'grad_type', 'target_eq', ...}，
+#           四类 grad_type 的判定条件见 _precompute_grad_info 的 docstring。
+# ===========================================================================
 
 
 # 从批量1D张量生成批量对角矩阵的函数
 @api_registry.register
 def batch_diag(v):
-    """从批量1D张量生成批量对角矩阵
-    
+    """从批量1D张量生成批量对角矩阵。
+
     参数:
         v: 输入张量，形状为(*, n)，其中*表示任意数量的批处理维度
-        
+
     返回:
         形状为(*, n, n)的对角矩阵，对角线元素为输入张量的值
+
+    调用者: _compute_trace_grad、_compute_diag_extract_grad、
+    _restore_diagonal_tensor（梯度构造对角线结构）；同时作为公开接口 rm.batch_diag
     """
     # 验证输入
     if not isinstance(v, TN):
@@ -5225,6 +5807,11 @@ def _einsum_use_optimize(input_eqs: list[str], output_eq: str, operand_data: lis
 
     另：numpy的c_einsum路径不支持省略号维度被求和的方程（如'...i->i'会直接
     抛出ValueError），此类方程必须走optimize路径，与张量规模无关。
+
+    返回:
+        True 表示走 optimize（BLAS）路径，False 表示 naive 路径
+
+    调用者: einsum（前向）
     """
     # 省略号维度被求和（如'...i->i'）：c_einsum不支持，必须走optimize路径
     if any('.' in eq for eq in input_eqs) and '.' not in output_eq:
@@ -5253,14 +5840,17 @@ def _einsum_use_optimize(input_eqs: list[str], output_eq: str, operand_data: lis
 def _parse_einsum_equation(equation: str, num_operands: int) -> tuple[str, list[str], str]:
     """
     解析einsum方程字符串。
-    
+
+    显式输出（含 '->'）直接拆分；隐式输出取「只出现一次」的索引并按字母排序，
+    若输入含省略号则在最前面补 '...'。
+
     参数:
         equation: einsum方程字符串
         num_operands: 操作数数量
-        
+
     返回:
         (input_eq, input_eqs, output_eq): 输入方程字符串、输入方程列表、输出方程字符串
-        
+
     示例:
         >>> _parse_einsum_equation('ij,jk->ik', 2)
         ('ij,jk', ['ij', 'jk'], 'ik')
@@ -5268,6 +5858,8 @@ def _parse_einsum_equation(equation: str, num_operands: int) -> tuple[str, list[
         ('ii', ['ii'], '')
         >>> _parse_einsum_equation('ij,jk', 2)  # 隐式输出
         ('ij,jk', ['ij', 'jk'], 'ik')
+
+    调用者: einsum（前向入口）
     """
     if '->' in equation:
         input_eq, output_eq = equation.split('->')
@@ -5295,7 +5887,10 @@ def _parse_einsum_equation(equation: str, num_operands: int) -> tuple[str, list[
 
 
 def _has_duplicate_indices(target_eq: str) -> bool:
-    """检查target_eq是否包含重复索引（忽略省略号...）。"""
+    """检查 target_eq 是否含重复索引（忽略省略号 '...'）。
+
+    调用者: _precompute_grad_info（分类判据）、_restore_diagonal_tensor（是否需施加约束）
+    """
     index_counts = {}
     for c in target_eq:
         if c != '.':  # 忽略省略号
@@ -5310,6 +5905,11 @@ def _broadcast_expand_shape(shape: tuple, target_shape: tuple) -> tuple:
     目标维为1而源维更大的维度（如省略号批量维被其他操作数广播放大）保留源尺寸，使 expand
     合法；此类维度随后由 _unbroadcast_grad 求和还原为目标尺寸（前向共享同一份数据，梯度
     应按广播份数累加）。其余维度取目标尺寸以正常广播。
+
+    返回:
+        可直接用于 expand 的形状元组
+
+    调用者: _expand_grad_dimensions、_compute_trace_grad、_compute_diag_extract_grad
     """
     return tuple(src if tgt == 1 else tgt for src, tgt in zip(shape, target_shape))
 
@@ -5327,6 +5927,8 @@ def _unbroadcast_grad(grad_tensor: TN, target_shape: tuple) -> TN:
       - 某个维度目标大于 1 而梯度为 1：梯度与广播份数无关，直接广播到目标尺寸。
 
     形状本就一致时原样返回，故对迹/对角线等已对齐的路径无副作用。
+
+    调用者: _einsum_backward（所有 grad_type 分支的统一收尾）
     """
     grad = grad_tensor
     while grad.ndim > len(target_shape):
@@ -5347,6 +5949,11 @@ def _ellipsis_after_indices(target_eq: str, rank: int) -> bool:
 
     用于区分布局：省略号在索引之前/中间时，重复索引对占据最前两维的反面——省略号在被
     重复的索引对之后时，该索引对才真正落在目标的最前两维上。
+
+    返回:
+        True 表示省略号位于全部显式索引之后（如 'ii...'）
+
+    调用者: _compute_trace_grad、_compute_diag_extract_grad
     """
     return '...' in target_eq and rank > len(target_eq.replace('.', '')) and \
         len(target_eq.split('...')[0]) == len(target_eq.replace('.', ''))
@@ -5380,6 +5987,8 @@ def _restore_diagonal_tensor(grad_tensor: TN, target_shape: tuple, target_eq: st
 
     返回:
         还原后的梯度张量（仅重复索引的对角线位置非0）
+
+    调用者: _compute_complex_einsum_grad（阶段3）
     """
     if not _has_duplicate_indices(target_eq):
         return grad_tensor
@@ -5453,6 +6062,8 @@ def _reorder_partial_grad(
 
     重排后顺序为：[省略号之前的可用索引][省略号维][省略号之后的可用索引]；
     省略号维数量为 0、或原本就在最前时无需重排。
+
+    调用者: _compute_complex_einsum_grad（扩展维度前先对齐轴顺序）
     """
     if not has_ellipsis or not available_target_chars:
         return partial_grad
@@ -5494,6 +6105,8 @@ def _expand_grad_dimensions(
 
     省略号维按其在目标中的真实位置插入，故省略号位于中间/末尾（如 i...j、ij...k）时也能
     与目标形状对齐；由于消耗轴的顺序与该顺序完全一致，reshape 不会打乱已有数据。
+
+    调用者: _compute_complex_einsum_grad（阶段2，仅在偏梯度秩小于目标秩时调用）
     """
     target_eq_clean = target_eq.replace('.', '')
     # 目标中的省略号维数量：目标秩减去显式索引个数
@@ -5538,6 +6151,8 @@ def _compute_simple_einsum_grad(
 
     直接使用预计算的梯度方程，性能最优。
     grad_value的方程为output_eq（空输出时为''），确保非单位梯度正确参与计算。
+
+    调用者: _einsum_backward（grad_type='simple'）
     """
     grad_inputs = [grad_value]
 
@@ -5558,6 +6173,8 @@ def _compute_trace_grad(grad_value: TN, target_operand: TN, target_eq: str) -> T
 
     重复索引对默认位于目标最后两维；但当省略号位于该索引对之后（如 ii...）时，该对实际
     落在目标最前两维，此时 grad_value 对应的是尾部的省略号批量维，需按前两维施加对角约束。
+
+    调用者: _einsum_backward（grad_type='trace'）
     """
     target_shape = target_operand.shape
     rank = len(target_shape)
@@ -5588,6 +6205,8 @@ def _compute_diag_extract_grad(grad_value: TN, target_operand: TN, target_eq: st
 
     梯度是一个对角张量；输出缺少目标的省略号维度时（如 ...ii->i）需先扩展批量维度。
     省略号位于索引对之后时（ii...），对角约束施加在目标最前两维、grad_value 对应首维。
+
+    调用者: _einsum_backward（grad_type='diag_extract'）
     """
     target_shape = target_operand.shape
     rank = len(target_shape)
@@ -5617,6 +6236,8 @@ def _compute_complex_einsum_grad(
        可用子集维度的张量（对应前向中未被独立求和的那些维度）；
     2. 扩展维度：把偏梯度 reshape/expand 回目标的完整形状（缺失维、重复维先补1再广播）；
     3. 恢复对角线：对重复索引施加对角线约束，保证非对角位置梯度为0。
+
+    调用者: _einsum_backward（grad_type='complex'）
     """
     available_indices = info['available_indices']
     # 偏梯度中的省略号维度对应「目标自身的批量维度」，能否保留取决于该批量维在反向
@@ -5705,7 +6326,13 @@ def _precompute_grad_info(input_eqs: list[str], output_eq: str,
         operands: 操作数列表
 
     返回:
-        每个输入对应一个 info 字典，含 grad_type 及该类所需的辅助字段
+        每个输入对应一个 info 字典：
+          - grad_type: 'simple' / 'trace' / 'diag_extract' / 'complex'
+          - target_eq: 该输入的索引字符串
+          - 以及 available_indices、available_target_chars、has_ellipsis、
+            grad_equation 等辅助字段，由各分支按需取用
+
+    调用者: einsum（前向，仅在需要梯度时调用）
     """
     grad_infos = []
     
@@ -5785,6 +6412,8 @@ def _einsum_backward(result_tensor: TN, i: int) -> TN:
     区分本次要计算的是哪个输入的梯度。前向已将反向所需信息存入 parms：
         parms = (equation, input_eqs, output_eq, grad_infos)
     本函数按 grad_infos[i] 的 grad_type 路由到对应的处理函数。
+
+    调用者: einsum 前向注册的 gradfuncs（所有操作数共享此函数，用 i 区分）
     """
     grad_value = result_tensor.grad_value
     input_eqs = result_tensor.parms[1]
@@ -5837,6 +6466,12 @@ def einsum(equation: str, *operands: TN) -> TN:
     - 外积
     
     本函数接口与 PyTorch 的 torch.einsum() 兼容。
+
+    实现要点（完整调用关系见本节顶部）：
+        - 前向：解析方程 → 设备检查 → 选择 optimize/naive 路径 → 记录 parms 与 gradfuncs
+        - 反向：按 _precompute_grad_info 预分类的四类 grad_type 路由，
+          最后统一经 _unbroadcast_grad 还原前向发生的广播
+        - cupy 限制：输出不含 '...' 而输入含 '...' 时，内部改写为保留省略号维再求和
     
     参数:
         equation (str): 爱因斯坦求和方程字符串，格式为 "输入索引->输出索引"
@@ -5897,7 +6532,7 @@ def einsum(equation: str, *operands: TN) -> TN:
     # 获取设备和数组库
     device = operands[0].device
     for op in operands[1:]:
-        if op.device != device:
+        if not _same_device(operands[0], op):
             raise RuntimeError(f'Expected all tensors to be on the same device, '
                              f'but found at least two devices, {device} and {op.device}!')
     
@@ -5965,7 +6600,7 @@ def dot(x:TN,y:TN)->TN:
         raise RuntimeError(f"1D tensors expected, got {x._array.ndim}D tensor")
     if y._array.ndim != 1:
         raise RuntimeError(f"1D tensors expected, got {y._array.ndim}D tensor")
-    if x.device != y.device:
+    if not _same_device(x, y):
         raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
     
     # 使用x@y进行计算，利用现有的__matmul__方法的梯度跟踪能力
@@ -6000,7 +6635,7 @@ def outer(x:TN,y:TN)->TN:
         raise RuntimeError(f"1D tensors expected, got {x._array.ndim}D tensor")
     if y._array.ndim != 1:
         raise RuntimeError(f"1D tensors expected, got {y._array.ndim}D tensor")
-    if x.device != y.device:
+    if not _same_device(x, y):
         raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
     
     # 使用einsum实现外积，反向梯度计算更高效
@@ -6033,7 +6668,7 @@ def batch_outer(x:TN, y:TN)->TN:
         >>> b = randn(2, 3, 5)  # (2,3)批次，每个是长度为5的向量
         >>> batch_outer(a, b)  # 形状为(2, 3, 4, 5)
     """
-    if x.device != y.device:
+    if not _same_device(x, y):
         raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
     
     # 使用einsum实现批量外积，支持任意批次维度
@@ -6561,7 +7196,7 @@ def fill_diagonal_(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int 
         fill_value = value
 
     # 按索引原地赋值input张量
-    result = input.setat_(tuple(indices), fill_value)    
+    result = setat_(input, tuple(indices), fill_value)    
     return result
 
 # end of fill_diagonal_
@@ -6609,9 +7244,9 @@ def masked_fill_(input: TN, mask: TN, value: Any) -> TN:
         if mask.shape != input.shape:
             # 如果需要广播，先广播掩码
             broadcasted_mask = mask.broadcast_to(input.shape)
-            input[broadcasted_mask] = value
+            _setitem(input, broadcasted_mask, value)
         else:
-            input[mask] = value
+            _setitem(input, mask, value)
     except Exception as e:
         raise RuntimeError(f"mask with shape {mask.shape} is not broadcastable to tensor shape {input.shape}") from e
 
@@ -6933,3 +7568,334 @@ def share_grad_map(tensors:tuple|list):
             target_list.append(t)
 
     return type(tensors)(target_list)
+
+
+# ---------------------------------------------------------------------------
+# 张量显示：_disp 及其辅助函数
+#
+# 调用关系：
+#   _disp(t, format_spec)
+#     ├─ 步骤1 属性后缀：device / size / dtype / requires_grad（规则与torch一致）
+#     ├─ 步骤2 _parse_format_spec：解析出 (width, precision, format_type)
+#     ├─ 步骤3 _tensor_data_str：生成数据部分（二选一）
+#     │    ├─ torch默认规则：_print_summarized_values → _print_number_formatter
+#     │    │                或 _print_plain_formatter → _torch_layout
+#     │    └─ 显式 format_spec：_print_spec_formatter + numpy array2string
+#     ├─ 步骤4 _wrap_tensor_text：加 "tensor(" 前缀与续行缩进
+#     └─ 步骤5 _add_suffixes：追加属性并补齐右括号，超行宽时折行
+#
+# 约定：所有 formatter 均为 (format_value, width) 二元组，
+#       format_value(value) 返回已按 width 右对齐的字符串。
+# ---------------------------------------------------------------------------
+def _print_number_formatter(values, arrlib):
+    """按torch默认打印规则构造浮点/复数的格式化器（precision=4）。
+
+    values: 用于判断的数值数组（实部或虚部，大张量时只传首尾采样值）。
+    与torch一致：非零有限值全为整数时使用整数模式（末尾补'.'）；
+    max/min>1000、max>1e8 或 min<1e-4 时使用科学计数法；否则固定4位小数。
+
+    返回:
+        (format_value, width): 单值格式化函数（已按width右对齐）与对齐宽度
+    """
+    finite = arrlib.isfinite(values)
+    nonzero = values[finite & (values != 0)]
+    int_mode = True
+    sci_mode = False
+    vmin = vmax = 0.0
+    if nonzero.size:
+        abs_nz = arrlib.abs(nonzero)
+        abs_min = float(abs_nz.min())
+        abs_max = float(abs_nz.max())
+        # 对齐宽度取带符号极值，避免无负值时多算一个符号位
+        vmin = float(nonzero.min())
+        vmax = float(nonzero.max())
+        int_mode = bool(arrlib.all(nonzero == arrlib.floor(nonzero)))
+        sci_mode = (abs_max / abs_min > 1000.0) or (abs_max > 1.0e8) or (abs_min < 1.0e-4)
+
+    if sci_mode:
+        width = builtins.max(1, len(f'{vmax:.4e}'), len(f'{vmin:.4e}'))
+
+        def fmt(x):
+            return f'{x:>{width}.4e}'
+    elif int_mode:
+        width = builtins.max(1, len(f'{vmax:.0f}') + 1, len(f'{vmin:.0f}') + 1)
+
+        def fmt(x):
+            # 整数模式下非有限值不加'.'，用于标识浮点类型
+            if x != x or builtins.abs(x) == builtins.float('inf'):
+                return f'{x:>{width}}'
+            return f'{x:>{width - 1}.0f}.'
+    else:
+        width = builtins.max(1, len(f'{vmax:.4f}'), len(f'{vmin:.4f}'))
+
+        def fmt(x):
+            return f'{x:>{width}.4f}'
+
+    return fmt, width
+
+
+def _print_plain_formatter(values, arrlib):
+    """整数/布尔的默认格式化器：按最大字符宽度右对齐（与torch一致）。
+
+    返回:
+        (format_value, width): 单值格式化函数与对齐宽度
+    """
+    items = values.reshape(-1).tolist()
+    width = builtins.max([1] + [len(str(v)) for v in items])
+
+    def fmt(x):
+        s = str(x)
+        return ' ' * (width - len(s)) + s
+
+    return fmt, width
+
+
+def _print_summarized_values(arr, arrlib, edgeitems: int = 3):
+    """按torch get_summarized_data 的规则收集元素，用于确定格式化参数。
+
+    大张量（元素数超过阈值）只显示每维首尾各 edgeitems 个元素，
+    因此列宽、整数模式、科学计数法也只需基于这些采样值判断。
+    """
+    if arr.ndim <= 1:
+        if arr.shape[0] > 2 * edgeitems:
+            return arrlib.concatenate([arr[:edgeitems], arr[-edgeitems:]])
+        return arr
+    n = arr.shape[0]
+    if n > 2 * edgeitems:
+        rows = list(range(edgeitems)) + list(range(n - edgeitems, n))
+    else:
+        rows = list(range(n))
+    parts = [_print_summarized_values(arr[i], arrlib, edgeitems).reshape(-1) for i in rows]
+    return arrlib.concatenate(parts) if parts else arr
+
+
+def _print_scalar(value, fmt1, fmt2=None):
+    """格式化单个元素。
+
+    fmt1/fmt2: 实部/虚部的 (format_value, width) 二元组，虚部为空表示实数。
+    复数与torch一致：虚部先格式化再去空白，按首字符判断是否需要补 '+'。
+    """
+    if fmt2 is None:
+        return fmt1[0](value)
+    real_str = fmt1[0](value.real)
+    imag_str = (fmt2[0](value.imag) + 'j').lstrip()
+    if imag_str[0] in ('+', '-'):
+        return real_str + imag_str
+    return real_str + '+' + imag_str
+
+
+def _torch_layout(arr, fmt1, fmt2=None, indent: int = 0, edgeitems: int = 3,
+                  summarize: bool = False, linewidth: int = 80,
+                  prefix_width: int = 7) -> str:
+    """按torch的排布算法生成数值部分的字符串（不含 tensor() 前缀与属性）。
+
+    fmt1/fmt2: (format_value, width) 二元组，fmt2 仅复数（虚部）使用。
+    - 每行元素数由元素宽度、行宽与缩进决定（与torch的 _vector_str 一致）
+    - 超过阈值时每维只显示首尾 edgeitems 个元素，中间用 '...' 省略
+    - 多维按 ',' + '\\n'*(dim-1) 连接，嵌套层相对缩进 indent+1
+      （绝对缩进由外层 format_text 的 tensor( 前缀补齐，prefix_width 参与行宽计算）
+    """
+    dim = arr.ndim
+    if dim == 0:
+        return _print_scalar(arr.item(), fmt1, fmt2)
+
+    if dim == 1:
+        element_length = fmt1[1] + 2
+        if fmt2 is not None:
+            element_length += fmt2[1] + 1
+        per_line = builtins.max(1, (linewidth - prefix_width - indent) // element_length)
+        n = arr.shape[0]
+        if summarize and n > 2 * edgeitems:
+            data = ([_print_scalar(v, fmt1, fmt2) for v in arr[:edgeitems].tolist()]
+                    + [' ...']
+                    + [_print_scalar(v, fmt1, fmt2) for v in arr[-edgeitems:].tolist()])
+        else:
+            data = [_print_scalar(v, fmt1, fmt2) for v in arr.tolist()]
+        lines = [', '.join(data[i:i + per_line]) for i in range(0, len(data), per_line)]
+        return '[' + (',' + '\n' + ' ' * (indent + 1)).join(lines) + ']'
+
+    n = arr.shape[0]
+    if summarize and n > 2 * edgeitems:
+        slices = ([_torch_layout(arr[i], fmt1, fmt2, indent + 1, edgeitems, summarize,
+                                 linewidth, prefix_width)
+                   for i in range(edgeitems)]
+                  + ['...']
+                  + [_torch_layout(arr[i], fmt1, fmt2, indent + 1, edgeitems, summarize,
+                                   linewidth, prefix_width)
+                     for i in range(n - edgeitems, n)])
+    else:
+        slices = [_torch_layout(arr[i], fmt1, fmt2, indent + 1, edgeitems, summarize,
+                                linewidth, prefix_width)
+                  for i in range(n)]
+    return '[' + (',' + '\n' * (dim - 1) + ' ' * (indent + 1)).join(slices) + ']'
+
+
+def _add_suffixes(tensor_str: str, suffixes, indent: int = 7, linewidth: int = 80) -> str:
+    """追加属性后缀并补齐右括号；超出行宽时折行并对齐到 indent 个空格。
+
+    tensor_str 为不含右括号的 "tensor(...)" 主体，返回值始终以 ')' 结尾。
+    """
+    parts = [tensor_str]
+    last_line_len = len(tensor_str) - (tensor_str.rfind('\n') + 1)
+    for suffix in suffixes:
+        suffix_len = len(suffix)
+        if last_line_len + suffix_len + 2 > linewidth:
+            parts.append(',\n' + ' ' * indent + suffix)
+            last_line_len = indent + suffix_len
+        else:
+            parts.append(', ' + suffix)
+            last_line_len += suffix_len + 2
+    parts.append(')')
+    return ''.join(parts)
+
+
+def _parse_format_spec(format_spec: str):
+    """解析 format_spec，返回 (width, precision, format_type)。
+
+    支持 '.2f'、'8.4f'、'.1e'、'05d' 等写法；
+    precision 为 None 表示未显式指定，此时使用torch默认规则。
+    """
+    format_type = 'f'  # 默认格式类型
+    width = None  # None 表示不指定宽度
+    precision = None  # None 表示使用torch默认规则（4位小数等）
+
+    if '.' in format_spec:
+        # 小数点前为宽度
+        width_digits = ''.join(filter(str.isdigit, format_spec.split('.')[0]))
+        if width_digits:
+            width = int(width_digits)
+
+        # 小数点后为精度，末尾字母为格式类型
+        precision_part = format_spec.split('.')[1]
+        precision_digits = ''.join(filter(str.isdigit, precision_part))
+        if precision_digits:
+            precision = int(precision_digits)
+        type_part = ''.join(filter(str.isalpha, precision_part))
+        if type_part:
+            format_type = type_part[0]
+    else:
+        # 没有小数点时只解析宽度与格式类型
+        width_digits = ''.join(filter(str.isdigit, format_spec))
+        if width_digits:
+            width = int(width_digits)
+        type_part = ''.join(filter(str.isalpha, format_spec))
+        if type_part:
+            format_type = type_part[0]
+
+    return width, precision, format_type
+
+
+def _print_spec_formatter(width, precision: int, format_type: str, offset: int = 0):
+    """按 format_spec 构造定宽右对齐的格式化器。
+
+    offset: 宽度偏移，复数虚部用 width-1（符号单独拼接，不占用虚部宽度）。
+    """
+    if width is None:
+        return lambda x: f'{x:.{precision}{format_type}}'
+    target_width = width - offset
+    return lambda x: f'{x:>{target_width}.{precision}{format_type}}'
+
+
+def _tensor_data_str(t: TN, arrlib, width, precision, format_type: str) -> str:
+    """生成张量数据部分的字符串（不含 tensor() 前缀与属性）。
+
+    未显式指定 precision，或类型为整数/布尔时，走torch默认规则
+    （整数/布尔忽略 spec）；否则浮点/复数按 format_spec 用 numpy 格式化。
+    """
+    is_complex = arrlib.issubdtype(t._array.dtype, arrlib.complexfloating)
+    is_floating = arrlib.issubdtype(t._array.dtype, arrlib.floating)
+
+    if precision is None or not (is_complex or is_floating):
+        # 与torch一致：超过1000个元素时每维只显示首尾3个元素，
+        # 并按torch的排布算法决定每行元素数与省略号形式
+        edgeitems = 3
+        summarize = t._array.size > 1000
+        # 列宽/整数模式/科学计数法只需基于实际显示的采样值判断
+        params = (_print_summarized_values(t._array, arrlib, edgeitems)
+                  if summarize else t._array)
+        fmt2 = None  # 只有复数才有虚部格式化器
+        if is_complex:
+            fmt1 = _print_number_formatter(params.real, arrlib)
+            fmt2 = _print_number_formatter(params.imag, arrlib)
+        elif is_floating:
+            fmt1 = _print_number_formatter(params, arrlib)
+        else:
+            fmt1 = _print_plain_formatter(params, arrlib)
+        # 空张量统一显示为 []，形状信息由 size 后缀补充
+        if t._array.size == 0:
+            return '[]'
+        return _torch_layout(t._array, fmt1, fmt2, 0, edgeitems, summarize)
+
+    # 显式 format_spec：实部与虚部共用同一规则，虚部宽度减1
+    real_fmt = _print_spec_formatter(width, precision, format_type)
+    if is_complex:
+        imag_fmt = _print_spec_formatter(width, precision, format_type, offset=1)
+
+        def complex_formatter(z):
+            imag_sign = '+' if z.imag >= 0 else '-'
+            return f'{real_fmt(z.real)}{imag_sign}{imag_fmt(builtins.abs(z.imag))}j'
+
+        formatter = {'complex_kind': complex_formatter}
+    else:
+        formatter = {'float_kind': real_fmt}
+    return arrlib.array2string(
+        t._array,
+        separator=', ',
+        formatter=formatter,  # type: ignore
+        threshold=1000  # 与torch一致：超过1000个元素时省略中间部分
+    )
+
+
+def _wrap_tensor_text(text: str, prefix: str = 'tensor') -> str:
+    """给数据部分加前缀与左括号，续行缩进 len(prefix)+1。
+
+    右括号不在此处添加，由 _add_suffixes 统一收尾。
+    """
+    # 去掉各行尾随空格；块间空行保持为空行，避免缩进后留下纯空白行
+    lines = [line.rstrip() for line in text.split('\n')]
+    if not lines:
+        return ""
+
+    lines[0] = f"{prefix}({lines[0]}"
+    indent = ' ' * (len(prefix) + 1)
+    for i in range(1, len(lines)):
+        if not lines[i]:
+            continue
+        lines[i] = f"{indent}{lines[i]}"
+
+    return '\n'.join(lines)
+
+@api_registry.register
+def _disp(t: TN, format_spec: str) -> str:
+    """TN.__disp__ 的实现：按 format_spec 返回张量的显示字符串。"""
+    # 获取默认浮点类型用于比较
+    default_float = get_default_dtype()
+    default_complex = get_default_complex()
+
+    # 获取数组库
+    arrlib = t._get_array_lib()
+
+    # 步骤1：构建属性后缀（顺序与torch一致：device → size → dtype → requires_grad）
+    attrs = []
+    if t.device != Device('cpu'):
+        attrs.append(f"device='{t.device}'")
+    if t._array.size == 0:
+        # 与torch一致：空张量显式给出形状（1维时省略），dtype 仅与默认浮点比较
+        if t.ndim != 1:
+            attrs.append(f"size={tuple(t.shape)}")
+        if t.dtype != default_float:
+            attrs.append(f"dtype={t.dtype.name}")
+    elif t.dtype not in (default_float, default_complex, np.int64, np.bool_):
+        attrs.append(f"dtype={t.dtype.name}")
+    if t.requires_grad:
+        attrs.append("requires_grad=True")
+
+    # 步骤2：解析 format_spec（width/precision/format_type）
+    width, precision, format_type = _parse_format_spec(format_spec)
+
+    # 步骤3：生成数据部分字符串
+    data_str = _tensor_data_str(t, arrlib, width, precision, format_type)
+
+    # 步骤4：加 tensor( 前缀（不含右括号）
+    # 步骤5：追加属性后缀并统一补齐右括号（超过行宽时折行）
+    return _add_suffixes(_wrap_tensor_text(data_str), attrs)

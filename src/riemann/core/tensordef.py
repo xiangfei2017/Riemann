@@ -66,7 +66,7 @@ import builtins
 import functools
 import inspect
 import warnings
-from typing import Callable, Any, Optional, overload
+from typing import Callable, Any, Optional
 from contextlib import contextmanager
 import numpy as np
 from ..cuda import Device, cp, get_default_device
@@ -254,170 +254,7 @@ class TN:
         返回:
             str: 格式化后的张量字符串表示
         """
-        # 获取默认浮点类型用于比较
-        default_float = get_default_dtype()
-        default_complex = get_default_complex()
-
-        # 获取数组库
-        arrlib = self._get_array_lib()
-
-        # 构建属性字符串        
-        attrs = []        
-        if self.device != Device('cpu'):
-            attrs.append(f"device='{self.device}'")
-        if is_float_or_complex(self.dtype) and self.dtype != default_float and self.dtype != default_complex:
-            attrs.append(f"dtype={self.dtype.name}")
-        if self.requires_grad:
-            attrs.append("requires_grad=True")        
-        attr_str = ", ".join(attrs)
-
-        # 格式化工具函数
-        def format_text(text, prefixStr):
-            lines = text.split('\n')
-            if not lines:
-                return ""
-            
-            # 处理第一行
-            if len(lines) == 1:
-                lines[0] = f"{prefixStr}({lines[0]})"
-            else:
-                lines[0] = f"{prefixStr}({lines[0]}"
-            
-            # 计算缩进量
-            indent = ' ' * (len(prefixStr) + 1)
-            
-            # 处理后续行
-            for i in range(1, len(lines)):
-                if i == len(lines) - 1:
-                    lines[i] = f"{indent}{lines[i]})"
-                else:
-                    lines[i] = f"{indent}{lines[i]}"
-            
-            return '\n'.join(lines)
-        
-        # 提取宽度、精度和格式类型信息
-        format_type = 'f'  # 默认格式类型
-        width = None  # None表示使用numpy默认值
-        precision = None  # None表示使用numpy默认值
-        
-        if '.' in format_spec:
-            # 提取小数点前的宽度部分
-            width_part = format_spec.split('.')[0]
-            width_digits = ''.join(filter(str.isdigit, width_part))
-            if width_digits:
-                width = int(width_digits)
-            
-            # 提取小数点后的数字和格式类型部分
-            precision_part = format_spec.split('.')[1]
-            # 提取数字部分（精度）
-            precision_digits = ''.join(filter(str.isdigit, precision_part))
-            if precision_digits:
-                precision = int(precision_digits)
-            # 提取格式类型（如果有）
-            type_part = ''.join(filter(str.isalpha, precision_part))
-            if type_part:
-                format_type = type_part[0]  # 使用第一个字母作为格式类型
-        else:
-            # 如果没有小数点，尝试提取宽度和格式类型
-            width_digits = ''.join(filter(str.isdigit, format_spec))
-            if width_digits:
-                width = int(width_digits)
-            type_part = ''.join(filter(str.isalpha, format_spec))
-            if type_part:
-                format_type = type_part[0]  # 使用第一个字母作为格式类型
-        
-        # 判断是否需要使用numpy默认格式化
-        # 只要指定了precision，就使用自定义格式化
-        # 否则使用numpy默认格式
-        use_numpy_default = precision is None
-        
-        # 简化实现：根据数据类型使用不同的格式化策略
-        if arrlib.issubdtype(self._array.dtype, arrlib.complexfloating):
-            if use_numpy_default:
-                # 使用numpy默认格式化
-                data_str = arrlib.array2string(
-                    self._array,
-                    separator=', ',
-                    threshold=self._array.size  # 确保显示所有元素
-                )
-            else:
-                # 复数类型的简化格式化 - 右对齐
-                def complex_formatter(z):
-                    # 格式化实部和虚部，使用右对齐格式
-                    real = z.real
-                    imag = z.imag
-                    
-                    # 使用从format_spec提取的宽度、精度和格式类型
-                    # 使用右对齐格式化，支持不同格式类型（如'f'、'e'等）
-                    if width is not None:
-                        real_str = f'{real:>{width}.{precision}{format_type}}'
-                        # 处理虚部符号 - 从格式化字符串中移除多余的符号
-                        imag_abs = builtins.abs(imag)
-                        imag_sign = '+' if imag >= 0 else '-'
-                        imag_str_clean = f'{imag_abs:>{width-1}.{precision}{format_type}}'
-                    else:
-                        real_str = f'{real:.{precision}{format_type}}'
-                        # 处理虚部符号 - 从格式化字符串中移除多余的符号
-                        imag_abs = builtins.abs(imag)
-                        imag_sign = '+' if imag >= 0 else '-'
-                        imag_str_clean = f'{imag_abs:.{precision}{format_type}}'
-                    
-                    return f'{real_str}{imag_sign}{imag_str_clean}j'
-                
-                formatter_dict = {'complex_kind': complex_formatter}
-                data_str = arrlib.array2string(
-                    self._array,
-                    separator=', ',
-                    formatter=formatter_dict,  # type: ignore
-                    threshold=self._array.size  # 确保显示所有元素
-                )
-        elif arrlib.issubdtype(self._array.dtype, arrlib.floating):
-            if use_numpy_default:
-                # 使用numpy默认格式化
-                data_str = arrlib.array2string(
-                    self._array,
-                    separator=', ',
-                    threshold=self._array.size  # 确保显示所有元素
-                )
-            else:
-                # 浮点类型的简化格式化 - 右对齐
-                def float_formatter(x):
-                    # 为了实现小数点对齐，使用右对齐格式化
-                    # 使用从format_spec提取的宽度、精度和格式类型
-                    if width is not None:
-                        return f'{x:>{width}.{precision}{format_type}}'
-                    else:
-                        return f'{x:.{precision}{format_type}}'
-                
-                formatter_dict = {'float_kind': float_formatter}
-                data_str = arrlib.array2string(
-                    self._array,
-                    separator=', ',
-                    formatter=formatter_dict,  # type: ignore
-                    threshold=self._array.size  # 确保显示所有元素
-                )
-        else:
-            # 对于非浮点、非复数类型，使用默认格式化
-            if arrlib.issubdtype(self._array.dtype, arrlib.integer):
-                data_str = arrlib.array2string(
-                    self._array,
-                    separator=', '
-                )
-            else:
-                # 其他类型使用默认格式化
-                data_str = arrlib.array2string(self._array, separator=', ')
-
-        
-        # 第一步：已经生成了多维数据的显示字符串
-        # 第二步：使用format_text函数添加"tensor("前缀
-        base_str = format_text(data_str, "tensor")
-        
-        # 第三步：在最后添加属性信息（format_text已经添加了右括号）
-        if attr_str:
-            base_str = base_str[:-1]
-            base_str += f", {attr_str})"
-                
-        return base_str
+        return _call_regapi('_disp', self, format_spec)
 
     def __repr__(self):
         """调用__disp__()使用默认格式显示对象"""
@@ -433,7 +270,7 @@ class TN:
         自定义格式化输出，支持浮点数格式规范。
         例如："{:.4f}".format(tensor) 会显示4位小数
         """
-        if self.ndim == 0 and not self.is_complex():
+        if self.ndim == 0:
             return format(self._array, format_spec)
         else:
             return self.__disp__(format_spec)
@@ -907,8 +744,7 @@ class TN:
         # 直接检查data是否为cp.ndarray类型
         if cp and isinstance(self._array, cp.ndarray):
             # 使用CuPy数组的device属性获取设备信息
-            cupy_device = self._array.device
-            device_idx = cupy_device.id
+            device_idx = self._array.device.id
             return Device(f'cuda:{device_idx}')
         else:
             # 对于NumPy数组或其他类型，返回CPU设备
@@ -1179,38 +1015,10 @@ class TN:
         return ret
 
     def __getitem__(self, index):
-        # 类型转换：TN索引转为NumPy数组
-        index_val = _convert_TNindex_to_numpy(index)
-        
-        # 执行索引操作并捕获错误
-        try:
-            indexed_data = self._array[index_val]
-        except (IndexError, ValueError) as e:
-            # 错误信息增强
-            err_msg = f"Index operation failed: {str(e)} (Original index type: {type(index)}, shape: {self.shape})"
-            raise type(e)(err_msg) from None
-        
-        # 使用base是否为None来判断是否为视图，这样可以同时支持numpy和cupy
-        # 对于numpy和cupy，视图的base属性指向原始数组，而副本的base属性为None
-        is_view = indexed_data.base is not None
-        
-        # 创建结果张量
-        ret = TN(indexed_data, requires_grad = (is_grad_enabled() and self.requires_grad))
-        
-        # 设置视图属性
-        ret._is_view = is_view
-        ret._base = self
-        ret._view_index = index_val
-        
-        if ret.requires_grad:
-            ret.fromvars = (self,)
-            ret.parms = (index_val,)
-            ret.gradfuncs = (_getitem_backward,)
-        
-        return ret
-    
+        return _getitem(self, index)
+
     def __setitem__(self, index, val):
-        return _call_regapi('setitem', self, index, val)
+        return _call_regapi('_setitem', self, index, val)
 
     # 原地/非原地成对接口：xxxat_ 直接在 self 上执行并记录依赖、返回 self；
     # xxxat 在副本上执行、返回新张量，self 不变。
@@ -1529,7 +1337,7 @@ class TN:
         '''
         计算张量的迹（对角线元素的和）
         '''
-        return api_registry.get("trace")(self)
+        return _call_regapi("trace", self)
 
     @property
     def mT(self) -> TN:
@@ -2043,7 +1851,7 @@ class TN:
         arrtype = (np.ndarray,cp.ndarray) if cp else (np.ndarray,)
 
         if isinstance(target,TN):
-            if target.device != self.device:
+            if not _same_device(target, self):
                 raise ValueError(f'target device must be {self.device} but got {target.device}')
             target.copy_(self)
         elif isinstance(target,arrtype):
@@ -2523,10 +2331,10 @@ class TN:
         return ret
 
     def unfold(self, dimension: int, size: int, step: int = None) -> 'TN':
-        return api_registry.get("unfold")(self, dimension, size, step)
+        return _call_regapi("unfold", self, dimension, size, step)
     
     def fold(self, dimension: int, size: int, step: int = None, output_size: int = None) -> 'TN':
-        return api_registry.get("fold")(self, dimension, size, step, output_size)
+        return _call_regapi("fold", self, dimension, size, step, output_size)
     
     def flatten(self, start_dim=0, end_dim=-1) -> 'TN':
         """将张量从start_dim到end_dim的维度展平，自动支持梯度跟踪"""
@@ -2672,9 +2480,7 @@ class TN:
         """
         # 解析参数格式（支持 (2,3) 或 2,3 两种形式）
         new_shape = _validate_shape(size)
-
-        # 直接调用函数版本，避免重复验证
-        return broadcast_to(self, new_shape)
+        return _call_regapi('broadcast_to', self, new_shape)
     
     def repeat(self, *repeats) -> TN:
         """
@@ -2784,10 +2590,10 @@ class TN:
         return _call_regapi('multinomial', self, num_samples, replacement, generator=generator)
 
     def maximum(self, other):
-        return maximum(self,other)
+        return _call_regapi('maximum', self, other)
     
     def minimum(self, other):
-        return minimum(self,other)
+        return _call_regapi('minimum', self, other)
 
     def sum(self, dim:int|tuple|None=None, keepdim:bool=False):  # type: ignore
         ret = sum(self, dim, keepdim)
@@ -2804,12 +2610,10 @@ class TN:
         return ret
     
     def var(self, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False):  # type: ignore
-        ret = var(self, dim, unbiased, keepdim)
-        return ret
+        return _call_regapi('var', self, dim, unbiased, keepdim)
     
     def std(self, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False):  # type: ignore
-        ret = std(self, dim, unbiased, keepdim)
-        return ret
+        return _call_regapi('std', self, dim, unbiased, keepdim)
 
     def abs(self):
         return abs(self)
@@ -2818,22 +2622,22 @@ class TN:
         return pow(self,exponent)
     
     def sqrt(self):
-        return sqrt(self)
+        return _call_regapi('sqrt', self)
 
     def exp(self):
-        return exp(self)
+        return _call_regapi('exp', self)
     
     def log(self):
-        return log(self)
+        return _call_regapi('log', self)
 
     def log10(self):
-        return log10(self)
+        return _call_regapi('log10', self)
     
     def log2(self):
-        return log2(self)
+        return _call_regapi('log2', self)
     
     def log1p(self):
-        return log1p(self)
+        return _call_regapi('log1p', self)
 
     def sin(self):
         return _call_regapi('sin', self)
@@ -2890,7 +2694,7 @@ class TN:
         return _call_regapi('arctanh', self)
 
     def sign(self):
-        return sign(self)
+        return _call_regapi('sign', self)
 
     def diagonal(self,offset:int=0,dim1:int=0,dim2:int=1):
         return _call_regapi('diagonal', self, offset, dim1, dim2)
@@ -4098,6 +3902,38 @@ class BackwardHookManager:
         self._popped_tensors.clear()
 
 
+
+def _getitem(t: TN, index):
+    """TN.__getitem__ 的实现：执行索引并建立视图与梯度依赖。"""
+    # 类型转换：TN索引转为NumPy数组
+    index_val = _convert_TNindex_to_numpy(index)
+
+    # 执行索引操作并捕获错误
+    try:
+        indexed_data = t._array[index_val]
+    except (IndexError, ValueError) as e:
+        # 错误信息增强
+        err_msg = f"Index operation failed: {str(e)} (Original index type: {type(index)}, shape: {t.shape})"
+        raise type(e)(err_msg) from None
+
+    # 使用base是否为None来判断是否为视图，这样可以同时支持numpy和cupy
+    # 对于numpy和cupy，视图的base属性指向原始数组，而副本的base属性为None
+    is_view = indexed_data.base is not None
+
+    # 创建结果张量
+    ret = TN(indexed_data, requires_grad=(is_grad_enabled() and t.requires_grad))
+    ret._is_view = is_view
+    ret._base = t
+    ret._view_index = index_val
+
+    if ret.requires_grad:
+        ret.fromvars = (t,)
+        ret.parms = (index_val,)
+        ret.gradfuncs = (_getitem_backward,)
+
+    return ret
+
+
 @contextmanager
 def device_context(tensor_obj: TN):
     """根据张量设备类型，提供相应的设备上下文管理器
@@ -5005,110 +4841,6 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         return wrapper
     return decorator
 
-def broadcast_to(input: TN, size: tuple[int, ...]) -> TN:
-    """
-    将输入张量广播到指定的形状。
-    
-    返回一个原始张量的视图，广播到新的形状。原始张量和新张量共享相同的数据，
-    但新张量的形状可能不同。广播遵循NumPy的广播规则。
-    
-    Args:
-        input (TN): 要广播的输入张量
-        size (tuple[int, ...]): 目标形状，必须与输入形状兼容
-        
-    Returns:
-        TN: 广播后的张量
-        
-    Raises:
-        TypeError: 如果输入不是TN张量或size不是元组/列表
-        RuntimeError: 如果广播失败
-        
-    Examples:
-        >>> x = tensor([[1, 2, 3]])  # 形状(1, 3)
-        >>> y = broadcast_to(x, (4, 3))  # 形状(4, 3)，每行都是[1, 2, 3]
-        >>> z = tensor([1, 2, 3])  # 形状(3,)
-        >>> w = broadcast_to(z, (2, 3))  # 形状(2, 3)，每行都是[1, 2, 3]
-    """
-    # 验证输入类型
-    if not isinstance(input, TN):
-        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
-    
-    # 确保size是元组（支持列表输入）
-    size = tuple(size) if isinstance(size, list) else size
-    
-    # _expand 内部会检查形状相等并返回自身，无需重复检查
-    # _expand 内部使用 numpy/cupy 的 broadcast_to，返回视图不复制数据
-    try:
-        return input._expand(size)
-    except ValueError as e:
-        raise RuntimeError(f"Failed to broadcast tensor from shape {input.shape} to shape {size}: {e}")
-
-def broadcast_tensors(*tensors: TN) -> tuple[TN, ...]:
-    """
-    将多个张量广播到相同的形状
-    
-    按照NumPy的广播规则，将多个输入张量广播到相同的形状。
-    如果张量的形状已经兼容，则返回原始张量；否则返回广播后的张量。
-    
-    Args:
-        *tensors: 要广播的张量，至少需要两个张量
-        type *tensors: TN
-        
-    Returns:
-        广播后的张量元组，所有张量具有相同的形状
-        rtype: tuple[TN, ...]
-        
-    Raises:
-        TypeError: 如果输入不是TN张量
-        RuntimeError: 如果广播失败
-        
-    Examples:
-        >>> a = tensor([1, 2, 3])  # 形状(3,)
-        >>> b = tensor([[4], [5]])  # 形状(2, 1)
-        >>> a_broadcast, b_broadcast = broadcast_tensors(a, b)
-        >>> a_broadcast.shape  # (2, 3)
-        >>> b_broadcast.shape  # (2, 3)
-        
-        >>> c = tensor([1, 2, 3])  # 形状(3,)
-        >>> d = tensor([[4], [5]])  # 形状(2, 1)
-        >>> e = tensor([[[6]]])  # 形状(1, 1, 1)
-        >>> c_broadcast, d_broadcast, e_broadcast = broadcast_tensors(c, d, e)
-        >>> c_broadcast.shape  # (1, 2, 3)
-        >>> d_broadcast.shape  # (1, 2, 3)
-        >>> e_broadcast.shape  # (1, 2, 3)
-    """
-    if len(tensors) < 2:
-        raise ValueError(f"broadcast_tensors requires at least 2 tensors, got {len(tensors)}")
-    
-    # 验证所有输入都是TN类型
-    for i, t in enumerate(tensors):
-        if not isinstance(t, TN):
-            raise TypeError(f"Expected tensor {i} to be TN type, got {type(t)}")
-    
-    # 使用对应的数组库计算广播后的形状
-    # 获取第一个张量的数组库（所有张量应该在同一个库中）
-    arrlib = tensors[0]._get_array_lib()
-    
-    try:
-        # 使用对应数组库的 broadcast 函数获取广播后的形状
-        broadcast_obj = arrlib.broadcast(*[t._array for t in tensors])
-        broadcast_shape = broadcast_obj.shape
-    except ValueError as e:
-        # 广播失败，抛出更清晰的错误信息
-        raise RuntimeError(f"Cannot broadcast tensors with incompatible shapes: {[t.shape for t in tensors]}") from e
-    
-    # 广播所有张量
-    broadcasted_tensors = []
-    for t in tensors:
-        if t.shape == broadcast_shape:
-            # 形状已经匹配，直接返回
-            broadcasted_tensors.append(t)
-        else:
-            # 需要广播
-            broadcasted_tensors.append(broadcast_to(t, broadcast_shape))
-    
-    return tuple(broadcasted_tensors)
-
 def _convert_TNindex_to_numpy(index):
     """
     将 TN 索引转换为 NumPy 兼容的索引格式
@@ -5382,7 +5114,7 @@ def _validate_out_tensor(out, result: TN, inputs, name: str, label: str = "out",
         raise RuntimeError(f"{name}(): {label} shape ({out.shape}) is incompatible with result shape ({result.shape})")
     if out.dtype != result.dtype:
         raise RuntimeError(f"Expected out tensor to have dtype {result.dtype}, but got {out.dtype} instead")
-    if out.device != result.device:
+    if not _same_device(out, result):
         raise RuntimeError(f"Expected out tensor to have device {result.device}, but got {out.device} instead")
 
 
@@ -5499,28 +5231,6 @@ def abs(x:TN)->TN:
         ret.gradfuncs = (_abs_backward,)
     
     return ret
-
-def sqrt(x:TN)->TN:
-    """
-    计算张量的平方根。
-    
-    返回一个新张量，其中每个元素是输入张量对应元素的平方根。
-    
-    Args:
-        x (TN): 输入张量，元素必须为非负数
-        
-    Returns:
-        TN: 包含输入张量平方根的新张量
-        
-    Examples:
-        >>> a = tensor([1, 4, 9])
-        >>> sqrt(a)  # 返回[1, 2, 3]
-        
-        >>> b = tensor([[4.0, 9.0], [16.0, 25.0]])
-        >>> sqrt(b)  # 返回[[2.0, 3.0], [4.0, 5.0]]
-    """
-    _require_tn(x, 'sqrt')
-    return x ** 0.5
 
 def _create_maxmin_mask(arr, dim:int|tuple|None=None, *, indices=None, maxmin_val=None):
     """创建最大值/最小值掩码数组，支持梯度分配到极值位置
@@ -5726,64 +5436,6 @@ def min(x:TN, dim:int|tuple|None=None, keepdim:bool=False, *, out=None):
         indices_tensor = TN(indices_arr)
         return _apply_out_tuple(out, ReturnType_min(values_tensor, indices_tensor), (x,), "min")
 
-def _var_backward(result_tensor:TN, i:int)->TN:
-    dim,unbiased,keepdim = result_tensor.parms[i]     
-    x=result_tensor.fromvars[i]
-    
-    # 计算样本数量n
-    if dim is None:
-        n = x.numel()
-    elif isinstance(dim, int):
-        n = x.shape[dim]
-    elif isinstance(dim, tuple):
-        # 对于多维度，我们需要计算每个维度的大小的乘积
-        n = 1
-        for d in dim:
-            n *= x.shape[d]
-    else:
-        raise TypeError(f"dim must be int, tuple or None, got {type(dim)}")
-    
-    # 计算自由度调整
-    ddof = 1 if unbiased else 0
-    denom = builtins.max(n - ddof, 1)  # 避免除以0
-    
-    # 计算(x - mean(x))的梯度因子
-    x_mean = mean(x, dim=dim, keepdim=True)  # 始终使用keepdim=True以保持广播正确
-    diff = x - x_mean
-    factor = x.dtype.type(2.0 / denom)       # 确保因子与输入张量的dtype一致，避免计算时导致数据类型提升
-
-    # 如果keepdim为False，需要扩展梯度维度以匹配diff的维度
-    # unsqueeze支持int、tuple和None，dim=None时直接返回原张量
-    if not keepdim:
-        grad_value = result_tensor.grad_value.unsqueeze(dim)
-    else:
-        grad_value = result_tensor.grad_value
-    
-    # 计算最终梯度
-    grad = grad_value * diff * factor
-    return grad
-
-def var(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->TN:
-    if not isinstance(x,TN):
-        raise SyntaxError('x must be a tensor')
-    
-    if dim == ():
-        dim = None
-    ddof = 1 if unbiased == True else 0
-
-    value = x._array.var(axis=dim, ddof=ddof, keepdims=keepdim)
-    ret = TN(value, requires_grad = (is_grad_enabled() and x.requires_grad))
-    
-    if ret.requires_grad:
-        ret.fromvars=(x,)
-        ret.parms=((dim,unbiased,keepdim),)
-        ret.gradfuncs=(_var_backward,)
-    
-    return ret
-
-def std(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->TN:
-    return sqrt(var(x,dim,unbiased,keepdim))
-
 def _transpose_backward(result_tensor:TN, i:int)->TN:
     d1,d2=result_tensor.parms[i]
     grad = result_tensor.grad_value.transpose(d1,d2)
@@ -5975,7 +5627,7 @@ def _matmul_grad_left(result_tensor:TN, i:int)->TN:
 
     # 分支3：多维 @ 1D，einsum 计算外积
     if left_ndim > 1 and right_ndim == 1:
-        return api_registry.get('einsum')('...m,k->...mk', grad_value, right_tensor.conj())
+        return _call_regapi('einsum', '...m,k->...mk', grad_value, right_tensor.conj())
 
     # 分支4：多维 @ 多维，标准矩阵乘法 @
     # 只比较批次部分（[:-2] 剥离矩阵维），找出 A 被广播的批次轴
@@ -6049,8 +5701,8 @@ def _matmul_grad_right(result_tensor:TN, i:int)->TN:
     # 分支2：1D @ 多维，einsum 计算外积
     if left_ndim == 1 and right_ndim > 1:
         # A 是 1D 不贡献批次维，C 的批次即 B 的批次，einsum 直接产出 B 的形状 (..., K, N)
-        return api_registry.get('einsum')('k,...n->...kn', left_tensor.conj(), grad_value)
-
+        return _call_regapi('einsum', 'k,...n->...kn', left_tensor.conj(), grad_value)
+        
     # 分支3：多维 @ 1D，矩阵乘法 + 批次求和
     if left_ndim > 1 and right_ndim == 1:
         # grad 为 C 的形状 (..., M)，插入列维变为"单列矩阵"才能与 A^T 参与 @ 运算
@@ -6199,7 +5851,18 @@ def _pow_grad_right(result_tensor:TN, i:int)->TN:
     right_var_shape = right_tensor.shape
     result_shape = result_tensor.shape
 
-    right_grad = result_tensor.grad_value * (result_tensor * log(left_value)).conj()
+    # 反向时左值可能是标量/数组（如 2 ** t 的底数），直接用数组库求对数，
+    # 避免为了取对数而构造 TN；python标量交给numpy并直接产出结果dtype的标量，
+    # 避免cp.log为标量分配0维设备数组，numpy标量参与cupy运算也不会跨设备
+    if isinstance(left_value, TN):
+        left_log = left_value.log()
+    elif isinstance(left_value, (int, float, complex, bool)):
+        left_log = np.log(result_tensor.dtype.type(left_value))
+    else:
+        left_log = result_tensor._get_array_lib().log(left_value)
+        if left_log.dtype != result_tensor.dtype:
+            left_log = left_log.astype(result_tensor.dtype)
+    right_grad = result_tensor.grad_value * (result_tensor * left_log).conj()
 
     # shape一样时，直接返回right_grad，否则对right_grad进行sum缩减
     if right_var_shape == result_shape:
@@ -6239,7 +5902,7 @@ def pow(input, exponent)->TN:
         reversed_order = False
 
     if isinstance(right,TN):
-        if left.device != right.device:
+        if not _same_device(left, right):
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {left.device} and {right.device}!')
         right_data = right._array
         right_requires_grad = right.requires_grad
@@ -6326,7 +5989,7 @@ def add(x, y, *, alpha=1)->TN:
         left, right = as_tensor(x), y
 
     if isinstance(right,TN):
-        if left.device != right.device:
+        if not _same_device(left, right):
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {left.device} and {right.device}!')
         right_data = right._array
         right_requires_grad = right.requires_grad
@@ -6391,7 +6054,7 @@ def sub(x, y, *, alpha=1)->TN:
         reversed_order = False
 
     if isinstance(right,TN):
-        if left.device != right.device:
+        if not _same_device(left, right):
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {left.device} and {right.device}!')
         right_data = right._array
         right_requires_grad = right.requires_grad
@@ -6450,7 +6113,7 @@ def mul(x, y)->TN:
         left, right = as_tensor(x), y
 
     if isinstance(right,TN):
-        if left.device != right.device:
+        if not _same_device(left, right):
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {left.device} and {right.device}!')
         right_data = right._array
         right_requires_grad = right.requires_grad
@@ -6504,7 +6167,7 @@ def div(x, y)->TN:
         reversed_order = False
 
     if isinstance(right,TN):
-        if left.device != right.device:
+        if not _same_device(left, right):
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {left.device} and {right.device}!')
         right_data = right._array
         right_requires_grad = right.requires_grad
@@ -6568,7 +6231,7 @@ def floor_divide(x, y)->TN:
         reversed_order = False
 
     if isinstance(right,TN):
-        if left.device != right.device:
+        if not _same_device(left, right):
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {left.device} and {right.device}!')
         right_data = right._array
         right_requires_grad = right.requires_grad
@@ -6630,7 +6293,7 @@ def remainder(x, y)->TN:
         reversed_order = False
 
     if isinstance(right,TN):
-        if left.device != right.device:
+        if not _same_device(left, right):
             raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {left.device} and {right.device}!')
         right_data = right._array
         right_requires_grad = right.requires_grad
@@ -6702,7 +6365,7 @@ def matmul(x, y)->TN:
             device = left.device
         )
 
-    if left.device != right_tensor.device:
+    if not _same_device(left, right_tensor):
         raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, {left.device} and {right_tensor.device}!')
 
     if left._array.ndim == 0 or right_tensor._array.ndim == 0:
@@ -6906,126 +6569,41 @@ def bitwise_right_shift(x, y)->TN:
         return TN(shift >> left._array)
     return TN(left._array >> shift)
 
-def _log_grad(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    return result_tensor.grad_value * (1. / x.conj())
+def _same_device(a: TN, b: TN) -> bool:
+    """判断两个张量是否位于同一设备。
 
-def log(x:TN)->TN:
+    直接按底层数组判断，避免为每次比较构造 Device 对象：
+    numpy 数组一律位于 cpu；cupy 数组比较设备号。
+    其余情况（一侧numpy、一侧cupy）必然不同设备。
     """
-    计算张量的自然对数。
+    a_arr, b_arr = a._array, b._array
+    if isinstance(a_arr, np.ndarray) and isinstance(b_arr, np.ndarray):
+        return True
+    if cp and isinstance(a_arr, cp.ndarray) and isinstance(b_arr, cp.ndarray):
+        return a_arr.device.id == b_arr.device.id
+    return False
 
-    返回一个新张量，其中每个元素是输入张量对应元素的自然对数(ln(x))。
 
-    Args:
-        x (TN): 输入张量，元素必须为正数
+def _scalar_where_dtype(x, y):
+    """两个标量分支的公共 dtype，与 torch 的标量提升规则一致。
 
-    Returns:
-        TN: 包含输入张量自然对数的新张量
-
-    Examples:
-        >>> a = tensor([1, e, e^2])  # e是自然常数
-        >>> log(a)  # 返回[0, 1, 2]
-
-        >>> b = tensor([[1.0, 2.718], [7.389, 20.086]])
-        >>> log(b)  # 返回[[0.0, 1.0], [2.0, 3.0]]
+    torch 把标量都当作弱类型：出现复数取默认复数类型，出现浮点取默认浮点类型，
+    仅出现整数取 int64，否则为 bool。numpy 的 where 会把 Python 浮点提升为
+    float64，因此这里先确定 dtype，再据此构造标量。
     """
-    _require_tn(x, 'log')
-    arrlib = x._get_array_lib()
-    result_data = arrlib.log(x._array)
-    requires_grad = (is_grad_enabled() and x.requires_grad)
-    ret = TN(result_data, requires_grad)
-    
-    if requires_grad:
-        ret.fromvars = (x,)
-        ret.gradfuncs = (_log_grad,)
+    kinds = {np.dtype(infer_data_type(x)).kind, np.dtype(infer_data_type(y)).kind}
+    if 'c' in kinds:
+        return get_default_complex()
+    if 'f' in kinds:
+        return get_default_dtype()
+    if kinds & {'i', 'u'}:
+        return int64
+    return np.dtype('bool')
 
-    return ret
 
-def log1p(x: TN) -> TN:    
-    """
-    计算张量的log(1+x)。
-    
-    返回一个新张量，其中每个元素是输入张量对应元素加1后的自然对数，即log(1+x)。
-    对于x接近0的小值，这个函数比直接计算log(1+x)更精确。
-    
-    Args:
-        x (TN): 输入张量，元素必须大于-1
-        
-    Returns:
-        TN: 包含输入张量log(1+x)的新张量
-        
-    Examples:
-        >>> a = tensor([0, 1, 2])
-        >>> log1p(a)  # 返回[log(1), log(2), log(3)] ≈ [0, 0.693, 1.099]
-        
-        >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
-        >>> log1p(b)  # 返回[[0.0, 0.693], [1.099, 1.386]]
-    """
-    return log(x + 1.0)  # 复用现有log函数
-
-def log2(x:TN)->TN:
-    """
-    计算张量的二进制对数。
-    
-    返回一个新张量，其中每个元素是输入张量对应元素的二进制对数(log2(x))。
-    
-    Args:
-        x (TN): 输入张量，元素必须为正数
-        
-    Returns:
-        TN: 包含输入张量二进制对数的新张量
-    """
-    return log(x) / np.log(2.0)
-
-def log10(x:TN)->TN:
-    """
-    计算张量的十进制对数。
-    
-    返回一个新张量，其中每个元素是输入张量对应元素的十进制对数(log10(x))。
-    
-    Args:
-        x (TN): 输入张量，元素必须为正数
-        
-    Returns:
-        TN: 包含输入张量十进制对数的新张量
-    """
-    return log(x) / np.log(10.0)
-    
-def _exp_grad(result_tensor:TN, i:int)->TN:
-    return result_tensor.grad_value * result_tensor.conj()
-
-def exp(x:TN)->TN:
-    """
-    计算张量的指数函数。
-
-    返回一个新张量，其中每个元素是输入张量对应元素的自然指数(e^x)。
-
-    Args:
-        x (TN): 输入张量
-
-    Returns:
-        TN: 包含输入张量指数函数值的新张量
-
-    Examples:
-        >>> a = tensor([0, 1, 2])
-        >>> exp(a)  # 返回[e^0, e^1, e^2] ≈ [1, 2.718, 7.389]
-
-        >>> b = tensor([[0.0, 1.0], [2.0, 3.0]])
-        >>> exp(b)  # 返回[[1.0, 2.718], [7.389, 20.086]]
-    """
-    _require_tn(x, 'exp')
-    arrlib = x._get_array_lib()
-    ret = TN(arrlib.exp(x._array), is_grad_enabled() and x.requires_grad)
-    
-    if ret.requires_grad:
-        ret.fromvars = (x,)
-        ret.gradfuncs = (_exp_grad,)
-
-    return ret
-
-def _where_backward(r, i):
-    """where函数的梯度计算函数（外部定义以避免重复创建闭包）"""
-    grad = r.grad_value * r.parms[i]
+def _where_grad(r, i, mask):
+    """按 mask 缩放上游梯度，并在广播场景下归约回源张量形状"""
+    grad = r.grad_value * mask
     var = r.fromvars[i]
     var_shape = var.shape
     grad_shape = grad.shape
@@ -7033,22 +6611,28 @@ def _where_backward(r, i):
     # 处理广播场景
     if var_shape != grad_shape:
         broadcast_axes = _get_broadcast_axis(grad_shape, var_shape)
-        grad = grad.sum(dim=broadcast_axes, keepdim=False)
-        grad = grad._reshape(var_shape)
+        grad = grad.sum(dim=broadcast_axes, keepdim=False)._reshape(var_shape)
     
     # 仅在类型不一致时进行转换
     grad = grad.type(var.dtype)
     return grad
 
-@overload
-def where(cond: TN, x: None, y: None) -> tuple[TN, ...]:
-    ...
 
-@overload
-def where(cond: TN, x: TN | int | float, y: TN | int | float) -> TN:
-    ...
+def _where_backward(r, i):
+    """where函数x分支的梯度计算函数（外部定义以避免重复创建闭包）"""
+    return _where_grad(r, i, r.parms[i])
 
-@api_registry.register
+
+def _where_backward_other(r, i):
+    """where函数y分支的梯度计算函数：按 ~cond 筛选上游梯度。
+
+    取反在反向传播时才做，且bool掩码走逻辑非（结果仍是bool），
+    与浮点梯度相乘不会提升dtype，因此前向无需额外生成一份浮点掩码张量。
+    """
+    cond = r.parms[i]
+    mask = ~cond if cond.dtype == np.bool_ else 1.0 - cond
+    return _where_grad(r, i, mask)
+
 def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | None = None) -> TN | tuple[TN, ...]:
     
     if not isinstance(cond,TN):
@@ -7074,7 +6658,7 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
     
     # 设备检查
     if x_is_tensor:
-        if cond.device != x.device:
+        if not _same_device(cond, x):
             raise ValueError(f"Expected all tensors to be on the same device, "
                            f"but found devices: cond={cond.device}, x={x.device}")
         x_requires_grad = x.requires_grad
@@ -7084,7 +6668,7 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
         x_data = x
         
     if y_is_tensor:
-        if cond.device != y.device:
+        if not _same_device(cond, y):
             raise ValueError(f"Expected all tensors to be on the same device, "
                            f"but found devices: cond={cond.device}, y={y.device}")
         y_requires_grad = y.requires_grad
@@ -7092,6 +6676,13 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
     else:
         y_requires_grad = False
         y_data = y
+
+    # 两个分支都是标量时按 torch 的弱类型规则指定 dtype，
+    # 否则 numpy 会把 Python 浮点提升为 float64
+    if not x_is_tensor and not y_is_tensor and is_number(x) and is_number(y):
+        scalar_dtype = _scalar_where_dtype(x, y)
+        x_data = scalar_dtype.type(x)
+        y_data = scalar_dtype.type(y)
         
     # 条件选择，cond不参与梯度计算
     data = arrlib.where(cond._array, x_data, y_data)
@@ -7104,37 +6695,18 @@ def where(cond: TN, x: TN | int | float | None = None, y: TN | int | float | Non
     if ret.requires_grad:
         if x_requires_grad and y_requires_grad:
             ret.fromvars = (x, y)
-            ret.parms = (cond, 1.0 - cond)
-            ret.gradfuncs = (_where_backward, _where_backward)
+            ret.parms = (cond, cond)
+            ret.gradfuncs = (_where_backward, _where_backward_other)
         elif x_requires_grad:
             ret.fromvars = (x, )
             ret.parms = (cond,)
             ret.gradfuncs = (_where_backward, )
         else:
             ret.fromvars = (y, )
-            ret.parms = (1.0 - cond,)
-            ret.gradfuncs = (_where_backward, )
+            ret.parms = (cond,)
+            ret.gradfuncs = (_where_backward_other, )
     
     return ret
-
-def _sign_derivative(result:TN, x:TN)->tuple[TN]:
-    # sign函数在x=0处不可导，在其他点处梯度为0
-    # 梯度为零，与上游梯度相乘后仍为零
-    return (result.grad_value * zeros_like(x),)
-
-@track_grad(_sign_derivative)
-def sign(x:TN)->TN:
-    """计算张量的符号函数
-    
-    对于复数 z = a + bi:
-    - 如果 z ≠ 0: sign(z) = z / |z| = (a + bi) / √(a² + b²)
-    - 如果 z = 0: sign(z) = 0
-    
-    该函数支持实数和复数张量，并正确处理反向传播。
-    """
-    _require_tn(x, 'sign')
-    arrlib = x._get_array_lib()
-    return TN(arrlib.sign(x._array))
 
 def conj(x):
     """计算输入的共轭。
@@ -7329,244 +6901,6 @@ def unique(input: TN, sorted: bool = True, return_inverse: bool = False,
         return as_tensor(unique_values,device=dev)
 # end of unique
 
-def maximum(input: TN, other: TN) -> TN:
-    """
-    计算两个张量的逐元素最大值
-    
-    参数:
-        input (TN): 第一个输入张量
-        other (TN): 第二个输入张量，可以是标量或与input广播兼容的张量
-        
-    返回:
-        TN: 包含两个张量逐元素最大值的新张量
-        
-    异常:
-        TypeError: 当输入不是TN张量时抛出
-        
-    示例:
-        >>> a = rm.tensor([[1, 2], [3, 4]])
-        >>> b = rm.tensor([[2, 1], [1, 5]])
-        >>> rm.maximum(a, b)
-        tensor([[2, 2],
-                [3, 5]])
-    """
-    if not isinstance(input, TN):
-        raise TypeError(f"Expected input to be TN tensor, got {type(input)}")
-    
-    arrlib = input._get_array_lib()
-    dev = input.device
-
-    if not isinstance(other, TN):
-        other = as_tensor(other,device=dev)
-    
-    if other.device != dev:
-        raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
-    
-    # 前向计算：使用numpy的maximum
-    value = arrlib.maximum(input._array, other._array)
-    ret = TN(value, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
-    
-    # 注册梯度函数
-    if ret.requires_grad:
-        ret.fromvars = (input, other)
-        ret.gradfuncs = (_maximum_backward_input, _maximum_backward_other)
-    
-    return ret
-
-def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
-    """
-    maximum函数对第一个输入的梯度计算
-    
-    梯度规则：
-    - 当input > other时，梯度为1（传递梯度）
-    - 当input < other时，梯度为0（阻断梯度）
-    - 当input == other时，梯度为0.5（与PyTorch行为一致，平均分配）
-    """
-    input_tensor = result_tensor.fromvars[i]  # 第一个输入
-    other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
-    
-    
-    # 计算梯度掩码
-    # input > other: 1.0
-    # input == other: 0.5  # 与PyTorch一致
-    # input < other: 0.0
-    # 使用riemann的where函数，自动处理设备上下文
-    mask = where(
-        input_tensor > other_tensor, 
-        1.0, 
-        where(input_tensor < other_tensor, 0.0, 0.5)
-    ).type(input_tensor.dtype)
-    
-    # 应用梯度掩码
-    grad = result_tensor.grad_value * mask
-    
-    # 处理广播情况
-    input_shape = input_tensor.shape
-    result_shape = result_tensor.shape
-    
-    if input_shape != result_shape:
-        # 获取需要缩减的广播轴
-        broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
-        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
-    
-    return grad
-
-def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
-    """
-    maximum函数对第二个输入的梯度计算
-    
-    梯度规则：
-    - 当other > input时，梯度为1（传递梯度）
-    - 当other <= input时，梯度为0（阻断梯度）
-    - 当other == input时，梯度为0.5（平均分配）
-    """
-    other_tensor = result_tensor.fromvars[i]  # 第二个输入
-    input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
-    
-    
-    # 计算梯度掩码
-    # other > input: 1.0
-    # other == input: 0.5  # 与PyTorch一致
-    # other < input: 0.0
-    # 使用riemann的where函数，自动处理设备上下文
-    mask = where(
-        other_tensor > input_tensor, 
-        1.0,
-        where(other_tensor < input_tensor, 0.0, 0.5)
-    ).type(other_tensor.dtype)
-    
-    # 应用梯度掩码
-    grad = result_tensor.grad_value * mask
-    
-    # 处理广播情况
-    other_shape = other_tensor.shape
-    result_shape = result_tensor.shape
-    
-    if other_shape != result_shape:
-        # 获取需要缩减的广播轴
-        broadcast_axes = _get_broadcast_axis(result_shape, other_shape)
-        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(other_shape)
-    
-    return grad
-
-def minimum(input: TN, other: TN) -> TN:
-    """
-    计算两个张量的逐元素最小值
-    
-    参数:
-        input (TN): 第一个输入张量
-        other (TN): 第二个输入张量，可以是标量或与input广播兼容的张量
-        
-    返回:
-        TN: 包含两个张量逐元素最小值的新张量
-        
-    异常:
-        TypeError: 当输入不是TN张量时抛出
-        
-    示例:
-        >>> a = rm.tensor([[1, 2], [3, 4]])
-        >>> b = rm.tensor([[2, 1], [1, 5]])
-        >>> rm.minimum(a, b)
-        tensor([[1, 1],
-                [1, 4]])
-    """
-    if not isinstance(input, TN):
-        raise TypeError(f"Expected input to be TN tensor, got {type(input)}")
-    
-    arrlib = input._get_array_lib()
-    dev = input.device
-
-    if not isinstance(other, TN):
-        other = as_tensor(other,device=dev)
-    
-    if other.device != dev:
-        raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
-        
-    # 前向计算：使用numpy的minimum
-    value = arrlib.minimum(input._array, other._array)
-    ret = TN(value, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
-    
-    # 注册梯度函数
-    if ret.requires_grad:
-        ret.fromvars = (input, other)
-        ret.gradfuncs = (_minimum_grad_input, _minimum_grad_other)
-    
-    return ret
-
-def _minimum_grad_input(result_tensor: TN, i: int) -> TN:
-    """
-    minimum函数对第一个输入的梯度计算
-    
-    梯度规则：
-    - 当input < other时，梯度为1（传递梯度）
-    - 当input >= other时，梯度为0（阻断梯度）
-    - 当input == other时，梯度为0.5（平均分配）
-    """
-    input_tensor = result_tensor.fromvars[i]  # 第一个输入
-    other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
-    
-    # 计算梯度掩码
-    # input < other: 1.0
-    # input == other: 0.5  
-    # input > other: 0.0
-    # 使用riemann的where函数，自动处理设备上下文
-    mask = where(
-        input_tensor < other_tensor, 
-        1.0, 
-        where(input_tensor > other_tensor, 0.0, 0.5)
-    ).type(input_tensor.dtype)
-    
-    # 应用梯度掩码
-    grad = result_tensor.grad_value * mask
-    
-    # 处理广播情况
-    input_shape = input_tensor.shape
-    result_shape = result_tensor.shape
-    
-    if input_shape != result_shape:
-        # 获取需要缩减的广播轴
-        broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
-        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
-    
-    return grad
-
-def _minimum_grad_other(result_tensor: TN, i: int) -> TN:
-    """
-    minimum函数对第二个输入的梯度计算
-    
-    梯度规则：
-    - 当other < input时，梯度为1（传递梯度）
-    - 当other >= input时，梯度为0（阻断梯度）
-    - 当other == input时，梯度为0.5（平均分配）
-    """
-    other_tensor = result_tensor.fromvars[i]  # 第二个输入
-    input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
-    
-    # 计算梯度掩码
-    # other < input: 1.0
-    # other == input: 0.5
-    # other > input: 0.0
-    # 使用riemann的where函数，自动处理设备上下文
-    mask = where(
-        other_tensor < input_tensor, 
-        1.0,
-        where(other_tensor > input_tensor, 0.0, 0.5)
-    ).type(other_tensor.dtype)
-    
-    # 应用梯度掩码
-    grad = result_tensor.grad_value * mask
-    
-    # 处理广播情况
-    other_shape = other_tensor.shape
-    result_shape = result_tensor.shape
-    
-    if other_shape != result_shape:
-        # 获取需要缩减的广播轴
-        broadcast_axes = _get_broadcast_axis(result_shape, other_shape)
-        grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(other_shape)
-    
-    return grad
-
 def equal(a:TN,b:TN)->bool:
     """
     检查两个张量是否相等，返回一个布尔值。
@@ -7625,7 +6959,7 @@ def allclose(a:TN,b:TN,rtol:float=1e-5, atol:float=1e-8, equal_nan:bool=False)->
         return False
     
     arrlib = a._get_array_lib()
-    if a.device != b.device:
+    if not _same_device(a, b):
         raise RuntimeError(f'Cannot compare tensors on different devices: {a.device} and {b.device}')
     
     # 获取numpy数组

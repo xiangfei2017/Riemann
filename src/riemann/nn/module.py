@@ -281,7 +281,7 @@ class Parameter(TN):
         返回:
             tuple: 包含构造函数和参数的元组
         """
-        from ..core import _parameter_constructor
+        from ..core.serialization import _parameter_constructor
         
         if self._array is None:
             return (_parameter_constructor, (None, self.requires_grad))

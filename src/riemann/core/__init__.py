@@ -43,18 +43,20 @@
     from riemann.core import TN, tensor, zeros
     from ..core import *          # riemann 子包内部使用
 
-注意：导入顺序为 tensordef -> tensorfuncs -> dtype -> gradmode -> serialization。
-serialization 依赖 nn.module（Parameter），必须放在最后，以保证
-core.tensordef 先完成加载，避免循环导入。
+注意：只有 `import *` 能导出的公共名才经由本包重导出；下划线开头的内部辅助函数
+（如 _apply_out、_getitem_backward、_parameter_constructor）请直接从定义模块导入，
+例如 `from ..core.tensordef import _apply_out`，避免依赖本包的初始化顺序。
+
+导入顺序：tensordef -> tensorfuncs -> serialization。dtype 与 gradmode 由
+tensordef 先行导入，并随其 `import *` 传递导出。serialization 依赖 nn.module
+（Parameter），必须放在最后，以保证 core.tensordef 先完成加载，避免循环导入。
 """
 
 from .tensordef import *
 from .tensorfuncs import *
-
-# tensordef 的内部辅助函数必须在 serialization 之前重导出：
-# serialization -> nn.module -> nn.kan -> linalg 的导入链会在本包尚未完成
-# 初始化时通过 `from ..core import _apply_out` 等取用这些名字
-from .tensordef import _apply_out, _apply_out_tuple, _getitem_backward
-
 from .serialization import *
-from .serialization import _parameter_constructor
+
+# `import *` 会把子模块依赖的模块对象一并带入本命名空间，
+# 这里统一清理，避免 riemann.core.np / riemann.os 之类的意外公共名。
+del np, cp, os, sys, builtins, functools, inspect, warnings
+del namedtuple, contextmanager, Callable, Any, Optional

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-MNIST手写数字识别神经网络示例（改进版）
+MNIST手写数字识别神经网络示例（SGD优化器版）
 
 本文件实现了一个基于Riemann框架的简单神经网络，用于识别MNIST手写数字数据集。
-使用更新后的MNIST类和transforms模块，采用与nn_CrossEntropy_SGD.py相同的网络结构和优化器参数。
+使用MNIST类和transforms模块进行数据加载与预处理，采用单隐藏层全连接网络结构。
 
 网络架构:
 - 输入层: 784个神经元 (28×28像素的MNIST图像展平后)
@@ -11,7 +11,7 @@ MNIST手写数字识别神经网络示例（改进版）
 - 输出层: 10个神经元，对应10个数字类别(0-9)
 
 损失函数: 交叉熵损失函数 (CrossEntropyLoss)
-优化器: 随机梯度下降 (SGD)，学习率0.001，动量0.9
+优化器: 随机梯度下降 (SGD)，学习率0.01，动量0.9
 
 数据预处理:
 - transforms.ToTensor(): 将PIL图像转换为张量并归一化到[0,1]范围
@@ -20,7 +20,6 @@ MNIST手写数字识别神经网络示例（改进版）
 特点:
 - 使用DataLoader进行批量数据加载，提高训练效率
 - 在模型中使用nn.Flatten()进行输入展平，而不是在forward方法中
-- 支持GPU加速计算（如果可用）
 - 提供详细的训练进度和性能指标
 
 作者: Riemann框架示例
@@ -75,13 +74,13 @@ class Classifier(nn.Module):
         self.model = nn.Sequential(
             nn.Flatten(),        # 展平操作，将输入从(1, 28, 28)变为(1, 784)
             nn.Linear(784, 200),  # 输入层到隐藏层
-            nn.ReLU(),           # ReLU激活函数，与nn_CrossEntropy_SGD.py相同
+            nn.ReLU(),           # ReLU激活函数
             nn.Linear(200, 10)   # 隐藏层到输出层
         )
 
         # 交叉熵损失函数，适用于多分类任务
         self.loss_func = nn.CrossEntropyLoss()
-        # 随机梯度下降优化器，学习率0.001，momentum=0.9，与nn_CrossEntropy_SGD.py相同
+        # 随机梯度下降优化器，学习率0.01，momentum=0.9
         self.optimizer = opt.SGD(self.parameters(), lr=0.01, momentum=0.9)
 
     def forward(self,inputs):

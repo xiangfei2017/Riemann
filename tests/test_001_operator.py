@@ -342,6 +342,54 @@ class TestOperatorFunctions(unittest.TestCase):
                     
                     print_test_result(f"Addition gradient x {riemann_dtype} (device: {device_name})", success_x_grad, error_x_grad)
                     print_test_result(f"Addition gradient y {riemann_dtype} (device: {device_name})", success_y_grad, error_y_grad)
+    
+    def test_pow_non_tensor_base(self):
+        """测试幂运算底数为非张量的场景：python标量、numpy标量、numpy数组、list（前向值与指数梯度）"""
+        for riemann_dtype, torch_dtype in [(float32, torch.float32), (float64, torch.float64)]:
+            exp_data = np.array([[1.5, 2.0], [2.5, 3.0]], dtype=riemann_dtype)
+            arr_data = np.array([[2.0, 3.0], [4.0, 5.0]], dtype=riemann_dtype)
+            
+            for device in device_list:
+                pytorch_device = torch.device(device)
+                device_name = device
+                
+                # (riemann底数, torch底数)
+                bases = [
+                    (2, 2),                 # python int
+                    (2.5, 2.5),             # python float
+                    (np.float32(2.0), 2.0), # numpy标量
+                ]
+                if riemann_dtype == np.float64:
+                    # np.float64标量在numpy中按float64提升，放进float64轮次避免梯度dtype警告
+                    bases.append((np.float64(2.0), 2.0))
+                if device_name == 'cpu':
+                    # cupy不接受numpy数组作为操作数，数组/list底数只在CPU上覆盖
+                    bases.append((arr_data, arr_data))
+                    if riemann_dtype == np.float64:
+                        bases.append((arr_data.tolist(), arr_data))
+                
+                for base, torch_base in bases:
+                    exp = tensor(exp_data, requires_grad=True, device=device)
+                    texp = torch.tensor(exp_data, dtype=torch_dtype, requires_grad=True, device=pytorch_device)
+                    
+                    # 前向：底数为非张量，指数为张量
+                    result = base ** exp
+                    if isinstance(torch_base, (list, np.ndarray)):
+                        tbase = torch.tensor(torch_base, dtype=torch_dtype, device=pytorch_device)
+                    else:
+                        tbase = torch_base
+                    tresult = tbase ** texp
+                    test_name = f"Power non-tensor base [{type(base).__name__}] {riemann_dtype} (device: {device_name})"
+                    success, error = compare_values(result, tresult, test_name)
+                    print_test_result(test_name, success, error)
+                    
+                    # 反向：验证指数张量的梯度
+                    result.sum().backward()
+                    tresult.sum().backward()
+                    test_name = f"Power non-tensor base gradient [{type(base).__name__}] {riemann_dtype} (device: {device_name})"
+                    success, error = compare_values(exp.grad, texp.grad, test_name)
+                    print_test_result(test_name, success, error)
+    
     def test_comparison_operators(self):
         """测试比较运算符：>、>=、<、<=、==、!="""
         # 测试不同数据类型

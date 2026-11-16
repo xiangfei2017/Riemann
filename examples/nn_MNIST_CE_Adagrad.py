@@ -17,7 +17,7 @@
 - tqdm：进度条显示
 
 用法：
-    python nn_CrossEntropy_Adagrad.py
+    python nn_MNIST_CE_Adagrad.py
 """
 import sys,os,time
 from tqdm import tqdm

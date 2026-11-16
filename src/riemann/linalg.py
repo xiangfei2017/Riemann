@@ -62,7 +62,10 @@ from __future__ import annotations
 import contextlib
 import numpy as np
 from .core import *
-from .core import _apply_out, _apply_out_tuple, api_registry
+from .cuda import cp
+from .core.tensordef import (
+    _apply_out, _apply_out_tuple, _same_device, api_registry
+)
 import builtins
 
 def matmul(A, B, *, out=None):
@@ -107,7 +110,7 @@ def matmul(A, B, *, out=None):
         raise TypeError(f"matmul: Expected B to be TN type, got {type(B)}")
     
     # 检查 device 是否一致
-    if A.device != B.device:
+    if not _same_device(A, B):
         raise RuntimeError(f"Expected all tensors to be on the same device, but found at least two devices, {A.device} and {B.device}!")
     
     # 执行矩阵乘法
@@ -172,7 +175,7 @@ def cross(input, other, *, dim=-1, out=None):
         raise TypeError(f"cross: Expected other to be TN type, got {type(other)}")
     
     # 检查 device 是否一致
-    if input.device != other.device:
+    if not _same_device(input, other):
         raise RuntimeError(f"Expected all tensors to be on the same device, but found at least two devices, {input.device} and {other.device}!")
     
     # 处理负维度
@@ -1712,7 +1715,7 @@ def lstsq(A, B, *, rcond=None, out=None):
         raise TypeError(f"Input A must be TN type, got {type(A)}")
     if not isinstance(B, TN):
         raise TypeError(f"Input B must be TN type, got {type(B)}")
-    if A.device != B.device:
+    if not _same_device(A, B):
         raise ValueError(f"Input A and B must have the same device, got {A.device} and {B.device}")
     
     arrlib = A._get_array_lib()
@@ -2400,7 +2403,7 @@ def solve(A, B, *, left=True, out=None):
         raise TypeError(f"A must be TN type, got {type(A)}")
     if not isinstance(B, TN):
         raise TypeError(f"B must be TN type, got {type(B)}")
-    if A.device != B.device:
+    if not _same_device(A, B):
         raise ValueError(f"A and B must have the same device, got {A.device} and {B.device}")
     
     if A.dtype.kind not in ['f', 'c']:

@@ -2,14 +2,15 @@
 演示Riemann的梯度计算功能
 
 本示例展示了如何使用Riemann的grad()函数计算函数的梯度。
-包括单输入单输出、多输入单输出、多输入多输出等情况的梯度计算。
+包括单输入单输出、多输入（偏导数）、非标量输出等情况的梯度计算。
 
 主要功能：
 1. 单输入单输出函数的梯度计算
-2. 多输入单输出函数的梯度计算
-3. 高阶导数计算
-4. 偏导数计算
-5. 使用梯度进行优化
+2. 多输入函数的梯度计算（偏导数）
+3. 向量输入与非标量输出的梯度计算（grad_outputs参数）
+4. 使用create_graph=True计算高阶导数
+5. allow_unused参数控制无关输入的处理方式
+6. 复杂计算图与矩阵运算的梯度计算
 """
 
 import sys, os
@@ -136,8 +137,8 @@ d2y_dx2 = grad(dy_dx, h_x)[0]
 print(f'二阶导数d²f/dx² = {d2y_dx2}')  # 应为 6x = 12
 print('说明: create_graph=True允许对梯度结果再次求导\n')
 
-# 示例6: 使用strict参数
-print('6、使用strict参数')
+# 示例6: 使用allow_unused参数
+print('6、使用allow_unused参数')
 print('测试当输出与某些输入无关时的行为')
 print('f(x, y) = x^2')
 print('x = 2.0, y = 3.0')
@@ -155,11 +156,11 @@ print(f'输入x: {x_indep}, y: {y_indep}')
 z_indep = independent_func(x_indep, y_indep)
 print(f'函数值z = f(x, y): {z_indep}')
 
-# 默认strict=False，对无关输入返回None
+# allow_unused=True，对无关输入返回None
 grad_x_indep, grad_y_indep = grad(z_indep, [x_indep, y_indep], allow_unused=True)
 print(f'allow_unused=True时，dz/dx = {grad_x_indep}, dz/dy = {grad_y_indep}')
 
-# strict=True，对无关输入会抛出错误
+# allow_unused=False，对无关输入会抛出错误
 try:
     grad(z_indep, [x_indep, y_indep], allow_unused=False)
     print('错误: 应该抛出异常但没有')

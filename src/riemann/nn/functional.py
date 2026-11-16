@@ -86,7 +86,9 @@ support automatic differentiation through properly implemented backward function
 """
 
 from __future__ import annotations
+import builtins
 from ..core import *
+from ..core.tensordef import _same_device
 
 def linear(input: TN, weight: TN, bias: TN | None = None) -> TN:
     """
@@ -130,7 +132,7 @@ def linear(input: TN, weight: TN, bias: TN | None = None) -> TN:
     if bias is not None and not isinstance(bias, TN):
         raise TypeError(f"Expected bias type to be TN tensor or None, but received type: {type(bias)}")
     
-    if input.device != weight.device or (bias is not None and bias.device != weight.device):
+    if not _same_device(input, weight) or (bias is not None and not _same_device(bias, weight)):
         raise ValueError("input, weight, and bias must have the same device")
     
     # 检查维度兼容性
@@ -992,7 +994,7 @@ def mse_loss(input: TN, target: TN, size_average=None, reduce=None, reduction: s
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-    if input.device != target.device:
+    if not _same_device(input, target):
         raise ValueError("Input and target must be on the same device")
     # 处理旧版参数
     if size_average is not None or reduce is not None:
@@ -1039,7 +1041,7 @@ def l1_loss(input: TN, target: TN, size_average=None, reduce=None, reduction: st
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-    if input.device != target.device:
+    if not _same_device(input, target):
         raise ValueError("Input and target must be on the same device")
     # 处理旧版参数
     if size_average is not None or reduce is not None:
@@ -1094,7 +1096,7 @@ def smooth_l1_loss(input: TN, target: TN, size_average=None, reduce=None, reduct
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-    if input.device != target.device:
+    if not _same_device(input, target):
         raise ValueError("Input and target must be on the same device")
     # 处理旧版参数
     if size_average is not None or reduce is not None:
@@ -1154,7 +1156,7 @@ def cross_entropy(input: TN, target: TN, weight: TN | None = None,
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-    if input.device != target.device:
+    if not _same_device(input, target):
         raise ValueError("Input and target must be on the same device")
     # 处理旧版参数
     if size_average is not None or reduce is not None:
@@ -1290,7 +1292,7 @@ def huber_loss(input: TN, target: TN, delta: float = 1.0,
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
     if not isinstance(target, TN): 
         raise TypeError(f"Expected target type to be TN tensor, but received type: {type(target)}")
-    if input.device != target.device:
+    if not _same_device(input, target):
         raise ValueError("Input and target must be on the same device")
     
     # 处理旧版参数
@@ -1868,7 +1870,7 @@ def conv1d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, d
     if bias is not None and not isinstance(bias, TN):
         raise TypeError(f"Expected bias type to be TN tensor or None, but received type: {type(bias)}")
     
-    if input.device != weight.device or (bias is not None and bias.device != weight.device):
+    if not _same_device(input, weight) or (bias is not None and not _same_device(bias, weight)):
         raise ValueError("input, weight, and bias must have the same device")
     
     if input.ndim != 3 or weight.ndim != 3:
@@ -1996,7 +1998,7 @@ def conv2d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, d
     if bias is not None and not isinstance(bias, TN):
         raise TypeError(f"Expected bias type to be TN tensor or None, but received type: {type(bias)}")
     
-    if input.device != weight.device or (bias is not None and bias.device != weight.device):
+    if not _same_device(input, weight) or (bias is not None and not _same_device(bias, weight)):
         raise ValueError("input, weight, and bias must have the same device")
     
     if input.ndim != 4 or weight.ndim != 4:
@@ -2105,7 +2107,7 @@ def conv3d(input: TN, weight: TN, bias: TN | None = None, stride=1, padding=0, d
     if bias is not None and not isinstance(bias, TN):
         raise TypeError(f"Expected bias type to be TN tensor or None, but received type: {type(bias)}")
     
-    if input.device != weight.device or (bias is not None and bias.device != weight.device):
+    if not _same_device(input, weight) or (bias is not None and not _same_device(bias, weight)):
         raise ValueError("input, weight, and bias must have the same device")
     
     if input.ndim != 5 or weight.ndim != 5:
@@ -2950,13 +2952,13 @@ def batch_norm(input: TN, running_mean: TN | None = None, running_var: TN | None
     if weight is not None:
         if not isinstance(weight, TN):
             raise TypeError(f"Expected weight to be TN tensor, but received type: {type(weight)}")
-        elif weight.device != input.device:
+        elif not _same_device(weight, input):
             raise ValueError(f"Expected weight to have device {input.device}, but got {weight.device}")
     
     if bias is not None:
         if not isinstance(bias, TN):
             raise TypeError(f"Expected bias to be TN tensor, but received type: {type(bias)}")
-        elif bias.device != input.device:
+        elif not _same_device(bias, input):
             raise ValueError(f"Expected bias to have device {input.device}, but got {bias.device}")
     
     # 获取通道数
@@ -3202,7 +3204,7 @@ def embedding(
         raise TypeError(f"Expected input to be TN tensor, but received type: {type(input)}")
     if not isinstance(weight, TN):
         raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
-    if input.device != weight.device:
+    if not _same_device(input, weight):
         raise ValueError("input and weight must have the same device")
     
     # 检查输入数据类型是否为整数类型
@@ -3383,7 +3385,7 @@ def embedding2(
         raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
     if not isinstance(input, TN):
         raise TypeError(f"Expected input to be TN tensor, but received type: {type(input)}")
-    if input.device != weight.device:
+    if not _same_device(input, weight):
         raise ValueError("input and weight must have the same device")
     
     # 检查输入数据类型是否为整数类型

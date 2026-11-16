@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- encoding: utf-8 -*-
 """
-@File    :   cnn_CIFAR10_advanced.py
+@File    :   cnn_CIFAR10_CE_Adam.py
 @Time    :   2025/12/27
 @Author  :   Advanced CNN
 @Version :   1.1
@@ -83,10 +83,10 @@ class AdvancedConvNet(nn.Module):
     5. 使用ReLU激活函数，提高训练稳定性
     
     网络结构:
-        - 输入块: Conv(3->32, 3x3) -> ReLU -> Conv(32->32, 3x3) -> ReLU -> MaxPool(2x2)
-        - 中间块1: Conv(32->64, 3x3) -> ReLU -> Conv(64->64, 3x3) -> ReLU -> MaxPool(2x2)
-        - 中间块2: Conv(64->128, 3x3) -> ReLU -> Conv(128->128, 3x3) -> ReLU -> MaxPool(2x2)
-        - 全连接层: Linear(128*4*4->512) -> ReLU -> Dropout -> Linear(512->10)
+        - 输入块: Conv(3->32, 3x3) -> BN -> ReLU -> Conv(32->32, 3x3) -> BN -> ReLU -> MaxPool(2x2) -> Dropout
+        - 中间块1: Conv(32->64, 3x3) -> BN -> ReLU -> Conv(64->64, 3x3) -> BN -> ReLU -> MaxPool(2x2) -> Dropout
+        - 中间块2: Conv(64->128, 3x3) -> BN -> ReLU -> Conv(128->128, 3x3) -> BN -> ReLU -> MaxPool(2x2) -> Dropout
+        - 全连接层: Linear(128*4*4->512) -> BN -> ReLU -> Dropout -> Linear(512->10)
     
     方法:
         forward(inputs): 前向传播计算

@@ -6,10 +6,9 @@ scatter函数是深度学习中常用的操作之一，用于根据索引将源�
 
 主要功能：
 1. 基本的scatter操作演示
-2. 不同维度的scatter操作
+2. 不同变体与不同维度的scatter操作（scatter / scatter_ / scatter_add_）
 3. scatter的梯度计算
-4. 在神经网络中的应用场景
-5. 与PyTorch scatter函数的对比
+4. one-hot编码等应用场景
 """
 
 import sys,os

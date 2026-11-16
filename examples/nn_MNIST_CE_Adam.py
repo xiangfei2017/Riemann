@@ -3,7 +3,7 @@
 MNIST手写数字识别神经网络示例（Adam优化器版）
 
 本文件实现了一个基于Riemann框架的简单神经网络，用于识别MNIST手写数字数据集。
-使用Adam优化器进行模型训练，与SGD优化器进行性能对比。
+使用Adam优化器进行模型训练，可与SGD优化器版示例（nn_MNIST_CE_SGD.py）对照。
 
 网络架构:
 - 输入层: 784个神经元 (28×28像素的MNIST图像展平后)
@@ -14,8 +14,9 @@ MNIST手写数字识别神经网络示例（Adam优化器版）
 优化器: Adam优化器，学习率0.001，betas=(0.9, 0.999)，weight_decay=0.0001
 
 数据预处理:
-- 直接从CSV文件加载原始数据
-- 图像数据归一化到[0.01, 1.0]范围
+- 使用riemann.vision.datasets.MNIST加载标准MNIST数据集
+- transforms.ToTensor(): 将PIL图像转换为张量并归一化到[0,1]范围
+- transforms.Normalize(): 使用均值(0.1307)和标准差(0.3081)进行标准化
 - 标签直接使用类别索引，适配CrossEntropyLoss
 
 特点:
@@ -25,7 +26,7 @@ MNIST手写数字识别神经网络示例（Adam优化器版）
 - 包含完整的训练和测试评估流程
 
 作者: Riemann框架示例
-日期: 2023
+日期: 2025
 """
 import sys,os,time
 from tqdm import tqdm

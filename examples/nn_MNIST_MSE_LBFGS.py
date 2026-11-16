@@ -5,7 +5,7 @@
 包含数据集加载、模型定义、训练和测试功能，支持批量数据加载和处理。
 
 主要功能：
-1. 使用riemann.vision.datasets.MNIST加载标准MNIST数据集
+1. 使用riemann.vision.datasets.EasyMNIST加载预处理后的MNIST数据集
 2. 构建简单的全连接神经网络模型
 3. 实现训练循环和测试评估
 4. 支持批量数据加载和处理
@@ -14,11 +14,11 @@
 
 依赖：
 - riemann：自定义深度学习框架
-- riemann.vision：计算机视觉模块，包含MNIST数据集和变换
+- riemann.vision：计算机视觉模块，包含MNIST数据集
 - tqdm：进度条显示
 
 用法：
-    python nn_MSELoss_LBFGS.py
+    python nn_MNIST_MSE_LBFGS.py
 """
 import sys,os,time
 from tqdm import tqdm
@@ -88,7 +88,7 @@ class Classifier(nn.Module):
         前向传播计算
         
         将输入数据通过网络模型，得到预测输出。
-        输入数据会先经过展平层，然后通过两个线性层和激活函数。
+        输入数据（已由EasyMNIST展平为784维）直接通过两个线性层和激活函数。
         
         参数:
             inputs (Tensor): 输入张量，形状为(batch_size, 784)

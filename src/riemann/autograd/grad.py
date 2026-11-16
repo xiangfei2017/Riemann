@@ -51,6 +51,7 @@ import numpy as np
 # 显式导入所需符号：星号导入会把 abs/round 等内置名遮蔽成张量版本，
 # 容易在误差比较等纯数值场景中误用（历史上 gradcheck 就踩过这个坑）
 from ..core import TN, api_registry, set_grad_enabled, tensor, zeros_like
+from ..core.tensordef import _same_device
 
 def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, create_graph: bool = False):
         """执行反向模式自动微分（反向传播）。
@@ -204,7 +205,7 @@ def grad(outputs:TN,
         if grad_outputs._array.shape == outputs._array.shape:
             # 与 torch.autograd.grad 一致：grad_outputs 必须与输出同设备，
             # 不做隐式搬运（torch 报 invalid gradient at index 0 - expected device ...）
-            if grad_outputs.device != outputs.device:
+            if not _same_device(grad_outputs, outputs):
                 raise RuntimeError(
                     f"invalid gradient at index 0 - expected device {outputs.device} "
                     f"but got {grad_outputs.device}")
