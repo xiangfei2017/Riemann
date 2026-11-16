@@ -55,9 +55,71 @@ from .dtype import *
 from .gradmode import *
 from .tensordef import *
 from .tensordef import (
-    _validate_shape, _as_tn, _get_device, _is_array_type,
-    _get_broadcast_axis, _apply_out, _apply_out_tuple    
+    _validate_shape, _require_tn, _get_device,
+    _get_broadcast_axis, _apply_out, _apply_out_tuple,
+    _convert_TNindex_to_numpy, _floordiv_grad_left, _floordiv_grad_right
 )
+
+
+# ---------------------------------------------------------------------------
+# 分区目录（分区内按“常量/辅助函数 -> 被依赖的底层实现 -> 对外接口”排列，
+# 即被调用者在前、调用者在后）
+#   1. 模块常量
+#   2. 张量创建与转换（from_numpy / from_dlpack / arange / linspace）
+#   3. 随机数（随机种子、均匀/正态分布、随机整数与排列、多项式采样）
+#   4. 基础逐元素数学（取整、平方、三角函数、双曲函数及其梯度）
+#   5. 归约与统计（逻辑运算、求和、方差、乘积、累积和、排序、topk）
+#   6. 索引合并（视图索引链 -> 原始张量索引）
+#   7. 原地索引操作（_i*_full 全量向量化、反向回调、*at_/*at 接口、abs_/neg_）
+#   8. 索引读写（index_select / masked_select / take / gather / scatter / setitem）
+#   9. 形状变换与拼接（split / stack / concatenate / unfold / fold / repeat）
+#   10. einsum（方程解析、批量对角线辅助、梯度计算与入口）
+#   11. 矩阵与对角线（dot / outer / kron / tril / triu / diagonal / trace / fill_diagonal）
+#   12. 其余工具（masked_fill / clamp / 梯度来源共享）
+# ---------------------------------------------------------------------------
+
+
+# ===========================================================================
+# 1. 模块常量
+# ===========================================================================
+
+
+# cupy 不可用时为空元组，isinstance(x, ()) 恒为 False，
+# 因此判断数组类型时无需再逐个检查 cp 是否为 None
+_CP_NDARRAY = (cp.ndarray,) if cp is not None else ()
+# 索引归一化中视为“数组/序列索引”的类型
+_ARRAY_TYPES = (list, np.ndarray) + _CP_NDARRAY
+# 索引归一化中视为“单个索引”（而非索引元组）的类型
+_INDEX_TYPES = (slice, int) + _ARRAY_TYPES
+
+# 反向传播需要“左值”的原地操作回调。
+# mul/div/pow 的反向要用操作前的左值，因此必须在覆盖数据之前备份 target_copy；
+# add/sub/set 的反向只用索引和梯度，不需要备份，可省去一次整块内存拷贝。
+# 用回调函数名而不是函数对象做判断，避免这些函数定义在本类之后造成前向引用问题。
+_LEFT_VALUE_BACKWARD_NAMES = {
+    '_mulat_inplace_backward',
+    '_divat_inplace_backward',
+    '_powat_inplace_backward',
+    '_modat_inplace_backward',
+}
+
+# 原地操作梯度回调函数名 -> 对应的原地操作方法名，__setitem__ 据此重放副本上的操作。
+# 只收录复合赋值运算（+=、-=、*=、/=、**=、%=）；setat_ 不在此列——它本身是覆盖写，
+# 直接按数据 setat 即可得到相同结果，无需重放。
+_INPLACE_AT_METHODS = {
+    '_addat_inplace_backward': 'addat_',
+    '_subat_inplace_backward': 'subat_',
+    '_mulat_inplace_backward': 'mulat_',
+    '_divat_inplace_backward': 'divat_',
+    '_powat_inplace_backward': 'powat_',
+    '_modat_inplace_backward': 'modat_',
+}
+
+
+# ===========================================================================
+# 2. 张量创建与转换（from_numpy / from_dlpack / arange / linspace）
+# ===========================================================================
+
 
 def from_numpy(arr: np.ndarray | cp.ndarray) -> TN:
     """
@@ -103,6 +165,7 @@ def from_numpy(arr: np.ndarray | cp.ndarray) -> TN:
         raise TypeError("dtype of arr need to be numberic")
 
     return TN(arr)
+
 
 def from_dlpack(ext_tensor) -> TN:
     """
@@ -187,1091 +250,88 @@ def from_dlpack(ext_tensor) -> TN:
     
     return TN(arr)
 
-def dot(x:TN,y:TN)->TN:
-    """
-    计算两个一维张量的点积（内积）。
-    
-    这个函数与PyTorch的torch.dot()行为一致，只接受1D张量，并计算它们的内积。
-    
-    Args:
-        x (TN): 第一个一维张量
-        y (TN): 第二个一维张量
-        
-    Returns:
-        TN: 点积结果，是一个标量张量
-        
-    Raises:
-        RuntimeError: 如果输入张量不是一维的
-        
-    Examples:
-        >>> a = tensor([1, 2, 3])
-        >>> b = tensor([4, 5, 6])
-        >>> dot(a, b)  # 返回32 (1*4 + 2*5 + 3*6)
-    """
-    if x._array.ndim != 1:
-        raise RuntimeError(f"1D tensors expected, got {x._array.ndim}D tensor")
-    if y._array.ndim != 1:
-        raise RuntimeError(f"1D tensors expected, got {y._array.ndim}D tensor")
-    if x.device != y.device:
-        raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
-    
-    # 使用x@y进行计算，利用现有的__matmul__方法的梯度跟踪能力
-    return x @ y
 
-
-def outer(x:TN,y:TN)->TN:
+def arange(start: float, end: float | None = None, step: float = 1.0, dtype: np.dtype | None = None, device: str|int|Device|None = None, requires_grad: bool = False) -> TN:
     """
-    计算两个一维张量的外积。
-    
-    这个函数与PyTorch的torch.outer()行为一致，只接受1D张量，并计算它们的外积。
-    外积结果是一个形状为(len(x), len(y))的2D张量，其中result[i][j] = x[i] * y[j]。
-    
-    实现使用einsum('i,j->ij')，相比unsqueeze+乘法，反向梯度计算更快（约2.5倍）。
-    
-    Args:
-        x (TN): 第一个一维张量
-        y (TN): 第二个一维张量
-        
-    Returns:
-        TN: 外积结果，是一个形状为(len(x), len(y))的2D张量
-        
-    Raises:
-        RuntimeError: 如果输入张量不是一维的
-        
-    Examples:
-        >>> a = tensor([1, 2, 3])
-        >>> b = tensor([4, 5, 6])
-        >>> outer(a, b)  # 返回[[4, 5, 6], [8, 10, 12], [12, 15, 18]]
-    """
-    if x._array.ndim != 1:
-        raise RuntimeError(f"1D tensors expected, got {x._array.ndim}D tensor")
-    if y._array.ndim != 1:
-        raise RuntimeError(f"1D tensors expected, got {y._array.ndim}D tensor")
-    if x.device != y.device:
-        raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
-    
-    # 使用einsum实现外积，反向梯度计算更高效
-    return einsum('i,j->ij', x, y)
-
-def batch_outer(x:TN, y:TN)->TN:
-    """
-    计算批量向量的外积。
-    
-    支持任意批次维度的向量外积，结果形状为(..., len(x), len(y))。
-    这是outer()的批量扩展版本。
-    
-    Args:
-        x (TN): 输入张量，形状为(..., M)，最后一维为向量长度
-        y (TN): 输入张量，形状为(..., N)，最后一维为向量长度
-        
-    Returns:
-        TN: 批量外积结果，形状为(..., M, N)
-        
-    Raises:
-        RuntimeError: 如果输入张量的批次维度不匹配
-        
-    Examples:
-        >>> a = randn(2, 3)  # 2个批次，每个是长度为3的向量
-        >>> b = randn(2, 4)  # 2个批次，每个是长度为4的向量
-        >>> batch_outer(a, b)  # 形状为(2, 3, 4)
-        
-        >>> a = randn(2, 3, 4)  # (2,3)批次，每个是长度为4的向量
-        >>> b = randn(2, 3, 5)  # (2,3)批次，每个是长度为5的向量
-        >>> batch_outer(a, b)  # 形状为(2, 3, 4, 5)
-    """
-    if x.device != y.device:
-        raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
-    
-    # 使用einsum实现批量外积，支持任意批次维度
-    return einsum('...i,...j->...ij', x, y)
-
-
-def kron(input: TN, other: TN, *, out: TN | None = None) -> TN:
-    """
-    计算 input 和 other 的克罗内克积（Kronecker product），记作 :math:`\\otimes`。
-    
-    如果 input 是 :math:`(a_0 \\times a_1 \\times \\dots \\times a_n)` 张量，
-    other 是 :math:`(b_0 \\times b_1 \\times \\dots \\times b_n)` 张量，
-    则结果将是 :math:`(a_0 \\cdot b_0 \\times a_1 \\cdot b_1 \\times \\dots \\times a_n \\cdot b_n)` 张量。
-    
-    计算公式:
-    :math:`(A \\otimes B)_{k_0, k_1, \\dots, k_n} = A_{i_0, i_1, \\dots, i_n} \\cdot B_{j_0, j_1, \\dots, j_n}`
-    
-    其中 :math:`k_t = i_t \\cdot b_t + j_t`
+    创建一个一维张量，包含从start到end（不包括end）的等差序列。
     
     参数:
-        input: 第一个输入张量
-        other: 第二个输入张量
-        out: 可选的输出张量，用于存储结果
-        
+        start: 序列的起始值
+        end: 序列的结束值（不包含）。如果省略，start将被视为end，而start将变为0
+        step: 相邻两个元素之间的步长，默认为1.0
+        dtype: 返回张量的数据类型。如果未指定，将从其他输入推断
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
+        requires_grad: 是否需要计算梯度，默认为False
+    
     返回:
-        克罗内克积结果张量
-        
-    示例:
-        >>> mat1 = rm.eye(3)
-        >>> mat2 = rm.ones(5, 3)
-        >>> rm.kron(mat1, mat2).shape
-        torch.Size([15, 9])
-        
-        >>> A = rm.tensor([[1, 2], [3, 4]])
-        >>> B = rm.tensor([[0, 5], [6, 7]])
-        >>> rm.kron(A, B)
-        tensor([[ 0,  5,  0, 10],
-                [ 6,  7, 12, 14],
-                [ 0, 15,  0, 20],
-                [18, 21, 24, 28]])
+        包含等差序列的一维张量
     """
-    # 使用einsum计算克罗内克积
-    # 对于2D矩阵，克罗内克积可以通过外积和reshape实现
-    # A ⊗ B 的 (i0*i1, j0*j1) 位置元素 = A[i0, j0] * B[i1, j1]
-    
-    input_shape = input.shape
-    other_shape = other.shape
-    
-    # 确保两个张量维度相同
-    if len(input_shape) != len(other_shape):
-        raise ValueError(f"kron: input and other must have the same number of dimensions, "
-                        f"got {len(input_shape)} and {len(other_shape)}")
-    
-    ndim = len(input_shape)
-    
-    if ndim == 0:
-        # 标量情况
-        result = input * other
-    elif ndim == 1:
-        # 1D向量: 外积后展平
-        # input: (a,), other: (b,) -> result: (a*b,)
-        result = einsum('i,j->ij', input, other).reshape(-1)
-    elif ndim == 2:
-        # 2D矩阵: 使用einsum计算外积后reshape
-        # input: (a0, a1), other: (b0, b1) -> result: (a0*b0, a1*b1)
-        outer = einsum('ij,kl->ikjl', input, other)
-        result = outer.reshape(input_shape[0] * other_shape[0], input_shape[1] * other_shape[1])
-    else:
-        # 高维张量
-        # 构建einsum方程: 例如3D时 'abc,def->adbecf'
-        input_indices = ''.join(chr(ord('a') + i) for i in range(ndim))
-        other_indices = ''.join(chr(ord('a') + ndim + i) for i in range(ndim))
-        output_indices = ''.join(f'{input_indices[i]}{other_indices[i]}' for i in range(ndim))
-        equation = f'{input_indices},{other_indices}->{output_indices}'
-        
-        outer = einsum(equation, input, other)
-        
-        # reshape到最终形状
-        result_shape = tuple(input_shape[i] * other_shape[i] for i in range(ndim))
-        result = outer.reshape(result_shape)
-    
-    return _apply_out(out, result, (input, other), "kron")
-
-def abs_(x:TN)->TN:
-    """
-    就地取绝对值，等价于 torch.abs_。
-
-    直接修改输入张量的数据并返回它本身。布尔张量、复数张量不支持（与 torch 一致）。
-
-    Args:
-        x (TN): 输入张量
-
-    Returns:
-        TN: 修改后的输入张量（与输入是同一对象）
-
-    Examples:
-        >>> a = tensor([-1., 2., -3.])
-        >>> abs_(a)  # a 变为 [1., 2., 3.]，返回 a 本身
-    """
-    x = _as_tn(x)
-    return x.abs_()
-
-def square(x:TN)->TN:
-    """
-    计算张量的平方。
-    
-    返回一个新张量，其中每个元素是输入张量对应元素的平方。
-    
-    Args:
-        x (TN): 输入张量
-        
-    Returns:
-        TN: 包含输入张量平方的新张量
-        
-    Examples:
-        >>> a = tensor([1, 2, 3])
-        >>> square(a)  # 返回[1, 4, 9]
-        
-        >>> b = tensor([[1, 2, 3], [4, 5, 6]])
-        >>> square(b)  # 返回[[1, 4, 9], [16, 25, 36]]
-    """
-    x = _as_tn(x)
-    return x ** 2.0
-
-# 利用mean函数计算var的版本，无需构造梯度回调函数
-def var2(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->TN:
-    if not isinstance(x,TN):
-        raise SyntaxError('x must be a tensor')
-    
-    if dim == ():
-        dim = None
-    
-    # 基于mean函数实现方差计算
-    # 1. 计算均值
-    x_mean = mean(x, dim=dim, keepdim=True)
-    
-    # 2. 计算平方差（使用模的平方，对于复数需要考虑共轭）
-    diff = x - x_mean
-    # 对于复数，使用diff * diff.conj()计算模的平方
-    square_diff = diff * diff.conj()
-    
-    # 3. 计算平方差的均值
-    variance = mean(square_diff, dim=dim, keepdim=keepdim)
-    
-    # 4. 根据unbiased参数调整自由度
-    if unbiased:
-        # 计算用于自由度调整的缩放因子
-        if dim is None:
-            n = x.numel()
-        elif isinstance(dim, int):
-            n = x.shape[dim]
-        elif isinstance(dim, tuple):
-            n = 1
-            for d in dim:
-                n *= x.shape[d]
+    # 处理参数，支持arange(end)的调用形式
+    if end is None:
+        end = start  # 先保存用户输入
+        # 根据用户输入类型决定起始值类型
+        start = 0 if isinstance(end, int) else 0.0  
+            
+    # 如果没有指定dtype，根据输入类型推断
+    if dtype is None:
+        # 检查所有输入是否都是整数
+        is_all_integer = isinstance(start, int) and isinstance(end, int) and isinstance(step, int)
+        if is_all_integer:
+            # 所有输入都是整数时使用int64
+            dt = np.int64
         else:
-            raise TypeError(f"dim must be int, tuple or None, got {type(dim)}")
-        
-        if n > 1:  # 避免除以0
-            scaling_factor = tensor(n / (n - 1),dtype=x.dtype, device=x.device)
-            variance = variance * scaling_factor
-    
-    return variance.real
-
-def neg_(x)->TN:
-    """
-    就地取负，等价于 torch.neg_。
-
-    直接修改输入张量的数据并返回它本身。布尔张量不支持取负，
-    无符号整型按位宽回绕并保持 dtype（如 uint8 的 -1 得到 255）。
-
-    Args:
-        x (TN): 输入张量
-
-    Returns:
-        TN: 修改后的输入张量（与输入是同一对象）
-
-    Examples:
-        >>> a = tensor([1., -2.])
-        >>> neg_(a)  # a 变为 [-1., 2.]，返回 a 本身
-    """
-    x = _as_tn(x)
-    return x.neg_()
-
-def exp2(x:TN)->TN:
-    x = _as_tn(x)
-    return 2.0 ** x
-
-
-def _split_with_indices(input: TN, indices_or_sections, dim: int) -> tuple[TN, ...]:
-    """
-    内部函数：使用 numpy 风格的语义分割张量。
-
-    该函数根据 `indices_or_sections` 的类型决定分割方式：
-    - 当 `indices_or_sections` 为整数时，表示将张量分割成 N 段。如果维度大小不能被 N 整除，
-      最后一段将包含剩余的元素。
-    - 当 `indices_or_sections` 为列表时，表示在指定的索引位置进行分割。
-
-    参数：
-        input (TN): 输入的 TN 张量。
-        indices_or_sections (int | list): 分割参数。
-            - int: 分割的段数。
-            - list: 分割点的索引列表。
-        dim (int): 进行分割的维度。默认为 0。
-
-    返回：
-        tuple[TN, ...]: 包含分割后子张量的元组。
-
-    示例：
-        >>> # 按段数分割
-        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])
-        >>> _split_with_indices(x, 2, dim=1)
-        (tensor([[1, 2], [5, 6]]), tensor([[3, 4], [7, 8]]))
-        >>>
-        >>> # 按索引分割
-        >>> _split_with_indices(x, [1, 3], dim=1)
-        (tensor([[1], [5]]), tensor([[2, 3], [6, 7]]), tensor([[4], [8]]))
-    """
-    arrlib = input._get_array_lib()
-    
-    if isinstance(indices_or_sections, int):
-        # 整数：分割成 N 段
-        n_sections = indices_or_sections
-        if n_sections <= 0:
-            raise ValueError(f"number of sections must be positive, got {n_sections}")
-        split_data = arrlib.array_split(input._array, n_sections, axis=dim)
+            # 否则使用默认浮点类型
+            dt = get_default_dtype()
     else:
-        # 列表：分割点索引
-        split_points = list(indices_or_sections)
-        if len(split_points) == 0:
-            split_data = [input._array]
-        else:
-            split_data = arrlib.split(input._array, split_points, axis=dim)
-    
-    # 从分割结果计算每段的大小（用于反向传播）
-    split_sizes = [s.shape[dim] for s in split_data]
-    
-    # 创建子张量列表（保留计算图）
-    sub_tensors = []
-    for i, data in enumerate(split_data):
-        subt = TN(data, requires_grad=(is_grad_enabled() and input.requires_grad))
-        
-        # 记录计算图信息
-        if input.requires_grad:
-            subt.fromvars = (input,)
-            subt.parms = ((split_sizes, dim, i),)
-            subt.gradfuncs = (_split_backward,)
-        
-        sub_tensors.append(subt)
-    
-    return tuple(sub_tensors)
+        dt = dtype
 
-def split(input: TN, split_size_or_sections, dim: int = 0) -> tuple[TN, ...]:
-    """
-    沿指定轴分割TN张量，支持计算图记录和梯度反向传播
-    
-    参数：
-        input: 输入TN张量
-        split_size_or_sections: 
-            - 整数：每段的大小（最后一段可能较小）
-            - 列表：每段的大小列表，总和必须等于该维度大小
-        dim: 分割轴（默认0）
-    
-    返回：
-        tuple[TN, ...]: 分割后的张量元组
-    
-    示例：
-        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])  # shape (2, 4)
-        >>> rm.split(x, 2, dim=1)  # 每段大小为2
-        (tensor([[1, 2], [5, 6]]), tensor([[3, 4], [7, 8]]))
-        >>> rm.split(x, [1, 3], dim=1)  # 段大小为[1, 3]
-        (tensor([[1], [5]]), tensor([[2, 3, 4], [6, 7, 8]]))
-    """
-    dim_size = input.shape[dim]
-    
-    if isinstance(split_size_or_sections, int):
-        # 整数：每段的大小，转换为分割点
-        section_size = split_size_or_sections
-        if section_size <= 0:
-            raise ValueError(f"split_size_or_sections must be positive, got {section_size}")
-        # 计算分割点
-        split_points = list(range(section_size, dim_size, section_size))
+    # 使用numpy/cupy的arange创建数组
+    dev = _get_device(device)
+    if dev.type == 'cpu':
+        data = np.arange(start, end, step, dtype=dt)
     else:
-        # 列表：每段的大小，转换为分割点
-        split_sizes = list(split_size_or_sections)
-        total_size = builtins.sum(split_sizes)
-        if total_size != dim_size:
-            raise ValueError(f"sum of split sections ({total_size}) must equal dimension size ({dim_size})")
-        # 计算分割点（累积和）
-        split_points = list(accumulate(split_sizes[:-1]))
+        with cp.cuda.Device(dev.index):
+            data = cp.arange(start, end, step, dtype=dt)
     
-    # 使用 _split_with_indices 进行分割
-    return _split_with_indices(input, split_points, dim)
+    # 创建并返回张量
+    return TN(data, requires_grad=bool(requires_grad))
 
-def _split_backward(result_tensor: TN, i: int) -> TN:
-    split_sizes, dim, split_pos = result_tensor.parms[i]
-    parent = result_tensor.fromvars[i]
-    
-    grad = zeros_like(parent)
 
-    # 计算起始和结束位置
-    start = builtins.sum(split_sizes[:split_pos]) if split_pos > 0 else 0
-    end = start + split_sizes[split_pos]
-    
-    # 累加归一化后的梯度
-    slice_obj = [slice(None)] * parent._array.ndim
-    slice_obj[dim] = slice(int(start), int(end))
-    grad[tuple(slice_obj)] = result_tensor.grad_value
-    
-    return grad
-
-def vsplit(input: TN, indices_or_sections):
+# 添加linspace函数
+def linspace(start: float, end: float, steps: int = 100, endpoint: bool = True, dtype: np.dtype | None = None, device: str|int|Device|None = None, requires_grad: bool = False) -> TN:
     """
-    垂直分割（沿 dim=0），将张量分割为多个子张量
-    
-    参数：
-        input: 输入张量，至少2维
-        indices_or_sections: 
-            - 整数：分割成 N 段
-            - 列表：分割点索引列表
-    
-    示例：
-        >>> x = rm.tensor([[1, 2], [3, 4], [5, 6], [7, 8]])  # shape (4, 2)
-        >>> rm.vsplit(x, 2)  # 分割成 2 段
-        (tensor([[1, 2], [3, 4]]), tensor([[5, 6], [7, 8]]))
-        >>> rm.vsplit(x, [1, 3])  # 在索引 1 和 3 处分割
-        (tensor([[1, 2]]), tensor([[3, 4], [5, 6]]), tensor([[7, 8]]))
-    """
-    return _split_with_indices(input, indices_or_sections, dim=0)
-
-def hsplit(input: TN, indices_or_sections):
-    """
-    水平分割（沿 dim=1），将张量分割为多个子张量
-    
-    参数：
-        input: 输入张量，至少2维
-        indices_or_sections: 
-            - 整数：分割成 N 段
-            - 列表：分割点索引列表
-    
-    示例：
-        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])  # shape (2, 4)
-        >>> rm.hsplit(x, 2)  # 分割成 2 段
-        (tensor([[1, 2], [5, 6]]), tensor([[3, 4], [7, 8]]))
-    """
-    return _split_with_indices(input, indices_or_sections, dim=1)
-
-def dsplit(input: TN, indices_or_sections):
-    """
-    深度分割（沿 dim=2），将张量分割为多个子张量
-    
-    参数：
-        input: 输入张量，至少3维
-        indices_or_sections: 
-            - 整数：分割成 N 段
-            - 列表：分割点索引列表
-    
-    示例：
-        >>> x = rm.tensor(np.random.randn(2, 3, 6))  # shape (2, 3, 6)
-        >>> rm.dsplit(x, 3)  # 分割成 3 段
-        # 返回 3 个 shape 为 (2, 3, 2) 的张量
-    """
-    return _split_with_indices(input, indices_or_sections, dim=2)
-
-def tensor_split(input: TN, indices_or_sections, dim: int = 0) -> tuple[TN, ...]:
-    """
-    将张量沿指定维度分割为多个子张量。
-
-    该函数根据 `indices_or_sections` 的类型决定分割方式：
-    - 当 `indices_or_sections` 为整数时，表示将张量分割成 N 段。如果维度大小不能被 N 整除，
-      前 `size % N` 个段的大小为 `size // N + 1`，其余段的大小为 `size // N`。
-    - 当 `indices_or_sections` 为列表时，表示在指定的索引位置进行分割。
-
-    参数：
-        input (TN): 输入的 TN 张量。
-        indices_or_sections (int | list): 分割参数。
-            - int: 分割的段数。
-            - list: 分割点的索引列表。
-        dim (int): 进行分割的维度。默认为 0。
-
-    返回：
-        tuple[TN, ...]: 包含分割后子张量的元组。
-
-    示例：
-        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]])  # shape (3, 4)
-        >>> # 按段数分割
-        >>> tensor_split(x, 3, dim=0)
-        (tensor([[1, 2, 3, 4]]), tensor([[5, 6, 7, 8]]), tensor([[9, 10, 11, 12]]))
-        >>> # 按索引分割
-        >>> tensor_split(x, [1, 2], dim=0)
-        (tensor([[1, 2, 3, 4]]), tensor([[5, 6, 7, 8]]), tensor([[9, 10, 11, 12]]))
-    """
-    return _split_with_indices(input, indices_or_sections, dim)
-
-@api_registry.register("stack")
-def stack(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
-    """沿新维度堆叠张量"""
-    arrlib = tensors[0]._get_array_lib()
-    data = arrlib.stack([t._array for t in tensors], axis=dim)
-    
-    # 梯度需求判断优化为any()
-    requires_grad = (is_grad_enabled() and builtins.any(t.requires_grad for t in tensors))
-    
-    ret = TN(data, requires_grad=requires_grad)
-    
-    if requires_grad:
-        ret.fromvars = tuple(tensors)  # 确保tuple类型
-        num = len(tensors)
-        ret.parms = (dim,) * num
-        ret.gradfuncs = (_stack_backward,) * num
-    
-    return ret
-
-def concatenate(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
-    """沿指定轴连接张量"""
-    arrlib = tensors[0]._get_array_lib()
-    data = arrlib.concatenate([t._array for t in tensors], axis=dim)
-    
-    requires_grad = (is_grad_enabled() and builtins.any(t.requires_grad for t in tensors))
-    
-    ret = TN(data, requires_grad=requires_grad)
-    
-    if requires_grad:
-        ret.fromvars = tuple(tensors)  # 确保tuple类型
-        num = len(tensors)
-        ret.parms = (dim,) * num
-        ret.gradfuncs = (_concatenate_backward,) * num
-    
-    return ret
-
-def _stack_backward(result_tensor: TN, i: int) -> TN:
-    dim = result_tensor.parms[i]
-    grad = result_tensor.grad_value
-    slices = [slice(None)] * grad._array.ndim
-    slices[dim] = i  # type: ignore
-    return grad[tuple(slices)]
-
-def _concatenate_backward(result_tensor: TN, i: int) -> TN:
-    dim = result_tensor.parms[i]
-    grad_data = result_tensor.grad_value
-    
-    # 获取所有输入张量在拼接轴上的尺寸
-    split_sizes = [t._array.shape[dim] for t in result_tensor.fromvars]
-    
-    # 使用Python内置的accumulate函数计算累积和，避免不必要的数组转换
-    split_points = list(accumulate(split_sizes[:-1])) if len(split_sizes) > 1 else []
-    
-    try:
-        # 使用 _split_with_indices 进行分割（numpy风格语义）
-        grads = _split_with_indices(grad_data, split_points, dim=dim)
-        return grads[i]
-    
-    except ValueError as e:
-        raise RuntimeError(f"梯度分割失败: {e}") from None
-
-def cat(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
-    return concatenate(tensors, dim)
-
-def vstack(tensors: tuple[TN, ...]|list[TN]) -> TN:
-    """垂直堆叠张量
-    
-    对于一维张量，将它们作为行堆叠（创建二维数组）；
-    对于多维张量，沿第0轴（行方向）连接。
-    """
-
-    # 检查是否所有张量都是0D的
-    all_0d = all(t.ndim == 0 for t in tensors)
-
-    # 检查是否所有张量都是一维的
-    all_1d = all(t.ndim == 1 for t in tensors)
-    if all_0d:
-        # 对于0D张量，添加新维度后沿第0轴连接
-        expanded_tensors = [t._reshape((1, 1)) for t in tensors]
-        return concatenate(expanded_tensors, dim=0)
-    elif all_1d:
-        # 对于一维张量，添加新维度后沿第0轴连接
-        # 这样可以利用concatenate的梯度跟踪能力
-        expanded_tensors = [t._reshape((1, -1)) for t in tensors]
-        return concatenate(expanded_tensors, dim=0)
-    else:
-        # 对于多维张量，沿第0轴连接
-        return concatenate(tensors, dim=0)
-
-def hstack(tensors: tuple[TN, ...]|list[TN]) -> TN:
-    """水平堆叠张量
-    
-    对于一维张量，水平连接成一维数组；
-    对于多维张量，沿第1轴（列方向）连接。
-    """
-    # 检查是否所有张量都是0D的
-    all_0d = all(t.ndim == 0 for t in tensors)
-
-    # 检查是否所有张量都是一维的
-    all_1d = all(t.ndim == 1 for t in tensors)
-    if all_0d:
-        # 对于0D张量，添加新维度后沿第0轴连接
-        expanded_tensors = [t._reshape((1,)) for t in tensors]
-        return concatenate(expanded_tensors, dim=0)
-    elif all_1d:
-        # 对于一维张量，沿第0轴连接（水平堆叠）
-        return concatenate(tensors, dim=0)
-    else:
-        # 对于多维张量，沿第1轴连接
-        return concatenate(tensors, dim=1)
-
-def dstack(tensors):
-    """
-    深度堆叠（沿第三维）
-    
-    根据输入张量的维度自动处理：
-    - 1D 张量 (N,) -> reshape 为 (1, N, 1)，然后沿第2维堆叠
-    - 2D 张量 (M, N) -> reshape 为 (M, N, 1)，然后沿第2维堆叠  
-    - 3D+ 张量 (M, N, P, ...) -> 沿第2维拼接
-    
-    参数：
-        tensors: 张量列表
-    
-    返回：
-        堆叠后的张量
-    """
-    if not tensors:
-        raise ValueError("dstack requires at least one tensor")
-    
-    # 获取第一个张量的维度数
-    first_tensor = tensors[0]
-    ndim = first_tensor.ndim
-    
-    if ndim == 1:
-        # 1D: (N,) -> (1, N, 1)，然后沿第2维堆叠
-        reshaped = [t.reshape((1, -1, 1)) for t in tensors]
-        return concatenate(reshaped, dim=2)
-    elif ndim == 2:
-        # 2D: (M, N) -> (M, N, 1)，然后沿第2维堆叠
-        reshaped = [t.reshape((*t.shape, 1)) for t in tensors]
-        return concatenate(reshaped, dim=2)
-    else:
-        # 3D+: 沿第2维拼接
-        return concatenate(tensors, dim=2)
-
-@api_registry.register("unfold")
-def unfold(tensor_obj: TN, dimension: int, size: int, step: int = None) -> 'TN':  # type: ignore
-    """将张量的指定维度展开为多个连续的切片。
-    
-    该函数用于将张量的指定维度展开为
-    多个连续的窗口切片，常用于卷积操作中的im2col变换。
+    创建一个一维张量，包含从start到end的均匀间隔的值。
     
     参数:
-        tensor_obj: 输入张量
-        dimension: 要展开的维度
-        size: 窗口大小
-        step: 步长，默认等于size（不重叠）
+        start: 序列的起始值
+        end: 序列的结束值
+        steps: 生成的样本数量，默认为100
+        endpoint: 如果为True，序列包含end；否则不包含，默认为True
+        dtype: 返回张量的数据类型。如果未指定，将从其他输入推断
+        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
+        requires_grad: 是否需要计算梯度，默认为False
     
     返回:
-        TN: 展开后的张量，新张量的形状为：
-            原形状[:dimension] + (num_windows,) + 原形状[dimension+1:] + (size,)
-            其中 num_windows = (原形状[dimension] - size) // step + 1
-    
-    异常:
-        ValueError: 当维度超出范围或参数不合法时抛出
+        包含均匀间隔值的一维张量
     """
-    # 处理默认步长
-    if step is None:
-        step = size
+    # 如果没有指定dtype，使用默认浮点类型
+    dt = get_default_dtype() if dtype is None else dtype
     
-    # 处理负数维度索引
-    dim = dimension if dimension >= 0 else tensor_obj.ndim + dimension
-    if dim < 0 or dim >= tensor_obj.ndim:
-        raise ValueError(f"Dimension {dimension} out of range for tensor with {tensor_obj.ndim} dimensions")
-    
-    # 获取输入形状
-    input_shape = list(tensor_obj.shape)
-    dim_size = input_shape[dim]
-    
-    # 检查参数合法性
-    if size > dim_size:
-        raise ValueError(f"Size {size} is larger than dimension size {dim_size}")
-    
-    # 计算窗口数量
-    num_windows = (dim_size - size) // step + 1
-    if (dim_size - size) % step != 0:
-        warnings.warn(f"Window step {step} is not compatible with dimension size {dim_size} and window size {size}, some elements will be discarded")
-    
-    # 计算输出形状：原形状[:dim] + [num_windows] + 原形状[dim+1:] + [size]
-    output_shape = list(input_shape)
-    output_shape[dim] = num_windows
-    output_shape.append(size)
-    
-    # 创建所有窗口
-    windows = []
-    for i in range(num_windows):
-        # 计算当前窗口的起始和结束索引
-        start = i * step
-        end = start + size
-        
-        # 创建切片索引
-        idx = [slice(None)] * tensor_obj.ndim
-        idx[dim] = slice(start, end)
-        
-        # 获取窗口
-        window = tensor_obj[tuple(idx)]
-        
-        # 调整窗口形状：将展开维度移动到最后
-        # 例如：对于形状(a, size, b)，转换为(a, b, size)
-        perm = list(range(tensor_obj.ndim))
-        perm.append(perm.pop(dim))
-        window = window.permute(perm)
-        
-        # 在原dim位置插入1，形成窗口数量维度
-        window_shape = list(window.shape)
-        window_shape.insert(dim, 1)
-        window = window._reshape(tuple(window_shape))
-        
-        # 将窗口添加到列表中
-        windows.append(window)
-    
-    # 沿窗口数量维度堆叠所有窗口
-    result = concatenate(windows, dim=dim)
-    
-    # 确保输出形状正确
-    assert result.shape == tuple(output_shape), f"Expected shape {output_shape}, got {result.shape}"
-    
-    return result
-
-@api_registry.register("fold")
-def fold(tensor_obj:TN, dimension: int, size: int, step: int = None, output_size: int = None) -> 'TN':  # type: ignore
-    """
-    将张量的指定维度从窗口展开状态折叠回原始形状。
-    这是unfold()函数的逆操作。
-
-    参数:
-        tensor_obj: 输入张量
-        dimension: 要折叠的维度（对应unfold时的维度）
-        size: 窗口大小（与unfold时的size相同）
-        step: 步长（与unfold时的step相同）
-        output_size: 折叠后的目标维度大小。如果不提供，将自动计算为：
-            (num_windows - 1) * step + size，其中num_windows是输入张量在dimension处的大小
-
-    返回:
-        TN: 折叠后的张量，形状为：
-            原形状[:dimension] + (output_size,) + 原形状[dimension+1:-1]
-
-    异常:
-        ValueError: 当维度超出范围或参数不合法时抛出
-    """
-    # 处理默认步长
-    if step is None:
-        step = size
-
-    # 处理负数维度索引
-    dim = dimension if dimension >= 0 else tensor_obj.ndim + dimension
-    if dim < 0 or dim >= tensor_obj.ndim:
-        raise ValueError(f"Dimension {dimension} out of range for tensor with {tensor_obj.ndim} dimensions")
-
-    # 检查输入张量是否符合预期格式（最后一维应包含窗口元素）
-    if tensor_obj.ndim < 2:
-        raise ValueError(f"Input tensor must have at least 2 dimensions, got {tensor_obj.ndim}")
-
-    # 获取输入形状
-    input_shape = list(tensor_obj.shape)
-    num_windows = input_shape[dim]
-    window_size = input_shape[-1]
-
-    # 验证窗口大小是否匹配
-    if window_size != size:
-        raise ValueError(f"Window size mismatch: expected {size}, got {window_size}")
-
-    # 计算输出维度大小
-    if output_size is None:
-        output_size = (num_windows - 1) * step + size
-
-    # 构建输出形状
-    output_shape = list(input_shape)
-    output_shape[dim] = output_size
-    output_shape.pop()  # 移除最后一维（窗口元素）
-
-    # 创建一个形状为output_shape的零张量作为基础，与输入张量在同一设备上
-    output = zeros(output_shape, dtype=tensor_obj.dtype, device=tensor_obj.device) 
-
-    # 对于每个窗口，将其内容添加到输出张量的对应位置
-    for i in range(num_windows):
-        # 计算当前窗口在输出张量中的起始和结束位置
-        start = i * step
-        end = start + size
-
-        # 创建输出张量的切片索引
-        output_idx = [slice(None)] * output.ndim
-        output_idx[dim] = slice(start, end)
-
-        # 获取当前窗口内容
-        # 输入形状: [batch, channels, num_windows, window_size] 或类似
-        window_idx = [slice(None)] * tensor_obj.ndim
-        window_idx[dim] = i  # type: ignore
-        window_idx[-1] = slice(None)  # 选择所有窗口元素
-        window = tensor_obj[tuple(window_idx)]
-
-        # 确保窗口形状与输出切片形状匹配
-        # 窗口形状应该是: output_shape[:dim] + (size,) + output_shape[dim+1:]
-        window_shape = list(output_shape)
-        window_shape[dim] = size
-        window = window.view(tuple(window_shape))
-
-        # 将窗口贡献添加到输出张量（原地操作）
-        output.addat_(tuple(output_idx),window)
-
-    return output
-
-
-def nonzero(input: TN, *, as_tuple: bool = False) -> TN | tuple[TN, ...]:
-    """
-    返回输入张量中所有非零元素的索引。
-    
-    参数:
-        input: 输入张量
-        as_tuple: 如果为True，返回一个元组，其中每个元素对应一个维度的索引张量；
-                 如果为False（默认），返回一个二维张量，每行是一个非零元素的坐标
-    
-    返回:
-        TN或tuple[TN, ...]: 非零元素的索引
-        - 当as_tuple=False时，返回形状为(N, input.ndim)的二维张量，其中N是非零元素的数量
-        - 当as_tuple=True时，返回一个元组，包含input.ndim个一维张量，每个对应一个维度的索引
-    
-    示例:
-        >>> x = tensor([[1, 0, 2], [0, 3, 0]])
-        >>> nonzero(x)
-        tensor([[0, 0], [0, 2], [1, 1]])
-        >>> nonzero(x, as_tuple=True)
-        (tensor([0, 0, 1]), tensor([0, 2, 1]))
-    """
-    if not isinstance(input, TN):
-        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
-    
-    # 获取非零元素的索引
-    arrlib = input._get_array_lib()
-    indices = arrlib.nonzero(input._array)
-    
-    if as_tuple:
-        # 返回元组形式，每个维度一个张量
-        result = tuple(as_tensor(idx,device=input.device) for idx in indices)
+    # 使用numpy/cupy的linspace创建数组
+    dev = _get_device(device)
+    if dev.type == 'cpu':
+        data = np.linspace(start, end, num=steps, endpoint=endpoint, dtype=dt)
     else:
-        # 返回二维张量形式，每行是一个坐标
-        if len(indices) > 0:
-            # 将索引数组堆叠成二维数组
-            result_data = arrlib.stack(indices, axis=1)
-        else:
-            # 如果没有非零元素，返回空的二维数组
-            with device_context(input):
-                result_data = arrlib.empty((0, input.ndim), dtype=np.int64)
-        result = as_tensor(result_data,device=input.device)  # type: ignore
+        with cp.cuda.Device(dev.index):
+            data = cp.linspace(start, end, num=steps, endpoint=endpoint, dtype=dt)
     
-    return result
-
-def logical_and(input:TN, other:TN|int|float|bool)->TN:
-    """
-    逐元素计算逻辑与，非零值视为 True，返回布尔类型张量。
-
-    参数:
-        input: 输入张量
-        other: 另一个张量或标量值，形状可与 input 广播
-
-    返回:
-        布尔类型张量，对应位置为 True 表示两个输入在该位置均非零
-    """
-    if not isinstance(input, TN):
-        raise TypeError('input must be a tensor')
-
-    if isinstance(other, TN):
-        if other.device != input.device:
-            raise ValueError(f"Expected all tensors to be on the same device, "
-                             f"but found devices: input={input.device}, other={other.device}")
-        other_data = other._array
-    else:
-        other_data = other
-
-    arrlib = input._get_array_lib()
-    value = arrlib.logical_and(input._array, other_data)
-    return as_tensor(value,device=input.device)
-
-def logical_or(input:TN, other:TN|int|float|bool)->TN:
-    """
-    逐元素计算逻辑或，非零值视为 True，返回布尔类型张量。
-
-    参数:
-        input: 输入张量
-        other: 另一个张量或标量值，形状可与 input 广播
-
-    返回:
-        布尔类型张量，对应位置为 True 表示两个输入在该位置至少一个非零
-    """
-    if not isinstance(input, TN):
-        raise TypeError('input must be a tensor')
-
-    if isinstance(other, TN):
-        if other.device != input.device:
-            raise ValueError(f"Expected all tensors to be on the same device, "
-                             f"but found devices: input={input.device}, other={other.device}")
-        other_data = other._array
-    else:
-        other_data = other
-
-    arrlib = input._get_array_lib()
-    value = arrlib.logical_or(input._array, other_data)
-    return as_tensor(value,device=input.device)
-
-def logical_xor(input:TN, other:TN|int|float|bool)->TN:
-    """
-    逐元素计算逻辑异或，非零值视为 True，返回布尔类型张量。
-
-    参数:
-        input: 输入张量
-        other: 另一个张量或标量值，形状可与 input 广播
-
-    返回:
-        布尔类型张量，对应位置为 True 表示两个输入在该位置恰好一个非零
-    """
-    if not isinstance(input, TN):
-        raise TypeError('input must be a tensor')
-
-    if isinstance(other, TN):
-        if other.device != input.device:
-            raise ValueError(f"Expected all tensors to be on the same device, "
-                             f"but found devices: input={input.device}, other={other.device}")
-        other_data = other._array
-    else:
-        other_data = other
-
-    arrlib = input._get_array_lib()
-    value = arrlib.logical_xor(input._array, other_data)
-    return as_tensor(value,device=input.device)
-
-def logical_not(x:TN)->TN:
-    """
-    逐元素计算逻辑非，非零值视为 True，返回布尔类型张量。
-
-    参数:
-        x: 输入张量
-
-    返回:
-        布尔类型张量，对应位置为 True 表示输入张量中该位置为零
-    """
-    if not isinstance(x, TN):
-        raise TypeError('x must be a tensor')
-
-    arrlib = x._get_array_lib()
-    value = arrlib.logical_not(x._array)
-    return as_tensor(value,device=x.device)
+    return TN(data, requires_grad=bool(requires_grad))
 
 
-def _sumall_derivative(result: TN, *args) -> tuple:
-    """
-    计算 sumall() 的梯度。
+# ===========================================================================
+# 3. 随机数（随机种子、均匀/正态分布、随机整数与排列、多项式采样）
+# ===========================================================================
 
-    对每个输入，按其与结果的广播关系对上游梯度求和，恢复到输入形状。
-    非 TN 参数不占梯度元组的位置；不需要梯度的 TN 参数返回 None。
-
-    Args:
-        result: sumall() 的输出张量，可通过 result.grad_value 获取上游梯度
-        *args: sumall() 的全部输入参数
-
-    Returns:
-        tuple: 每个 TN 输入对应的梯度（按参数出现顺序）
-    """
-    grads = []
-    for arg in args:
-        if not isinstance(arg, TN):
-            continue
-        if not arg.requires_grad:
-            grads.append(None)
-            continue
-
-        input_shape = arg.shape
-        if input_shape == result.shape:
-            grads.append(result.grad_value)
-        else:
-            # 计算广播轴并对grad_value进行求和
-            broadcast_axes = _get_broadcast_axis(result.shape, input_shape)
-            grads.append(sum(result.grad_value, dim=broadcast_axes, keepdim=False)._reshape(input_shape))
-    return tuple(grads)
-
-@track_grad(_sumall_derivative)
-def sumall(*args) -> TN:
-    """
-    将多个张量或非张量相加，返回和
-        
-    Args:
-        *args: 任意数量的张量或非张量参数
-        
-    Returns:
-        TN: 所有参数的和
-    """
-    if not args:
-        raise ValueError("sumall() must have at least one argument")
-
-    # 设备：优先使用首个张量的设备，否则使用默认设备
-    tensor_args = [arg for arg in args if isinstance(arg, TN)]
-    target_device = tensor_args[0].device if tensor_args else _get_device(None)
-
-    # 所有张量必须在同一设备上
-    bad_arg = next((arg for arg in tensor_args if arg.device != target_device), None)
-    if bad_arg is not None:
-        raise ValueError(
-            f"All tensor arguments must be on the same device, "
-            f"but found {bad_arg.device} and {target_device}"
-        )
-
-    arrlib = np if target_device.type == 'cpu' else cp
-
-    def _align(arg):
-        """将参数统一到 target_device 对应的数组库"""
-        if isinstance(arg, TN):
-            return arg._array
-        if cp is not None and arrlib is np and isinstance(arg, cp.ndarray):
-            return cp.asnumpy(arg)                  # GPU → CPU
-        if arrlib is cp and isinstance(arg, np.ndarray):
-            with cp.cuda.Device(target_device.index):
-                return cp.asarray(arg)              # CPU → GPU
-        return arg                                  # python 值 / 同库数组
-
-    # 累加；计算图由 track_grad 装饰器自动建立
-    # 注意：模块内定义了名为 sum 的算子，此处必须用 builtins.sum 调用内置实现
-    return as_tensor(builtins.sum(_align(arg) for arg in args), device=target_device)
-
-def isum(*args, **kwargs):
-    """
-    智能sum函数：
-    - 如果第一个参数是TN或数组类型，且只有1个位置参数，调用参数对象的sum方法函数
-    - 如果多个参数中包含张量、numpy数组或cupy数组、python数值，调用python内置sum(args)
-    - 否则直接调用 builtins.sum（Python内置sum）
-    
-    参数:
-        *args: 可变参数
-        **kwargs: 关键字参数，可包含 dim 和 keepdim（用于张量求和）
-    
-    返回:
-        根据参数类型返回张量、numpy/cupy数组或Python数值
-    
-    示例:
-        >>> isum(tensor([1, 2, 3]))  # 张量求和
-        tensor(6)
-        >>> isum(tensor([1, 2, 3]), dim=0)  # 沿维度求和
-        tensor(6)
-        >>> isum(1, 2, 3)  # 多个数值求和
-        6
-        >>> isum([1, 2, 3])  # Python列表求和
-        6
-    """
-    
-    # 情况1：只有一个位置参数且是TN或numpy/cupy数组类型
-    if len(args) == 1 :
-        x = args[0]
-        if (isinstance(x, TN) or 
-           _is_array_type(x)
-        ):
-            # 只有一个位置参数，或有关键字参数 -> 调用 _sum
-            return x.sum(**kwargs)
-    
-    # 情况2：多个位置参数，检查参数是否张量、数组或python数值类型
-    if len(args) >= 2:
-        data_types = (
-            TN, int, float, complex, bool,
-            np.integer, np.floating, np.complexfloating, np.bool_,
-            np.ndarray
-        )
-        if cp:
-            data_types = data_types + (cp.ndarray,)
-        
-        if all(isinstance(arg, data_types) for arg in args):
-            return builtins.sum(args)
-    
-    # 情况3：其它情况，调用 builtins.sum
-    return builtins.sum(*args, **kwargs)
-
-def ceil(x:TN)->TN:
-    """
-    计算张量的上取整。
-
-    返回:
-        包含输入张量上取整的新张量
-    """
-    x = _as_tn(x)
-    arrlib = x._get_array_lib()
-    return as_tensor(arrlib.ceil(x._array),device=x.device)
-
-def trunc(x:TN)->TN:
-    """
-    计算张量的截断取整。
-
-    返回:
-        包含输入张量截断取整的新张量
-    """
-    x = _as_tn(x)
-    arrlib = x._get_array_lib()
-    return as_tensor(arrlib.trunc(x._array),device=x.device)
 
 def manual_seed(seed: int) -> int:
     """
@@ -1306,6 +366,7 @@ def manual_seed(seed: int) -> int:
     
     return seed
 
+
 def rand(*size, requires_grad=False, dtype:np.dtype|None = None,device:str|int|Device|None=None) -> TN:
     """
     创建一个填充了[0,1)均匀分布随机数的张量。
@@ -1336,6 +397,7 @@ def rand(*size, requires_grad=False, dtype:np.dtype|None = None,device:str|int|D
     
     return TN(data, requires_grad=bool(requires_grad))
 
+
 def randn(*size, requires_grad=False, dtype:np.dtype|None = None,device:str|int|Device|None=None) -> TN:
     """
     创建一个填充了标准正态分布随机数的张量。
@@ -1365,6 +427,7 @@ def randn(*size, requires_grad=False, dtype:np.dtype|None = None,device:str|int|
             data = cp.random.randn(*shape,dtype=dt)
     
     return TN(data, requires_grad=bool(requires_grad))
+
 
 def randint(low: int, high = None, size = None, dtype = int64,device:str|int|Device|None=None,requires_grad = False) -> TN:
     """
@@ -1421,6 +484,7 @@ def randint(low: int, high = None, size = None, dtype = int64,device:str|int|Dev
     
     return TN(data, requires_grad=bool(requires_grad))
 
+
 def randperm(n: int, requires_grad=False, dtype=int64,device:str|int|Device|None=None) -> TN:
     """
     创建一个包含0到n-1随机排列的张量。
@@ -1450,6 +514,7 @@ def randperm(n: int, requires_grad=False, dtype=int64,device:str|int|Device|None
             data = cp.random.permutation(n).astype(dt)
     
     return TN(data, requires_grad=bool(requires_grad))
+
 
 def normal(mean:float,std:float,size:int|tuple,dtype:np.dtype|None = None,device:str|int|Device|None=None,requires_grad=False)->TN: 
     """
@@ -1482,160 +547,8 @@ def normal(mean:float,std:float,size:int|tuple,dtype:np.dtype|None = None,device
     
     return TN(data, requires_grad=bool(requires_grad))
 
-def _topk_backward(result_tensor: TN, i: int) -> TN:
-    """
-    topk操作的反向传播函数。
-    将输出位置上的梯度按照topk索引散射回输入张量的对应位置，
-    未被选中的输入位置梯度为0。
-    """
-    # 获取原始输入张量
-    input_tensor = result_tensor.fromvars[i]
-    # 获取topk选择时使用的索引和维度
-    topk_indices, topk_dim = result_tensor.parms[i]
-    # 获取梯度值
-    grad_value = result_tensor.grad_value
 
-    # 创建与输入形状相同的零张量
-    grad = zeros_like(input_tensor)
-
-    # 将梯度按照topk索引放置到正确的位置
-    if topk_indices.ndim == 1:
-        # 1D情况
-        grad[topk_indices] = grad_value
-    else:
-        # 多维情况，根据topk维度创建正确的坐标网格
-        arrlib = input_tensor._get_array_lib()
-        with device_context(input_tensor):
-            # 创建坐标网格（确保在源张量的设备上创建）
-            coords = list(arrlib.ogrid[tuple(slice(0, size) for size in topk_indices.shape)])
-        # 用topk的索引替换该维度的坐标
-        coords[topk_dim] = topk_indices._array
-        # 使用这些坐标将梯度值分配回原始位置
-        grad[tuple(coords)] = grad_value
-
-    return grad
-
-
-@api_registry.register('topk')
-def topk(input: TN, k: int, dim: int = -1, largest: bool = True, sorted: bool = True, *, out = None) -> tuple[TN, TN]:
-    """
-    沿指定维度返回输入张量中k个最大（或最小）元素的值和索引。
-
-    接口与PyTorch的torch.topk()兼容，基于numpy/cupy的argpartition实现：
-    先通过argpartition以O(n)复杂度将前k个元素划分到一起，
-    当sorted=True时再对这k个候选项做argsort，保证返回值有序。
-
-    参数:
-        input (TN): 输入张量，至少为1维，不支持复数类型
-        k (int): 返回元素的个数，必须满足 0 <= k <= input.size(dim)
-        dim (int): 查找的维度，默认为最后一维
-        largest (bool): True返回最大的k个元素，False返回最小的k个元素，默认为True
-        sorted (bool): True保证返回元素按值有序（最大模式降序、最小模式升序），
-                       False时仅保证选出的是top-k元素、顺序不做保证，默认为True
-        out: 可选的输出元组 (values, indices)，使用out时不支持自动微分
-
-    返回:
-        tuple[TN, TN]: (values, indices)，values为top-k元素的值（支持梯度），
-                       indices为对应的int64索引（不支持梯度）
-
-    异常:
-        IndexError: dim超出维度范围
-        RuntimeError: k超出范围、输入为复数、out与requires_grad冲突等
-
-    示例:
-        >>> x = rm.tensor([3., 1., 4., 1., 5.])
-        >>> values, indices = rm.topk(x, 2)
-        >>> values
-        tensor([5., 4.])
-        >>> indices
-        tensor([4, 2])
-    """
-    # 输入类型检查
-    if not isinstance(input, TN):
-        raise TypeError("topk: input must be a tensor")
-    if input.is_complex():
-        raise RuntimeError("topk() does not support complex input")
-    # k必须是整数（排除bool）
-    if isinstance(k, bool) or not isinstance(k, (int, np.integer)):
-        raise TypeError("topk: k must be an integer")
-    k = int(k)
-    # torch要求输入至少1维
-    if input.ndim == 0:
-        raise RuntimeError("topk: input must have at least 1 dimension")
-
-    # 确保dim在有效范围内
-    if dim < -input.ndim or dim >= input.ndim:
-        raise IndexError(f"Dimension out of range (expected to be in range of "
-                         f"[-{input.ndim}, {input.ndim - 1}], got {dim})")
-    # 标准化维度索引
-    if dim < 0:
-        dim += input.ndim
-
-    dim_size = input.shape[dim]
-    if k < 0 or k > dim_size:
-        raise RuntimeError(f"selected index k out of range, k should be in [0, {dim_size}] but got {k}")
-
-    arrlib = input._get_array_lib()
-    data = input._array
-
-    with device_context(input):
-        if k == 0:
-            # k=0时返回指定维度长度为0的空结果
-            result_shape = data.shape[:dim] + (0,) + data.shape[dim+1:]
-            values_arr = arrlib.empty(result_shape, dtype=data.dtype)
-            indices_arr = arrlib.empty(result_shape, dtype=arrlib.int64)
-        else:
-            # 第一步：利用argpartition以O(n)复杂度将top-k候选划分到一起
-            if largest:
-                # 升序划分后，最大的k个位于维度末尾
-                part_indices = arrlib.argpartition(data, kth=dim_size - k, axis=dim)
-                candidate_pos = slice(dim_size - k, dim_size)
-            else:
-                # 升序划分后，最小的k个位于维度开头
-                part_indices = arrlib.argpartition(data, kth=k - 1, axis=dim)
-                candidate_pos = slice(0, k)
-
-            # 沿dim取出前k个候选索引
-            take_slice = [slice(None)] * data.ndim
-            take_slice[dim] = candidate_pos
-            candidate_indices = part_indices[tuple(take_slice)]
-
-            # 用候选索引从原数据中聚集出候选值
-            coords = list(arrlib.ogrid[tuple(slice(0, size) for size in data.shape)])
-            coords[dim] = candidate_indices
-            values_arr = data[tuple(coords)]
-
-            # 第二步：sorted=True时对k个候选项排序，保证输出有序
-            # 统一升序argsort，largest模式沿dim反转切片得到降序，
-            # 避免对values_arr取负号以兼容无符号整型，且省去临时数组
-            if sorted:
-                order = arrlib.argsort(values_arr, axis=dim)
-                if largest:
-                    rev = [slice(None, None, -1) if d == dim else slice(None)
-                           for d in range(values_arr.ndim)]
-                    order = order[tuple(rev)]
-                order_coords = list(arrlib.ogrid[tuple(slice(0, size) for size in values_arr.shape)])
-                order_coords[dim] = order
-                indices_arr = candidate_indices[tuple(order_coords)]
-                values_arr = values_arr[tuple(order_coords)]
-            else:
-                indices_arr = candidate_indices
-
-    # 创建结果张量：values支持梯度，indices为整型索引不支持梯度
-    values_tensor = as_tensor(values_arr, device=input.device,
-                           requires_grad=(is_grad_enabled() and input.requires_grad))
-    indices_tensor = as_tensor(indices_arr, device=input.device, requires_grad=False)
-
-    if values_tensor.requires_grad:
-        values_tensor.fromvars = (input,)
-        values_tensor.parms = ((indices_tensor, dim),)
-        values_tensor.gradfuncs = (_topk_backward,)
-
-    # 处理out参数
-    return _apply_out_tuple(out, (values_tensor, indices_tensor), (input,), "topk")
-
-
-@api_registry.register('multinomial')
+@api_registry.register
 def multinomial(input: TN, num_samples: int, replacement: bool = False, *, generator=None, out: TN|None = None) -> TN:
     """
     按照输入张量给出的多项分布权重进行抽样，返回类别的索引。
@@ -1757,87 +670,90 @@ def multinomial(input: TN, num_samples: int, replacement: bool = False, *, gener
     # 处理out参数
     return _apply_out(out, result, (input,), "multinomial")
 
-def arange(start: float, end: float | None = None, step: float = 1.0, dtype: np.dtype | None = None, device: str|int|Device|None = None, requires_grad: bool = False) -> TN:
-    """
-    创建一个一维张量，包含从start到end（不包括end）的等差序列。
-    
-    参数:
-        start: 序列的起始值
-        end: 序列的结束值（不包含）。如果省略，start将被视为end，而start将变为0
-        step: 相邻两个元素之间的步长，默认为1.0
-        dtype: 返回张量的数据类型。如果未指定，将从其他输入推断
-        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
-        requires_grad: 是否需要计算梯度，默认为False
-    
-    返回:
-        包含等差序列的一维张量
-    """
-    # 处理参数，支持arange(end)的调用形式
-    if end is None:
-        end = start  # 先保存用户输入
-        # 根据用户输入类型决定起始值类型
-        start = 0 if isinstance(end, int) else 0.0  
-            
-    # 如果没有指定dtype，根据输入类型推断
-    if dtype is None:
-        # 检查所有输入是否都是整数
-        is_all_integer = isinstance(start, int) and isinstance(end, int) and isinstance(step, int)
-        if is_all_integer:
-            # 所有输入都是整数时使用int64
-            dt = np.int64
-        else:
-            # 否则使用默认浮点类型
-            dt = get_default_dtype()
-    else:
-        dt = dtype
 
-    # 使用numpy/cupy的arange创建数组
-    dev = _get_device(device)
-    if dev.type == 'cpu':
-        data = np.arange(start, end, step, dtype=dt)
-    else:
-        with cp.cuda.Device(dev.index):
-            data = cp.arange(start, end, step, dtype=dt)
-    
-    # 创建并返回张量
-    return TN(data, requires_grad=bool(requires_grad))
+# ===========================================================================
+# 4. 基础逐元素数学（取整、平方、三角函数、双曲函数及其梯度）
+# ===========================================================================
 
-# 添加linspace函数
-def linspace(start: float, end: float, steps: int = 100, endpoint: bool = True, dtype: np.dtype | None = None, device: str|int|Device|None = None, requires_grad: bool = False) -> TN:
+
+def exp2(x:TN)->TN:
+    _require_tn(x, 'exp2')
+    return 2.0 ** x
+
+
+def ceil(x:TN)->TN:
     """
-    创建一个一维张量，包含从start到end的均匀间隔的值。
-    
-    参数:
-        start: 序列的起始值
-        end: 序列的结束值
-        steps: 生成的样本数量，默认为100
-        endpoint: 如果为True，序列包含end；否则不包含，默认为True
-        dtype: 返回张量的数据类型。如果未指定，将从其他输入推断
-        device(str|int|Device,optional): 可选，指定张量所在的设备，可以是'cpu'、'cuda'、CUDA设备索引、device对象或None
-        requires_grad: 是否需要计算梯度，默认为False
-    
+    计算张量的上取整。
+
     返回:
-        包含均匀间隔值的一维张量
+        包含输入张量上取整的新张量
+
+    抛出:
+        TypeError: 入参不是 TN（与 torch 一致，不做隐式转换）
     """
-    # 如果没有指定dtype，使用默认浮点类型
-    dt = get_default_dtype() if dtype is None else dtype
+    if not isinstance(x, TN):
+        raise TypeError(f"ceil(): argument 'input' (position 1) must be Tensor, not {type(x).__name__}")
+    arrlib = x._get_array_lib()
+    return as_tensor(arrlib.ceil(x._array),device=x.device)
+
+
+def trunc(x:TN)->TN:
+    """
+    计算张量的截断取整。
+
+    返回:
+        包含输入张量截断取整的新张量
+
+    抛出:
+        TypeError: 入参不是 TN（与 torch 一致，不做隐式转换）
+    """
+    if not isinstance(x, TN):
+        raise TypeError(f"trunc(): argument 'input' (position 1) must be Tensor, not {type(x).__name__}")
+    arrlib = x._get_array_lib()
+    return as_tensor(arrlib.trunc(x._array),device=x.device)
+
+def round(x:TN)->TN:
+    """
+    计算张量的四舍五入取整。
+
+    返回:
+        包含输入张量四舍五入取整的新张量
+
+    抛出:
+        TypeError: 入参不是 TN（与 torch 一致，不做隐式转换）
+    """
+    _require_tn(x, 'round')
+    return as_tensor(x._array.round(),device=x.device)
+
+def square(x:TN)->TN:
+    """
+    计算张量的平方。
     
-    # 使用numpy/cupy的linspace创建数组
-    dev = _get_device(device)
-    if dev.type == 'cpu':
-        data = np.linspace(start, end, num=steps, endpoint=endpoint, dtype=dt)
-    else:
-        with cp.cuda.Device(dev.index):
-            data = cp.linspace(start, end, num=steps, endpoint=endpoint, dtype=dt)
+    返回一个新张量，其中每个元素是输入张量对应元素的平方。
     
-    return TN(data, requires_grad=bool(requires_grad))
+    Args:
+        x (TN): 输入张量
+        
+    Returns:
+        TN: 包含输入张量平方的新张量
+        
+    Examples:
+        >>> a = tensor([1, 2, 3])
+        >>> square(a)  # 返回[1, 4, 9]
+        
+        >>> b = tensor([[1, 2, 3], [4, 5, 6]])
+        >>> square(b)  # 返回[[1, 4, 9], [16, 25, 36]]
+    """
+    _require_tn(x, 'square')
+    return x ** 2.0
 
 
 def _sin_grad(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
     return result_tensor.grad_value * cos(x).conj()
 
-@api_registry.register('sin')
+
+@api_registry.register
 def sin(x:TN)->TN:
     """
     计算张量的正弦函数。
@@ -1857,7 +773,7 @@ def sin(x:TN)->TN:
         >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
         >>> sin(b)  # 返回[[0.0, 0.707], [1.0, 0.707]]
     """
-    x = _as_tn(x)
+    _require_tn(x, 'sin')
     arrlib = x._get_array_lib()
     ret = TN(arrlib.sin(x._array), is_grad_enabled() and x.requires_grad)
         
@@ -1866,12 +782,14 @@ def sin(x:TN)->TN:
         ret.gradfuncs = (_sin_grad,)
 
     return ret
-    
+
+
 def _cos_grad(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
     return result_tensor.grad_value * (-sin(x).conj())
 
-@api_registry.register('cos')
+
+@api_registry.register
 def cos(x:TN)->TN:
     """
     计算张量的余弦函数。
@@ -1891,7 +809,7 @@ def cos(x:TN)->TN:
         >>> b = tensor([[0.0, pi/4], [pi/2, 3*pi/4]])
         >>> cos(b)  # 返回[[1.0, 0.707], [0.0, -0.707]]
     """
-    x = _as_tn(x)
+    _require_tn(x, 'cos')
     arrlib = x._get_array_lib()
     ret = TN(arrlib.cos(x._array), is_grad_enabled() and x.requires_grad)
     
@@ -1901,11 +819,13 @@ def cos(x:TN)->TN:
 
     return ret
 
+
 def _tan_grad(result_tensor:TN, i:int)->TN:
     x = result_tensor.fromvars[i]
     return result_tensor.grad_value * (1. + (tan(x.conj()))**2.)
-    
-@api_registry.register('tan')
+
+
+@api_registry.register
 def tan(x:TN)->TN:
     """
     计算张量的正切函数。
@@ -1925,7 +845,7 @@ def tan(x:TN)->TN:
         >>> b = tensor([[0.0, pi/6], [pi/3, pi/4]])
         >>> tan(b)  # 返回[[0.0, 0.577], [1.732, 1.0]]
     """
-    x = _as_tn(x)
+    _require_tn(x, 'tan')
     arrlib = x._get_array_lib()
     ret = TN(arrlib.tan(x._array), is_grad_enabled() and x.requires_grad)
     
@@ -1935,7 +855,8 @@ def tan(x:TN)->TN:
 
     return ret
 
-@api_registry.register('cot')
+
+@api_registry.register
 def cot(x:TN)->TN:
     """
     计算张量的余切函数。
@@ -1957,48 +878,58 @@ def cot(x:TN)->TN:
     """
     return 1./tan(x)
 
-@api_registry.register('sec')
+
+@api_registry.register
 def sec(x:TN)->TN:
     return 1./cos(x)
 
-@api_registry.register('csc')
+
+@api_registry.register
 def csc(x:TN)->TN:
     return 1./sin(x)
+
 
 def _arcsin_derivative(result:TN, x:TN)->tuple[TN]:
     return (result.grad_value * (1./sqrt(1. - x**2.).conj()),)
 
-@api_registry.register('arcsin')
+
+@api_registry.register
 @track_grad(_arcsin_derivative)
 def arcsin(x:TN)->TN:
-    x = _as_tn(x)
+    _require_tn(x, 'arcsin')
     arrlib = x._get_array_lib()
     return TN(arrlib.arcsin(x._array))
+
 
 def _arccos_derivative(result:TN, x:TN)->tuple[TN]:
     return (result.grad_value * (-1.0/sqrt(1. - x**2.).conj()),)
 
-@api_registry.register('arccos')
+
+@api_registry.register
 @track_grad(_arccos_derivative)
 def arccos(x:TN)->TN:
-    x = _as_tn(x)
+    _require_tn(x, 'arccos')
     arrlib = x._get_array_lib()
     return TN(arrlib.arccos(x._array))
+
 
 def _arctan_derivative(result:TN, x:TN)->tuple[TN]:
     return (result.grad_value * (1./(1. + x**2.).conj()),)
 
-@api_registry.register('arctan')
+
+@api_registry.register
 @track_grad(_arctan_derivative)
 def arctan(x:TN)->TN:
-    x = _as_tn(x)
+    _require_tn(x, 'arctan')
     arrlib = x._get_array_lib()
     return TN(arrlib.arctan(x._array))
+
 
 def _sinh_derivative(result:TN, x:TN)->tuple[TN]:
     return (result.grad_value * cosh(x).conj(),)
 
-@api_registry.register('sinh')
+
+@api_registry.register
 @track_grad(_sinh_derivative)
 def sinh(x:TN)->TN:
     """
@@ -2019,14 +950,16 @@ def sinh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> sinh(b)  # 返回[[0.0, 1.175], [3.627, -1.175]]
     """
-    x = _as_tn(x)
+    _require_tn(x, 'sinh')
     arrlib = x._get_array_lib()
     return TN(arrlib.sinh(x._array))
+
 
 def _cosh_derivative(result:TN, x:TN)->tuple[TN]:
     return (result.grad_value * sinh(x).conj(),)
 
-@api_registry.register('cosh')
+
+@api_registry.register
 @track_grad(_cosh_derivative)
 def cosh(x:TN)->TN:
     """
@@ -2047,14 +980,16 @@ def cosh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> cosh(b)  # 返回[[1.0, 1.543], [3.762, 1.543]]
     """
-    x = _as_tn(x)
+    _require_tn(x, 'cosh')
     arrlib = x._get_array_lib()
     return TN(arrlib.cosh(x._array))
+
 
 def _tanh_derivative(result:TN, x:TN)->tuple[TN]:
     return (result.grad_value * (1.0 - tanh(x)**2.0).conj(),)
 
-@api_registry.register('tanh')
+
+@api_registry.register
 @track_grad(_tanh_derivative)
 def tanh(x:TN)->TN:
     """
@@ -2075,11 +1010,12 @@ def tanh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> tanh(b)  # 返回[[0.0, 0.762], [0.964, -0.762]]
     """
-    x = _as_tn(x)
+    _require_tn(x, 'tanh')
     arrlib = x._get_array_lib()
     return TN(arrlib.tanh(x._array))
 
-@api_registry.register('coth')
+
+@api_registry.register
 def coth(x:TN)->TN:
     """
     计算张量的双曲余切函数。
@@ -2101,7 +1037,8 @@ def coth(x:TN)->TN:
     """
     return 1.0 / tanh(x)
 
-@api_registry.register('sech')
+
+@api_registry.register
 def sech(x:TN)->TN:
     """
     计算张量的双曲正割函数。
@@ -2123,7 +1060,8 @@ def sech(x:TN)->TN:
     """
     return 1.0 / cosh(x)
 
-@api_registry.register('csch')
+
+@api_registry.register
 def csch(x:TN)->TN:
     """
     计算张量的双曲余割函数。
@@ -2145,10 +1083,12 @@ def csch(x:TN)->TN:
     """
     return 1.0 / sinh(x)
 
+
 def _arcsinh_derivative(result:TN, x:TN)->tuple[TN]:
     return (result.grad_value * (1. / sqrt(x**2. + 1.).conj()),)
-    
-@api_registry.register('arcsinh')
+
+
+@api_registry.register
 @track_grad(_arcsinh_derivative)
 def arcsinh(x:TN)->TN:
     """
@@ -2169,14 +1109,16 @@ def arcsinh(x:TN)->TN:
         >>> b = tensor([[0.0, 1.0], [2.0, -1.0]])
         >>> arcsinh(b)  # 返回[[0.0, 0.881], [1.444, -0.881]]
     """
-    x = _as_tn(x)
+    _require_tn(x, 'arcsinh')
     arrlib = x._get_array_lib()
     return TN(arrlib.arcsinh(x._array))
+
 
 def _arccosh_derivative(result:TN, x:TN)->tuple[TN]:
     return (result.grad_value * (1. / sqrt(x**2. - 1.).conj()),)
 
-@api_registry.register('arccosh')
+
+@api_registry.register
 @track_grad(_arccosh_derivative)
 def arccosh(x:TN)->TN:
     """
@@ -2197,14 +1139,16 @@ def arccosh(x:TN)->TN:
         >>> b = tensor([[1.0, 2.0], [3.0, 4.0]])
         >>> arccosh(b)  # 返回[[0.0, 1.317], [1.763, 2.063]]
     """
-    x = _as_tn(x)
+    _require_tn(x, 'arccosh')
     arrlib = x._get_array_lib()
     return TN(arrlib.arccosh(x._array))
+
 
 def _arctanh_derivative(result:TN, x:TN)->tuple[TN]:
     return (result.grad_value * (1. / (1. - x**2.0).conj()),)
 
-@api_registry.register('arctanh')
+
+@api_registry.register
 @track_grad(_arctanh_derivative)
 def arctanh(x:TN)->TN:
     """
@@ -2225,369 +1169,282 @@ def arctanh(x:TN)->TN:
         >>> b = tensor([[0.0, 0.5], [0.8, -0.8]])
         >>> arctanh(b)  # 返回[[0.0, 0.549], [1.099, -1.099]]
     """
-    x = _as_tn(x)
+    _require_tn(x, 'arctanh')
     arrlib = x._get_array_lib()
     return TN(arrlib.arctanh(x._array))
 
 
-@api_registry.register('repeat')
-def repeat(input: TN, repeats: tuple[int, ...]) -> TN:
-    """
-    沿着指定的维度重复张量的元素。
-    
-    返回一个新的张量，其中输入张量的元素在每个维度上重复指定的次数。
-    
-    此函数的行为与PyTorch的torch.repeat()完全一致，包括：
-    - 当repeats长度小于输入张量维度时，抛出异常
-    - 当repeats长度大于输入张量维度时，在前面添加新的维度
-    - 对整个维度的内容进行重复，而不是对每个元素单独重复
-    
-    Args:
-        input (TN): 要重复的输入张量
-        repeats (tuple[int, ...]): 每个维度的重复次数，可以是整数元组或多个整数参数
-            - 如果长度小于输入张量维度，会抛出异常
-            - 如果长度大于输入张量维度，会在前面添加新的维度
-            - 所有元素必须是正整数
-        
-    Returns:
-        TN: 重复后的新张量
-        
-    Raises:
-        TypeError: 如果输入不是TN张量
-        ValueError: 如果repeats包含非正整数
-        
-    Examples:
-        >>> # 一维张量的重复
-        >>> x = tensor([1, 2, 3])  # 形状(3,)
-        >>> y = repeat(x, (2,))  # 形状(6,)，结果为[1, 2, 3, 1, 2, 3]
-        >>> 
-        >>> # 二维张量的重复
-        >>> z = tensor([[1, 2], [3, 4]])  # 形状(2, 2)
-        >>> w = repeat(z, (2, 3))  # 形状(4, 6)，结果为[[1, 2, 1, 2, 1, 2], [3, 4, 3, 4, 3, 4], [1, 2, 1, 2, 1, 2], [3, 4, 3, 4, 3, 4]]
-        >>> 
-        >>> # repeats长度小于输入张量维度
-        >>> v = repeat(z, (3,))  # 形状(2, 6)，结果为[[1, 2, 1, 2, 1, 2], [3, 4, 3, 4, 3, 4]]
-        >>> 
-        >>> # repeats长度大于输入张量维度
-        >>> u = repeat(x, (2, 3))  # 形状(2, 9)，结果为[[1, 2, 3, 1, 2, 3, 1, 2, 3], [1, 2, 3, 1, 2, 3, 1, 2, 3]]
-        >>> 
-        >>> # 使用方法调用
-        >>> a = tensor([5, 6, 7])
-        >>> b = a.repeat(4)  # 形状(12,)，结果为[5, 6, 7, 5, 6, 7, 5, 6, 7, 5, 6, 7]
-    """
-    # 验证输入
-    if not isinstance(input, TN):
-        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
-    
-    # 使用_validate_shape处理repeats参数
-    repeats = _validate_shape(repeats)
-    
-    # 验证所有重复次数都是正整数
-    for r in repeats:
-        if not isinstance(r, int) or r <= 0:
-            raise ValueError(f"All elements in repeats must be positive integers, got {r}")
-    
-    # 获取底层数组库
-    arrlib = input._get_array_lib()
-    
-    # 保存输入张量的原始形状
-    original_shape = input._array.shape
-    
-    # 处理repeats长度与输入张量维度的关系
-    ndim = input._array.ndim
-    if len(repeats) < ndim:
-        # 如果repeats长度小于输入张量维度，抛出异常，与PyTorch行为一致
-        raise ValueError(f"Number of dimensions of repeat dims ({len(repeats)}) can not be smaller than number of dimensions of tensor ({ndim})")
-    elif len(repeats) > ndim:
-        # 如果repeats长度大于输入张量维度，在前面添加新的维度
-        # 首先计算需要添加的维度数
-        new_dims = len(repeats) - ndim
-        # 在输入张量前面添加新的维度，每个新维度的大小为1
-        for _ in range(new_dims):
-            input._array = arrlib.expand_dims(input._array, axis=0)
-        # 更新ndim值
-        ndim = input._array.ndim
-    
-    # 使用NumPy的repeat功能实现
-    
-    # 对于每个维度，从最后一个维度开始重复，只处理需要重复的轴
-    # 注意：使用tile函数而不是repeat函数，以实现与PyTorch一致的行为
-    # PyTorch的repeat是对整个维度的内容进行重复，而NumPy的repeat是对每个元素进行重复
-    repeated_data = input._array
-    
-    # 计算每个维度的重复次数，对于不需要重复的维度，设置为1
-    tile_repeats = []
-    for i in range(ndim):
-        if repeats[i] > 1:
-            tile_repeats.append(repeats[i])
-        else:
-            tile_repeats.append(1)
-    
-    # 使用tile函数进行重复
-    repeated_data = arrlib.tile(repeated_data, tuple(tile_repeats))
-    
-    # 创建结果张量
-    result = TN(repeated_data, requires_grad = (is_grad_enabled() and input.requires_grad))
-    
-    # 设置梯度传播
-    if result.requires_grad:
-        def _repeat_backward(result_tensor: TN, i: int) -> TN:
-            # 重复操作的梯度是将结果的梯度在重复的维度上求和
-            grad_value = result_tensor.grad_value
-            
-            # 对于每个维度，从最后一个维度开始求和
-            for j in reversed(range(ndim)):
-                # 计算步长和大小
-                size = input._array.shape[j]
-                repeat = repeats[j]
-                
-                # 重塑梯度张量，以便在重复的维度上求和
-                shape = list(grad_value.shape)
-                shape[j] = repeat
-                shape.insert(j+1, size)
-                grad_reshaped = grad_value._reshape(tuple(shape))
-                
-                # 在重复的维度上求和
-                grad_value = grad_reshaped.sum(dim=j)
-            
-            # 将梯度的形状调整为输入张量的原始形状
-            grad_value = grad_value._reshape(original_shape)
-            
-            return grad_value
-        
-        result.fromvars = (input,)
-        result.gradfuncs = (_repeat_backward,)
-    
-    return result
+# ===========================================================================
+# 5. 归约与统计（逻辑运算、求和、方差、乘积、累积和、排序、topk）
+# ===========================================================================
 
 
-@api_registry.register('masked_fill')
-def masked_fill(input: TN, mask: TN, value: Any) -> TN:
+def logical_and(input:TN, other:TN|int|float|bool)->TN:
     """
-    使用标量值填充张量中对应掩码为True的位置（非原地操作）
-    
+    逐元素计算逻辑与，非零值视为 True，返回布尔类型张量。
+
     参数:
         input: 输入张量
-        mask: 布尔类型的掩码张量，形状需与输入张量广播兼容
-        value: 填充值，可以是标量或0维张量
-    
+        other: 另一个张量或标量值，形状可与 input 广播
+
     返回:
-        填充后的新张量
-    
-    示例:
-        使用标量值填充:
-            arr = tensor([1, 2, 3, 4, 5])
-            mask = tensor([False, True, False, True, False])
-            new_arr = arr.masked_fill(mask, -1)
-            print(new_arr)  # 输出: [1, -1, 3, -1, 5]
-            print(arr)      # 输出: [1, 2, 3, 4, 5] (原张量不变)
+        布尔类型张量，对应位置为 True 表示两个输入在该位置均非零
     """
-    # 检查mask是否为布尔类型
-    if mask.dtype != np.bool_:
-        raise RuntimeError(f"masked_fill only supports boolean masks, but got mask with dtype {mask.dtype}")
-    
-    # 处理不同类型的value参数
-    if isinstance(value, TN):
-        if value.ndim != 0:  # type: ignore
-            raise RuntimeError(f'masked_fill only supports 0-dimension value tensor but got tensor with {value.ndim} dimensions.')  # type: ignore
-    
-    # 执行填充操作
-    try:
-        if mask.shape != input.shape:
-            # 如果需要广播，先广播掩码
-            broadcasted_mask = mask.broadcast_to(input.shape)
-            # 使用where执行非原地填充
-            return where(broadcasted_mask, value, input)
-        else:
-            # 使用where执行非原地填充
-            return where(mask, value, input)
-    except Exception as e:
-        raise RuntimeError(f"mask with shape {mask.shape} is not broadcastable to tensor shape {input.shape}") from e
+    if not isinstance(input, TN):
+        raise TypeError('input must be a tensor')
+
+    if isinstance(other, TN):
+        if other.device != input.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                             f"but found devices: input={input.device}, other={other.device}")
+        other_data = other._array
+    else:
+        other_data = other
+
+    arrlib = input._get_array_lib()
+    value = arrlib.logical_and(input._array, other_data)
+    return as_tensor(value,device=input.device)
 
 
-@api_registry.register('clamp')
-def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, out: TN | None = None) -> TN:
+def logical_or(input:TN, other:TN|int|float|bool)->TN:
     """
-    将张量的元素限制在 [min, max] 范围内（非原地）
-    
+    逐元素计算逻辑或，非零值视为 True，返回布尔类型张量。
+
+    参数:
+        input: 输入张量
+        other: 另一个张量或标量值，形状可与 input 广播
+
+    返回:
+        布尔类型张量，对应位置为 True 表示两个输入在该位置至少一个非零
+    """
+    if not isinstance(input, TN):
+        raise TypeError('input must be a tensor')
+
+    if isinstance(other, TN):
+        if other.device != input.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                             f"but found devices: input={input.device}, other={other.device}")
+        other_data = other._array
+    else:
+        other_data = other
+
+    arrlib = input._get_array_lib()
+    value = arrlib.logical_or(input._array, other_data)
+    return as_tensor(value,device=input.device)
+
+
+def logical_xor(input:TN, other:TN|int|float|bool)->TN:
+    """
+    逐元素计算逻辑异或，非零值视为 True，返回布尔类型张量。
+
+    参数:
+        input: 输入张量
+        other: 另一个张量或标量值，形状可与 input 广播
+
+    返回:
+        布尔类型张量，对应位置为 True 表示两个输入在该位置恰好一个非零
+    """
+    if not isinstance(input, TN):
+        raise TypeError('input must be a tensor')
+
+    if isinstance(other, TN):
+        if other.device != input.device:
+            raise ValueError(f"Expected all tensors to be on the same device, "
+                             f"but found devices: input={input.device}, other={other.device}")
+        other_data = other._array
+    else:
+        other_data = other
+
+    arrlib = input._get_array_lib()
+    value = arrlib.logical_xor(input._array, other_data)
+    return as_tensor(value,device=input.device)
+
+
+def logical_not(x:TN)->TN:
+    """
+    逐元素计算逻辑非，非零值视为 True，返回布尔类型张量。
+
     参数:
         x: 输入张量
-        min: 下限值，可以是标量或张量
-        max: 上限值，可以是标量或张量
-        out: 输出张量（可选）；指定后结果写入 out，且不支持自动微分
-    
+
     返回:
-        限制在指定范围内的张量
-
-    边界相等时的处理（对齐 PyTorch 的 clamp）:
-        - 标量边界：开区间严格比较。元素恰等于 min/max 时不改写，其自身梯度为 0
-        - 张量边界：闭区间
-          * 元素仅等于一侧边界（x==lo<hi 或 lo<x==hi）：梯度对半分给该元素与该边界张量（各 0.5）
-          * 元素同时等于上下界（x==lo==hi）：梯度全部归该元素（dx=1）
-          * lo>hi（区间无效）：结果全部取 hi，梯度全部归 hi
-        - min>max（均为标量时）：不报错，所有元素的结果值都等于 max（即先被抬到 min、再统一压到上界 max）
-        - min 与 max 必须同为标量或同为张量；两者均为 None 时报 ValueError
+        布尔类型张量，对应位置为 True 表示输入张量中该位置为零
     """
-    # 参数缺省检查：min 与 max 不能同时为 None
-    if min is None and max is None:
-        raise ValueError("clamp(): min or max must be specified")
-    
-    # 标量与张量边界不可混用（与 PyTorch 的重载约束一致）
-    min_is_tn = isinstance(min, TN)
-    max_is_tn = isinstance(max, TN)
-    if (min_is_tn and max is not None and not max_is_tn) or \
-       (max_is_tn and min is not None and not min_is_tn):
-        raise TypeError("clamp(): min and max must be both scalars or both tensors")
+    if not isinstance(x, TN):
+        raise TypeError('x must be a tensor')
 
-    if not min_is_tn and not max_is_tn:
-        # 标量边界：开区间严格比较 —— 仅 x<min 或 x>max 的元素改写为边界值；
-        # 元素恰等于边界时不改写、其自身梯度为 0（与 PyTorch 一致）。
-        # min>max（均为标量）不报错，所有元素的结果值都等于 max（与 torch/numpy 一致）
-        y = x
-        if min is not None:
-            y = where(x <= min, min, y)
-        if max is not None:
-            y = where(y >= max, max, y)
-    else:
-        # 张量边界：缺失一侧以 ±inf 作哨兵填充，比较时该侧条件恒为假，等价于不设限
-        lo = min if min_is_tn else -float('inf')
-        hi = max if max_is_tn else float('inf')
-
-        # 值：先 max(x,lo) 再 min(hi)；lo>hi 时结果全部落到 hi（与 PyTorch 一致）
-        m = where(x < lo, lo, x)
-        y = where(m > hi, hi, m)
-        # 闭区间下元素可能落在边界上，需按 PyTorch 规则分配梯度：
-        # 单边相等（x==lo<hi 或 lo<x==hi）时元素与边界张量各得 0.5 —— 取值用 0.5*(x+bound)，
-        # 因 x==bound 数值上恰好等于 bound，而梯度精确为 dx=0.5、dbound=0.5；
-        # 三重相等 x==lo==hi 被 (lo<hi) 排除，保持 dx=1；
-        # 仅对真实张量边界施加对半分：None 侧为 ±inf 哨兵，若 x 恰为 ±inf 不应参与
-        if min_is_tn:
-            t_lo = (x == lo) & (lo < hi)
-            y = where(t_lo, 0.5 * (x + lo), y)
-        if max_is_tn:
-            t_hi = (x == hi) & (lo < hi)
-            y = where(t_hi, 0.5 * (x + hi), y)
-
-    # 若指定 out，把结果写入其中并返回（out 场景不支持自动微分）
-    return _apply_out(out, y, (x, min, max), "clamp")
+    arrlib = x._get_array_lib()
+    value = arrlib.logical_not(x._array)
+    return as_tensor(value,device=x.device)
 
 
-def _sort_backward(result_tensor: TN, i: int) -> TN:
+def _sumall_derivative(result: TN, *args) -> tuple:
     """
-    排序操作的反向传播函数
-    对于排序后的张量，梯度需要按照原始索引重新排列
-    """
-    # 获取原始输入张量
-    input_tensor = result_tensor.fromvars[i]
-    # 获取排序时使用的索引、排序维度
-    sorted_indices, sort_dim = result_tensor.parms[i]
-    # 获取梯度值
-    grad_value = result_tensor.grad_value
-    
-    # 创建与输入形状相同的零张量
-    grad = zeros_like(input_tensor)
-    
-    # 获取输入张量对应的数组库
-    arrlib = input_tensor._get_array_lib()
-    # 将梯度按照原始索引放置到正确的位置
-    # 使用高级索引将梯度值分配回原始位置
-    if sorted_indices.ndim == 1:
-        # 1D情况
-        grad[sorted_indices] = grad_value
-    else:
-        # 多维情况，根据排序维度创建正确的坐标网格
-        # 创建与sorted_indices形状相同的坐标网格（确保在源张量的设备上创建）
-        with device_context(input_tensor):
-            coords = list(arrlib.ogrid[tuple(slice(0, size) for size in sorted_indices.shape)])
-        # 用排序后的索引替换排序维度的坐标
-        coords[sort_dim] = sorted_indices._array
-        # 使用这些坐标将梯度值分配回原始位置
-        grad[tuple(coords)] = grad_value
-    
-    return grad
+    计算 sumall() 的梯度。
 
-@api_registry.register('sort')
-def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = False, *, out = None) -> tuple[TN, TN]:
+    对每个输入，按其与结果的广播关系对上游梯度求和，恢复到输入形状。
+    非 TN 参数不占梯度元组的位置；不需要梯度的 TN 参数返回 None。
+
+    Args:
+        result: sumall() 的输出张量，可通过 result.grad_value 获取上游梯度
+        *args: sumall() 的全部输入参数
+
+    Returns:
+        tuple: 每个 TN 输入对应的梯度（按参数出现顺序）
     """
-    对张量沿指定维度排序，返回排序后的张量和对应的索引张量
+    grads = []
+    for arg in args:
+        if not isinstance(arg, TN):
+            continue
+        if not arg.requires_grad:
+            grads.append(None)
+            continue
+
+        input_shape = arg.shape
+        if input_shape == result.shape:
+            grads.append(result.grad_value)
+        else:
+            # 计算广播轴并对grad_value进行求和
+            broadcast_axes = _get_broadcast_axis(result.shape, input_shape)
+            grads.append(sum(result.grad_value, dim=broadcast_axes, keepdim=False)._reshape(input_shape))
+    return tuple(grads)
+
+
+@track_grad(_sumall_derivative)
+def sumall(*args) -> TN:
+    """
+    将多个张量或非张量相加，返回和
+        
+    Args:
+        *args: 任意数量的张量或非张量参数
+        
+    Returns:
+        TN: 所有参数的和
+    """
+    if not args:
+        raise ValueError("sumall() must have at least one argument")
+
+    # 设备：优先使用首个张量的设备，否则使用默认设备
+    tensor_args = [arg for arg in args if isinstance(arg, TN)]
+    target_device = tensor_args[0].device if tensor_args else _get_device(None)
+
+    # 所有张量必须在同一设备上
+    bad_arg = next((arg for arg in tensor_args if arg.device != target_device), None)
+    if bad_arg is not None:
+        raise ValueError(
+            f"All tensor arguments must be on the same device, "
+            f"but found {bad_arg.device} and {target_device}"
+        )
+
+    arrlib = np if target_device.type == 'cpu' else cp
+
+    def _align(arg):
+        """将参数统一到 target_device 对应的数组库"""
+        if isinstance(arg, TN):
+            return arg._array
+        if cp is not None and arrlib is np and isinstance(arg, cp.ndarray):
+            return cp.asnumpy(arg)                  # GPU → CPU
+        if arrlib is cp and isinstance(arg, np.ndarray):
+            with cp.cuda.Device(target_device.index):
+                return cp.asarray(arg)              # CPU → GPU
+        return arg                                  # python 值 / 同库数组
+
+    # 累加；计算图由 track_grad 装饰器自动建立
+    # 注意：模块内定义了名为 sum 的算子，此处必须用 builtins.sum 调用内置实现
+    return as_tensor(builtins.sum(_align(arg) for arg in args), device=target_device)
+
+
+def isum(*args, **kwargs):
+    """
+    智能sum函数：
+    - 如果第一个参数是TN或数组类型，且只有1个位置参数，调用参数对象的sum方法函数
+    - 如果多个参数中包含张量、numpy数组或cupy数组、python数值，调用python内置sum(args)
+    - 否则直接调用 builtins.sum（Python内置sum）
     
     参数:
-        input: 输入张量
-        dim: 排序维度，默认为最后一维
-        descending: 是否降序排列，默认为False（升序）
-        stable: 是否使用稳定排序算法，默认为False
-        out: 可选的输出元组 (values, indices)
+        *args: 可变参数
+        **kwargs: 关键字参数，可包含 dim 和 keepdim（用于张量求和）
     
     返回:
-        包含两个张量的元组 (sorted_values, sorted_indices)
-        
-    注意: 当使用out参数时，不支持自动微分
+        根据参数类型返回张量、numpy/cupy数组或Python数值
+    
+    示例:
+        >>> isum(tensor([1, 2, 3]))  # 张量求和
+        tensor(6)
+        >>> isum(tensor([1, 2, 3]), dim=0)  # 沿维度求和
+        tensor(6)
+        >>> isum(1, 2, 3)  # 多个数值求和
+        6
+        >>> isum([1, 2, 3])  # Python列表求和
+        6
     """
-    # 确保dim在有效范围内
-    if dim < -input.ndim or dim >= input.ndim:
-        raise IndexError(f"Dimension out of range (expected to be in range of [-{input.ndim}, {input.ndim-1}], got {dim})")
     
-    # 标准化维度索引
-    if dim < 0:
-        dim += input.ndim
+    # 情况1：只有一个位置参数且是TN或numpy/cupy数组类型
+    if len(args) == 1 :
+        x = args[0]
+        if (isinstance(x, TN) or
+            isinstance(x, np.ndarray) or
+            (cp is not None and isinstance(x, cp.ndarray))
+        ):
+            # 只有一个位置参数，或有关键字参数 -> 调用 _sum
+            return x.sum(**kwargs)
     
-    arrlib = input._get_array_lib()
-    # 使用numpy进行排序
-    # numpy的sort不支持stable参数，所以这里忽略stable参数
-    sorted_indices = arrlib.argsort(input._array, axis=dim)
+    # 情况2：多个位置参数，检查参数是否张量、数组或python数值类型
+    if len(args) >= 2:
+        data_types = (
+            TN, int, float, complex, bool,
+            np.integer, np.floating, np.complexfloating, np.bool_,
+            np.ndarray
+        )
+        if cp:
+            data_types = data_types + (cp.ndarray,)
+        
+        if all(isinstance(arg, data_types) for arg in args):
+            return builtins.sum(args)
     
-    # 创建用于索引的坐标网格（确保在输入张量的设备上创建）
-    with device_context(input):
-        coords = list(arrlib.ogrid[tuple(slice(0, size) for size in input._array.shape)])
-    # 用排序后的索引替换指定维度的坐标
-    coords[dim] = sorted_indices
+    # 情况3：其它情况，调用 builtins.sum
+    return builtins.sum(*args, **kwargs)
+
+
+# 利用mean函数计算var的版本，无需构造梯度回调函数
+def var2(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->TN:
+    if not isinstance(x,TN):
+        raise SyntaxError('x must be a tensor')
     
-    # 获取排序后的值
-    sorted_values_data = input._array[tuple(coords)]
+    if dim == ():
+        dim = None
     
-    # 如果需要降序，反转排序结果
-    if descending:
-        # 创建反转索引
-        reverse_slice = [slice(None)] * input._array.ndim
-        reverse_slice[dim] = slice(None, None, -1)
-        sorted_values_data = sorted_values_data[tuple(reverse_slice)]
-        # 调整索引以反映降序
-        # 对于每个子数组，计算原始位置的反转
-        # 这部分比较复杂，需要根据具体维度处理
-        # 创建一个与sorted_indices形状相同的数组，用于存储反转后的索引
-        with device_context(input):
-            reverse_indices = arrlib.empty_like(sorted_indices)
-        # 获取指定维度的大小
-        dim_size = input._array.shape[dim]
-        # 对每个子数组进行处理
-        # 注意：nditer在CPU上执行，但操作的是已有数组
-        it = np.nditer(sorted_indices, flags=['multi_index', 'refs_ok'])
-        while not it.finished:
-            # 获取当前元素的多维索引
-            idx = list(it.multi_index)
-            # 获取当前子数组
-            sub_array = sorted_indices[tuple(idx[:dim] + [slice(None)] + idx[dim+1:])]  # type: ignore
-            # 创建反转后的子数组索引
-            reverse_sub_array = sub_array[::-1].copy()
-            # 将反转后的子数组放回原位置
-            reverse_indices[tuple(idx[:dim] + [slice(None)] + idx[dim+1:])] = reverse_sub_array
-            it.iternext()
-        sorted_indices = reverse_indices
+    # 基于mean函数实现方差计算
+    # 1. 计算均值
+    x_mean = mean(x, dim=dim, keepdim=True)
     
-    # 创建排序值张量
-    sorted_values = TN(sorted_values_data, requires_grad=(is_grad_enabled() and input.requires_grad))
+    # 2. 计算平方差（使用模的平方，对于复数需要考虑共轭）
+    diff = x - x_mean
+    # 对于复数，使用diff * diff.conj()计算模的平方
+    square_diff = diff * diff.conj()
     
-    # 创建索引张量（索引张量不需要梯度）
-    sorted_indices_tensor = TN(sorted_indices, requires_grad=False)
+    # 3. 计算平方差的均值
+    variance = mean(square_diff, dim=dim, keepdim=keepdim)
     
-    # 设置梯度信息
-    if sorted_values.requires_grad:
-        sorted_values.fromvars = (input,)
-        sorted_values.parms = ((sorted_indices_tensor, dim),)
-        sorted_values.gradfuncs = (_sort_backward,)
+    # 4. 根据unbiased参数调整自由度
+    if unbiased:
+        # 计算用于自由度调整的缩放因子
+        if dim is None:
+            n = x.numel()
+        elif isinstance(dim, int):
+            n = x.shape[dim]
+        elif isinstance(dim, tuple):
+            n = 1
+            for d in dim:
+                n *= x.shape[d]
+        else:
+            raise TypeError(f"dim must be int, tuple or None, got {type(dim)}")
+        
+        if n > 1:  # 避免除以0
+            scaling_factor = tensor(n / (n - 1),dtype=x.dtype, device=x.device)
+            variance = variance * scaling_factor
     
-    # 处理out参数
-    return _apply_out_tuple(out, (sorted_values, sorted_indices_tensor), (input,), "sort")
+    return variance.real
 
 
 def _prod_backward(result_tensor:TN, i:int)->TN:
@@ -2725,7 +1582,8 @@ def _prod_backward(result_tensor:TN, i:int)->TN:
     
     return grad
 
-@api_registry.register('prod')
+
+@api_registry.register
 def prod(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     """
     返回张量在指定维度上的乘积。
@@ -2779,7 +1637,7 @@ def _cumsum_backward(result_tensor: TN, i: int) -> TN:
     return input_grad
 
 
-@api_registry.register('cumsum')
+@api_registry.register
 def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN | None = None) -> TN:
     """
     对输入张量沿指定维度进行累积求和。
@@ -2843,7 +1701,2342 @@ def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN 
     
     return _apply_out(out, ret, (input,), "cumsum")
 
-@api_registry.register('index_select')
+
+def _sort_backward(result_tensor: TN, i: int) -> TN:
+    """
+    排序操作的反向传播函数
+    对于排序后的张量，梯度需要按照原始索引重新排列
+    """
+    # 获取原始输入张量
+    input_tensor = result_tensor.fromvars[i]
+    # 获取排序时使用的索引、排序维度
+    sorted_indices, sort_dim = result_tensor.parms[i]
+    # 获取梯度值
+    grad_value = result_tensor.grad_value
+    
+    # 创建与输入形状相同的零张量
+    grad = zeros_like(input_tensor)
+    
+    # 获取输入张量对应的数组库
+    arrlib = input_tensor._get_array_lib()
+    # 将梯度按照原始索引放置到正确的位置
+    # 使用高级索引将梯度值分配回原始位置
+    if sorted_indices.ndim == 1:
+        # 1D情况
+        grad[sorted_indices] = grad_value
+    else:
+        # 多维情况，根据排序维度创建正确的坐标网格
+        # 创建与sorted_indices形状相同的坐标网格（确保在源张量的设备上创建）
+        with device_context(input_tensor):
+            coords = list(arrlib.ogrid[tuple(slice(0, size) for size in sorted_indices.shape)])
+        # 用排序后的索引替换排序维度的坐标
+        coords[sort_dim] = sorted_indices._array
+        # 使用这些坐标将梯度值分配回原始位置
+        grad[tuple(coords)] = grad_value
+    
+    return grad
+
+
+@api_registry.register
+def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = False, *, out = None) -> tuple[TN, TN]:
+    """
+    对张量沿指定维度排序，返回排序后的张量和对应的索引张量
+    
+    参数:
+        input: 输入张量
+        dim: 排序维度，默认为最后一维
+        descending: 是否降序排列，默认为False（升序）
+        stable: 是否使用稳定排序算法，默认为False
+        out: 可选的输出元组 (values, indices)
+    
+    返回:
+        包含两个张量的元组 (sorted_values, sorted_indices)
+        
+    注意: 当使用out参数时，不支持自动微分
+    """
+    # 确保dim在有效范围内
+    if dim < -input.ndim or dim >= input.ndim:
+        raise IndexError(f"Dimension out of range (expected to be in range of [-{input.ndim}, {input.ndim-1}], got {dim})")
+    
+    # 标准化维度索引
+    if dim < 0:
+        dim += input.ndim
+    
+    arrlib = input._get_array_lib()
+    # 使用numpy进行排序
+    # numpy的sort不支持stable参数，所以这里忽略stable参数
+    sorted_indices = arrlib.argsort(input._array, axis=dim)
+    
+    # 创建用于索引的坐标网格（确保在输入张量的设备上创建）
+    with device_context(input):
+        coords = list(arrlib.ogrid[tuple(slice(0, size) for size in input._array.shape)])
+    # 用排序后的索引替换指定维度的坐标
+    coords[dim] = sorted_indices
+    
+    # 获取排序后的值
+    sorted_values_data = input._array[tuple(coords)]
+    
+    # 如果需要降序，反转排序结果
+    if descending:
+        # 创建反转索引
+        reverse_slice = [slice(None)] * input._array.ndim
+        reverse_slice[dim] = slice(None, None, -1)
+        sorted_values_data = sorted_values_data[tuple(reverse_slice)]
+        # 调整索引以反映降序
+        # 对于每个子数组，计算原始位置的反转
+        # 这部分比较复杂，需要根据具体维度处理
+        # 创建一个与sorted_indices形状相同的数组，用于存储反转后的索引
+        with device_context(input):
+            reverse_indices = arrlib.empty_like(sorted_indices)
+        # 获取指定维度的大小
+        dim_size = input._array.shape[dim]
+        # 对每个子数组进行处理
+        # 注意：nditer在CPU上执行，但操作的是已有数组
+        it = np.nditer(sorted_indices, flags=['multi_index', 'refs_ok'])
+        while not it.finished:
+            # 获取当前元素的多维索引
+            idx = list(it.multi_index)
+            # 获取当前子数组
+            sub_array = sorted_indices[tuple(idx[:dim] + [slice(None)] + idx[dim+1:])]  # type: ignore
+            # 创建反转后的子数组索引
+            reverse_sub_array = sub_array[::-1].copy()
+            # 将反转后的子数组放回原位置
+            reverse_indices[tuple(idx[:dim] + [slice(None)] + idx[dim+1:])] = reverse_sub_array
+            it.iternext()
+        sorted_indices = reverse_indices
+    
+    # 创建排序值张量
+    sorted_values = TN(sorted_values_data, requires_grad=(is_grad_enabled() and input.requires_grad))
+    
+    # 创建索引张量（索引张量不需要梯度）
+    sorted_indices_tensor = TN(sorted_indices, requires_grad=False)
+    
+    # 设置梯度信息
+    if sorted_values.requires_grad:
+        sorted_values.fromvars = (input,)
+        sorted_values.parms = ((sorted_indices_tensor, dim),)
+        sorted_values.gradfuncs = (_sort_backward,)
+    
+    # 处理out参数
+    return _apply_out_tuple(out, (sorted_values, sorted_indices_tensor), (input,), "sort")
+
+
+def _topk_backward(result_tensor: TN, i: int) -> TN:
+    """
+    topk操作的反向传播函数。
+    将输出位置上的梯度按照topk索引散射回输入张量的对应位置，
+    未被选中的输入位置梯度为0。
+    """
+    # 获取原始输入张量
+    input_tensor = result_tensor.fromvars[i]
+    # 获取topk选择时使用的索引和维度
+    topk_indices, topk_dim = result_tensor.parms[i]
+    # 获取梯度值
+    grad_value = result_tensor.grad_value
+
+    # 创建与输入形状相同的零张量
+    grad = zeros_like(input_tensor)
+
+    # 将梯度按照topk索引放置到正确的位置
+    if topk_indices.ndim == 1:
+        # 1D情况
+        grad[topk_indices] = grad_value
+    else:
+        # 多维情况，根据topk维度创建正确的坐标网格
+        arrlib = input_tensor._get_array_lib()
+        with device_context(input_tensor):
+            # 创建坐标网格（确保在源张量的设备上创建）
+            coords = list(arrlib.ogrid[tuple(slice(0, size) for size in topk_indices.shape)])
+        # 用topk的索引替换该维度的坐标
+        coords[topk_dim] = topk_indices._array
+        # 使用这些坐标将梯度值分配回原始位置
+        grad[tuple(coords)] = grad_value
+
+    return grad
+
+
+@api_registry.register
+def topk(input: TN, k: int, dim: int = -1, largest: bool = True, sorted: bool = True, *, out = None) -> tuple[TN, TN]:
+    """
+    沿指定维度返回输入张量中k个最大（或最小）元素的值和索引。
+
+    接口与PyTorch的torch.topk()兼容，基于numpy/cupy的argpartition实现：
+    先通过argpartition以O(n)复杂度将前k个元素划分到一起，
+    当sorted=True时再对这k个候选项做argsort，保证返回值有序。
+
+    参数:
+        input (TN): 输入张量，至少为1维，不支持复数类型
+        k (int): 返回元素的个数，必须满足 0 <= k <= input.size(dim)
+        dim (int): 查找的维度，默认为最后一维
+        largest (bool): True返回最大的k个元素，False返回最小的k个元素，默认为True
+        sorted (bool): True保证返回元素按值有序（最大模式降序、最小模式升序），
+                       False时仅保证选出的是top-k元素、顺序不做保证，默认为True
+        out: 可选的输出元组 (values, indices)，使用out时不支持自动微分
+
+    返回:
+        tuple[TN, TN]: (values, indices)，values为top-k元素的值（支持梯度），
+                       indices为对应的int64索引（不支持梯度）
+
+    异常:
+        IndexError: dim超出维度范围
+        RuntimeError: k超出范围、输入为复数、out与requires_grad冲突等
+
+    示例:
+        >>> x = rm.tensor([3., 1., 4., 1., 5.])
+        >>> values, indices = rm.topk(x, 2)
+        >>> values
+        tensor([5., 4.])
+        >>> indices
+        tensor([4, 2])
+    """
+    # 输入类型检查
+    if not isinstance(input, TN):
+        raise TypeError("topk: input must be a tensor")
+    if input.is_complex():
+        raise RuntimeError("topk() does not support complex input")
+    # k必须是整数（排除bool）
+    if isinstance(k, bool) or not isinstance(k, (int, np.integer)):
+        raise TypeError("topk: k must be an integer")
+    k = int(k)
+    # torch要求输入至少1维
+    if input.ndim == 0:
+        raise RuntimeError("topk: input must have at least 1 dimension")
+
+    # 确保dim在有效范围内
+    if dim < -input.ndim or dim >= input.ndim:
+        raise IndexError(f"Dimension out of range (expected to be in range of "
+                         f"[-{input.ndim}, {input.ndim - 1}], got {dim})")
+    # 标准化维度索引
+    if dim < 0:
+        dim += input.ndim
+
+    dim_size = input.shape[dim]
+    if k < 0 or k > dim_size:
+        raise RuntimeError(f"selected index k out of range, k should be in [0, {dim_size}] but got {k}")
+
+    arrlib = input._get_array_lib()
+    data = input._array
+
+    with device_context(input):
+        if k == 0:
+            # k=0时返回指定维度长度为0的空结果
+            result_shape = data.shape[:dim] + (0,) + data.shape[dim+1:]
+            values_arr = arrlib.empty(result_shape, dtype=data.dtype)
+            indices_arr = arrlib.empty(result_shape, dtype=arrlib.int64)
+        else:
+            # 第一步：利用argpartition以O(n)复杂度将top-k候选划分到一起
+            if largest:
+                # 升序划分后，最大的k个位于维度末尾
+                part_indices = arrlib.argpartition(data, kth=dim_size - k, axis=dim)
+                candidate_pos = slice(dim_size - k, dim_size)
+            else:
+                # 升序划分后，最小的k个位于维度开头
+                part_indices = arrlib.argpartition(data, kth=k - 1, axis=dim)
+                candidate_pos = slice(0, k)
+
+            # 沿dim取出前k个候选索引
+            take_slice = [slice(None)] * data.ndim
+            take_slice[dim] = candidate_pos
+            candidate_indices = part_indices[tuple(take_slice)]
+
+            # 用候选索引从原数据中聚集出候选值
+            coords = list(arrlib.ogrid[tuple(slice(0, size) for size in data.shape)])
+            coords[dim] = candidate_indices
+            values_arr = data[tuple(coords)]
+
+            # 第二步：sorted=True时对k个候选项排序，保证输出有序
+            # 统一升序argsort，largest模式沿dim反转切片得到降序，
+            # 避免对values_arr取负号以兼容无符号整型，且省去临时数组
+            if sorted:
+                order = arrlib.argsort(values_arr, axis=dim)
+                if largest:
+                    rev = [slice(None, None, -1) if d == dim else slice(None)
+                           for d in range(values_arr.ndim)]
+                    order = order[tuple(rev)]
+                order_coords = list(arrlib.ogrid[tuple(slice(0, size) for size in values_arr.shape)])
+                order_coords[dim] = order
+                indices_arr = candidate_indices[tuple(order_coords)]
+                values_arr = values_arr[tuple(order_coords)]
+            else:
+                indices_arr = candidate_indices
+
+    # 创建结果张量：values支持梯度，indices为整型索引不支持梯度
+    values_tensor = as_tensor(values_arr, device=input.device,
+                           requires_grad=(is_grad_enabled() and input.requires_grad))
+    indices_tensor = as_tensor(indices_arr, device=input.device, requires_grad=False)
+
+    if values_tensor.requires_grad:
+        values_tensor.fromvars = (input,)
+        values_tensor.parms = ((indices_tensor, dim),)
+        values_tensor.gradfuncs = (_topk_backward,)
+
+    # 处理out参数
+    return _apply_out_tuple(out, (values_tensor, indices_tensor), (input,), "topk")
+
+
+def nonzero(input: TN, *, as_tuple: bool = False) -> TN | tuple[TN, ...]:
+    """
+    返回输入张量中所有非零元素的索引。
+    
+    参数:
+        input: 输入张量
+        as_tuple: 如果为True，返回一个元组，其中每个元素对应一个维度的索引张量；
+                 如果为False（默认），返回一个二维张量，每行是一个非零元素的坐标
+    
+    返回:
+        TN或tuple[TN, ...]: 非零元素的索引
+        - 当as_tuple=False时，返回形状为(N, input.ndim)的二维张量，其中N是非零元素的数量
+        - 当as_tuple=True时，返回一个元组，包含input.ndim个一维张量，每个对应一个维度的索引
+    
+    示例:
+        >>> x = tensor([[1, 0, 2], [0, 3, 0]])
+        >>> nonzero(x)
+        tensor([[0, 0], [0, 2], [1, 1]])
+        >>> nonzero(x, as_tuple=True)
+        (tensor([0, 0, 1]), tensor([0, 2, 1]))
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    # 获取非零元素的索引
+    arrlib = input._get_array_lib()
+    indices = arrlib.nonzero(input._array)
+    
+    if as_tuple:
+        # 返回元组形式，每个维度一个张量
+        result = tuple(as_tensor(idx,device=input.device) for idx in indices)
+    else:
+        # 返回二维张量形式，每行是一个坐标
+        if len(indices) > 0:
+            # 将索引数组堆叠成二维数组
+            result_data = arrlib.stack(indices, axis=1)
+        else:
+            # 如果没有非零元素，返回空的二维数组
+            with device_context(input):
+                result_data = arrlib.empty((0, input.ndim), dtype=np.int64)
+        result = as_tensor(result_data,device=input.device)  # type: ignore
+    
+    return result
+
+
+# ===========================================================================
+# 6. 索引合并（视图索引链 -> 原始张量索引）
+# ===========================================================================
+
+
+class _IndexDescriptor:
+    """
+    统一索引描述符类
+    
+    用于统一表示不同类型的索引（切片、数组、整数），便于进行索引合并计算。
+    调用者: _normalize_index、_merge_descriptors、_descriptor_to_index、merge_indices
+    （构造实例并按类型分派）
+
+    - LINEAR：等差数列索引，元素映射为 f(i) = start + i*step，
+      其中 i ∈ [0, (stop-start)/step)；正负步长统一适用，合并时可直接做复合映射
+    - LOOKUP：显式离散位置表 indices；布尔索引已转为 True 所在位置，
+      负索引已按维度大小归一化
+    - NONE：保留类型；实际 None（np.newaxis）在 _normalize_index 中返回 Python None，
+      表示仅添加维度，不参与描述符合并
+    
+    属性:
+        type: 索引类型（LINEAR、LOOKUP 或 NONE）
+        params: 类型特定的参数字典
+    
+    示例:
+        >>> # 表示切片 slice(2, 10, 2)
+        >>> desc = _IndexDescriptor(_IndexDescriptor.LINEAR, start=2, stop=10, step=2)
+        >>> 
+        >>> # 表示数组索引 [0, 2, 4]
+        >>> desc = _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=np.array([0, 2, 4]))
+    """
+    
+    LINEAR = 'LINEAR'  # 线性切片索引，如 slice(start, stop, step)
+    LOOKUP = 'LOOKUP'  # 离散索引，如 [0, 2, 4] 或 np.array([0, 2, 4])
+    NONE = 'NONE'      # None 索引（np.newaxis）
+    
+    __slots__ = ('type', 'params')
+    
+    def __init__(self, mapping_type: str, **params):
+        """
+        初始化索引描述符
+        
+        Args:
+            mapping_type: 索引类型（LINEAR、LOOKUP 或 NONE）
+            **params: 类型特定的参数
+                - LINEAR: start, stop, step
+                - LOOKUP: indices（numpy 数组）
+        """
+        self.type = mapping_type
+        self.params = params
+    
+    def __repr__(self):
+        """返回描述符的字符串表示"""
+        if self.type == _IndexDescriptor.LINEAR:
+            return f"LINEAR(start={self.params['start']}, stop={self.params['stop']}, step={self.params['step']})"
+        elif self.type == _IndexDescriptor.LOOKUP:
+            return f"LOOKUP(indices={self.params['indices']})"
+        else:
+            return f"NONE()"
+
+
+def _normalize_index_to_tuple(index):
+    """将单个索引或索引序列统一标准化为元组。
+
+    merge_indices 内部统一用元组表示索引，避免后续按位置取值时对
+    int/slice/list 等类型做分支判断。规则：
+      - 已是 tuple：原样返回
+      - 单个索引（slice/int/list/np.ndarray/cupy 数组）：包装为单元素元组
+      - 其他可迭代对象：tuple(index)
+
+    注意：None 索引会由调用方先转换为 (None,)，因此这里不单独处理 None。
+
+    调用者: merge_indices、_try_merge_special_base_index、_preprocess_base_index、
+    _preprocess_current_index
+    """
+    if isinstance(index, tuple):
+        return index
+    elif index is Ellipsis:
+        # 单省略号包装成元组，交由后续 _expand_ellipsis 按目标维度数展开
+        return (Ellipsis,)
+    elif isinstance(index, _INDEX_TYPES):
+        return (index,)
+    else:
+        return tuple(index)
+
+
+def _expand_ellipsis(index, target_ndim):
+    """展开索引中的 Ellipsis（...）为适当数量的 slice(None)。
+
+    语义与 NumPy/PyTorch 保持一致：
+      - target_ndim 表示“需要被索引的维度数”（对 current_index 而言是视图维度数）
+      - None（np.newaxis）只添加维度，不消耗维度，因此不计入 num_other
+      - 显式非 None 索引超过 target_ndim 时，Ellipsis 展开为 0 个切片
+      - 不含 Ellipsis 时原样返回；长度补全由调用方按需处理
+
+    调用者: _preprocess_base_index、_preprocess_current_index
+    """
+    # 标准化为tuple
+    if not isinstance(index, tuple):
+        if index is Ellipsis:
+            return (slice(None),) * target_ndim
+        return (index,)
+    
+    # 检查是否包含 Ellipsis（使用显式循环避免数组索引的歧义）
+    ellipsis_idx = -1
+    for i, idx in enumerate(index):
+        if idx is Ellipsis:
+            ellipsis_idx = i
+            break
+    
+    if ellipsis_idx == -1:
+        # 没有 Ellipsis，直接返回
+        return index
+    
+    # 计算需要填充的 slice(None) 数量（None 仅添加维度，不消耗维度）
+    num_other = len([idx for idx in index if idx is not Ellipsis and idx is not None])
+    num_slices_needed = target_ndim - num_other
+    
+    if num_slices_needed < 0:
+        # Ellipsis 可以表示0个切片
+        return index[:ellipsis_idx] + index[ellipsis_idx+1:]
+    
+    # 展开 Ellipsis
+    return (index[:ellipsis_idx] + 
+            (slice(None),) * num_slices_needed + 
+            index[ellipsis_idx+1:])
+
+
+def _try_merge_special_base_index(base_index, current_index):
+    """尝试快速合并几类特殊的 base_index，无法直接合并时返回 None。
+
+    可快速处理的场景：
+      1. base_index 为空元组 ()：表示直接索引原始张量，无需合并，返回 current_index
+      2. base_index 为 (None,)：视图仅由一个 np.newaxis 构成。
+         对常见的单元素 current_index（int/None/slice）给出等价索引，
+         其他情况保留 None 并追加 current_index
+      3. base_index 全为整数索引：视图没有剩余维度，
+         将整数索引与 current_index 直接拼接即可
+
+    Returns:
+        tuple 或 None：合并结果；返回 None 表示需要走通用分阶段合并流程。
+
+    调用者: merge_indices（第一阶段，先尝试快速合并特殊情况）
+    """
+    # 处理 base_index 为空元组的情况（直接索引原始张量）
+    # 注意：current_index 不会是 None，因为 _convert_TNindex_to_numpy 已将 None 转换为 (None,)
+    if isinstance(base_index, tuple) and len(base_index) == 0:
+        return current_index
+    
+    # 处理 (None,) 形式的 base_index（通过 np.newaxis 创建的视图）
+    if isinstance(base_index, tuple) and len(base_index) == 1 and base_index[0] is None:
+        # 标准化 current_index 为元组（current_index 不会是 None，因为 _convert_TNindex_to_numpy 已转换）
+        curr_tuple = current_index if isinstance(current_index, tuple) else (current_index,)
+        
+        if len(curr_tuple) == 1:
+            curr_idx = curr_tuple[0]
+            if isinstance(curr_idx, int):
+                # x[None][0] -> 选取新维度的第0个元素，结果是原始数据的全部
+                return (slice(None),)
+            elif curr_idx is None:
+                # x[None][None] -> 添加两个新维度
+                return (None, None)
+            elif isinstance(curr_idx, slice):
+                # x[None][:] -> 保留新维度，选取全部
+                return (None, curr_idx)
+        
+        # 其他情况，保留 None 并追加 current_index
+        return (None,) + curr_tuple
+    
+    # 标准化 base_index 为元组
+    base_tuple = _normalize_index_to_tuple(base_index)
+    
+    # 检查是否全是整数索引（无视图维度）
+    if all(isinstance(idx, int) for idx in base_tuple):
+        if isinstance(current_index, int) and len(base_tuple) == 1:
+            # 单整数索引链式访问，如 x[5][3]
+            return (base_tuple[0], current_index)
+        elif isinstance(current_index, tuple):
+            # 多索引链式访问，如 x[5][1:3]
+            return base_tuple + current_index
+        return base_tuple
+    
+    # 需要进一步处理
+    return None
+
+
+def _preprocess_base_index(base_index, base_shape):
+    """预处理基础索引，返回 (base_tuple, view_dims)。
+
+    - base_tuple：标准化后的元组索引，Ellipsis 已展开。这里刻意不补齐长度，
+      因为 base_index 可能只索引原始张量的前若干个维度（尾部维度隐式全切片）
+    - view_dims：真正构成视图维度的位置列表。只有切片、数组等索引会保留维度；
+      整数索引会把该维度消去，None 只添加新维度，二者都不计入 view_dims
+
+    例：
+        base_index=(slice(2, 8), 1)    -> view_dims=[0]
+        base_index=(None, slice(2, 8)) -> view_dims=[1]
+
+    调用者: merge_indices（第二阶段，预处理 base_index）
+    """
+    # 标准化为元组格式
+    base_tuple = _normalize_index_to_tuple(base_index)
+    
+    # 计算基础张量的维度数
+    base_ndim = len(base_shape)
+    
+    # 展开 Ellipsis（不填充长度，因为 base_index 可能只索引部分维度）
+    base_tuple = _expand_ellipsis(base_tuple, base_ndim)
+    
+    # 计算 view_dims（非整数索引的位置）
+    view_dims = [i for i, idx in enumerate(base_tuple)
+                 if not isinstance(idx, int) and idx is not None]
+    
+    return base_tuple, view_dims
+
+
+def _preprocess_current_index(current_index, view_dims):
+    """预处理当前索引，使其与视图维度一一对应。
+
+    - 标准化为元组，并按视图维度数 len(view_dims) 展开 Ellipsis
+    - 只统计非 None 元素：None 不消耗视图维度
+    - 非 None 元素不足时在末尾补 slice(None)，等价于 Python 的隐式全切片
+
+    返回的元组仍保留 None 的位置，供 merge_indices 在组装阶段插入新维度。
+
+    调用者: merge_indices（第三阶段，预处理 current_index）
+    """
+    result = _normalize_index_to_tuple(current_index)
+    
+    ndim = len(view_dims)
+    
+    # 展开 Ellipsis
+    result = _expand_ellipsis(result, ndim)
+    
+    # 填充长度以匹配 view_dims（None 不消耗视图维度，不计入缺失数量）
+    non_none_count = len([idx for idx in result if idx is not None])
+    if non_none_count < ndim:
+        result = result + (slice(None),) * (ndim - non_none_count)
+    
+    return result
+
+
+def _normalize_index(index, dim_size: int):
+    """把单个索引转换为 _IndexDescriptor（统一表示线性切片/离散索引）。
+
+    - slice：正步长时 start/stop 缺省为 0/dim_size；负步长时 start 缺省为
+      dim_size-1、stop 缺省为 -dim_size-1（表示越过首元素）；负索引按 dim_size 归一化
+    - int：转为单元素 LOOKUP（负整数先加 dim_size）
+    - list/ndarray/cupy：布尔数组转为 True 所在位置的整数数组；
+      整数数组中的负数按 dim_size 归一化
+    - None：返回 None（np.newaxis 不参与描述符运算）
+
+    Args:
+        index: 单个索引元素
+        dim_size: 该维度在“被索引张量”中的大小（合并视图维度时为视图大小）
+
+    调用者: merge_indices（第四阶段，逐个视图维度标准化）
+    """
+    
+    if isinstance(index, slice):
+        # 处理切片索引
+        step = index.step if index.step is not None else 1
+        
+        # 处理负步长切片
+        # 对于负步长，start 默认为 dim_size-1，stop 默认为 -dim_size-1（在第一个元素之前）
+        if step < 0:
+            start = index.start if index.start is not None else dim_size - 1
+            # 对于负步长，stop 默认为 -dim_size-1（比任何有效索引都小）
+            stop = index.stop if index.stop is not None else -dim_size - 1
+        else:
+            start = index.start if index.start is not None else 0
+            stop = index.stop if index.stop is not None else dim_size
+        
+        # 处理负数索引（仅当不是 None 转换的默认值时）
+        if start < 0:
+            start += dim_size
+        # 对于负步长，stop 可以是负数（表示在数组开头之前停止）
+        if stop < 0 and step > 0:
+            stop += dim_size
+        
+        return _IndexDescriptor(_IndexDescriptor.LINEAR, start=start, stop=stop, step=step)
+    
+    elif isinstance(index, (int, np.integer)):
+        # 处理整数索引，转换为单元素 LOOKUP
+        idx = int(index if index >= 0 else index + dim_size)
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=np.array([idx]))
+    
+    elif isinstance(index, _ARRAY_TYPES):
+        # 处理列表、NumPy 数组或 CuPy 数组索引
+        is_cupy = isinstance(index, _CP_NDARRAY)
+        if is_cupy:
+            # CuPy 数组：保持 CuPy 类型，使用 cupy 的函数
+            indices = index
+            lib = cp
+        else:
+            # NumPy 数组或列表：转换为 NumPy 数组
+            indices = np.asarray(index)
+            lib = np
+        
+        # 处理布尔数组索引
+        # 布尔数组需要转换为整数索引（True 元素的位置）
+        if indices.dtype == bool:
+            # 将布尔数组转换为整数索引数组
+            int_indices = lib.where(indices)[0]
+            return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=int_indices)
+        
+        # 处理负索引（仅适用于整数数组）
+        if np.issubdtype(indices.dtype, np.integer):
+            indices = lib.where(indices < 0, indices + dim_size, indices)
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=indices)
+    
+    elif index is Ellipsis:
+        # Ellipsis (...) 应该在 _expand_ellipsis 中处理
+        # 如果到达这里，说明 Ellipsis 没有被正确展开
+        raise ValueError("Ellipsis (...) 应该在 _expand_ellipsis 中处理，不应该到达 normalize_index")
+
+    elif index is None:
+        # None (np.newaxis) 作为特殊标记返回
+        return None
+
+    else:
+        raise ValueError(f"不支持的索引类型: {type(index)}")
+
+
+def _merge_descriptors(base_desc: _IndexDescriptor, current_desc: _IndexDescriptor) -> _IndexDescriptor:
+    """合并两个索引描述符，得到“在父张量上一步索引”的等价描述符。
+
+    参数含义：
+        base_desc:    视图维度到父维度的映射（由 base_index 标准化而来）
+        current_desc: 当前索引在该视图维度上的映射（dim_size 为视图大小）
+
+    支持四种组合（公式与推导见各分支注释）：
+        1. LINEAR + LINEAR = LINEAR：两个切片复合，新的起点/步长/终点按线性映射计算
+        2. LINEAR + LOOKUP = LOOKUP：离散索引经线性映射换算到父维度位置
+        3. LOOKUP + LINEAR = LOOKUP：从查找表中截取一段子区间
+        4. LOOKUP + LOOKUP = LOOKUP：用第二个查找表从第一个查找表中挑选元素
+
+    Returns:
+        合并后的 _IndexDescriptor，可直接交给 _descriptor_to_index 还原为索引对象。
+
+    调用者: merge_indices（第四阶段，复合 base/current 两个描述符）
+    """
+    
+    # 情况1: LINEAR + LINEAR = LINEAR
+    # 组合两个切片，计算新的 start, stop, step
+    # 
+    # 数学公式:
+    #   设基础切片: A = slice(a_start, a_stop, a_step)
+    #   设当前切片: C = slice(c_start, c_stop, c_step)
+    #   
+    #   则合并后的切片:
+    #     new_start = a_start + c_start * a_step
+    #     new_step  = a_step * c_step
+    #     new_stop  = min(a_start + c_stop * a_step, a_stop)
+    #
+    # 推导过程:
+    #   基础切片映射: f(i) = a_start + i * a_step, 其中 i ∈ [0, (a_stop-a_start)/a_step)
+    #   当前切片映射: g(j) = c_start + j * c_step, 其中 j ∈ [0, (c_stop-c_start)/c_step)
+    #   
+    #   合并映射: h(j) = f(g(j)) = a_start + (c_start + j * c_step) * a_step
+    #                    = (a_start + c_start * a_step) + j * (a_step * c_step)
+    #   
+    #   因此:
+    #     新起点 = a_start + c_start * a_step
+    #     新步长 = a_step * c_step
+    #     新终点 = min(a_start + c_stop * a_step, a_stop)  # 不能超过基础切片的终点
+    #
+    # 示例:
+    #   base = slice(2, 8, 1), current = slice(1, 3, 1)
+    #   new_start = 2 + 1*1 = 3
+    #   new_step  = 1*1 = 1
+    #   new_stop  = min(2 + 3*1, 8) = 5
+    #   result = slice(3, 5, 1)  # 即 arr[2:8][1:3] == arr[3:5]
+    if base_desc.type == _IndexDescriptor.LINEAR and current_desc.type == _IndexDescriptor.LINEAR:
+        a_start, a_stop, a_step = base_desc.params['start'], base_desc.params['stop'], base_desc.params['step']
+        c_start, c_stop, c_step = current_desc.params['start'], current_desc.params['stop'], current_desc.params['step']
+        
+        # 处理负步长（反转切片）
+        # 对于负步长，使用数学公式直接计算合并后的切片参数
+        # 
+        # 数学公式（适用于正负步长）:
+        #   设基础切片: A = slice(a_start, a_stop, a_step)
+        #   设当前切片: C = slice(c_start, c_stop, c_step)
+        #   
+        #   则合并后的切片:
+        #     new_start = a_start + c_start * a_step
+        #     new_step  = a_step * c_step
+        #     new_stop  = a_start + c_stop * a_step
+        #
+        # 注意: 对于负步长，不需要取 min，因为负步长的 stop 本身就可能小于 start
+        #
+        # 示例（负步长）:
+        #   base = slice(9, -1, -1)  # 表示 [9,8,7,6,5,4,3,2,1,0]
+        #   current = slice(1, 4, 1)  # 选取第1到第4个元素
+        #   new_start = 9 + 1*(-1) = 8
+        #   new_step  = (-1)*1 = -1
+        #   new_stop  = 9 + 4*(-1) = 5
+        #   result = slice(8, 5, -1)  # 表示 [8,7,6]
+        if a_step < 0:
+            new_start = a_start + c_start * a_step
+            new_step = a_step * c_step
+            new_stop = a_start + c_stop * a_step
+            return _IndexDescriptor(_IndexDescriptor.LINEAR, start=new_start, stop=new_stop, step=new_step)
+        
+        new_start = a_start + c_start * a_step
+        new_step = a_step * c_step
+        new_stop = builtins.min(a_start + c_stop * a_step, a_stop)
+        
+        return _IndexDescriptor(_IndexDescriptor.LINEAR, start=new_start, stop=new_stop, step=new_step)
+    
+    # 情况2: LINEAR + LOOKUP = LOOKUP
+    # 切片后离散索引，应用线性映射
+    #
+    # 数学公式:
+    #   设基础切片: A = slice(start, stop, step)
+    #   设当前索引: C = [c_0, c_1, ..., c_n]
+    #   
+    #   则合并后的索引:
+    #     mapped[i] = start + c_i * step
+    #
+    # 推导过程:
+    #   基础切片映射: f(i) = start + i * step
+    #   离散索引直接选取: c_i 表示在视图中的第 c_i 个元素
+    #   
+    #   合并映射: mapped[i] = f(c_i) = start + c_i * step
+    #
+    # 示例:
+    #   base = slice(2, 8, 2), current = [0, 2]
+    #   mapped[0] = 2 + 0*2 = 2
+    #   mapped[1] = 2 + 2*2 = 6
+    #   result = [2, 6]  # 即 arr[2:8:2][[0,2]] == arr[[2,6]]
+    elif base_desc.type == _IndexDescriptor.LINEAR and current_desc.type == _IndexDescriptor.LOOKUP:
+        start = base_desc.params['start']
+        step = base_desc.params['step']
+        indices = current_desc.params['indices']
+        
+        mapped = start + indices * step
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=mapped)
+    
+    # 情况3: LOOKUP + LINEAR = LOOKUP
+    # 离散索引后切片，从查找表中选择子范围
+    #
+    # 数学公式:
+    #   设基础查找表: T = [t_0, t_1, ..., t_m]
+    #   设当前切片: C = slice(start, stop, step)
+    #   
+    #   则合并后的索引:
+    #     indices = [start, start+step, start+2*step, ..., min(stop, m)-1]
+    #     mapped[i] = T[indices[i]]
+    #
+    # 推导过程:
+    #   基础查找表: T[i] 表示父张量中的第 T[i] 个元素
+    #   切片映射: 从查找表中选取索引范围 [start, stop)，步长为 step
+    #   
+    #   合并映射: mapped[j] = T[start + j * step], 其中 j 满足 start + j*step < min(stop, m)
+    #
+    # 示例:
+    #   base = [2, 4, 6, 8], current = slice(1, 3, 1)
+    #   indices = [1, 2]  # 从查找表中选取第1和第2个元素
+    #   mapped = [base[1], base[2]] = [4, 6]
+    #   result = [4, 6]  # 即 arr[[2,4,6,8]][1:3] == arr[[4,6]]
+    elif base_desc.type == _IndexDescriptor.LOOKUP and current_desc.type == _IndexDescriptor.LINEAR:
+        table = base_desc.params['indices']
+        start = current_desc.params['start']
+        stop = current_desc.params['stop']
+        step = current_desc.params['step']
+        
+        # 根据 table 的类型选择库
+        lib = cp if isinstance(table, _CP_NDARRAY) else np
+
+        actual_stop = builtins.min(stop, table.size)
+        indices = lib.arange(start, actual_stop, step)
+        
+        mapped = table[indices]
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=mapped)
+    
+    # 情况4: LOOKUP + LOOKUP = LOOKUP
+    # 两次离散索引，使用第二次索引从第一次的查找表中选择元素
+    #
+    # 数学公式:
+    #   设基础查找表: T1 = [a_0, a_1, ..., a_m]
+    #   设当前查找表: T2 = [b_0, b_1, ..., b_n]
+    #   
+    #   则合并后的索引:
+    #     valid_indices = {b_i | 0 <= b_i < m}
+    #     mapped[i] = T1[T2[i]]  # 仅对有效的 T2[i]
+    #
+    # 推导过程:
+    #   第一次查找: T1[i] 表示父张量中的第 T1[i] 个元素
+    #   第二次查找: T2[j] 表示在 T1 中的第 T2[j] 个元素
+    #   
+    #   合并映射: mapped[j] = T1[T2[j]], 需要满足 0 <= T2[j] < len(T1)
+    #   
+    #   注意: 如果 T2[j] 超出范围，则跳过该索引（通过 valid_mask 过滤）
+    #
+    # 示例:
+    #   base = [2, 4, 6, 8], current = [0, 2]
+    #   mapped[0] = base[0] = 2
+    #   mapped[1] = base[2] = 6
+    #   result = [2, 6]  # 即 arr[[2,4,6,8]][[0,2]] == arr[[2,6]]
+    elif base_desc.type == _IndexDescriptor.LOOKUP and current_desc.type == _IndexDescriptor.LOOKUP:
+        table1 = base_desc.params['indices']
+        table2 = current_desc.params['indices']
+        
+        # 确定使用哪个数组库（根据 table2 的类型，因为结果应该与 table2 同类型）
+        lib = cp if isinstance(table2, _CP_NDARRAY) else np
+
+        # 如果 table1 和 table2 类型不同，需要转换 table1
+        is_cupy1 = isinstance(table1, _CP_NDARRAY)
+        is_cupy2 = isinstance(table2, _CP_NDARRAY)
+        if is_cupy1 and not is_cupy2:
+            # table1 是 CuPy，table2 是 NumPy：将 table1 转换为 NumPy
+            table1 = table1.get()
+        elif not is_cupy1 and is_cupy2:
+            # table1 是 NumPy，table2 是 CuPy：将 table1 转换到 table2 所在设备
+            with table2.device:
+                table1 = cp.asarray(table1)
+
+        table1_size = table1.size
+        valid_mask = (table2 >= 0) & (table2 < table1_size)
+        valid_indices = table2[valid_mask]
+        mapped = table1[valid_indices]
+        return _IndexDescriptor(_IndexDescriptor.LOOKUP, indices=mapped)
+    
+    else:
+        raise ValueError(f"未知的描述符类型组合: {base_desc.type}, {current_desc.type}")
+
+
+def _descriptor_to_index(desc: _IndexDescriptor, original_type: type = None, keep_step_none: bool = False):
+    """把合并后的 _IndexDescriptor 转回可直接用于张量索引的 Python 对象。
+
+    Args:
+        desc: 合并结果描述符（LINEAR/LOOKUP/NONE）
+        original_type: 当前索引的原始类型；当 LOOKUP 只含一个元素且原始为 int 时，
+            转回 int 而不是数组，以保持索引语义一致
+        keep_step_none: 为 True 且 step==1 时，输出 slice(start, stop, None)，
+            保持与外部书写的切片形式一致（便于比较/打印）
+
+    调用者: merge_indices（第四阶段，把合并后的描述符转回索引对象）
+    """
+    if desc.type == _IndexDescriptor.LINEAR:
+        start = desc.params['start']
+        stop = desc.params['stop']
+        step = desc.params['step']
+        # 如果 step 为 1 且 keep_step_none 为 True，返回 None（与原版一致）
+        if keep_step_none and step == 1:
+            step = None
+        return slice(start, stop, step)
+    elif desc.type == _IndexDescriptor.LOOKUP:
+        indices = desc.params['indices']
+        if len(indices) == 1 and original_type == int:
+            return int(indices[0])
+        return indices
+    elif desc.type == _IndexDescriptor.NONE:
+        return None
+    else:
+        raise ValueError(f"未知的描述符类型: {desc.type}")
+
+
+@api_registry.register
+def merge_indices(self, base_index, current_index):
+    """
+    基于 _IndexDescriptor 的索引合并函数
+
+    将视图索引链（base_index 和 current_index）合并为在原始张量上的等效索引。
+    这是原地操作的核心函数，用于确定需要修改原始张量的哪些元素。
+
+    核心思想：
+        视图中每个保留的维度都能写成父维度上的线性映射（切片）或离散映射（数组）；
+        当前索引在该视图维度上再做一次选择，两次选择可以复合为一次映射
+        （详见 _merge_descriptors）。整数维度已被消去，None 维度只添加坐标轴，
+        二者都不参与复合运算，最后再按原始维度顺序组装结果。
+
+    职责分层设计：
+    ----------------
+    本函数采用分层架构，各阶段职责清晰：
+
+    第一阶段 - 尝试处理特殊情况：
+        调用 _try_merge_special_base_index 处理可以快速合并的情况：
+        - base_index 为空元组（直接索引原始张量）
+        - base_index 为 (None,)（np.newaxis 创建的视图）
+        - base_index 全是整数索引（链式索引）
+        如果可以合并，直接返回结果，跳过后续阶段。
+        
+        注意：base_index 不会为 None，因为 _convert_TNindex_to_numpy 已将 None 转换为 (None,)
+
+    第二阶段 - 预处理 base_index：
+        调用 _preprocess_base_index 进行标准化：
+        - 将各种格式（slice、int、tuple 等）统一转换为元组格式
+        - 展开 Ellipsis（...），但不填充长度（因为 base_index 可能只索引部分维度）
+        - 计算 view_dims（真正构成视图维度的位置：切片/数组等，不含整数和 None）
+
+    第三阶段 - 预处理 current_index：
+        调用 _preprocess_current_index 进行标准化：
+        - 转换为元组格式
+        - 展开 Ellipsis
+        - 仅对非 None 元素补齐长度（None 不占视图维度），末尾补 slice(None)
+
+    第四阶段 - 逐个视图维度合并索引：
+        将 current_index 中的非 None 元素与 view_dims 一一对应：调用 _normalize_index
+        转为 _IndexDescriptor，用 _merge_descriptors 合并，再经 _descriptor_to_index 转回原始格式。
+        该阶段只计算“每个视图维度映射到原始张量的哪个位置”，不处理 None。
+
+    第五阶段 - 组装结果：
+        按 base_index 的维度顺序输出结果：整数/None 维度原样保留，视图维度输出其合并结果；
+        并在第 j 个视图维度之前插入 current_index 中位于第 j 个非 None 元素之前的 None。
+
+    支持的索引类型：
+    ----------------
+    - 切片索引：slice(start, stop, step)，支持正负步长
+    - 整数索引：int，支持负索引
+    - 数组索引：list、np.ndarray、cp.ndarray，支持布尔数组
+    - 省略号：Ellipsis（...）自动展开
+    - None 索引：np.newaxis，仅添加维度，不消耗视图维度
+
+    关键规则（None 的处理）：
+    ----------------
+    - None 不消耗视图维度，因此 current_index 的非 None 元素按顺序映射到 view_dims；
+      非 None 元素不足 view_dims 数量时，末尾用 slice(None) 补齐（等价于 Python 隐式全切片）。
+    - 合并结果是用于索引“原始张量”的，所以 None 新维度按其在 current_index 中的
+      相对位置插入：位于第 j 个非 None 元素之前的 None，插入到第 j 个视图维度之前；
+      j 等于视图维度数时追加到结果末尾。
+    - base_index 中的整数维度、None 维度均不参与合并，原样保留在结果中。
+
+    Args:
+        base_index: 基础索引，用于创建视图。可以是 slice、int、tuple、list 或 np.ndarray
+        current_index: 当前索引，用于在视图上进行索引。可以是 slice、int、tuple 等
+
+    Returns:
+        tuple: 合并后的索引元组，可以直接用于原始张量的索引
+
+    示例:
+        >>> # 基本切片合并：x[2:8][1:3] 等价于 x[3:5]
+        >>> merge_indices(self, slice(2, 8), slice(1, 3))
+        (slice(3, 5, None),)
+        >>>
+        >>> # 负步长切片：x[::-1][1:4] 在 1D 张量 [0..9] 上
+        >>> merge_indices(self, slice(None, None, -1), slice(1, 4))
+        (slice(8, 5, -1),)  # 选取元素 [8, 7, 6]
+        >>>
+        >>> # 多维索引合并：x[2:8, 3:7][1:3, 0:2] 等价于 x[3:5, 3:5]
+        >>> merge_indices(self, (slice(2, 8), slice(3, 7)), (slice(1, 3), slice(0, 2)))
+        (slice(3, 5, None), slice(3, 5, None))
+        >>>
+        >>> # 数组索引合并：x[[0,2,4]][[0,2]] 等价于 x[[0,4]]
+        >>> merge_indices(self, [0, 2, 4], [0, 2])
+        (array([0, 4]),)
+        >>>
+        >>> # np.newaxis 特殊情况：x[None][0] 等价于 x[:]
+        >>> merge_indices(self, (None,), (0,))
+        (slice(None),)
+        >>>
+        >>> # 在视图上新增维度：x[2:8, 3:7][None, 1:3] 等价于 x[None, 3:5, 3:7]
+        >>> merge_indices(self, (slice(2, 8), slice(3, 7)), (None, slice(1, 3)))
+        (None, slice(3, 5, None), slice(3, 7, None))
+
+    调用者: _inplace_unary_at_、_inplace_oper_at_（视图索引重定向时合并视图索引与当前索引）；
+    同时也是对外接口，供 rm.merge_indices 直接调用
+    """
+    
+    # 第一阶段：尝试处理特殊情况    
+    result = _try_merge_special_base_index(base_index, current_index)
+    if result is not None:
+        return result
+    
+    # 提前获取基础张量形状，后续多个阶段复用
+    base_shape = self._base.shape if (hasattr(self, '_base') and self._base is not None) else self.shape
+    
+    # 第二阶段：预处理 base_index    
+    base_index, view_dims = _preprocess_base_index(base_index, base_shape)
+    
+    # 视图由部分索引创建时（尾部维度隐式全切片），base_index 不含这些维度。
+    # 若当前索引显式作用于这些尾部维度（如 v[..., 1]，或 current 元素数超过
+    # view_dims 数量），需先把 base_index 补齐为全维，否则省略号展开的维度数
+    # 与视图实际维度不一致，合并时会把索引维度丢掉。
+    if len(base_index) < len(base_shape):
+        curr_tuple = _normalize_index_to_tuple(current_index)
+        non_none = [idx for idx in curr_tuple if idx is not None]
+        has_ellipsis = any(idx is Ellipsis for idx in curr_tuple)
+        view_ndim_no_newaxis = self.ndim - len([idx for idx in base_index if idx is None])
+        if len(non_none) > len(view_dims) or (has_ellipsis and view_ndim_no_newaxis > len(view_dims)):
+            base_index = base_index + (slice(None),) * (len(base_shape) - len(base_index))
+            view_dims = [i for i, idx in enumerate(base_index)
+                         if not isinstance(idx, int) and idx is not None]
+    
+    # 第三阶段：预处理 current_index    
+    current_index = _preprocess_current_index(current_index, view_dims)
+    
+    # 第四阶段：逐个维度合并索引
+    merged_dims = {}  # 视图维度位置 -> 合并后的索引
+    current_non_none = [idx for idx in current_index if idx is not None]
+    
+    for i, view_dim in enumerate(view_dims):
+        base_idx = base_index[view_dim]
+        curr_idx = current_non_none[i]
+        
+        # 第 i 个非 None 索引作用于第 i 个视图维度 view_dims[i]；
+        # None 已从当前索引序列中剔除，留到第五阶段按相对位置插入
+        
+        # 获取该视图维度在原始张量中对应维度的大小（用于解析负索引/负步长）
+        dim_size = base_shape[view_dim] if view_dim < len(base_shape) else 1
+        
+        # 标准化基础索引为 IndexDescriptor
+        base_desc = _normalize_index(base_idx, dim_size)
+
+        # 防御性处理：base_tuple 中若残留 None（理论上已被 view_dims 排除），保持原样
+        if base_desc is None:
+            merged_dims[view_dim] = base_idx
+            continue
+
+        # 计算视图大小（该维度在视图中的元素数量）
+        if base_desc.type == _IndexDescriptor.LINEAR:
+            p = base_desc.params
+            view_size = (p['stop'] - p['start'] + p['step'] - 1) // p['step']
+        else:
+            view_size = base_desc.params['indices'].size
+        
+        # 标准化当前索引、合并、转回原始格式
+        current_desc = _normalize_index(curr_idx, view_size)
+        merged = _merge_descriptors(base_desc, current_desc)
+        merged_dims[view_dim] = _descriptor_to_index(merged, type(curr_idx), keep_step_none=True)
+    
+    # 第五阶段：组装结果
+    # 统计每个 None 前面有多少个非 None 元素：none_before[j] 表示需要插到
+    # 第 j 个视图维度之前的 None 数量；j == 视图维度数时表示追加到末尾
+    none_before = {}
+    seen = 0
+    for idx in current_index:
+        if idx is None:
+            none_before[seen] = none_before.get(seen, 0) + 1
+        else:
+            seen += 1
+
+    # 按 base_index 的维度顺序输出，保证整数维度（已被消去）和原始维度顺序不变
+    result = []
+    ordinal = 0  # 已处理的视图维度序号，用于查 none_before
+    for pos, base_idx in enumerate(base_index):
+        if pos in merged_dims:
+            result.extend([None] * none_before.get(ordinal, 0))
+            result.append(merged_dims[pos])
+            ordinal += 1
+        else:
+            result.append(base_idx)
+    result.extend([None] * none_before.get(ordinal, 0))
+
+    return tuple(result)
+
+
+# ===========================================================================
+# 7. 原地索引操作（_i*_full 全量向量化、反向回调、*at_/*at 接口、abs_/neg_）
+# ===========================================================================
+
+
+# 全量索引（index 为 ()）时使用的向量化原地操作。
+# 与 ufunc.at 的分工：
+# - oper_func（ufunc.at）面向任意索引，必须保证重复索引“累加”的语义，
+#   但在全量索引下会退化成逐元素循环（实测慢两个数量级）；
+# - 全量索引不存在重复元素，可直接使用原地运算符，语义与 ufunc.at 等价。
+# 传入的右值已由 _adjust_right_val 转成 input 的 dtype 并完成形状对齐，
+# 因此这里不会引入额外的类型转换差异，cupy 数组同样适用。
+def _iadd_full(numpy_arr, right):
+    """全量索引（index 为 ()）下执行原地加法 arr += right，绕开 ufunc.at 的逐元素慢路径。
+
+    调用者: addat_（作为 vector_func 实参传入 _inplace_oper_at_）
+    """
+    numpy_arr += right
+    return numpy_arr
+
+
+def _isub_full(numpy_arr, right):
+    """全量索引（index 为 ()）下执行原地减法 arr -= right，绕开 ufunc.at 的逐元素慢路径。
+
+    调用者: subat_（作为 vector_func 实参传入 _inplace_oper_at_）
+    """
+    numpy_arr -= right
+    return numpy_arr
+
+
+def _imul_full(numpy_arr, right):
+    """全量索引（index 为 ()）下执行原地乘法 arr *= right，绕开 ufunc.at 的逐元素慢路径。
+
+    调用者: mulat_（作为 vector_func 实参传入 _inplace_oper_at_）
+    """
+    numpy_arr *= right
+    return numpy_arr
+
+
+def _idiv_full(numpy_arr, right):
+    """全量索引（index 为 ()）下执行原地除法 arr /= right，绕开 ufunc.at 的逐元素慢路径。
+
+    调用者: divat_（作为 vector_func 实参传入 _inplace_oper_at_）
+    """
+    numpy_arr /= right
+    return numpy_arr
+
+
+def _ipow_full(numpy_arr, right):
+    """全量索引（index 为 ()）下执行原地幂运算 arr **= right，绕开 ufunc.at 的逐元素慢路径。
+
+    调用者: powat_（作为 vector_func 实参传入 _inplace_oper_at_）
+    """
+    numpy_arr **= right
+    return numpy_arr
+
+
+def _ifloordiv_full(numpy_arr, right):
+    """全量索引（index 为 ()）下执行原地向下取整除法 arr //= right。
+
+    调用者: floordivat_（作为 vector_func 实参传入 _inplace_oper_at_）
+    """
+    numpy_arr //= right
+    return numpy_arr
+
+
+def _imod_full(numpy_arr, right):
+    """全量索引（index 为 ()）下执行原地取余 arr %= right。
+
+    调用者: modat_（作为 vector_func 实参传入 _inplace_oper_at_）
+    """
+    numpy_arr %= right
+    return numpy_arr
+
+
+def _iset_full(numpy_arr, right):
+    """全量索引（index 为 ()）下执行覆盖写 arr[...] = right。
+
+    调用者: setat_（作为 vector_func 实参传入 _inplace_oper_at_）
+    """
+    numpy_arr[...] = right
+    return numpy_arr
+
+
+def _setat_backward_left(result_tensor:TN, i:int)->TN:
+    """非原地 setat 反向中传给左值的梯度：索引位置已被覆盖写，故把该位置梯度清零。
+
+    调用者: setat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    index = result_tensor.parms[0]
+    grad = result_tensor.grad_value.setat(index,0.)
+    return grad
+
+
+def _setat_backward_right(result_tensor:TN, i:int)->TN:
+    """非原地 setat 反向中传给右值的梯度：取 self 梯度在索引位置的取值。
+
+    调用者: setat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    index = result_tensor.parms[0]
+
+    # result_tensor就是原地赋值时的self
+    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor.grad_value[index]
+    return right_var_grad
+
+
+def _setat_inplace_backward(result_tensor:TN, i:int)->TN: 
+    """原地 setat_ 的反向：右值梯度取索引位置的梯度，并把 self 该位置梯度清零。
+
+    调用者: setat_（作为 backward_func 实参传入 _inplace_oper_at_）
+    """
+    index = result_tensor.parms[i][1]
+
+    # result_tensor就是原地赋值时的self
+    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor.grad_value[index]
+    # 由于self的在原地索引赋值时index位置已被右值覆盖，
+    # 所以要将self的grad_value中索引位置的梯度设为0
+    clone_self_grad = result_tensor.grad_value.setat(index,0.)
+    result_tensor.grad_value = clone_self_grad
+    
+    return right_var_grad
+
+
+def _addat_backward_left(result_tensor:TN, i:int)->TN:
+    """非原地 addat 反向中传给左值的梯度：加法不改变左值梯度，原样返回。
+
+    调用者: addat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    return result_tensor.grad_value
+
+
+def _addat_backward_right(result_tensor: TN, i: int) -> TN:
+    """非原地 addat 反向中传给右值的梯度：取 self 梯度在索引位置的取值。
+
+    调用者: addat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    index = result_tensor.parms[0]
+
+    # result_tensor就是原地赋值时的self
+    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor.grad_value[index]    
+    return right_var_grad
+
+
+def _addat_inplace_backward(result_tensor:TN, i:int)->TN:    
+    """原地 addat_ 的反向：右值梯度即 self 梯度在索引位置的取值。
+
+    调用者: addat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS，供 setitem 重放
+    """
+    index = result_tensor.parms[i][1]
+
+    # result_tensor就是原地赋值时的self
+    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor.grad_value[index]
+    return right_var_grad
+
+
+def _subat_backward_left(result_tensor:TN, i:int)->TN:
+    """非原地 subat 反向中传给左值的梯度：减法不改变左值梯度，原样返回。
+
+    调用者: subat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    return result_tensor.grad_value
+
+def _subat_backward_right(result_tensor: TN, i: int) -> TN:
+    """非原地 subat 反向中传给右值的梯度：索引位置梯度取负。
+
+    调用者: subat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    index = result_tensor.parms[0]
+
+    # result_tensor就是原地赋值时的self
+    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor.grad_value[index]    
+    return right_var_grad
+
+
+def _subat_inplace_backward(result_tensor:TN, i:int)->TN:    
+    """原地 subat_ 的反向：右值梯度为 self 在索引位置梯度的相反数。
+
+    调用者: subat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS，供 setitem 重放
+    """
+    index = result_tensor.parms[i][1]
+
+    # result_tensor就是原地赋值时的self
+    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = -result_tensor.grad_value[index]
+    return right_var_grad
+
+
+def _mulat_backward_left(result_tensor:TN, i:int)->TN:
+    """非原地 mulat 反向中传给左值的梯度：用右值的共轭修正索引位置的梯度。
+
+    调用者: mulat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    left_var = result_tensor.fromvars[0]
+    right_var = result_tensor.fromvars[1]
+    index = result_tensor.parms[0]
+
+    left_var_grad = result_tensor.grad_value[index] * right_var.conj()
+    grad = result_tensor.grad_value.setat(index,left_var_grad)
+    return grad
+
+
+def _mulat_backward_right(result_tensor: TN, i: int) -> TN:
+    """非原地 mulat 反向中传给右值的梯度：索引位置梯度乘左值（按索引）的共轭。
+
+    调用者: mulat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    left_var = result_tensor.fromvars[0]
+    right_var = result_tensor.fromvars[1]
+    index = result_tensor.parms[0]
+
+    right_var_grad = result_tensor.grad_value[index] * left_var[index].conj()
+    return right_var_grad
+
+
+def _mulat_inplace_backward(result_tensor: TN, i: int) -> TN:
+    """原地 mulat_ 的反向：由备份的左值算出右值梯度，并把 self 索引位置梯度替换为左值梯度。
+
+    调用者: mulat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
+    """
+    right_var = result_tensor.fromvars[i]
+    left_var = result_tensor.parms[i][0]    
+    index = result_tensor.parms[i][1]
+
+    result_grad = result_tensor.grad_value[index]
+    right_var_grad = result_grad * left_var.conj()
+
+    # 由于self的在原地索引赋值时index位置已被乘积值覆盖，
+    # 所以要将self的grad_value中索引位置的梯度设为左值的梯度
+    left_var_grad = result_grad * right_var.conj()
+    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)    
+    result_tensor.grad_value = clone_self_grad
+
+    return right_var_grad
+
+
+def _neg_inplace_data(array, index)->None:
+    """neg_ 的数据改写函数：对指定索引位置的元素取负。
+
+    调用者: neg_（作为 data_func 实参传入 _inplace_unary_at_）
+    """
+    array[index] = -array[index]
+
+
+def _abs_inplace_data(array, index)->None:
+    """abs_ 的数据改写函数：对指定索引位置的元素取绝对值。
+
+    不能用内置 abs()：本模块的 abs(TN) 会遮蔽内置名，数组会被包成 TN；
+    ndarray/numpy 标量/cupy 数组都实现了 __abs__，可直接调用以保持设备无关。
+
+    调用者: abs_（作为 data_func 实参传入 _inplace_unary_at_）
+    """
+    array[index] = array[index].__abs__()
+
+
+def _placeholder_zero_grad(result_tensor: TN, i: int) -> TN:
+    """为不传播梯度的一元原地运算返回0标量梯度，供占位变量接收。
+
+    调用者: _negat_inplace_backward、_absat_inplace_backward
+    """
+    placeholder = result_tensor.fromvars[i]
+    return TN(placeholder._get_array_lib().zeros((), dtype=placeholder.dtype))
+
+
+def _negat_inplace_backward(result_tensor: TN, i: int) -> TN:
+    """neg_ 的反向：把流向自身历史算子的梯度取负（d(-x)/dx = -1）。
+
+    调用者: neg_（作为 backward_func 实参传入 _inplace_unary_at_）
+    """
+    index = result_tensor.parms[i][1]
+
+    result_grad = result_tensor.grad_value[index]
+    result_tensor.grad_value = result_tensor.grad_value.setat(index, -result_grad)
+
+    return _placeholder_zero_grad(result_tensor, i)
+
+
+def _absat_inplace_backward(result_tensor: TN, i: int) -> TN:
+    """abs_ 的反向：d|x|/dx = sign(x)，符号取自操作前的左值副本。
+
+    调用者: abs_（作为 backward_func 实参传入 _inplace_unary_at_）
+    """
+    left_copy = result_tensor.parms[i][0]
+    index = result_tensor.parms[i][1]
+
+    result_grad = result_tensor.grad_value[index]
+    left_grad = result_grad * left_copy._get_array_lib().sign(left_copy._array)
+    result_tensor.grad_value = result_tensor.grad_value.setat(index, left_grad)
+
+    return _placeholder_zero_grad(result_tensor, i)
+
+
+def _divat_backward_left(result_tensor:TN, i:int)->TN:
+    """非原地 divat 反向中传给左值的梯度：索引位置梯度除以右值的共轭。
+
+    调用者: divat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    left_var = result_tensor.fromvars[0]
+    right_var = result_tensor.fromvars[1]
+    index = result_tensor.parms[0]
+
+    left_var_grad = result_tensor.grad_value[index] / right_var.conj()
+    grad = result_tensor.grad_value.setat(index,left_var_grad)
+    return grad
+
+
+def _divat_backward_right(result_tensor: TN, i: int) -> TN:
+    """非原地 divat 反向中传给右值的梯度：-x/right 的共轭乘以索引位置梯度。
+
+    调用者: divat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    left_var = result_tensor.fromvars[0]
+    right_var = result_tensor.fromvars[1]
+    index = result_tensor.parms[0]
+
+    right_var_grad = result_tensor.grad_value[index] * (-result_tensor[index]/right_var).conj()
+    return right_var_grad
+
+
+def _divat_inplace_backward(result_tensor: TN, i: int) -> TN:
+    """原地 divat_ 的反向：算出右值梯度，并把 self 索引位置梯度设为左值梯度。
+
+    调用者: divat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
+    """
+    right_var = result_tensor.fromvars[i]
+    left_var = result_tensor.parms[i][0]    
+    index = result_tensor.parms[i][1]
+
+    result_grad = result_tensor.grad_value[index]
+    right_var_grad = result_grad * (-result_tensor[index]/right_var).conj()
+
+    # 由于self的在原地索引赋值时index位置已被覆盖，
+    # 所以要将self的grad_value中索引位置的梯度设为左值的梯度
+    left_var_grad = result_grad / right_var.conj()
+    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)    
+    result_tensor.grad_value = clone_self_grad
+
+    return right_var_grad
+
+
+def _modat_backward_left(result_tensor:TN, i:int)->TN:
+    """非原地 modat 反向中传给左值的梯度：取余对左值的导数为 1，梯度原样返回。
+
+    调用者: modat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    # d(left % right)/d(left) = 1，结果梯度即为左值梯度
+    return result_tensor.grad_value
+
+
+def _modat_backward_right(result_tensor: TN, i: int) -> TN:
+    """非原地 modat 反向中传给右值的梯度：-floor(left/right) 乘以索引位置梯度。
+
+    调用者: modat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    left_var = result_tensor.fromvars[0]
+    right_var = result_tensor.fromvars[1]
+    index = result_tensor.parms[0]
+
+    # d(left % right)/d(right) = -floor(left/right)
+    right_var_grad = -result_tensor.grad_value[index] * floor(left_var[index] / right_var)
+    return right_var_grad
+
+
+def _modat_inplace_backward(result_tensor: TN, i: int) -> TN:
+    """原地 modat_ 的反向：算出右值梯度，并把 self 索引位置梯度设为左值梯度。
+
+    调用者: modat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
+    """
+    right_var = result_tensor.fromvars[i]
+    left_var = result_tensor.parms[i][0]    
+    index = result_tensor.parms[i][1]
+
+    result_grad = result_tensor.grad_value[index]
+    right_var_grad = -result_grad * floor(left_var / right_var)
+
+    # 由于self在原地索引赋值时index位置已被取余结果覆盖，
+    # 所以要将self的grad_value中索引位置的梯度设为左值的梯度（导数恒为1）
+    clone_self_grad = result_tensor.grad_value.setat(index, result_grad)    
+    result_tensor.grad_value = clone_self_grad
+
+    return right_var_grad
+
+
+def _powat_backward_left(result_tensor:TN, i:int)->TN:
+    """非原地 powat 反向中传给左值的梯度：right*left**(right-1) 的共轭乘以索引位置梯度。
+
+    调用者: powat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    left_var = result_tensor.fromvars[0]
+    right_var = result_tensor.fromvars[1]
+    index = result_tensor.parms[0]
+
+    result_grad = result_tensor.grad_value[index]
+    left_var_grad = result_grad * (right_var * (left_var[index] ** (right_var - 1.))).conj()
+    grad = result_tensor.grad_value.setat(index,left_var_grad)
+    return grad
+
+
+def _powat_backward_right(result_tensor: TN, i: int) -> TN:
+    """非原地 powat 反向中传给右值的梯度：result*log(left) 的共轭乘以索引位置梯度。
+
+    调用者: powat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    """
+    left_var = result_tensor.fromvars[0]
+    right_var = result_tensor.fromvars[1]
+    index = result_tensor.parms[0]
+
+    result_grad = result_tensor.grad_value[index]
+    right_var_grad = result_grad * result_tensor[index].conj() * log(left_var[index].conj())
+    return right_var_grad
+
+
+def _powat_inplace_backward(result_tensor: TN, i: int) -> TN:
+    """原地 powat_ 的反向：算出右值梯度，并把 self 索引位置梯度设为左值梯度。
+
+    调用者: powat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
+    """
+    right_var = result_tensor.fromvars[i]
+    left_var = result_tensor.parms[i][0]    
+    index = result_tensor.parms[i][1]
+
+    result_grad = result_tensor.grad_value[index]
+    right_var_grad = result_grad * result_tensor[index].conj() * log(left_var.conj())
+
+    # 由于self的在原地索引赋值时index位置已被乘积值覆盖，
+    # 所以要将self的grad_value中索引位置的梯度设为左值的梯度
+    left_var_grad = result_grad * (right_var * (left_var ** (right_var - 1.))).conj()
+    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)    
+    result_tensor.grad_value = clone_self_grad
+
+    return right_var_grad
+
+
+def _floordivat_inplace_backward(result_tensor:TN, i:int)->TN:
+    """原地 floordivat_ 的反向：向下取整除法不可导，直接抛 RuntimeError（与 torch 一致）。
+
+    调用者: floordivat_（作为 backward_func 实参传入 _inplace_oper_at_）
+    """
+    raise RuntimeError('derivative for aten::floor_divide is not implemented')
+
+
+def _adjust_right_val(input:TN, target_data, val):
+    """将右值转为与目标张量一致的 dtype/device，并调整形状以匹配索引选中的区域。
+
+    调用者: _inplace_oper_at_、_non_inplace_oper_at
+    """
+    # 若 val 已是 TN，则校验设备一致性、按需转换 dtype 后直接复用，避免重复创建
+    if isinstance(val, TN):
+        right_val = val
+        # 检查设备一致性
+        if right_val.device != input.device:
+            raise ValueError(f"Right value device {right_val.device} does not match target device {input.device}")
+        # 检查并转换dtype
+        if right_val.dtype != input.dtype:
+            right_val = right_val.type(input.dtype)
+    else:
+        right_val = as_tensor(val, dtype=input.dtype, device=input.device)
+
+    # 将右值形状、维度转化为和索引值相匹配的形式
+    # 注：target_data 可能是numpy数组（切片/花式索引），也可能是numpy标量（整数索引选中单个元素），
+    # 二者都提供 size/shape/ndim，故下列判定对两种情形通用
+    target_size = target_data.size
+    right_size = right_val._array.size  # 直接访问底层数组的size，避免方法调用开销
+
+    if right_size > target_size:
+        # 唯一例外：向空张量（size=0）赋值仅含1个元素的右值（标量、形状(1,)/(1,1)等）是合法的
+        if target_size == 0 and right_size == 1:
+            # 归一为0维：numpy对空选择的赋值只接受0维/1维右值，否则会因右值维数报TypeError
+            right_val = right_val._reshape(())
+        else:
+            raise ValueError(f"Right value size {right_size} exceeds target size {target_size}")
+    elif right_size == target_size:
+        right_val = right_val._reshape(target_data.shape)
+    elif right_val.ndim <= target_data.ndim:
+        # _expand 内部不做形状检查，形状不兼容时由 broadcast_to 报错，故无需在此重复校验
+        right_val = right_val._expand(target_data.shape)
+    else:
+        # 维度数过多，先squeeze所有大小为1的维度，再expand
+        dim = tuple(i for i, size in enumerate(right_val.shape) if size == 1)
+        right_val = right_val._squeeze(dim)
+        right_val = right_val._expand(target_data.shape)
+
+    return right_val
+
+
+def _inplace_unary_at_(input:TN, index, data_func, backward_func):
+    """在指定索引位置对 input 执行一元原地运算，并记录反向传播所需的依赖。
+
+    与 _inplace_oper_at_ 的区别：一元运算没有右值，data_func 直接依据左值
+    改写数据，因此梯度只需修正 input 自身历史算子的梯度（由 backward_func
+    完成），不用记录右值依赖；占位变量仅用于承载该梯度回调。
+
+    参数:
+        input: 被操作的张量
+        index: 目标索引；空元组 () 表示整个张量
+        data_func: 执行函数，签名 (数组, 索引)，直接在数组上改写数据
+        backward_func: 该操作对应的梯度回调，写入 input.gradfuncs
+
+    视图重定向：若 input 是视图，先合并视图索引与 index，再在 input._base 上执行，
+    保证写入落到真实存储；返回值仍是视图对象本身。
+
+    调用者: abs_、neg_（另在视图重定向时递归调用自身）
+    """
+    # 将索引规范化为numpy索引
+    index_val = _convert_TNindex_to_numpy(index)
+
+    # 检查是否为视图对象
+    if hasattr(input, '_is_view') and input._is_view:
+        combined_index = merge_indices(input, input._view_index, index_val)
+        _inplace_unary_at_(input._base, combined_index, data_func, backward_func)
+        return input
+
+    # 是否记录计算图：no_grad 下既不记录依赖，也不改动 requires_grad
+    need_grad = is_grad_enabled() and input.requires_grad
+
+    # 反向需要操作前的左值（如 abs 的符号），故在改写数据前备份一份独立副本
+    target_data = input._array[index_val]
+    if need_grad:
+        if target_data.base is not None:
+            target_data = target_data.copy()  # 复制共享内存的视图，确保独立性
+        target_copy = TN(target_data)
+
+    data_func(input._array, index_val)  # 执行原地操作
+
+    if need_grad:
+        # 一元原地运算没有右值，用不依赖任何输入的占位变量承载梯度回调；
+        # 插入位置与 _inplace_oper_at_ 一致，保证“后做的原地操作先处理梯度”
+        placeholder = zeros((), dtype=input.dtype, device=input.device, requires_grad=True)
+        input.requires_grad = True
+        input.fromvars = (placeholder,) + input.fromvars
+        input.parms = ((target_copy,index_val),) + input.parms
+        input.gradfuncs = (backward_func, ) + input.gradfuncs
+
+    return input
+
+
+def _inplace_oper_at_(input:TN, index, val, oper_func, backward_func, vector_func=None):
+    """在指定索引位置对 input 执行原地运算，并记录反向传播所需的依赖。
+
+    参数:
+        input: 被操作的张量
+        index: 目标索引；空元组 () 表示整个张量
+        val: 右值，标量或张量
+        oper_func: 通用执行函数，签名 (数组, 索引, 右值数组)；
+                   必须是 ufunc.at 一类支持重复索引累加的实现
+        backward_func: 该操作对应的梯度回调，写入 input.gradfuncs
+        vector_func: 可选的全量索引加速函数，签名 (数组, 右值数组)；
+                     仅当 index 为 () 时使用，为 None 时全部走 oper_func
+
+    视图重定向：若 input 是视图，先合并视图索引与 index，再在 input._base 上执行，
+    保证写入落到真实存储；返回值仍是视图对象本身，调用方无需区分。
+
+    计算图记录顺序“最新在前”：每次原地操作把右值、索引（含左值副本）、梯度回调
+    分别插入 fromvars/parms/gradfuncs 的首部，反向传播按逆序处理，从而实现
+    “后做的原地操作先处理梯度”。
+
+    调用者: setat_、addat_、subat_、mulat_、divat_、powat_、floordivat_、modat_
+    （另在视图重定向时递归调用自身）
+    """
+    # 将索引规范化为numpy索引
+    index_val = _convert_TNindex_to_numpy(index)
+
+    # 检查是否为视图对象
+    if hasattr(input, '_is_view') and input._is_view:
+        # 将当前操作索引与视图索引合并
+        combined_index = merge_indices(input, input._view_index, index_val)
+
+        # input是视图时，直接在原张量input._base上执行操作
+        _inplace_oper_at_(input._base, combined_index, val, oper_func, backward_func, vector_func)
+
+        # 返回视图对象本身
+        return input
+
+    # 将右值形状、维度转化为和索引值相匹配的形式
+    target_data = input._array[index_val]
+    right_val = _adjust_right_val(input, target_data, val)
+
+    # 是否记录计算图：no_grad 下既不记录依赖，也不改动 requires_grad，
+    # 与 torch 保持一致（梯度开关不应永久改变张量的属性）
+    need_grad = is_grad_enabled() and (input.requires_grad or right_val.requires_grad)
+
+    # target 的来源有两种：
+    # 1、基本切片返回视图，与input共享内存
+    # 2、整数/花式索引返回副本或numpy标量，本就不共享，但形状/维度信息仍需保留
+    # 对于共享内存的视图，必须在改动input前备份一份独立且无依赖的副本：
+    # 因为反向传播要用到左值，而原地操作后 input 对应位置的数据已被覆盖
+    # 只有 mul/div/pow 的反向需要左值（_LEFT_VALUE_BACKWARD_NAMES），
+    # add/sub/set 的反向只用索引，可省去这次整块内存拷贝
+    if need_grad and getattr(backward_func, '__name__', '') in _LEFT_VALUE_BACKWARD_NAMES:
+        if target_data.base is not None:
+            target_data = target_data.copy()  # 复制共享内存的视图，确保独立性
+        target_copy = TN(target_data)
+    else:
+        target_copy = None
+
+    # 空元组索引与省略号均表示对整个张量操作，不存在重复索引，可直接用向量化版本，
+    # 避免 ufunc.at 的逐元素慢路径；其余索引保持 ufunc.at 的累加语义
+    if vector_func is not None and (
+            index_val is Ellipsis
+            or (isinstance(index_val, tuple) and len(index_val) == 0)):
+        vector_func(input._array, right_val._array)
+    else:
+        oper_func(input._array, index_val, right_val._array)  # 执行原地操作
+
+    if need_grad:
+        # 原地赋值时，须在input的现有计算图上增加依赖关系，注意:
+        # 1、只能记录右值的依赖关系，不能记录input，避免依赖循环
+        # 2、右值的梯度回调函数里同时传递右值梯度和更新input的梯度，所以右值requires_grad=False时，
+        #    需要复制一个右值的副本用于跟踪梯度，将副本的requires_grad置True，以便backward里副本的梯度跟踪函数被调用
+        # 3、原地赋值依赖关系需要优先处理，须插入到fromvars元组前面
+        # 4、多次原地赋值时，遵循先赋值的右值后处理梯度跟踪原则，要从0位置插入右值、索引、梯度回调函数
+        # 5、若右值依赖 input（如 t = a[[0,4]]; a[1:3] = t），这里会形成环；
+        #    该情况由 __setitem__ 的 _assign_without_cycle 提前拦截，不会走到这里
+        if right_val.requires_grad == False:
+            # 需要一个用于传播梯度的右值变量，但又不要改动右值的属性，detach一个新变量是一个经济、可行的办法
+            right_val = right_val.detach().requires_grad_(True)
+
+        input.requires_grad = True
+        input.fromvars = (right_val,) + input.fromvars
+        # 注意(target_copy,index_val)必须以元组的形式整体插入到parms元组前面
+        input.parms = ((target_copy,index_val),) + input.parms
+        input.gradfuncs = (backward_func, ) + input.gradfuncs
+
+    return input
+
+
+def _non_inplace_oper_at(input:TN, index, val, oper_func, left_backward_func, right_backward_func):
+    """在 input 的副本上按索引执行运算并返回新张量，input 本身不变。
+
+    调用者: setat、addat、subat、mulat、divat、powat、floordivat、modat
+    """
+    # 将索引规范化为numpy索引
+    index_val = _convert_TNindex_to_numpy(index)
+
+    # 将右值形状、维度转化为和索引值相匹配的形式
+    target = input._array[index_val]
+    right_val = _adjust_right_val(input, target, val)
+
+    # 新建一个input张量的独立副本，用于存储结果
+    ret = input.copy()
+    oper_func(ret._array, index_val, right_val._array)
+
+    ret.requires_grad = (is_grad_enabled() and (input.requires_grad or right_val.requires_grad))
+
+    if ret.requires_grad:
+        ret.fromvars = (input,right_val)
+        ret.parms = (index_val,)
+        ret.gradfuncs = (left_backward_func,right_backward_func)
+
+    return ret
+
+
+# 原地/非原地成对接口：xxxat_ 直接在 input 上执行并记录依赖、返回 input；
+# xxxat 在副本上执行、返回新张量，input 不变。
+# 每对接口都提供两种执行函数，由 _inplace_oper_at_ 按索引选择：
+# - oper_func：通用路径，基于 ufunc.at，保证花式索引“重复索引累加”的语义；
+# - vector_func：仅用于 index 为 () 的全量操作，走向量化原地运算符
+#   （即 _iadd_full 等），避免 ufunc.at 的逐元素慢路径。
+
+
+@api_registry.register
+def setat_(input:TN, index, val):
+    """原地执行 input[index] = val（覆盖写），返回 input。"""
+    def _set_numpy_item(numpy_arr, index, right_numpy_arr):
+        numpy_arr[index] = right_numpy_arr
+        return numpy_arr
+
+    return _inplace_oper_at_(input, index, val, _set_numpy_item,
+                             _setat_inplace_backward, _iset_full)
+
+
+@api_registry.register
+def setat(input:TN, index, val):
+    """非原地执行 input[index] = val，返回新张量。"""
+    def _set_numpy_item(numpy_arr, index, right_numpy_arr):
+        numpy_arr[index] = right_numpy_arr
+        return numpy_arr
+
+    return _non_inplace_oper_at(input, index, val, _set_numpy_item,
+                                _setat_backward_left, _setat_backward_right)
+
+
+@api_registry.register
+def addat_(input:TN, index, val):
+    """原地执行 input[index] += val（重复索引累加），返回 input。"""
+    arrlib = input._get_array_lib()
+    return _inplace_oper_at_(input, index, val, arrlib.add.at,
+                             _addat_inplace_backward, _iadd_full)
+
+
+@api_registry.register
+def addat(input:TN, index, val):
+    """非原地执行 input[index] += val，返回新张量。"""
+    arrlib = input._get_array_lib()
+    return _non_inplace_oper_at(input, index, val, arrlib.add.at,
+                                _addat_backward_left, _addat_backward_right)
+
+
+@api_registry.register
+def subat_(input:TN, index, val):
+    """原地执行 input[index] -= val（重复索引累加），返回 input。
+
+    cupy 的 subtract.at 支持不完整，故 cupy 分支改用切片原地运算。
+    """
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _subat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] -= right_numpy_arr
+            return numpy_arr
+        oper_func = _subat_numpy_item
+    else:
+        oper_func = np.subtract.at
+    return _inplace_oper_at_(input, index, val, oper_func,
+                             _subat_inplace_backward, _isub_full)
+
+
+@api_registry.register
+def subat(input:TN, index, val):
+    """非原地执行 input[index] -= val，返回新张量。"""
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _subat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] -= right_numpy_arr
+            return numpy_arr
+        oper_func = _subat_numpy_item
+    else:
+        oper_func = np.subtract.at
+    return _non_inplace_oper_at(input, index, val, oper_func,
+                                _subat_backward_left, _subat_backward_right)
+
+
+@api_registry.register
+def mulat_(input:TN, index, val):
+    """原地执行 input[index] *= val（重复索引累加），返回 input。
+
+    反向传播需要操作前的左值，target_copy 会在这里被备份。
+    """
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _mulat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] *= right_numpy_arr
+            return numpy_arr
+        oper_func = _mulat_numpy_item
+    else:
+        oper_func = np.multiply.at
+
+    return _inplace_oper_at_(input, index, val, oper_func,
+                             _mulat_inplace_backward, _imul_full)
+
+
+@api_registry.register
+def mulat(input:TN, index, val):
+    """非原地执行 input[index] *= val，返回新张量。"""
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _mulat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] *= right_numpy_arr
+            return numpy_arr
+        oper_func = _mulat_numpy_item
+    else:
+        oper_func = np.multiply.at
+
+    return _non_inplace_oper_at(input, index, val, oper_func,
+                                _mulat_backward_left, _mulat_backward_right)
+
+
+@api_registry.register
+def divat_(input:TN, index, val):
+    """原地执行 input[index] /= val（重复索引累加），返回 input。
+
+    反向传播需要操作前的左值，target_copy 会在这里被备份。
+    """
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _divat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] /= right_numpy_arr
+            return numpy_arr
+        oper_func = _divat_numpy_item
+    else:
+        oper_func = np.divide.at
+    return _inplace_oper_at_(input, index, val, oper_func,
+                             _divat_inplace_backward, _idiv_full)
+
+
+@api_registry.register
+def divat(input:TN, index, val):
+    """非原地执行 input[index] /= val，返回新张量。"""
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _divat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] /= right_numpy_arr
+            return numpy_arr
+        oper_func = _divat_numpy_item
+    else:
+        oper_func = np.divide.at
+    return _non_inplace_oper_at(input, index, val, oper_func,
+                                _divat_backward_left, _divat_backward_right)
+
+
+@api_registry.register
+def powat_(input:TN, index, val):
+    """原地执行 input[index] **= val（重复索引累加），返回 input。
+
+    反向传播需要操作前的左值，target_copy 会在这里被备份。
+    """
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _powat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] **= right_numpy_arr
+            return numpy_arr
+        oper_func = _powat_numpy_item
+    else:
+        oper_func = np.power.at
+    return _inplace_oper_at_(input, index, val, oper_func,
+                             _powat_inplace_backward, _ipow_full)
+
+
+@api_registry.register
+def powat(input:TN, index, val):
+    """非原地执行 input[index] **= val，返回新张量。"""
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _powat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] **= right_numpy_arr
+            return numpy_arr
+        oper_func = _powat_numpy_item
+    else:
+        oper_func = np.power.at
+    return _non_inplace_oper_at(input, index, val, oper_func,
+                                _powat_backward_left, _powat_backward_right)
+
+
+@api_registry.register
+def floordivat_(input:TN, index, val):
+    """原地执行 input[index] //= val（重复索引累加），返回 input。
+
+    向下取整除法不可导，反向传播与 torch 一致，在 backward 时抛出异常，
+    因此无需备份左值。
+    """
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _floordivat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] //= right_numpy_arr
+            return numpy_arr
+        oper_func = _floordivat_numpy_item
+    else:
+        oper_func = np.floor_divide.at
+    return _inplace_oper_at_(input, index, val, oper_func,
+                             _floordivat_inplace_backward, _ifloordiv_full)
+
+
+@api_registry.register
+def floordivat(input:TN, index, val):
+    """非原地执行 input[index] //= val，返回新张量。"""
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _floordivat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] //= right_numpy_arr
+            return numpy_arr
+        oper_func = _floordivat_numpy_item
+    else:
+        oper_func = np.floor_divide.at
+    return _non_inplace_oper_at(input, index, val, oper_func,
+                                _floordiv_grad_left, _floordiv_grad_right)
+
+
+@api_registry.register
+def modat_(input:TN, index, val):
+    """原地执行 input[index] %= val（重复索引累加），返回 input。
+
+    反向传播需要操作前的左值，target_copy 会在这里被备份。
+    """
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _modat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] %= right_numpy_arr
+            return numpy_arr
+        oper_func = _modat_numpy_item
+    else:
+        oper_func = np.remainder.at
+    return _inplace_oper_at_(input, index, val, oper_func,
+                             _modat_inplace_backward, _imod_full)
+
+
+@api_registry.register
+def modat(input:TN, index, val):
+    """非原地执行 input[index] %= val，返回新张量。"""
+    arrlib = input._get_array_lib()
+    if arrlib == cp:
+        def _modat_numpy_item(numpy_arr, index, right_numpy_arr):
+            numpy_arr[index] %= right_numpy_arr
+            return numpy_arr
+        oper_func = _modat_numpy_item
+    else:
+        oper_func = np.remainder.at
+    return _non_inplace_oper_at(input, index, val, oper_func,
+                                _modat_backward_left, _modat_backward_right)
+
+
+@api_registry.register
+def abs_(x:TN)->TN:
+    """
+    就地取绝对值，等价于 torch.abs_。
+
+    直接修改输入张量的数据并返回它本身。布尔张量、复数张量不支持（与 torch 一致）。
+
+    Args:
+        x (TN): 输入张量
+
+    Returns:
+        TN: 修改后的输入张量（与输入是同一对象）
+
+    Raises:
+        RuntimeError: 如果输入是需要梯度的叶子节点，或复数类型（与 torch 一致）
+        NotImplementedError: 如果输入是布尔类型
+
+    Examples:
+        >>> a = tensor([-1., 2., -3.])
+        >>> abs_(a)  # a 变为 [1., 2., 3.]，返回 a 本身
+    """
+    _require_tn(x, 'abs_')
+    if is_grad_enabled() and x.is_leaf and x.requires_grad:
+        raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
+
+    # torch 的 abs_ 不支持布尔与复数类型
+    if np.issubdtype(x.dtype, np.bool_):
+        raise NotImplementedError("abs_ is not implemented for bool tensors")
+    if np.issubdtype(x.dtype, np.complexfloating):
+        raise RuntimeError("In-place abs is not supported for complex tensors.")
+
+    return _inplace_unary_at_(x, (), _abs_inplace_data, _absat_inplace_backward)
+
+
+@api_registry.register
+def neg_(x)->TN:
+    """
+    就地取负，等价于 torch.neg_。
+
+    直接修改输入张量的数据并返回它本身。布尔张量不支持取负，
+    无符号整型按位宽回绕并保持 dtype（如 uint8 的 -1 得到 255）。
+
+    Args:
+        x (TN): 输入张量
+
+    Returns:
+        TN: 修改后的输入张量（与输入是同一对象）
+
+    Raises:
+        RuntimeError: 如果输入是需要梯度的叶子节点
+        NotImplementedError: 如果输入是布尔类型
+
+    Examples:
+        >>> a = tensor([1., -2.])
+        >>> neg_(a)  # a 变为 [-1., 2.]，返回 a 本身
+    """
+    _require_tn(x, 'neg_')
+    if is_grad_enabled() and x.is_leaf and x.requires_grad:
+        raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
+
+    # 布尔张量取负没有意义，torch 同样不支持；取反请用 ~ 或 bitwise_not()
+    if np.issubdtype(x.dtype, np.bool_):
+        raise NotImplementedError(
+            "Negation, the `-` operator, on a bool tensor is not supported. "
+            "If you are trying to invert a mask, use the `~` or `bitwise_not()` operator instead."
+        )
+
+    # 一元原地运算没有右值，传入空索引表示对整个视图操作（视图索引由
+    # _inplace_unary_at_ 自动合并），无符号整型取负由底层按位宽回绕
+    return _inplace_unary_at_(x, (), _neg_inplace_data, _negat_inplace_backward)
+
+
+# ===========================================================================
+# 8. 索引读写（index_select / masked_select / take / gather / scatter / setitem）
+# ===========================================================================
+
+
+def _graph_contains(var, target):
+    """判断 target 是否出现在 var 的计算图来源中（含 var 自身）。
+
+    仅沿 requires_grad 为 True 的节点遍历：不需要梯度的节点不会继续向上游传播，
+    其祖先也就不参与判断，同时能剪掉大部分无关子图。
+    用 id 记录访问过的节点，避免共享子图重复遍历和潜在环路导致的死循环。
+
+    只在 __setitem__ 无法重放的兜底路径上调用，属于低频操作，不做额外优化。
+    """
+    stack = [var]
+    visited = set()
+    while stack:
+        item = stack.pop()
+        if item is target:
+            return True
+        if id(item) in visited:
+            continue
+        visited.add(id(item))
+        if not item.requires_grad:
+            continue
+        stack.extend(item.fromvars)
+    return False
+
+
+def _is_boolean_index(idx):
+    """检查索引是否为布尔类型索引"""
+    try:
+        if hasattr(idx, 'dtype') and idx.dtype == bool:
+            return True
+        elif isinstance(idx, np.ndarray) and idx.dtype == bool:
+            return True
+        elif isinstance(idx, tuple):
+            return any(_is_boolean_index(i) for i in idx)
+        return False
+    except Exception:
+        return False
+
+
+def _indexes_are_equal(idx1, idx2):
+    """判断两个索引是否表示同一选择，用于确认视图/副本索引与回写索引是否一致。
+
+    只做保守判断：
+    - 布尔索引直接视为不同，避免布尔数组逐元素比较的歧义；
+    - 元组索引逐项比较，数组项用 np.array_equal，任一项不同即返回 False；
+    - 无法比较的类型返回 False，让调用方走更安全的赋值路径。
+    """
+    try:
+        # 跳过布尔索引比较
+        if _is_boolean_index(idx1) or _is_boolean_index(idx2):
+            return False
+
+        if isinstance(idx1, tuple) and isinstance(idx2, tuple):
+            # 元组索引比较
+            if len(idx1) != len(idx2):
+                return False
+            for a, b in zip(idx1, idx2):
+                try:
+                    # 数组类型用逐元素比较，注意不能提前 return，需继续比较剩余元素
+                    if hasattr(a, 'shape') or hasattr(b, 'shape'):
+                        if not np.array_equal(np.asarray(a), np.asarray(b)):
+                            return False
+                        continue
+                    # 简单类型直接比较
+                    if a != b:
+                        return False
+                except Exception:
+                    return False
+            return True
+        elif isinstance(idx1, (int, slice, type(None))) and isinstance(idx2, (int, slice, type(None))):
+            # 单一索引比较
+            return idx1 == idx2
+        else:
+            # 其他类型尝试转换为数组比较
+            try:
+                return bool(np.array_equal(np.asarray(idx1), np.asarray(idx2)))
+            except Exception:
+                return False
+    except Exception:
+        return False
+
+
+def _collect_replay_ops(input, val, index_val):
+    """收集 val 上记录的原地操作，供 __setitem__ 按时间顺序重放到 self。
+
+    场景：a[[0,4]] += 1 时 __getitem__ 返回副本 val，原地操作只改了 val，
+    因此 self 需要“重演”这些操作才能得到相同数据。重演等价于直接在 self 上
+    执行 a[idx] op= 右值，既不改动副本、也不会产生 self 与 val 的循环依赖。
+
+    两个前提缺一不可，否则重演结果与 val 的实际数据不一致：
+    1. val 必须取自同一索引（val._view_index == index_val）；
+    2. 每条原地操作都必须作用于整个副本（stored_index 为 ()）。
+        若副本上做过局部原地操作（如 t[0] += 1），重演需要再合并一层索引，
+        这里不做该推导，直接放弃重演。
+
+    原地操作记录连续插入在计算图首部且“最新在前”，遇到第一条非原地记录即停止；
+    返回的列表同样保持“最新在前”，调用方需 reversed 后按时间顺序执行。
+
+    参数:
+        val: __getitem__ 返回的副本张量。
+        index_val: 本次赋值使用的索引（已规范化为 numpy 索引）。
+
+    返回值:
+        list: [(method_name, right_val), ...]，无可用重放时为空列表
+    """
+    if not _indexes_are_equal(getattr(val, '_view_index', None), index_val):
+        return []
+
+    ops = []
+    for i, func in enumerate(val.gradfuncs):
+        op_name = _INPLACE_AT_METHODS.get(getattr(func, '__name__', ''))
+        if op_name is None:
+            # 原地操作记录连续插入在计算图首部，遇到非原地操作即可停止
+            break
+        parm = val.parms[i]
+        # 原地操作的 parms 为 (target_copy, stored_index)，stored_index 为 ()
+        # 表示该操作作用于整个副本；否则说明副本上还做过局部原地操作
+        if not (isinstance(parm, tuple) and len(parm) >= 2
+                and isinstance(parm[1], tuple) and len(parm[1]) == 0):
+            return []
+        ops.append((op_name, val.fromvars[i]))
+    return ops
+
+
+def _assign_without_cycle(input, index, val):
+    """按数据把 val 写入 self，必要时断开 val 对 self 的计算图依赖。
+
+    用于无法重放的场景，例如：
+    - t = a[[0,4]]; t += 1; a[1:3] = t（索引不一致）；
+    - a[[0,4]] = a[[4,0]]（副本直接回写，没有原地操作记录）。
+
+    直接 setat_ 会让 self.fromvars 包含 val、而 val 的图又包含 self，形成环路。
+    反向传播按“消费者梯度到齐才调度”的方式推进，环内节点互相等待，导致整条
+    链路的梯度都算不出来（不是算错，而是全丢）。因此检测到依赖时先 detach：
+    数据写入仍然正确，只是“副本 → self”这条回传路径被截断。
+
+    注意：detach 只影响该副本回传到 self 的梯度，self 的其他来源（如 x → a）
+    不受影响。这也是本实现与 torch 的已知差异，torch 通过不可变的图节点
+    天然避免该环。
+
+    参数:
+        index: 写入索引
+        val: 要写入的右值张量
+    """
+    if isinstance(val, TN) and val.requires_grad and _graph_contains(val, input):
+        val = val.detach()
+    return setat_(input, index, val)
+
+
+def _compute_to_direct_indices(input:TN, dim:int, index_data:np.ndarray):
+    """
+    计算用于setat、setat_、addat的直接索引，
+    用在gather、scatter、scatter、scatter_scatter中将间接索引转换为直接索引
+    
+    参数:
+        input: gather或scatter操作的张量，用于获取形状信息
+        dim: 要操作的维度索引
+        index_data: 包含索引映射信息的NumPy数组
+    
+    返回:
+        一个元组，包含每个维度的索引数组，用于直接索引目标张量
+    """
+
+    # 获取self和index_data的形状
+    target_shape = input.shape        
+    index_shape = index_data.shape
+
+    # 确保index和self的维度数相同
+    # index张量的维度必须与读取数据的源张量和写入数据的目的张量的维度相同
+    # 用于gather函数时，self是源张量，用于scatter函数时，self是目的张量
+    if index_data.ndim != input.ndim:
+        raise ValueError(f"Dimension mismatch between index and input: index has {index_data.ndim} dimensions, input has {input.ndim} dimensions")
+    
+    # 确保dim在有效范围内
+    if dim >= len(target_shape) or dim < -len(target_shape):
+        raise ValueError(f"Dimension {dim} out of range for tensor of shape {target_shape}")
+ 
+    # 添加对负维度索引的支持
+    if dim < 0:
+        dim = dim + len(target_shape)
+    
+    # 检查索引值是否在有效范围内
+    if np.any(index_data < 0) or np.any(index_data >= target_shape[dim]):
+        raise IndexError(f"Index value out of range [0, {target_shape[dim]}-1]")
+
+    # 使用np.indices一次性创建所有网格索引（使用numpy即可，索引值不依赖于设备）
+    grid_indices = np.indices(index_shape)
+    
+    # 为每个维度创建索引
+    direct_indices = []
+    
+    # 处理与index_data维度对应的部分
+    for i in range(len(index_shape)):
+        if i == dim and dim < len(index_shape):
+            # 如果dim在index的维度范围内，使用index_data的值
+            direct_indices.append(index_data)
+        else:
+            # 否则使用网格索引
+            direct_indices.append(grid_indices[i])
+    
+    # 处理目标张量维度大于index_data的情况 - 简化版本
+    for i in range(len(index_shape), len(target_shape)):
+        # 对于额外维度，直接使用全0索引（使用numpy即可）
+        # 这与gather函数原始实现保持一致
+        direct_indices.append(np.zeros(index_shape, dtype=np.int64))
+    
+    return tuple(direct_indices)
+# end of _compute_direct_indices
+
+
+@api_registry.register
+def setitem(input: TN, index, val):
+    """
+    原地赋值入口，负责 a[index] = val 以及 Python 展开后的 a[index] op= val。
+
+    `a[index] op= val` 在 Python 中会拆成三步：
+    1. temp = a.__getitem__(index)：基本切片得到视图，整数/花式索引得到副本；
+    2. temp op= val：原地操作只作用于 temp；若 temp 是视图，_inplace_oper_at_
+        会合并索引后重定向到 a 上直接执行，此时 a 的数据已被改写；
+    3. a.__setitem__(index, temp)：把结果落回 a，即本函数。
+
+    按 temp 的形态分四种处理：
+    - 右值不是张量：直接 setat_；
+    - 张量但 _base 不是 self：直接 setat_，不涉及原地操作语义；
+    - 视图且索引一致（场景 A）：第 2 步已改写 a，直接返回 self；
+    - 副本（场景 B）：第 2 步只改了副本，需要把副本上的原地操作重放到 a。
+
+    重放依赖两个前提：副本取自同一索引、且所有原地操作都作用于整个副本；
+    否则退化为按数据赋值（_assign_without_cycle）。这样数据始终正确，代价是
+    不可重放的场景中“副本 → self”这条梯度路径会被切断。
+
+    参数:
+        input: 目标张量
+        index: 索引，可以是切片、整数、数组等
+        val: 右值，可能是张量或标量
+    """
+    # 1. 叶子节点检查：所有原地操作都需要这个检查
+    # 叶子节点是计算图的起点，直接修改会破坏梯度追踪
+    if is_grad_enabled() and input.is_leaf and input.requires_grad:
+        raise RuntimeError('a leaf Variable that requires grad is being used in an in-place operation.')
+
+    # 2. 快速路径：简单赋值（右值不是张量，没有 _is_view 属性）
+    if not hasattr(val, '_is_view'):
+        return input.setat_(index, val)
+
+    # 3. 快速路径：视图但基础不是 self（来自其他张量的视图）
+    if val._base is not input:
+        return input.setat_(index, val)
+
+    # 4. 复杂原地操作场景：视图且基础是 self
+    # 这种情况发生在 a[index] += b 这样的原地操作中
+    # val 是通过 a.__getitem__(index) 创建的临时张量
+    index_val = _convert_TNindex_to_numpy(index)
+
+    # 根据 val 是否是视图，分两种情况处理：
+    # 
+    # 场景 A：val 是视图（如切片索引 a[0:3] += 1）
+    # - __getitem__ 返回的视图与 self 共享内存
+    # - 原地操作已在 _inplace_oper_at_ 中被重定向到 self 上执行
+    # - 这里只需检查索引匹配，直接返回
+    #
+    # 场景 B：val 不是视图（如整数数组索引 a[[0,4]] += 1）
+    # - __getitem__ 返回的是副本，不共享内存
+    # - 原地操作只修改了 val 的数据，self 的数据未变
+    # - 需要将 val 中记录的原地操作应用到 self 上
+    if val._is_view:
+        # 场景 A：视图对象
+        # 检查 val 的视图索引与当前索引是否一致
+        # 使用 _indexes_are_equal 安全比较（处理布尔数组等复杂索引）
+        if _indexes_are_equal(val._view_index, index_val):
+            # 索引匹配，原地操作已在 self 上执行，直接返回
+            return input
+        return _assign_without_cycle(input, index, val)
+
+    # 场景 B：非视图对象（如整数数组索引 a[[0,4]] += 1）
+    # 副本记录着它相对 self 做过的原地操作，按时间顺序全部重放即可完整还原数据，
+    # 且不会在计算图中引入环路。重放的成立条件是：副本取自同一索引，且所有
+    # 原地操作都作用于整个副本（见 _collect_replay_ops）。
+    replay_ops = _collect_replay_ops(input, val, index_val)
+    if replay_ops:
+        # 记录按“最新在前”存放，重放必须按“最早在前”的顺序执行
+        for op_name, right_val in reversed(replay_ops):
+            getattr(input, op_name)(index_val, right_val)
+        return input
+
+    # 无法安全重放：按数据赋值。若副本的计算图依赖 self，需先断开环路，
+    # 否则 self 与副本互相引用，反向传播无法收敛（梯度会整体丢失）。
+    return _assign_without_cycle(input, index, val)
+
+
+@api_registry.register
 def index_select(input: TN, dim: int, index: TN, *, out = None) -> TN:
     """
     沿指定维度按索引选择元素，与 torch.index_select 语义一致
@@ -2883,7 +4076,7 @@ def index_select(input: TN, dim: int, index: TN, *, out = None) -> TN:
     return _apply_out(out, result, (input,), "index_select")
 
 
-@api_registry.register('masked_select')
+@api_registry.register
 def masked_select(input: TN, mask: TN, *, out = None) -> TN:
     """
     按布尔掩码选择元素，与 torch.masked_select 语义一致
@@ -2908,7 +4101,7 @@ def masked_select(input: TN, mask: TN, *, out = None) -> TN:
     return _apply_out(out, result, (input,), "masked_select")
 
 
-@api_registry.register('take')
+@api_registry.register
 def take(input: TN, index: TN) -> TN:
     """
     按扁平化后的下标选择元素，与 torch.take 语义一致
@@ -2937,7 +4130,7 @@ def take(input: TN, index: TN) -> TN:
     return result
 
 
-@api_registry.register('index_put_')
+@api_registry.register
 def index_put_(input, indices, values, accumulate: bool = False) -> 'TN':
     """
     按索引把 values 写入当前张量（原地操作），与 torch.Tensor.index_put_ 语义一致
@@ -2969,106 +4162,39 @@ def index_put_(input, indices, values, accumulate: bool = False) -> 'TN':
     return input.setat_(indices, values)
 
 
-@api_registry.register('scatter')
-def scatter(input, dim, index, src=None, *, value=None):
+@api_registry.register
+def gather(input: TN, dim: int, index: TN, *, sparse_grad: bool = False, out = None) -> TN:
     """
-    将值按照index指定的位置填充到与self同形状的一个新张量中
-    
+    沿指定维度收集元素，与 torch.gather 语义一致
+
     参数:
-        dim: 沿着哪个维度进行索引
-        index: 索引张量
-        src: 源张量，提供要填充的值，与value参数互斥；当为标量且value未提供时，视为value参数
-        value: 标量值（命名参数），提供要填充的值，与src参数互斥
-    
+        input: 源张量
+        dim: 收集维度，支持负维度
+        index: 索引张量，维数须与 input 相同，dtype 会被规范化为 int64
+        sparse_grad: 是否产生稀疏梯度；Riemann 暂不支持，仅允许 False
+        out: 可选的输出张量，形状须与结果一致
+
     返回:
-        新的填充后的张量
+        形状与 index 相同的新张量
+
+    注意: 当使用out参数时，不支持自动微分
     """
-    
-    # 标记value是否来自非命名参数
-    is_positional_value = False
-    
+    if sparse_grad:
+        raise NotImplementedError("gather(): sparse_grad=True is not supported")
+
     arrlib = input._get_array_lib()
-    dev = input.device
+    index_data = index._array.astype(arrlib.int64)
+    result = input[_compute_to_direct_indices(input, dim, index_data)]
 
-    # 处理非命名参数作为value的情况
-    # 如果src是标量且value未提供，则将src视为value参数
-    if src is not None and value is None:
-        # 检查非命名参数是否为有效的标量类型
-        positional_scalar_types = (int, float, complex)
-        # 检查是否为numpy标量
-        is_numpy_scalar = hasattr(src, 'dtype') and arrlib.isscalar(src)
-        
-        if isinstance(src, positional_scalar_types) or is_numpy_scalar:
-            value = src
-            src = None
-            is_positional_value = True
-    
-    # 检查参数互斥性
-    if src is not None and value is not None:
-        raise ValueError("src and value parameters are mutually exclusive, please provide only one")
-    
-    if src is None and value is None:
-        raise ValueError("Either src or value parameter must be provided")
-    
-    # 检查value参数类型
-    if value is not None:
-        if is_positional_value:
-            # 非命名参数时的类型检查：仅限int、float、complex、numpy标量
-            positional_scalar_types = (int, float, complex)
-            is_numpy_scalar = hasattr(value, 'dtype') and arrlib.isscalar(value)
-            
-            if not (isinstance(value, positional_scalar_types) or is_numpy_scalar):
-                raise TypeError(f"Positional value must be a scalar (int, float, complex, numpy scalar), got {type(value).__name__}")
-        else:
-            # 命名参数时的类型检查：int、float、complex、numpy标量、TN标量
-            named_scalar_types = (int, float, complex)
-            is_numpy_scalar = hasattr(value, 'dtype') and arrlib.isscalar(value)
-            is_TN_scalar = isinstance(value, TN) and value.ndim == 0
-            
-            if not (isinstance(value, named_scalar_types) or is_numpy_scalar or is_TN_scalar):
-                raise TypeError(f"Named value must be a scalar (int, float, complex, numpy scalar, TN scalar), got {type(value).__name__}")
-    
-    # 统一将index转换为int64的TN张量（已是int64且同设备的TN会直接返回原对象）
-    index = as_tensor(index, dtype=int64, device=dev)
-    
-    # 确保dim是有效的维度
-    if dim < 0:
-        dim += input.ndim
-    if dim < 0 or dim >= input.ndim:
-        raise IndexError(f"Dimension out of range (expected to be in range of [{-input.ndim}, {input.ndim-1}], got {dim})")
-    
-    # 确保index和self的维度数相同
-    if index.ndim != input.ndim:
-        raise ValueError(f"Dimension mismatch between index and input: index has {index.ndim} dimensions, input has {input.ndim} dimensions")
-    
-    # 处理src参数
-    if src is not None:
-        # 将src转换为TN张量（如果它不是）
-        if not isinstance(src, TN):
-            src = as_tensor(src, dtype=input.dtype, device=dev)
-        
-        # 确保src和self的dtype相同
-        if src.dtype != input.dtype:
-            raise RuntimeError(f"scatter(): Expected input.dtype to be equal to src.dtype")
-
-        # 确保src和index的形状相同
-        if src.shape != index.shape:
-            raise ValueError(f"Shape mismatch between index and src: index has shape {index.shape}, src has shape {src.shape}")
-        
-        fill_value = src
-    else:  # 使用value参数
-        # 创建与index形状相同的张量，填充value值
-        fill_value = full_like(index, value, dtype=input.dtype, device=dev)            
-
-    # 计算直接索引
-    full_index = _compute_to_direct_indices(input, dim, index._array)
-    
-    # 使用setat进行赋值
-    return input.setat(full_index, fill_value)
-# end of scatter
+    return _apply_out(out, result, (input,), "gather")
 
 
-@api_registry.register('scatter_')
+# 启用optimize路径（tensordot/BLAS加速）的最小操作数元素数阈值：
+# 低于该值时einsum_path计算开销（约30us）超过BLAS收益
+_EINSUM_OPTIMIZE_MIN_ELEMS = 4096
+
+
+@api_registry.register
 def scatter_(input, dim, index, src=None, *, value=None):
     """
     将值按照index指定的位置原地填充到张量self中
@@ -3170,39 +4296,67 @@ def scatter_(input, dim, index, src=None, *, value=None):
 # end of scatter_
 
 
-@api_registry.register('scatter_add')
-def scatter_add(input, dim, index, src):
+@api_registry.register
+def scatter(input, dim, index, src=None, *, value=None):
     """
-    将src中的值按照index指定的位置累加到与self同形状的新张量中
+    将值按照index指定的位置填充到与self同形状的一个新张量中
     
     参数:
-        dim: 沿着张量src的哪个维度进行索引
-        index: 索引张量，形状必须与src（如果是张量）兼容，维度数必须与self相同
-        src: 源张量或标量，提供要累加的值
+        dim: 沿着哪个维度进行索引
+        index: 索引张量
+        src: 源张量，提供要填充的值，与value参数互斥；当为标量且value未提供时，视为value参数
+        value: 标量值（命名参数），提供要填充的值，与src参数互斥
     
     返回:
-        原地修改后的张量（input）
+        新的填充后的张量
     """
+    
+    # 标记value是否来自非命名参数
+    is_positional_value = False
+    
+    arrlib = input._get_array_lib()
     dev = input.device
+
+    # 处理非命名参数作为value的情况
+    # 如果src是标量且value未提供，则将src视为value参数
+    if src is not None and value is None:
+        # 检查非命名参数是否为有效的标量类型
+        positional_scalar_types = (int, float, complex)
+        # 检查是否为numpy标量
+        is_numpy_scalar = hasattr(src, 'dtype') and arrlib.isscalar(src)
+        
+        if isinstance(src, positional_scalar_types) or is_numpy_scalar:
+            value = src
+            src = None
+            is_positional_value = True
+    
+    # 检查参数互斥性
+    if src is not None and value is not None:
+        raise ValueError("src and value parameters are mutually exclusive, please provide only one")
+    
+    if src is None and value is None:
+        raise ValueError("Either src or value parameter must be provided")
+    
+    # 检查value参数类型
+    if value is not None:
+        if is_positional_value:
+            # 非命名参数时的类型检查：仅限int、float、complex、numpy标量
+            positional_scalar_types = (int, float, complex)
+            is_numpy_scalar = hasattr(value, 'dtype') and arrlib.isscalar(value)
+            
+            if not (isinstance(value, positional_scalar_types) or is_numpy_scalar):
+                raise TypeError(f"Positional value must be a scalar (int, float, complex, numpy scalar), got {type(value).__name__}")
+        else:
+            # 命名参数时的类型检查：int、float、complex、numpy标量、TN标量
+            named_scalar_types = (int, float, complex)
+            is_numpy_scalar = hasattr(value, 'dtype') and arrlib.isscalar(value)
+            is_TN_scalar = isinstance(value, TN) and value.ndim == 0
+            
+            if not (isinstance(value, named_scalar_types) or is_numpy_scalar or is_TN_scalar):
+                raise TypeError(f"Named value must be a scalar (int, float, complex, numpy scalar, TN scalar), got {type(value).__name__}")
     
     # 统一将index转换为int64的TN张量（已是int64且同设备的TN会直接返回原对象）
     index = as_tensor(index, dtype=int64, device=dev)
-    
-    # 处理src为标量的情况        
-    # src参数的类型检查：int、float、complex、numpy标量、TN标量
-    if is_scalar(src):
-        src = full_like(index, src, dtype=input.dtype, device=dev)
-
-    if not isinstance(src,TN):
-        src = as_tensor(src, dtype=input.dtype, device=dev)
-
-    # 确保src和self的dtype相同
-    if src.dtype != input.dtype:
-        raise RuntimeError(f"scatter_add_(): Expected input.dtype to be equal to src.dtype")
-
-    # 对于张量，确保形状与index相同
-    if src.shape != index.shape:
-        raise ValueError(f"Shape mismatch between index and src: index has shape {index.shape}, src has shape {src.shape}")
     
     # 确保dim是有效的维度
     if dim < 0:
@@ -3213,16 +4367,35 @@ def scatter_add(input, dim, index, src):
     # 确保index和self的维度数相同
     if index.ndim != input.ndim:
         raise ValueError(f"Dimension mismatch between index and input: index has {index.ndim} dimensions, input has {input.ndim} dimensions")
-            
+    
+    # 处理src参数
+    if src is not None:
+        # 将src转换为TN张量（如果它不是）
+        if not isinstance(src, TN):
+            src = as_tensor(src, dtype=input.dtype, device=dev)
+        
+        # 确保src和self的dtype相同
+        if src.dtype != input.dtype:
+            raise RuntimeError(f"scatter(): Expected input.dtype to be equal to src.dtype")
+
+        # 确保src和index的形状相同
+        if src.shape != index.shape:
+            raise ValueError(f"Shape mismatch between index and src: index has shape {index.shape}, src has shape {src.shape}")
+        
+        fill_value = src
+    else:  # 使用value参数
+        # 创建与index形状相同的张量，填充value值
+        fill_value = full_like(index, value, dtype=input.dtype, device=dev)            
+
     # 计算直接索引
     full_index = _compute_to_direct_indices(input, dim, index._array)
     
-    # 直接调用原地操作的addat_函数
-    return input.addat(full_index, src)
-# end of scatter_add
+    # 使用setat进行赋值
+    return input.setat(full_index, fill_value)
+# end of scatter
 
 
-@api_registry.register('scatter_add_')
+@api_registry.register
 def scatter_add_(input, dim, index, src):
     """
     将src中的值按照index指定的位置原地累加到self张量中
@@ -3278,97 +4451,766 @@ def scatter_add_(input, dim, index, src):
 # end of scatter_add_
 
 
-def _compute_to_direct_indices(input:TN, dim:int, index_data:np.ndarray):
+@api_registry.register
+def scatter_add(input, dim, index, src):
     """
-    计算用于setat、setat_、addat的直接索引，
-    用在gather、scatter、scatter、scatter_scatter中将间接索引转换为直接索引
+    将src中的值按照index指定的位置累加到与self同形状的新张量中
     
     参数:
-        input: gather或scatter操作的张量，用于获取形状信息
-        dim: 要操作的维度索引
-        index_data: 包含索引映射信息的NumPy数组
+        dim: 沿着张量src的哪个维度进行索引
+        index: 索引张量，形状必须与src（如果是张量）兼容，维度数必须与self相同
+        src: 源张量或标量，提供要累加的值
     
     返回:
-        一个元组，包含每个维度的索引数组，用于直接索引目标张量
+        原地修改后的张量（input）
     """
-
-    # 获取self和index_data的形状
-    target_shape = input.shape        
-    index_shape = index_data.shape
-
-    # 确保index和self的维度数相同
-    # index张量的维度必须与读取数据的源张量和写入数据的目的张量的维度相同
-    # 用于gather函数时，self是源张量，用于scatter函数时，self是目的张量
-    if index_data.ndim != input.ndim:
-        raise ValueError(f"Dimension mismatch between index and input: index has {index_data.ndim} dimensions, input has {input.ndim} dimensions")
+    dev = input.device
     
-    # 确保dim在有效范围内
-    if dim >= len(target_shape) or dim < -len(target_shape):
-        raise ValueError(f"Dimension {dim} out of range for tensor of shape {target_shape}")
- 
-    # 添加对负维度索引的支持
+    # 统一将index转换为int64的TN张量（已是int64且同设备的TN会直接返回原对象）
+    index = as_tensor(index, dtype=int64, device=dev)
+    
+    # 处理src为标量的情况        
+    # src参数的类型检查：int、float、complex、numpy标量、TN标量
+    if is_scalar(src):
+        src = full_like(index, src, dtype=input.dtype, device=dev)
+
+    if not isinstance(src,TN):
+        src = as_tensor(src, dtype=input.dtype, device=dev)
+
+    # 确保src和self的dtype相同
+    if src.dtype != input.dtype:
+        raise RuntimeError(f"scatter_add_(): Expected input.dtype to be equal to src.dtype")
+
+    # 对于张量，确保形状与index相同
+    if src.shape != index.shape:
+        raise ValueError(f"Shape mismatch between index and src: index has shape {index.shape}, src has shape {src.shape}")
+    
+    # 确保dim是有效的维度
     if dim < 0:
-        dim = dim + len(target_shape)
+        dim += input.ndim
+    if dim < 0 or dim >= input.ndim:
+        raise IndexError(f"Dimension out of range (expected to be in range of [{-input.ndim}, {input.ndim-1}], got {dim})")
     
-    # 检查索引值是否在有效范围内
-    if np.any(index_data < 0) or np.any(index_data >= target_shape[dim]):
-        raise IndexError(f"Index value out of range [0, {target_shape[dim]}-1]")
-
-    # 使用np.indices一次性创建所有网格索引（使用numpy即可，索引值不依赖于设备）
-    grid_indices = np.indices(index_shape)
+    # 确保index和self的维度数相同
+    if index.ndim != input.ndim:
+        raise ValueError(f"Dimension mismatch between index and input: index has {index.ndim} dimensions, input has {input.ndim} dimensions")
+            
+    # 计算直接索引
+    full_index = _compute_to_direct_indices(input, dim, index._array)
     
-    # 为每个维度创建索引
-    direct_indices = []
-    
-    # 处理与index_data维度对应的部分
-    for i in range(len(index_shape)):
-        if i == dim and dim < len(index_shape):
-            # 如果dim在index的维度范围内，使用index_data的值
-            direct_indices.append(index_data)
-        else:
-            # 否则使用网格索引
-            direct_indices.append(grid_indices[i])
-    
-    # 处理目标张量维度大于index_data的情况 - 简化版本
-    for i in range(len(index_shape), len(target_shape)):
-        # 对于额外维度，直接使用全0索引（使用numpy即可）
-        # 这与gather函数原始实现保持一致
-        direct_indices.append(np.zeros(index_shape, dtype=np.int64))
-    
-    return tuple(direct_indices)
-# end of _compute_direct_indices
+    # 直接调用原地操作的addat_函数
+    return input.addat(full_index, src)
+# end of scatter_add
 
 
-@api_registry.register('gather')
-def gather(input: TN, dim: int, index: TN, *, sparse_grad: bool = False, out = None) -> TN:
+# ===========================================================================
+# 9. 形状变换与拼接（split / stack / concatenate / unfold / fold / repeat）
+# ===========================================================================
+
+
+def _split_backward(result_tensor: TN, i: int) -> TN:
+    split_sizes, dim, split_pos = result_tensor.parms[i]
+    parent = result_tensor.fromvars[i]
+    
+    grad = zeros_like(parent)
+
+    # 计算起始和结束位置
+    start = builtins.sum(split_sizes[:split_pos]) if split_pos > 0 else 0
+    end = start + split_sizes[split_pos]
+    
+    # 累加归一化后的梯度
+    slice_obj = [slice(None)] * parent._array.ndim
+    slice_obj[dim] = slice(int(start), int(end))
+    grad[tuple(slice_obj)] = result_tensor.grad_value
+    
+    return grad
+
+
+def _split_with_indices(input: TN, indices_or_sections, dim: int) -> tuple[TN, ...]:
     """
-    沿指定维度收集元素，与 torch.gather 语义一致
+    内部函数：使用 numpy 风格的语义分割张量。
+
+    该函数根据 `indices_or_sections` 的类型决定分割方式：
+    - 当 `indices_or_sections` 为整数时，表示将张量分割成 N 段。如果维度大小不能被 N 整除，
+      最后一段将包含剩余的元素。
+    - 当 `indices_or_sections` 为列表时，表示在指定的索引位置进行分割。
+
+    参数：
+        input (TN): 输入的 TN 张量。
+        indices_or_sections (int | list): 分割参数。
+            - int: 分割的段数。
+            - list: 分割点的索引列表。
+        dim (int): 进行分割的维度。默认为 0。
+
+    返回：
+        tuple[TN, ...]: 包含分割后子张量的元组。
+
+    示例：
+        >>> # 按段数分割
+        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])
+        >>> _split_with_indices(x, 2, dim=1)
+        (tensor([[1, 2], [5, 6]]), tensor([[3, 4], [7, 8]]))
+        >>>
+        >>> # 按索引分割
+        >>> _split_with_indices(x, [1, 3], dim=1)
+        (tensor([[1], [5]]), tensor([[2, 3], [6, 7]]), tensor([[4], [8]]))
+    """
+    arrlib = input._get_array_lib()
+    
+    if isinstance(indices_or_sections, int):
+        # 整数：分割成 N 段
+        n_sections = indices_or_sections
+        if n_sections <= 0:
+            raise ValueError(f"number of sections must be positive, got {n_sections}")
+        split_data = arrlib.array_split(input._array, n_sections, axis=dim)
+    else:
+        # 列表：分割点索引
+        split_points = list(indices_or_sections)
+        if len(split_points) == 0:
+            split_data = [input._array]
+        else:
+            split_data = arrlib.split(input._array, split_points, axis=dim)
+    
+    # 从分割结果计算每段的大小（用于反向传播）
+    split_sizes = [s.shape[dim] for s in split_data]
+    
+    # 创建子张量列表（保留计算图）
+    sub_tensors = []
+    for i, data in enumerate(split_data):
+        subt = TN(data, requires_grad=(is_grad_enabled() and input.requires_grad))
+        
+        # 记录计算图信息
+        if input.requires_grad:
+            subt.fromvars = (input,)
+            subt.parms = ((split_sizes, dim, i),)
+            subt.gradfuncs = (_split_backward,)
+        
+        sub_tensors.append(subt)
+    
+    return tuple(sub_tensors)
+
+
+def split(input: TN, split_size_or_sections, dim: int = 0) -> tuple[TN, ...]:
+    """
+    沿指定轴分割TN张量，支持计算图记录和梯度反向传播
+    
+    参数：
+        input: 输入TN张量
+        split_size_or_sections: 
+            - 整数：每段的大小（最后一段可能较小）
+            - 列表：每段的大小列表，总和必须等于该维度大小
+        dim: 分割轴（默认0）
+    
+    返回：
+        tuple[TN, ...]: 分割后的张量元组
+    
+    示例：
+        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])  # shape (2, 4)
+        >>> rm.split(x, 2, dim=1)  # 每段大小为2
+        (tensor([[1, 2], [5, 6]]), tensor([[3, 4], [7, 8]]))
+        >>> rm.split(x, [1, 3], dim=1)  # 段大小为[1, 3]
+        (tensor([[1], [5]]), tensor([[2, 3, 4], [6, 7, 8]]))
+    """
+    dim_size = input.shape[dim]
+    
+    if isinstance(split_size_or_sections, int):
+        # 整数：每段的大小，转换为分割点
+        section_size = split_size_or_sections
+        if section_size <= 0:
+            raise ValueError(f"split_size_or_sections must be positive, got {section_size}")
+        # 计算分割点
+        split_points = list(range(section_size, dim_size, section_size))
+    else:
+        # 列表：每段的大小，转换为分割点
+        split_sizes = list(split_size_or_sections)
+        total_size = builtins.sum(split_sizes)
+        if total_size != dim_size:
+            raise ValueError(f"sum of split sections ({total_size}) must equal dimension size ({dim_size})")
+        # 计算分割点（累积和）
+        split_points = list(accumulate(split_sizes[:-1]))
+    
+    # 使用 _split_with_indices 进行分割
+    return _split_with_indices(input, split_points, dim)
+
+
+def vsplit(input: TN, indices_or_sections):
+    """
+    垂直分割（沿 dim=0），将张量分割为多个子张量
+    
+    参数：
+        input: 输入张量，至少2维
+        indices_or_sections: 
+            - 整数：分割成 N 段
+            - 列表：分割点索引列表
+    
+    示例：
+        >>> x = rm.tensor([[1, 2], [3, 4], [5, 6], [7, 8]])  # shape (4, 2)
+        >>> rm.vsplit(x, 2)  # 分割成 2 段
+        (tensor([[1, 2], [3, 4]]), tensor([[5, 6], [7, 8]]))
+        >>> rm.vsplit(x, [1, 3])  # 在索引 1 和 3 处分割
+        (tensor([[1, 2]]), tensor([[3, 4], [5, 6]]), tensor([[7, 8]]))
+    """
+    return _split_with_indices(input, indices_or_sections, dim=0)
+
+
+def hsplit(input: TN, indices_or_sections):
+    """
+    水平分割（沿 dim=1），将张量分割为多个子张量
+    
+    参数：
+        input: 输入张量，至少2维
+        indices_or_sections: 
+            - 整数：分割成 N 段
+            - 列表：分割点索引列表
+    
+    示例：
+        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8]])  # shape (2, 4)
+        >>> rm.hsplit(x, 2)  # 分割成 2 段
+        (tensor([[1, 2], [5, 6]]), tensor([[3, 4], [7, 8]]))
+    """
+    return _split_with_indices(input, indices_or_sections, dim=1)
+
+
+def dsplit(input: TN, indices_or_sections):
+    """
+    深度分割（沿 dim=2），将张量分割为多个子张量
+    
+    参数：
+        input: 输入张量，至少3维
+        indices_or_sections: 
+            - 整数：分割成 N 段
+            - 列表：分割点索引列表
+    
+    示例：
+        >>> x = rm.tensor(np.random.randn(2, 3, 6))  # shape (2, 3, 6)
+        >>> rm.dsplit(x, 3)  # 分割成 3 段
+        # 返回 3 个 shape 为 (2, 3, 2) 的张量
+    """
+    return _split_with_indices(input, indices_or_sections, dim=2)
+
+
+def tensor_split(input: TN, indices_or_sections, dim: int = 0) -> tuple[TN, ...]:
+    """
+    将张量沿指定维度分割为多个子张量。
+
+    该函数根据 `indices_or_sections` 的类型决定分割方式：
+    - 当 `indices_or_sections` 为整数时，表示将张量分割成 N 段。如果维度大小不能被 N 整除，
+      前 `size % N` 个段的大小为 `size // N + 1`，其余段的大小为 `size // N`。
+    - 当 `indices_or_sections` 为列表时，表示在指定的索引位置进行分割。
+
+    参数：
+        input (TN): 输入的 TN 张量。
+        indices_or_sections (int | list): 分割参数。
+            - int: 分割的段数。
+            - list: 分割点的索引列表。
+        dim (int): 进行分割的维度。默认为 0。
+
+    返回：
+        tuple[TN, ...]: 包含分割后子张量的元组。
+
+    示例：
+        >>> x = rm.tensor([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]])  # shape (3, 4)
+        >>> # 按段数分割
+        >>> tensor_split(x, 3, dim=0)
+        (tensor([[1, 2, 3, 4]]), tensor([[5, 6, 7, 8]]), tensor([[9, 10, 11, 12]]))
+        >>> # 按索引分割
+        >>> tensor_split(x, [1, 2], dim=0)
+        (tensor([[1, 2, 3, 4]]), tensor([[5, 6, 7, 8]]), tensor([[9, 10, 11, 12]]))
+    """
+    return _split_with_indices(input, indices_or_sections, dim)
+
+
+def _stack_backward(result_tensor: TN, i: int) -> TN:
+    dim = result_tensor.parms[i]
+    grad = result_tensor.grad_value
+    slices = [slice(None)] * grad._array.ndim
+    slices[dim] = i  # type: ignore
+    return grad[tuple(slices)]
+
+
+@api_registry.register
+def stack(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
+    """沿新维度堆叠张量"""
+    arrlib = tensors[0]._get_array_lib()
+    data = arrlib.stack([t._array for t in tensors], axis=dim)
+    
+    # 梯度需求判断优化为any()
+    requires_grad = (is_grad_enabled() and builtins.any(t.requires_grad for t in tensors))
+    
+    ret = TN(data, requires_grad=requires_grad)
+    
+    if requires_grad:
+        ret.fromvars = tuple(tensors)  # 确保tuple类型
+        num = len(tensors)
+        ret.parms = (dim,) * num
+        ret.gradfuncs = (_stack_backward,) * num
+    
+    return ret
+
+
+def _concatenate_backward(result_tensor: TN, i: int) -> TN:
+    dim = result_tensor.parms[i]
+    grad_data = result_tensor.grad_value
+    
+    # 获取所有输入张量在拼接轴上的尺寸
+    split_sizes = [t._array.shape[dim] for t in result_tensor.fromvars]
+    
+    # 使用Python内置的accumulate函数计算累积和，避免不必要的数组转换
+    split_points = list(accumulate(split_sizes[:-1])) if len(split_sizes) > 1 else []
+    
+    try:
+        # 使用 _split_with_indices 进行分割（numpy风格语义）
+        grads = _split_with_indices(grad_data, split_points, dim=dim)
+        return grads[i]
+    
+    except ValueError as e:
+        raise RuntimeError(f"梯度分割失败: {e}") from None
+
+
+def concatenate(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
+    """沿指定轴连接张量"""
+    arrlib = tensors[0]._get_array_lib()
+    data = arrlib.concatenate([t._array for t in tensors], axis=dim)
+    
+    requires_grad = (is_grad_enabled() and builtins.any(t.requires_grad for t in tensors))
+    
+    ret = TN(data, requires_grad=requires_grad)
+    
+    if requires_grad:
+        ret.fromvars = tuple(tensors)  # 确保tuple类型
+        num = len(tensors)
+        ret.parms = (dim,) * num
+        ret.gradfuncs = (_concatenate_backward,) * num
+    
+    return ret
+
+
+def cat(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
+    return concatenate(tensors, dim)
+
+
+def vstack(tensors: tuple[TN, ...]|list[TN]) -> TN:
+    """垂直堆叠张量
+    
+    对于一维张量，将它们作为行堆叠（创建二维数组）；
+    对于多维张量，沿第0轴（行方向）连接。
+    """
+
+    # 检查是否所有张量都是0D的
+    all_0d = all(t.ndim == 0 for t in tensors)
+
+    # 检查是否所有张量都是一维的
+    all_1d = all(t.ndim == 1 for t in tensors)
+    if all_0d:
+        # 对于0D张量，添加新维度后沿第0轴连接
+        expanded_tensors = [t._reshape((1, 1)) for t in tensors]
+        return concatenate(expanded_tensors, dim=0)
+    elif all_1d:
+        # 对于一维张量，添加新维度后沿第0轴连接
+        # 这样可以利用concatenate的梯度跟踪能力
+        expanded_tensors = [t._reshape((1, -1)) for t in tensors]
+        return concatenate(expanded_tensors, dim=0)
+    else:
+        # 对于多维张量，沿第0轴连接
+        return concatenate(tensors, dim=0)
+
+
+def hstack(tensors: tuple[TN, ...]|list[TN]) -> TN:
+    """水平堆叠张量
+    
+    对于一维张量，水平连接成一维数组；
+    对于多维张量，沿第1轴（列方向）连接。
+    """
+    # 检查是否所有张量都是0D的
+    all_0d = all(t.ndim == 0 for t in tensors)
+
+    # 检查是否所有张量都是一维的
+    all_1d = all(t.ndim == 1 for t in tensors)
+    if all_0d:
+        # 对于0D张量，添加新维度后沿第0轴连接
+        expanded_tensors = [t._reshape((1,)) for t in tensors]
+        return concatenate(expanded_tensors, dim=0)
+    elif all_1d:
+        # 对于一维张量，沿第0轴连接（水平堆叠）
+        return concatenate(tensors, dim=0)
+    else:
+        # 对于多维张量，沿第1轴连接
+        return concatenate(tensors, dim=1)
+
+
+def dstack(tensors):
+    """
+    深度堆叠（沿第三维）
+    
+    根据输入张量的维度自动处理：
+    - 1D 张量 (N,) -> reshape 为 (1, N, 1)，然后沿第2维堆叠
+    - 2D 张量 (M, N) -> reshape 为 (M, N, 1)，然后沿第2维堆叠  
+    - 3D+ 张量 (M, N, P, ...) -> 沿第2维拼接
+    
+    参数：
+        tensors: 张量列表
+    
+    返回：
+        堆叠后的张量
+    """
+    if not tensors:
+        raise ValueError("dstack requires at least one tensor")
+    
+    # 获取第一个张量的维度数
+    first_tensor = tensors[0]
+    ndim = first_tensor.ndim
+    
+    if ndim == 1:
+        # 1D: (N,) -> (1, N, 1)，然后沿第2维堆叠
+        reshaped = [t.reshape((1, -1, 1)) for t in tensors]
+        return concatenate(reshaped, dim=2)
+    elif ndim == 2:
+        # 2D: (M, N) -> (M, N, 1)，然后沿第2维堆叠
+        reshaped = [t.reshape((*t.shape, 1)) for t in tensors]
+        return concatenate(reshaped, dim=2)
+    else:
+        # 3D+: 沿第2维拼接
+        return concatenate(tensors, dim=2)
+
+
+@api_registry.register
+def unfold(tensor_obj: TN, dimension: int, size: int, step: int = None) -> 'TN':  # type: ignore
+    """将张量的指定维度展开为多个连续的切片。
+    
+    该函数用于将张量的指定维度展开为
+    多个连续的窗口切片，常用于卷积操作中的im2col变换。
+    
+    参数:
+        tensor_obj: 输入张量
+        dimension: 要展开的维度
+        size: 窗口大小
+        step: 步长，默认等于size（不重叠）
+    
+    返回:
+        TN: 展开后的张量，新张量的形状为：
+            原形状[:dimension] + (num_windows,) + 原形状[dimension+1:] + (size,)
+            其中 num_windows = (原形状[dimension] - size) // step + 1
+    
+    异常:
+        ValueError: 当维度超出范围或参数不合法时抛出
+    """
+    # 处理默认步长
+    if step is None:
+        step = size
+    
+    # 处理负数维度索引
+    dim = dimension if dimension >= 0 else tensor_obj.ndim + dimension
+    if dim < 0 or dim >= tensor_obj.ndim:
+        raise ValueError(f"Dimension {dimension} out of range for tensor with {tensor_obj.ndim} dimensions")
+    
+    # 获取输入形状
+    input_shape = list(tensor_obj.shape)
+    dim_size = input_shape[dim]
+    
+    # 检查参数合法性
+    if size > dim_size:
+        raise ValueError(f"Size {size} is larger than dimension size {dim_size}")
+    
+    # 计算窗口数量
+    num_windows = (dim_size - size) // step + 1
+    if (dim_size - size) % step != 0:
+        warnings.warn(f"Window step {step} is not compatible with dimension size {dim_size} and window size {size}, some elements will be discarded")
+    
+    # 计算输出形状：原形状[:dim] + [num_windows] + 原形状[dim+1:] + [size]
+    output_shape = list(input_shape)
+    output_shape[dim] = num_windows
+    output_shape.append(size)
+    
+    # 创建所有窗口
+    windows = []
+    for i in range(num_windows):
+        # 计算当前窗口的起始和结束索引
+        start = i * step
+        end = start + size
+        
+        # 创建切片索引
+        idx = [slice(None)] * tensor_obj.ndim
+        idx[dim] = slice(start, end)
+        
+        # 获取窗口
+        window = tensor_obj[tuple(idx)]
+        
+        # 调整窗口形状：将展开维度移动到最后
+        # 例如：对于形状(a, size, b)，转换为(a, b, size)
+        perm = list(range(tensor_obj.ndim))
+        perm.append(perm.pop(dim))
+        window = window.permute(perm)
+        
+        # 在原dim位置插入1，形成窗口数量维度
+        window_shape = list(window.shape)
+        window_shape.insert(dim, 1)
+        window = window._reshape(tuple(window_shape))
+        
+        # 将窗口添加到列表中
+        windows.append(window)
+    
+    # 沿窗口数量维度堆叠所有窗口
+    result = concatenate(windows, dim=dim)
+    
+    # 确保输出形状正确
+    assert result.shape == tuple(output_shape), f"Expected shape {output_shape}, got {result.shape}"
+    
+    return result
+
+
+@api_registry.register
+def repeat(input: TN, repeats: tuple[int, ...]) -> TN:
+    """
+    沿着指定的维度重复张量的元素。
+    
+    返回一个新的张量，其中输入张量的元素在每个维度上重复指定的次数。
+    
+    此函数的行为与PyTorch的torch.repeat()完全一致，包括：
+    - 当repeats长度小于输入张量维度时，抛出异常
+    - 当repeats长度大于输入张量维度时，在前面添加新的维度
+    - 对整个维度的内容进行重复，而不是对每个元素单独重复
+    
+    Args:
+        input (TN): 要重复的输入张量
+        repeats (tuple[int, ...]): 每个维度的重复次数，可以是整数元组或多个整数参数
+            - 如果长度小于输入张量维度，会抛出异常
+            - 如果长度大于输入张量维度，会在前面添加新的维度
+            - 所有元素必须是正整数
+        
+    Returns:
+        TN: 重复后的新张量
+        
+    Raises:
+        TypeError: 如果输入不是TN张量
+        ValueError: 如果repeats包含非正整数
+        
+    Examples:
+        >>> # 一维张量的重复
+        >>> x = tensor([1, 2, 3])  # 形状(3,)
+        >>> y = repeat(x, (2,))  # 形状(6,)，结果为[1, 2, 3, 1, 2, 3]
+        >>> 
+        >>> # 二维张量的重复
+        >>> z = tensor([[1, 2], [3, 4]])  # 形状(2, 2)
+        >>> w = repeat(z, (2, 3))  # 形状(4, 6)，结果为[[1, 2, 1, 2, 1, 2], [3, 4, 3, 4, 3, 4], [1, 2, 1, 2, 1, 2], [3, 4, 3, 4, 3, 4]]
+        >>> 
+        >>> # repeats长度小于输入张量维度
+        >>> v = repeat(z, (3,))  # 形状(2, 6)，结果为[[1, 2, 1, 2, 1, 2], [3, 4, 3, 4, 3, 4]]
+        >>> 
+        >>> # repeats长度大于输入张量维度
+        >>> u = repeat(x, (2, 3))  # 形状(2, 9)，结果为[[1, 2, 3, 1, 2, 3, 1, 2, 3], [1, 2, 3, 1, 2, 3, 1, 2, 3]]
+        >>> 
+        >>> # 使用方法调用
+        >>> a = tensor([5, 6, 7])
+        >>> b = a.repeat(4)  # 形状(12,)，结果为[5, 6, 7, 5, 6, 7, 5, 6, 7, 5, 6, 7]
+    """
+    # 验证输入
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
+    
+    # 使用_validate_shape处理repeats参数
+    repeats = _validate_shape(repeats)
+    
+    # 验证所有重复次数都是正整数
+    for r in repeats:
+        if not isinstance(r, int) or r <= 0:
+            raise ValueError(f"All elements in repeats must be positive integers, got {r}")
+    
+    # 获取底层数组库
+    arrlib = input._get_array_lib()
+    
+    # 保存输入张量的原始形状
+    original_shape = input._array.shape
+    
+    # 处理repeats长度与输入张量维度的关系
+    ndim = input._array.ndim
+    if len(repeats) < ndim:
+        # 如果repeats长度小于输入张量维度，抛出异常，与PyTorch行为一致
+        raise ValueError(f"Number of dimensions of repeat dims ({len(repeats)}) can not be smaller than number of dimensions of tensor ({ndim})")
+    elif len(repeats) > ndim:
+        # 如果repeats长度大于输入张量维度，在前面添加新的维度
+        # 首先计算需要添加的维度数
+        new_dims = len(repeats) - ndim
+        # 在输入张量前面添加新的维度，每个新维度的大小为1
+        for _ in range(new_dims):
+            input._array = arrlib.expand_dims(input._array, axis=0)
+        # 更新ndim值
+        ndim = input._array.ndim
+    
+    # 使用NumPy的repeat功能实现
+    
+    # 对于每个维度，从最后一个维度开始重复，只处理需要重复的轴
+    # 注意：使用tile函数而不是repeat函数，以实现与PyTorch一致的行为
+    # PyTorch的repeat是对整个维度的内容进行重复，而NumPy的repeat是对每个元素进行重复
+    repeated_data = input._array
+    
+    # 计算每个维度的重复次数，对于不需要重复的维度，设置为1
+    tile_repeats = []
+    for i in range(ndim):
+        if repeats[i] > 1:
+            tile_repeats.append(repeats[i])
+        else:
+            tile_repeats.append(1)
+    
+    # 使用tile函数进行重复
+    repeated_data = arrlib.tile(repeated_data, tuple(tile_repeats))
+    
+    # 创建结果张量
+    result = TN(repeated_data, requires_grad = (is_grad_enabled() and input.requires_grad))
+    
+    # 设置梯度传播
+    if result.requires_grad:
+        def _repeat_backward(result_tensor: TN, i: int) -> TN:
+            # 重复操作的梯度是将结果的梯度在重复的维度上求和
+            grad_value = result_tensor.grad_value
+            
+            # 对于每个维度，从最后一个维度开始求和
+            for j in reversed(range(ndim)):
+                # 计算步长和大小
+                size = input._array.shape[j]
+                repeat = repeats[j]
+                
+                # 重塑梯度张量，以便在重复的维度上求和
+                shape = list(grad_value.shape)
+                shape[j] = repeat
+                shape.insert(j+1, size)
+                grad_reshaped = grad_value._reshape(tuple(shape))
+                
+                # 在重复的维度上求和
+                grad_value = grad_reshaped.sum(dim=j)
+            
+            # 将梯度的形状调整为输入张量的原始形状
+            grad_value = grad_value._reshape(original_shape)
+            
+            return grad_value
+        
+        result.fromvars = (input,)
+        result.gradfuncs = (_repeat_backward,)
+    
+    return result
+
+
+@api_registry.register
+def fold(tensor_obj:TN, dimension: int, size: int, step: int = None, output_size: int = None) -> 'TN':  # type: ignore
+    """
+    将张量的指定维度从窗口展开状态折叠回原始形状。
+    这是unfold()函数的逆操作。
 
     参数:
-        input: 源张量
-        dim: 收集维度，支持负维度
-        index: 索引张量，维数须与 input 相同，dtype 会被规范化为 int64
-        sparse_grad: 是否产生稀疏梯度；Riemann 暂不支持，仅允许 False
-        out: 可选的输出张量，形状须与结果一致
+        tensor_obj: 输入张量
+        dimension: 要折叠的维度（对应unfold时的维度）
+        size: 窗口大小（与unfold时的size相同）
+        step: 步长（与unfold时的step相同）
+        output_size: 折叠后的目标维度大小。如果不提供，将自动计算为：
+            (num_windows - 1) * step + size，其中num_windows是输入张量在dimension处的大小
 
     返回:
-        形状与 index 相同的新张量
+        TN: 折叠后的张量，形状为：
+            原形状[:dimension] + (output_size,) + 原形状[dimension+1:-1]
 
-    注意: 当使用out参数时，不支持自动微分
+    异常:
+        ValueError: 当维度超出范围或参数不合法时抛出
     """
-    if sparse_grad:
-        raise NotImplementedError("gather(): sparse_grad=True is not supported")
+    # 处理默认步长
+    if step is None:
+        step = size
 
-    arrlib = input._get_array_lib()
-    index_data = index._array.astype(arrlib.int64)
-    result = input[_compute_to_direct_indices(input, dim, index_data)]
+    # 处理负数维度索引
+    dim = dimension if dimension >= 0 else tensor_obj.ndim + dimension
+    if dim < 0 or dim >= tensor_obj.ndim:
+        raise ValueError(f"Dimension {dimension} out of range for tensor with {tensor_obj.ndim} dimensions")
 
-    return _apply_out(out, result, (input,), "gather")
+    # 检查输入张量是否符合预期格式（最后一维应包含窗口元素）
+    if tensor_obj.ndim < 2:
+        raise ValueError(f"Input tensor must have at least 2 dimensions, got {tensor_obj.ndim}")
+
+    # 获取输入形状
+    input_shape = list(tensor_obj.shape)
+    num_windows = input_shape[dim]
+    window_size = input_shape[-1]
+
+    # 验证窗口大小是否匹配
+    if window_size != size:
+        raise ValueError(f"Window size mismatch: expected {size}, got {window_size}")
+
+    # 计算输出维度大小
+    if output_size is None:
+        output_size = (num_windows - 1) * step + size
+
+    # 构建输出形状
+    output_shape = list(input_shape)
+    output_shape[dim] = output_size
+    output_shape.pop()  # 移除最后一维（窗口元素）
+
+    # 创建一个形状为output_shape的零张量作为基础，与输入张量在同一设备上
+    output = zeros(output_shape, dtype=tensor_obj.dtype, device=tensor_obj.device) 
+
+    # 对于每个窗口，将其内容添加到输出张量的对应位置
+    for i in range(num_windows):
+        # 计算当前窗口在输出张量中的起始和结束位置
+        start = i * step
+        end = start + size
+
+        # 创建输出张量的切片索引
+        output_idx = [slice(None)] * output.ndim
+        output_idx[dim] = slice(start, end)
+
+        # 获取当前窗口内容
+        # 输入形状: [batch, channels, num_windows, window_size] 或类似
+        window_idx = [slice(None)] * tensor_obj.ndim
+        window_idx[dim] = i  # type: ignore
+        window_idx[-1] = slice(None)  # 选择所有窗口元素
+        window = tensor_obj[tuple(window_idx)]
+
+        # 确保窗口形状与输出切片形状匹配
+        # 窗口形状应该是: output_shape[:dim] + (size,) + output_shape[dim+1:]
+        window_shape = list(output_shape)
+        window_shape[dim] = size
+        window = window.view(tuple(window_shape))
+
+        # 将窗口贡献添加到输出张量（原地操作）
+        output.addat_(tuple(output_idx),window)
+
+    return output
 
 
-# 启用optimize路径（tensordot/BLAS加速）的最小操作数元素数阈值：
-# 低于该值时einsum_path计算开销（约30us）超过BLAS收益
-_EINSUM_OPTIMIZE_MIN_ELEMS = 4096
+# ===========================================================================
+# 10. einsum（方程解析、批量对角线辅助、梯度计算与入口）
+# ===========================================================================
+
+
+# 从批量1D张量生成批量对角矩阵的函数
+@api_registry.register
+def batch_diag(v):
+    """从批量1D张量生成批量对角矩阵
+    
+    参数:
+        v: 输入张量，形状为(*, n)，其中*表示任意数量的批处理维度
+        
+    返回:
+        形状为(*, n, n)的对角矩阵，对角线元素为输入张量的值
+    """
+    # 验证输入
+    if not isinstance(v, TN):
+        raise TypeError(f"Input must be TN type, got {type(v)}")
+    
+    # 获取输入形状
+    shape = v.shape
+    n = shape[-1]  # 最后一维的大小
+    
+    # 创建单位矩阵模板，确保与输入张量的数据类型一致
+    identity_tensor = eye(n, device=v.device, dtype=v.dtype)
+    
+    # 使用广播机制生成对角矩阵
+    # 将输入张量扩展维度，然后与单位矩阵相乘
+    # 形状变化：(*, n) -> (*, 1, n) -> (*, n, n)
+    batch_eye = identity_tensor.expand(shape[:-1] + (n, n))
+    v_expanded = v.unsqueeze(-2)  # 扩展为 (*, 1, n)
+    
+    # 逐元素相乘，利用广播机制
+    result = v_expanded * batch_eye
+    return result
+
+# end of batch_diag
 
 
 def _einsum_use_optimize(input_eqs: list[str], output_eq: str, operand_data: list) -> bool:
@@ -3461,6 +5303,55 @@ def _has_duplicate_indices(target_eq: str) -> bool:
     return any(count > 1 for count in index_counts.values())
 
 
+def _broadcast_expand_shape(shape: tuple, target_shape: tuple) -> tuple:
+    """
+    按广播语义对齐源形状与目标形状，用于 expand。
+
+    目标维为1而源维更大的维度（如省略号批量维被其他操作数广播放大）保留源尺寸，使 expand
+    合法；此类维度随后由 _unbroadcast_grad 求和还原为目标尺寸（前向共享同一份数据，梯度
+    应按广播份数累加）。其余维度取目标尺寸以正常广播。
+    """
+    return tuple(src if tgt == 1 else tgt for src, tgt in zip(shape, target_shape))
+
+
+def _unbroadcast_grad(grad_tensor: TN, target_shape: tuple) -> TN:
+    """
+    将按广播形状算出的梯度还原为目标操作数的原始形状。
+
+    目标操作数的省略号批量维可能与输出/其他操作数不一致（如 ...i,...i->... 中某操作数
+    批量维为1，或 ...aaa,...b->ba 中该维被广播放大），梯度便按广播后的形状算出。按 torch
+    语义需先消除广播差异：
+      - 目标秩小于梯度秩：多出的前导维由其他操作数/输出广播而来，逐个求和消去；
+      - 某个维度目标为 1 而梯度大于 1：对该维 keepdim 求和（前向共享同一份数据，
+        梯度按广播份数累加）；
+      - 某个维度目标大于 1 而梯度为 1：梯度与广播份数无关，直接广播到目标尺寸。
+
+    形状本就一致时原样返回，故对迹/对角线等已对齐的路径无副作用。
+    """
+    grad = grad_tensor
+    while grad.ndim > len(target_shape):
+        grad = grad.sum(dim=0)
+    axes = tuple(ax for ax, (gs, ts) in enumerate(zip(grad.shape, target_shape))
+                 if ts == 1 and gs != 1)
+    if axes:
+        grad = grad.sum(dim=axes, keepdim=True)
+    if grad.shape != target_shape:
+        # 目标维大于梯度维（前向该维被广播放大），梯度可视为常数沿该维复制
+        grad = grad.expand(target_shape)
+    return grad
+
+
+def _ellipsis_after_indices(target_eq: str, rank: int) -> bool:
+    """
+    判断目标的省略号是否位于全部显式索引之后（如 'ii...'、'ij...k'）。
+
+    用于区分布局：省略号在索引之前/中间时，重复索引对占据最前两维的反面——省略号在被
+    重复的索引对之后时，该索引对才真正落在目标的最前两维上。
+    """
+    return '...' in target_eq and rank > len(target_eq.replace('.', '')) and \
+        len(target_eq.split('...')[0]) == len(target_eq.replace('.', ''))
+
+
 def _restore_diagonal_tensor(grad_tensor: TN, target_shape: tuple, target_eq: str) -> TN:
     """
     将梯度张量还原为具有重复索引的对角线形式。
@@ -3549,7 +5440,390 @@ def _restore_diagonal_tensor(grad_tensor: TN, target_shape: tuple, target_eq: st
     return result
 
 
-@api_registry.register('einsum')
+def _reorder_partial_grad(
+    partial_grad: TN, target_eq: str, available_target_chars: list[str], has_ellipsis: bool
+) -> TN:
+    """
+    把偏梯度从「省略号维在最前」的标准顺序重排为目标的真实维度顺序。
+
+    偏梯度由方程 '<grad_eq>,<其他操作数> -> ...<可用索引>' 算出，省略号维恒定位于最前，
+    其后是可用索引（按 available_target_chars 顺序，即其在 target_eq 中首次出现的顺序）。
+    而目标的省略号可能出现在中间或末尾（如 i...j、ij...k、ii...），其真实布局把显式索引
+    排在省略号维之前或之间。若重排缺失，后续按真实顺序消耗维度时会张冠李戴。
+
+    重排后顺序为：[省略号之前的可用索引][省略号维][省略号之后的可用索引]；
+    省略号维数量为 0、或原本就在最前时无需重排。
+    """
+    if not has_ellipsis or not available_target_chars:
+        return partial_grad
+
+    target_eq_clean = target_eq.replace('.', '')
+    n_ellipsis = partial_grad.ndim - len(available_target_chars)
+    # 省略号之前的显式索引个数：即真实布局中省略号维左侧的索引数
+    n_before = len(target_eq.split('...')[0])
+    if n_ellipsis <= 0 or n_before == 0:
+        return partial_grad
+
+    first_pos = {c: target_eq_clean.index(c) for c in available_target_chars}
+    before = [n_ellipsis + k for k, c in enumerate(available_target_chars)
+              if first_pos[c] < n_before]
+    after = [n_ellipsis + k for k, c in enumerate(available_target_chars)
+             if first_pos[c] >= n_before]
+    perm = before + list(range(n_ellipsis)) + after
+    if perm == list(range(partial_grad.ndim)):
+        return partial_grad
+    return partial_grad.permute(perm)
+
+
+def _expand_grad_dimensions(
+    partial_grad: TN, target_eq: str, available_indices: set,
+    has_ellipsis: bool, target_shape: tuple
+) -> TN:
+    """
+    把偏梯度扩展（广播）到目标的完整形状。
+
+    偏梯度的轴顺序与「目标真实维度顺序中过滤出可消耗维度」的顺序一致，即
+    [省略号之前的可用索引][省略号维][省略号之后的可用索引]（由 _reorder_partial_grad 保证）。
+    本函数按同一顺序重建目标的完整秩形状 expand_shape：
+
+    - 省略号维：有来源（has_ellipsis）时依次取偏梯度对应轴的真实尺寸；无来源时说明这些
+      批量维前向已被独立求和、梯度对其为常数，占位 1 等待广播；
+    - 可用索引：仅其「首次出现」消耗偏梯度的一个轴，重复出现处填 1，留待
+      _restore_diagonal_tensor 施加对角线约束；
+    - 不可用索引（前向已被独立求和）：填 1，后续通过广播补齐。
+
+    省略号维按其在目标中的真实位置插入，故省略号位于中间/末尾（如 i...j、ij...k）时也能
+    与目标形状对齐；由于消耗轴的顺序与该顺序完全一致，reshape 不会打乱已有数据。
+    """
+    target_eq_clean = target_eq.replace('.', '')
+    # 目标中的省略号维数量：目标秩减去显式索引个数
+    n_ellipsis = len(target_shape) - len(target_eq_clean)
+    # 省略号之前的显式索引个数（无省略号时视为全部索引之后），即省略号维的插入位置
+    n_before = len(target_eq.split('...')[0]) if '...' in target_eq else len(target_eq_clean)
+
+    # 按目标真实布局逐个列出「槽位」：省略号前的索引、省略号维、省略号后的索引
+    slots = ([('char', p) for p in range(n_before)] +
+             [('ellipsis', k) for k in range(n_ellipsis)] +
+             [('char', p) for p in range(n_before, len(target_eq_clean))])
+
+    expand_shape = []      # 目标的完整秩形状（含省略号维）
+    result_data_idx = 0    # partial_grad 中下一个待消费的轴下标
+    seen_available = set()
+
+    for kind, p in slots:
+        if kind == 'ellipsis':
+            consume = has_ellipsis
+        else:
+            c = target_eq_clean[p]
+            # 仅索引的首次出现消耗一个轴；重复出现处留待对角线约束处理
+            consume = c in available_indices and c not in seen_available
+            if consume:
+                seen_available.add(c)
+        if consume and result_data_idx < partial_grad.ndim:
+            expand_shape.append(partial_grad.shape[result_data_idx])
+            result_data_idx += 1
+        else:
+            expand_shape.append(1)
+
+    partial_grad = partial_grad.reshape(expand_shape)
+    return partial_grad.expand(_broadcast_expand_shape(expand_shape, target_shape))
+
+
+def _compute_simple_einsum_grad(
+    grad_value: TN, output_eq: str, 
+    all_operands: list[TN], i: int, grad_equation: str
+) -> TN:
+    """
+    计算简单einsum操作的梯度（无重复索引）。
+
+    直接使用预计算的梯度方程，性能最优。
+    grad_value的方程为output_eq（空输出时为''），确保非单位梯度正确参与计算。
+    """
+    grad_inputs = [grad_value]
+
+    for j, op in enumerate(all_operands):
+        if j != i:
+            grad_inputs.append(op.conj() if op.is_complex() else op)
+
+    return einsum(grad_equation, *grad_inputs)
+
+
+def _compute_trace_grad(grad_value: TN, target_operand: TN, target_eq: str) -> TN:
+    """
+    计算迹操作（ii->、bii->b、...ii->...、...ii->、ii...->、ii...->...）的梯度。
+
+    迹在前向只对重复索引对应的两维取对角元素求和，反向即构造一个对角张量：对角元素为
+    grad_value 的对应值、非对角为0。注意 grad_value 可能缺少目标的部分前导维度
+    （如 ...ii-> 的输出是标量、bii->b 只含批量维），需先广播到目标的批量形状。
+
+    重复索引对默认位于目标最后两维；但当省略号位于该索引对之后（如 ii...）时，该对实际
+    落在目标最前两维，此时 grad_value 对应的是尾部的省略号批量维，需按前两维施加对角约束。
+    """
+    target_shape = target_operand.shape
+    rank = len(target_shape)
+
+    if _ellipsis_after_indices(target_eq, rank):
+        # 重复对在最前两维：先把 grad_value（尾部省略号维，或标量）补前导维后广播到目标形状，
+        # 再沿最前两维乘单位矩阵，把非对角位置清零
+        n = target_shape[0]
+        v = grad_value.reshape((1,) * (rank - grad_value.ndim) + grad_value.shape)
+        v = v.expand(_broadcast_expand_shape(v.shape, target_shape))
+        eye_shape = (n, n) + (1,) * (rank - 2)
+        return v * eye(n, device=v.device, dtype=v.dtype).reshape(eye_shape)
+
+    batch_shape = target_operand.shape[:-1]
+    if not batch_shape:
+        # 纯2D迹（ii->）：梯度为0维标量，直接构造 (n, n) 的对角矩阵
+        n = target_operand.shape[-1]
+        v = grad_value * ones(n, device=grad_value.device, dtype=grad_value.dtype)
+        return batch_diag(v)
+    # 其余情况：在梯度末尾补一维（对角维）后广播到批量形状，再构造对角矩阵。
+    # 这样无论 grad_value 是标量（...ii->）还是缺批量维均可正确对齐
+    return batch_diag(grad_value.unsqueeze(-1).expand(batch_shape))
+
+
+def _compute_diag_extract_grad(grad_value: TN, target_operand: TN, target_eq: str) -> TN:
+    """
+    计算对角线提取操作（ii->i、...ii->i、ii...->i）的梯度。
+
+    梯度是一个对角张量；输出缺少目标的省略号维度时（如 ...ii->i）需先扩展批量维度。
+    省略号位于索引对之后时（ii...），对角约束施加在目标最前两维、grad_value 对应首维。
+    """
+    target_shape = target_operand.shape
+    rank = len(target_shape)
+
+    if _ellipsis_after_indices(target_eq, rank):
+        n = target_shape[0]
+        v = grad_value.reshape((n,) + (1,) * (rank - 1))
+        v = v.expand(_broadcast_expand_shape(v.shape, target_shape))
+        eye_shape = (n, n) + (1,) * (rank - 2)
+        return v * eye(n, device=v.device, dtype=v.dtype).reshape(eye_shape)
+
+    if grad_value.ndim < target_operand.ndim - 1:
+        grad_value = grad_value.expand(target_operand.shape[:-1])
+    return batch_diag(grad_value)
+
+
+def _compute_complex_einsum_grad(
+    grad_value: TN, output_eq: str, other_indices: list[str], 
+    other_operands: list[TN], target_eq: str, target_operand: TN,
+    info: dict
+) -> TN:
+    """
+    计算复杂 einsum 操作的梯度（目标含重复索引，或存在无法从其他来源获得的索引）。
+
+    分三步：
+    1. 偏梯度：把所有可用索引（输出 + 其他操作数）按梯度方程缩并，得到一个只含目标
+       可用子集维度的张量（对应前向中未被独立求和的那些维度）；
+    2. 扩展维度：把偏梯度 reshape/expand 回目标的完整形状（缺失维、重复维先补1再广播）；
+    3. 恢复对角线：对重复索引施加对角线约束，保证非对角位置梯度为0。
+    """
+    available_indices = info['available_indices']
+    # 偏梯度中的省略号维度对应「目标自身的批量维度」，能否保留取决于该批量维在反向
+    # 中是否有来源，分两种情况：
+    # 1. 输出含'...'：grad_value 自带批量维度（如 ...ii,i->...）
+    # 2. 其他操作数含'...'：目标的批量维与对方的批量维配对收缩，不能丢弃
+    #    （如 ...aaa,...b->ba 中 dx0[q,...] = sum_b g[b,...] * w[q,b]，q 依赖必须保留）
+    # 反之，若输出不含'...'且其他操作数也不含'...'，说明目标的批量维已在前向被独立
+    # 求和、梯度对其为常数，此时不能加'...'前缀（否则 numpy 会拒绝无来源的输出省略号，
+    # 例如 ...cdc->）
+    has_ellipsis = ('...' in target_eq
+                    and ('...' in output_eq or any('.' in oi for oi in other_indices)))
+    target_eq_clean = target_eq.replace('.', '')
+    
+    # 构造目标的"可用索引串"：按 target_eq 的出现顺序，保留能在梯度输入中找到来源的
+    # 索引，并去重（重复索引只保留一次，供后续扩展阶段复用同一维度）
+    seen = set()
+    available_target_chars = []
+    for c in target_eq_clean:
+        if c in available_indices and c not in seen:
+            available_target_chars.append(c)
+            seen.add(c)
+    available_target = ''.join(available_target_chars)
+    
+    if has_ellipsis:
+        available_target_with_ellipsis = '...' + available_target
+    else:
+        available_target_with_ellipsis = available_target
+    
+    # 组装偏梯度的 einsum 输入：grad_value（方程恒为 output_eq，空输出时用 '' 占位，
+    # 确保 grad_value 不参与缩并也不被丢弃）+ 各其他操作数（复数则取共轭）
+    grad_input_eqs = [output_eq]
+    grad_inputs = [grad_value]
+
+    for idx, op in zip(other_indices, other_operands):
+        grad_inputs.append(op.conj() if op.is_complex() else op)
+        grad_input_eqs.append(idx)
+
+    # 计算偏梯度，输出方程只保留目标的可用索引（可带 '...' 前缀）。
+    # 快捷分支：目标没有任何可用索引、且只有 grad_value 一个输入时，方程退化为 '->'，
+    # 偏梯度就是 grad_value 本身（标量），无需再走一次 einsum
+    if not available_target_with_ellipsis and len(grad_input_eqs) == 1:
+        partial_grad = grad_value
+    else:
+        grad_equation = ','.join(grad_input_eqs) + '->' + available_target_with_ellipsis
+        partial_grad = einsum(grad_equation, *grad_inputs)
+    
+    # 偏梯度的维度顺序固定为 [省略号维][可用索引]，而目标的真实布局可能把省略号维放在中间
+    # （如 i...j 的真实布局是 [i][省略号][j]），故先按目标的真实顺序重排偏梯度
+    partial_grad = _reorder_partial_grad(
+        partial_grad, target_eq, available_target_chars, has_ellipsis)
+
+    # 偏梯度秩小于目标时，扩展到目标的完整形状
+    target_shape = target_operand.shape
+    if partial_grad.ndim < len(target_shape):
+        partial_grad = _expand_grad_dimensions(
+            partial_grad, target_eq, available_indices, has_ellipsis, target_shape
+        )
+
+    # 恢复重复索引的对角线结构（非对角位置清零）
+    return _restore_diagonal_tensor(partial_grad, target_shape, target_eq)
+
+
+def _precompute_grad_info(input_eqs: list[str], output_eq: str,
+                          operands: list[TN]) -> list[dict]:
+    """
+    为每个输入预计算反向传播所需的梯度信息，避免反向时重复推导。
+
+    反向梯度统一遵循「用梯度方程再算一次 einsum」的思路：
+        grad_target = einsum(grad_value, 其他操作数 -> target_eq)
+    但不同形态的方程能构造出的合法梯度方程不同，故在此预先分类，反向时直接路由。
+    grad_type 共四类：
+
+    - 'simple'：目标无重复索引，且其所有索引都能从「输出 + 其他操作数」中找到来源。
+      此时目标索引在梯度输入中全部出现，可直接拼出合法梯度方程，反向只需一次 einsum。
+    - 'trace'：单操作数、恰好2个索引且重复、输出少2维（如 'ii->'），即取迹，
+      反向等价于把标量梯度铺到对角线上。
+    - 'diag_extract'：单操作数、恰好2个索引且重复、输出少1维（如 'ii->i'），
+      即提取对角线，反向同样只需构造对角矩阵。
+    - 'complex'：目标含重复索引，或存在无法从其他来源获得的索引。此时先做一次
+      「偏梯度」einsum 得到目标的可用子集，再扩展维度、恢复对角线约束。
+
+    参数:
+        input_eqs: 每个操作数的索引字符串
+        output_eq: 输出索引字符串（隐式输出已由 _parse_einsum_equation 解析为显式形式）
+        operands: 操作数列表
+
+    返回:
+        每个输入对应一个 info 字典，含 grad_type 及该类所需的辅助字段
+    """
+    grad_infos = []
+    
+    for i, target_eq in enumerate(input_eqs):
+        info = {'target_eq': target_eq}
+        
+        # 反向梯度方程的输入来源：除本目标外的其他操作数索引（它们提供未被求和的原始数据）
+        other_indices = [eq for j, eq in enumerate(input_eqs) if j != i]
+        # 可获得的索引集合 = 输出索引 ∪ 其他操作数索引；不在此集合中的索引，说明前向
+        # 只在目标自身内对其求和、无其他来源，需要走 'complex' 分支特殊处理
+        available_indices = set(output_eq) | set(''.join(other_indices))
+        available_indices.discard('.')
+        
+        target_eq_clean = target_eq.replace('.', '')
+        has_duplicates = _has_duplicate_indices(target_eq)
+        has_ellipsis = '...' in target_eq
+        
+        # 分类所需的几个结构判据
+        is_single_operand = len(input_eqs) == 1
+        # 末尾两维索引相同（如 ii、bii、...ii）
+        is_last_two_dup = (len(target_eq_clean) >= 2 and 
+                          target_eq_clean[-1] == target_eq_clean[-2])
+        
+        # 目标中存在既不在输出、也不在其他操作数中的索引（前向已把它们各自独立求和）
+        has_missing = any(c not in available_indices for c in target_eq_clean)
+        
+        # 目标的省略号维度能否从梯度输入中找到来源：若目标含'...'，而输出与其他操作数
+        # 都不含'...'，说明这些批量维已在前向被独立求和，梯度需广播回目标形状，
+        # 无法用 simple 的单次 einsum 表达，改由 'complex' 分支（含维度扩展）处理
+        has_unavailable_ellipsis = ('...' in target_eq and
+                                    not ('...' in output_eq or
+                                         any('.' in eq for eq in other_indices)))
+        
+        # 迹 / 对角线提取：只适用于「单操作数 + 恰好2个索引重复」的情况（如 ii->、ii->i）；
+        # 多索引重复（如 iijj->ij）形态更复杂，统一交给 'complex' 处理
+        is_trace_like = (is_single_operand and is_last_two_dup and has_duplicates and
+                        len(target_eq_clean) == 2)
+        
+        if is_trace_like:
+            # 依据输出比目标少的维数区分「迹」和「对角线提取」
+            output_eq_clean = output_eq.replace('.', '')
+            if len(output_eq_clean) == len(target_eq_clean) - 2:
+                info['grad_type'] = 'trace'
+            elif len(output_eq_clean) == len(target_eq_clean) - 1:
+                info['grad_type'] = 'diag_extract'
+            else:
+                info['grad_type'] = 'complex'
+                info['has_duplicates'] = has_duplicates
+                info['has_ellipsis'] = has_ellipsis
+                info['available_indices'] = available_indices
+        elif not has_duplicates and not has_missing and not has_unavailable_ellipsis:
+            # 简单情况：无重复索引、无缺失索引、且省略号维有来源，可直接构造梯度方程
+            info['grad_type'] = 'simple'
+            # 梯度方程 = 'output_eq,其他操作数索引 -> target_eq'。
+            # grad_value 的方程固定用 output_eq：空输出（'->'）时为空串 ''，numpy/cupy
+            # 支持空下标表示 0-d 标量操作数，从而保证 grad_value 始终参与计算不被丢弃
+            grad_input_eqs = [output_eq]
+            grad_input_eqs.extend(other_indices)
+            info['grad_equation'] = ','.join(grad_input_eqs) + '->' + target_eq
+        else:
+            # 复杂情况：含重复索引或缺失索引，需偏梯度 + 维度扩展 + 对角线恢复
+            info['grad_type'] = 'complex'
+            info['has_duplicates'] = has_duplicates
+            info['has_ellipsis'] = has_ellipsis
+            info['available_indices'] = available_indices
+        
+        grad_infos.append(info)
+    
+    return grad_infos
+
+
+def _einsum_backward(result_tensor: TN, i: int) -> TN:
+    """
+    einsum 的反向传播函数（外置版本）。
+
+    所有操作数共享这同一个梯度函数，通过参数 i（当前输入在操作数列表中的位置）
+    区分本次要计算的是哪个输入的梯度。前向已将反向所需信息存入 parms：
+        parms = (equation, input_eqs, output_eq, grad_infos)
+    本函数按 grad_infos[i] 的 grad_type 路由到对应的处理函数。
+    """
+    grad_value = result_tensor.grad_value
+    input_eqs = result_tensor.parms[1]
+    output_eq = result_tensor.parms[2]
+    grad_infos = result_tensor.parms[3]
+    all_operands = result_tensor.fromvars
+    
+    # 获取预计算的梯度信息
+    info = grad_infos[i]
+    grad_type = info['grad_type']
+    target_eq = info['target_eq']
+    target_operand = all_operands[i]
+    
+    # 快速路由到对应处理函数
+    if grad_type == 'simple':
+        # 简单情况：直接使用预计算的梯度方程
+        grad = _compute_simple_einsum_grad(
+            grad_value, output_eq, all_operands, i, info['grad_equation']
+        )
+    elif grad_type == 'trace':
+        # 迹操作
+        grad = _compute_trace_grad(grad_value, target_operand, target_eq)
+    elif grad_type == 'diag_extract':
+        # 对角线提取
+        grad = _compute_diag_extract_grad(grad_value, target_operand, target_eq)
+    else:
+        # 复杂情况
+        other_indices = [eq for j, eq in enumerate(input_eqs) if j != i]
+        other_operands = [op for j, op in enumerate(all_operands) if j != i]
+        grad = _compute_complex_einsum_grad(
+            grad_value, output_eq, other_indices, other_operands, 
+            target_eq, target_operand, info
+        )
+
+    # 目标省略号批量维可能小于输出（前向发生广播），需按 torch 语义对广播维求和还原形状
+    return _unbroadcast_grad(grad, target_operand.shape)
+
+
+@api_registry.register
 def einsum(equation: str, *operands: TN) -> TN:
     """
     爱因斯坦求和约定（Einstein Summation Convention）实现。
@@ -3660,582 +5934,210 @@ def einsum(equation: str, *operands: TN) -> TN:
     
     return result
 
-def _precompute_grad_info(input_eqs: list[str], output_eq: str,
-                          operands: list[TN]) -> list[dict]:
+
+# ===========================================================================
+# 11. 矩阵与对角线（dot / outer / kron / tril / triu / diagonal / trace / fill_diagonal）
+# ===========================================================================
+
+
+def dot(x:TN,y:TN)->TN:
     """
-    为每个输入预计算反向传播所需的梯度信息，避免反向时重复推导。
-
-    反向梯度统一遵循「用梯度方程再算一次 einsum」的思路：
-        grad_target = einsum(grad_value, 其他操作数 -> target_eq)
-    但不同形态的方程能构造出的合法梯度方程不同，故在此预先分类，反向时直接路由。
-    grad_type 共四类：
-
-    - 'simple'：目标无重复索引，且其所有索引都能从「输出 + 其他操作数」中找到来源。
-      此时目标索引在梯度输入中全部出现，可直接拼出合法梯度方程，反向只需一次 einsum。
-    - 'trace'：单操作数、恰好2个索引且重复、输出少2维（如 'ii->'），即取迹，
-      反向等价于把标量梯度铺到对角线上。
-    - 'diag_extract'：单操作数、恰好2个索引且重复、输出少1维（如 'ii->i'），
-      即提取对角线，反向同样只需构造对角矩阵。
-    - 'complex'：目标含重复索引，或存在无法从其他来源获得的索引。此时先做一次
-      「偏梯度」einsum 得到目标的可用子集，再扩展维度、恢复对角线约束。
-
-    参数:
-        input_eqs: 每个操作数的索引字符串
-        output_eq: 输出索引字符串（隐式输出已由 _parse_einsum_equation 解析为显式形式）
-        operands: 操作数列表
-
-    返回:
-        每个输入对应一个 info 字典，含 grad_type 及该类所需的辅助字段
-    """
-    grad_infos = []
+    计算两个一维张量的点积（内积）。
     
-    for i, target_eq in enumerate(input_eqs):
-        info = {'target_eq': target_eq}
-        
-        # 反向梯度方程的输入来源：除本目标外的其他操作数索引（它们提供未被求和的原始数据）
-        other_indices = [eq for j, eq in enumerate(input_eqs) if j != i]
-        # 可获得的索引集合 = 输出索引 ∪ 其他操作数索引；不在此集合中的索引，说明前向
-        # 只在目标自身内对其求和、无其他来源，需要走 'complex' 分支特殊处理
-        available_indices = set(output_eq) | set(''.join(other_indices))
-        available_indices.discard('.')
-        
-        target_eq_clean = target_eq.replace('.', '')
-        has_duplicates = _has_duplicate_indices(target_eq)
-        has_ellipsis = '...' in target_eq
-        
-        # 分类所需的几个结构判据
-        is_single_operand = len(input_eqs) == 1
-        # 末尾两维索引相同（如 ii、bii、...ii）
-        is_last_two_dup = (len(target_eq_clean) >= 2 and 
-                          target_eq_clean[-1] == target_eq_clean[-2])
-        
-        # 目标中存在既不在输出、也不在其他操作数中的索引（前向已把它们各自独立求和）
-        has_missing = any(c not in available_indices for c in target_eq_clean)
-        
-        # 目标的省略号维度能否从梯度输入中找到来源：若目标含'...'，而输出与其他操作数
-        # 都不含'...'，说明这些批量维已在前向被独立求和，梯度需广播回目标形状，
-        # 无法用 simple 的单次 einsum 表达，改由 'complex' 分支（含维度扩展）处理
-        has_unavailable_ellipsis = ('...' in target_eq and
-                                    not ('...' in output_eq or
-                                         any('.' in eq for eq in other_indices)))
-        
-        # 迹 / 对角线提取：只适用于「单操作数 + 恰好2个索引重复」的情况（如 ii->、ii->i）；
-        # 多索引重复（如 iijj->ij）形态更复杂，统一交给 'complex' 处理
-        is_trace_like = (is_single_operand and is_last_two_dup and has_duplicates and
-                        len(target_eq_clean) == 2)
-        
-        if is_trace_like:
-            # 依据输出比目标少的维数区分「迹」和「对角线提取」
-            output_eq_clean = output_eq.replace('.', '')
-            if len(output_eq_clean) == len(target_eq_clean) - 2:
-                info['grad_type'] = 'trace'
-            elif len(output_eq_clean) == len(target_eq_clean) - 1:
-                info['grad_type'] = 'diag_extract'
-            else:
-                info['grad_type'] = 'complex'
-                info['has_duplicates'] = has_duplicates
-                info['has_ellipsis'] = has_ellipsis
-                info['available_indices'] = available_indices
-        elif not has_duplicates and not has_missing and not has_unavailable_ellipsis:
-            # 简单情况：无重复索引、无缺失索引、且省略号维有来源，可直接构造梯度方程
-            info['grad_type'] = 'simple'
-            # 梯度方程 = 'output_eq,其他操作数索引 -> target_eq'。
-            # grad_value 的方程固定用 output_eq：空输出（'->'）时为空串 ''，numpy/cupy
-            # 支持空下标表示 0-d 标量操作数，从而保证 grad_value 始终参与计算不被丢弃
-            grad_input_eqs = [output_eq]
-            grad_input_eqs.extend(other_indices)
-            info['grad_equation'] = ','.join(grad_input_eqs) + '->' + target_eq
-        else:
-            # 复杂情况：含重复索引或缺失索引，需偏梯度 + 维度扩展 + 对角线恢复
-            info['grad_type'] = 'complex'
-            info['has_duplicates'] = has_duplicates
-            info['has_ellipsis'] = has_ellipsis
-            info['available_indices'] = available_indices
-        
-        grad_infos.append(info)
+    这个函数与PyTorch的torch.dot()行为一致，只接受1D张量，并计算它们的内积。
     
-    return grad_infos
-
-def _einsum_backward(result_tensor: TN, i: int) -> TN:
+    Args:
+        x (TN): 第一个一维张量
+        y (TN): 第二个一维张量
+        
+    Returns:
+        TN: 点积结果，是一个标量张量
+        
+    Raises:
+        RuntimeError: 如果输入张量不是一维的
+        
+    Examples:
+        >>> a = tensor([1, 2, 3])
+        >>> b = tensor([4, 5, 6])
+        >>> dot(a, b)  # 返回32 (1*4 + 2*5 + 3*6)
     """
-    einsum 的反向传播函数（外置版本）。
-
-    所有操作数共享这同一个梯度函数，通过参数 i（当前输入在操作数列表中的位置）
-    区分本次要计算的是哪个输入的梯度。前向已将反向所需信息存入 parms：
-        parms = (equation, input_eqs, output_eq, grad_infos)
-    本函数按 grad_infos[i] 的 grad_type 路由到对应的处理函数。
-    """
-    grad_value = result_tensor.grad_value
-    input_eqs = result_tensor.parms[1]
-    output_eq = result_tensor.parms[2]
-    grad_infos = result_tensor.parms[3]
-    all_operands = result_tensor.fromvars
+    if x._array.ndim != 1:
+        raise RuntimeError(f"1D tensors expected, got {x._array.ndim}D tensor")
+    if y._array.ndim != 1:
+        raise RuntimeError(f"1D tensors expected, got {y._array.ndim}D tensor")
+    if x.device != y.device:
+        raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
     
-    # 获取预计算的梯度信息
-    info = grad_infos[i]
-    grad_type = info['grad_type']
-    target_eq = info['target_eq']
-    target_operand = all_operands[i]
+    # 使用x@y进行计算，利用现有的__matmul__方法的梯度跟踪能力
+    return x @ y
+
+
+def outer(x:TN,y:TN)->TN:
+    """
+    计算两个一维张量的外积。
     
-    # 快速路由到对应处理函数
-    if grad_type == 'simple':
-        # 简单情况：直接使用预计算的梯度方程
-        grad = _compute_simple_einsum_grad(
-            grad_value, output_eq, all_operands, i, info['grad_equation']
-        )
-    elif grad_type == 'trace':
-        # 迹操作
-        grad = _compute_trace_grad(grad_value, target_operand, target_eq)
-    elif grad_type == 'diag_extract':
-        # 对角线提取
-        grad = _compute_diag_extract_grad(grad_value, target_operand, target_eq)
-    else:
-        # 复杂情况
-        other_indices = [eq for j, eq in enumerate(input_eqs) if j != i]
-        other_operands = [op for j, op in enumerate(all_operands) if j != i]
-        grad = _compute_complex_einsum_grad(
-            grad_value, output_eq, other_indices, other_operands, 
-            target_eq, target_operand, info
-        )
-
-    # 目标省略号批量维可能小于输出（前向发生广播），需按 torch 语义对广播维求和还原形状
-    return _unbroadcast_grad(grad, target_operand.shape)
-
-
-def _compute_simple_einsum_grad(
-    grad_value: TN, output_eq: str, 
-    all_operands: list[TN], i: int, grad_equation: str
-) -> TN:
-    """
-    计算简单einsum操作的梯度（无重复索引）。
-
-    直接使用预计算的梯度方程，性能最优。
-    grad_value的方程为output_eq（空输出时为''），确保非单位梯度正确参与计算。
-    """
-    grad_inputs = [grad_value]
-
-    for j, op in enumerate(all_operands):
-        if j != i:
-            grad_inputs.append(op.conj() if op.is_complex() else op)
-
-    return einsum(grad_equation, *grad_inputs)
-
-
-def _ellipsis_after_indices(target_eq: str, rank: int) -> bool:
-    """
-    判断目标的省略号是否位于全部显式索引之后（如 'ii...'、'ij...k'）。
-
-    用于区分布局：省略号在索引之前/中间时，重复索引对占据最前两维的反面——省略号在被
-    重复的索引对之后时，该索引对才真正落在目标的最前两维上。
-    """
-    return '...' in target_eq and rank > len(target_eq.replace('.', '')) and \
-        len(target_eq.split('...')[0]) == len(target_eq.replace('.', ''))
-
-
-def _compute_trace_grad(grad_value: TN, target_operand: TN, target_eq: str) -> TN:
-    """
-    计算迹操作（ii->、bii->b、...ii->...、...ii->、ii...->、ii...->...）的梯度。
-
-    迹在前向只对重复索引对应的两维取对角元素求和，反向即构造一个对角张量：对角元素为
-    grad_value 的对应值、非对角为0。注意 grad_value 可能缺少目标的部分前导维度
-    （如 ...ii-> 的输出是标量、bii->b 只含批量维），需先广播到目标的批量形状。
-
-    重复索引对默认位于目标最后两维；但当省略号位于该索引对之后（如 ii...）时，该对实际
-    落在目标最前两维，此时 grad_value 对应的是尾部的省略号批量维，需按前两维施加对角约束。
-    """
-    target_shape = target_operand.shape
-    rank = len(target_shape)
-
-    if _ellipsis_after_indices(target_eq, rank):
-        # 重复对在最前两维：先把 grad_value（尾部省略号维，或标量）补前导维后广播到目标形状，
-        # 再沿最前两维乘单位矩阵，把非对角位置清零
-        n = target_shape[0]
-        v = grad_value.reshape((1,) * (rank - grad_value.ndim) + grad_value.shape)
-        v = v.expand(_broadcast_expand_shape(v.shape, target_shape))
-        eye_shape = (n, n) + (1,) * (rank - 2)
-        return v * eye(n, device=v.device, dtype=v.dtype).reshape(eye_shape)
-
-    batch_shape = target_operand.shape[:-1]
-    if not batch_shape:
-        # 纯2D迹（ii->）：梯度为0维标量，直接构造 (n, n) 的对角矩阵
-        n = target_operand.shape[-1]
-        v = grad_value * ones(n, device=grad_value.device, dtype=grad_value.dtype)
-        return batch_diag(v)
-    # 其余情况：在梯度末尾补一维（对角维）后广播到批量形状，再构造对角矩阵。
-    # 这样无论 grad_value 是标量（...ii->）还是缺批量维均可正确对齐
-    return batch_diag(grad_value.unsqueeze(-1).expand(batch_shape))
-
-
-def _compute_diag_extract_grad(grad_value: TN, target_operand: TN, target_eq: str) -> TN:
-    """
-    计算对角线提取操作（ii->i、...ii->i、ii...->i）的梯度。
-
-    梯度是一个对角张量；输出缺少目标的省略号维度时（如 ...ii->i）需先扩展批量维度。
-    省略号位于索引对之后时（ii...），对角约束施加在目标最前两维、grad_value 对应首维。
-    """
-    target_shape = target_operand.shape
-    rank = len(target_shape)
-
-    if _ellipsis_after_indices(target_eq, rank):
-        n = target_shape[0]
-        v = grad_value.reshape((n,) + (1,) * (rank - 1))
-        v = v.expand(_broadcast_expand_shape(v.shape, target_shape))
-        eye_shape = (n, n) + (1,) * (rank - 2)
-        return v * eye(n, device=v.device, dtype=v.dtype).reshape(eye_shape)
-
-    if grad_value.ndim < target_operand.ndim - 1:
-        grad_value = grad_value.expand(target_operand.shape[:-1])
-    return batch_diag(grad_value)
-
-
-def _unbroadcast_grad(grad_tensor: TN, target_shape: tuple) -> TN:
-    """
-    将按广播形状算出的梯度还原为目标操作数的原始形状。
-
-    目标操作数的省略号批量维可能与输出/其他操作数不一致（如 ...i,...i->... 中某操作数
-    批量维为1，或 ...aaa,...b->ba 中该维被广播放大），梯度便按广播后的形状算出。按 torch
-    语义需先消除广播差异：
-      - 目标秩小于梯度秩：多出的前导维由其他操作数/输出广播而来，逐个求和消去；
-      - 某个维度目标为 1 而梯度大于 1：对该维 keepdim 求和（前向共享同一份数据，
-        梯度按广播份数累加）；
-      - 某个维度目标大于 1 而梯度为 1：梯度与广播份数无关，直接广播到目标尺寸。
-
-    形状本就一致时原样返回，故对迹/对角线等已对齐的路径无副作用。
-    """
-    grad = grad_tensor
-    while grad.ndim > len(target_shape):
-        grad = grad.sum(dim=0)
-    axes = tuple(ax for ax, (gs, ts) in enumerate(zip(grad.shape, target_shape))
-                 if ts == 1 and gs != 1)
-    if axes:
-        grad = grad.sum(dim=axes, keepdim=True)
-    if grad.shape != target_shape:
-        # 目标维大于梯度维（前向该维被广播放大），梯度可视为常数沿该维复制
-        grad = grad.expand(target_shape)
-    return grad
-
-
-def _compute_complex_einsum_grad(
-    grad_value: TN, output_eq: str, other_indices: list[str], 
-    other_operands: list[TN], target_eq: str, target_operand: TN,
-    info: dict
-) -> TN:
-    """
-    计算复杂 einsum 操作的梯度（目标含重复索引，或存在无法从其他来源获得的索引）。
-
-    分三步：
-    1. 偏梯度：把所有可用索引（输出 + 其他操作数）按梯度方程缩并，得到一个只含目标
-       可用子集维度的张量（对应前向中未被独立求和的那些维度）；
-    2. 扩展维度：把偏梯度 reshape/expand 回目标的完整形状（缺失维、重复维先补1再广播）；
-    3. 恢复对角线：对重复索引施加对角线约束，保证非对角位置梯度为0。
-    """
-    available_indices = info['available_indices']
-    # 偏梯度中的省略号维度对应「目标自身的批量维度」，能否保留取决于该批量维在反向
-    # 中是否有来源，分两种情况：
-    # 1. 输出含'...'：grad_value 自带批量维度（如 ...ii,i->...）
-    # 2. 其他操作数含'...'：目标的批量维与对方的批量维配对收缩，不能丢弃
-    #    （如 ...aaa,...b->ba 中 dx0[q,...] = sum_b g[b,...] * w[q,b]，q 依赖必须保留）
-    # 反之，若输出不含'...'且其他操作数也不含'...'，说明目标的批量维已在前向被独立
-    # 求和、梯度对其为常数，此时不能加'...'前缀（否则 numpy 会拒绝无来源的输出省略号，
-    # 例如 ...cdc->）
-    has_ellipsis = ('...' in target_eq
-                    and ('...' in output_eq or any('.' in oi for oi in other_indices)))
-    target_eq_clean = target_eq.replace('.', '')
+    这个函数与PyTorch的torch.outer()行为一致，只接受1D张量，并计算它们的外积。
+    外积结果是一个形状为(len(x), len(y))的2D张量，其中result[i][j] = x[i] * y[j]。
     
-    # 构造目标的"可用索引串"：按 target_eq 的出现顺序，保留能在梯度输入中找到来源的
-    # 索引，并去重（重复索引只保留一次，供后续扩展阶段复用同一维度）
-    seen = set()
-    available_target_chars = []
-    for c in target_eq_clean:
-        if c in available_indices and c not in seen:
-            available_target_chars.append(c)
-            seen.add(c)
-    available_target = ''.join(available_target_chars)
+    实现使用einsum('i,j->ij')，相比unsqueeze+乘法，反向梯度计算更快（约2.5倍）。
     
-    if has_ellipsis:
-        available_target_with_ellipsis = '...' + available_target
-    else:
-        available_target_with_ellipsis = available_target
+    Args:
+        x (TN): 第一个一维张量
+        y (TN): 第二个一维张量
+        
+    Returns:
+        TN: 外积结果，是一个形状为(len(x), len(y))的2D张量
+        
+    Raises:
+        RuntimeError: 如果输入张量不是一维的
+        
+    Examples:
+        >>> a = tensor([1, 2, 3])
+        >>> b = tensor([4, 5, 6])
+        >>> outer(a, b)  # 返回[[4, 5, 6], [8, 10, 12], [12, 15, 18]]
+    """
+    if x._array.ndim != 1:
+        raise RuntimeError(f"1D tensors expected, got {x._array.ndim}D tensor")
+    if y._array.ndim != 1:
+        raise RuntimeError(f"1D tensors expected, got {y._array.ndim}D tensor")
+    if x.device != y.device:
+        raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
     
-    # 组装偏梯度的 einsum 输入：grad_value（方程恒为 output_eq，空输出时用 '' 占位，
-    # 确保 grad_value 不参与缩并也不被丢弃）+ 各其他操作数（复数则取共轭）
-    grad_input_eqs = [output_eq]
-    grad_inputs = [grad_value]
+    # 使用einsum实现外积，反向梯度计算更高效
+    return einsum('i,j->ij', x, y)
 
-    for idx, op in zip(other_indices, other_operands):
-        grad_inputs.append(op.conj() if op.is_complex() else op)
-        grad_input_eqs.append(idx)
 
-    # 计算偏梯度，输出方程只保留目标的可用索引（可带 '...' 前缀）。
-    # 快捷分支：目标没有任何可用索引、且只有 grad_value 一个输入时，方程退化为 '->'，
-    # 偏梯度就是 grad_value 本身（标量），无需再走一次 einsum
-    if not available_target_with_ellipsis and len(grad_input_eqs) == 1:
-        partial_grad = grad_value
-    else:
-        grad_equation = ','.join(grad_input_eqs) + '->' + available_target_with_ellipsis
-        partial_grad = einsum(grad_equation, *grad_inputs)
+def batch_outer(x:TN, y:TN)->TN:
+    """
+    计算批量向量的外积。
     
-    # 偏梯度的维度顺序固定为 [省略号维][可用索引]，而目标的真实布局可能把省略号维放在中间
-    # （如 i...j 的真实布局是 [i][省略号][j]），故先按目标的真实顺序重排偏梯度
-    partial_grad = _reorder_partial_grad(
-        partial_grad, target_eq, available_target_chars, has_ellipsis)
-
-    # 偏梯度秩小于目标时，扩展到目标的完整形状
-    target_shape = target_operand.shape
-    if partial_grad.ndim < len(target_shape):
-        partial_grad = _expand_grad_dimensions(
-            partial_grad, target_eq, available_indices, has_ellipsis, target_shape
-        )
-
-    # 恢复重复索引的对角线结构（非对角位置清零）
-    return _restore_diagonal_tensor(partial_grad, target_shape, target_eq)
-
-
-def _reorder_partial_grad(
-    partial_grad: TN, target_eq: str, available_target_chars: list[str], has_ellipsis: bool
-) -> TN:
+    支持任意批次维度的向量外积，结果形状为(..., len(x), len(y))。
+    这是outer()的批量扩展版本。
+    
+    Args:
+        x (TN): 输入张量，形状为(..., M)，最后一维为向量长度
+        y (TN): 输入张量，形状为(..., N)，最后一维为向量长度
+        
+    Returns:
+        TN: 批量外积结果，形状为(..., M, N)
+        
+    Raises:
+        RuntimeError: 如果输入张量的批次维度不匹配
+        
+    Examples:
+        >>> a = randn(2, 3)  # 2个批次，每个是长度为3的向量
+        >>> b = randn(2, 4)  # 2个批次，每个是长度为4的向量
+        >>> batch_outer(a, b)  # 形状为(2, 3, 4)
+        
+        >>> a = randn(2, 3, 4)  # (2,3)批次，每个是长度为4的向量
+        >>> b = randn(2, 3, 5)  # (2,3)批次，每个是长度为5的向量
+        >>> batch_outer(a, b)  # 形状为(2, 3, 4, 5)
     """
-    把偏梯度从「省略号维在最前」的标准顺序重排为目标的真实维度顺序。
+    if x.device != y.device:
+        raise RuntimeError(f"Input tensors must have the same device, got {x.device} and {y.device}")
+    
+    # 使用einsum实现批量外积，支持任意批次维度
+    return einsum('...i,...j->...ij', x, y)
 
-    偏梯度由方程 '<grad_eq>,<其他操作数> -> ...<可用索引>' 算出，省略号维恒定位于最前，
-    其后是可用索引（按 available_target_chars 顺序，即其在 target_eq 中首次出现的顺序）。
-    而目标的省略号可能出现在中间或末尾（如 i...j、ij...k、ii...），其真实布局把显式索引
-    排在省略号维之前或之间。若重排缺失，后续按真实顺序消耗维度时会张冠李戴。
 
-    重排后顺序为：[省略号之前的可用索引][省略号维][省略号之后的可用索引]；
-    省略号维数量为 0、或原本就在最前时无需重排。
+def kron(input: TN, other: TN, *, out: TN | None = None) -> TN:
     """
-    if not has_ellipsis or not available_target_chars:
-        return partial_grad
-
-    target_eq_clean = target_eq.replace('.', '')
-    n_ellipsis = partial_grad.ndim - len(available_target_chars)
-    # 省略号之前的显式索引个数：即真实布局中省略号维左侧的索引数
-    n_before = len(target_eq.split('...')[0])
-    if n_ellipsis <= 0 or n_before == 0:
-        return partial_grad
-
-    first_pos = {c: target_eq_clean.index(c) for c in available_target_chars}
-    before = [n_ellipsis + k for k, c in enumerate(available_target_chars)
-              if first_pos[c] < n_before]
-    after = [n_ellipsis + k for k, c in enumerate(available_target_chars)
-             if first_pos[c] >= n_before]
-    perm = before + list(range(n_ellipsis)) + after
-    if perm == list(range(partial_grad.ndim)):
-        return partial_grad
-    return partial_grad.permute(perm)
-
-
-def _expand_grad_dimensions(
-    partial_grad: TN, target_eq: str, available_indices: set,
-    has_ellipsis: bool, target_shape: tuple
-) -> TN:
-    """
-    把偏梯度扩展（广播）到目标的完整形状。
-
-    偏梯度的轴顺序与「目标真实维度顺序中过滤出可消耗维度」的顺序一致，即
-    [省略号之前的可用索引][省略号维][省略号之后的可用索引]（由 _reorder_partial_grad 保证）。
-    本函数按同一顺序重建目标的完整秩形状 expand_shape：
-
-    - 省略号维：有来源（has_ellipsis）时依次取偏梯度对应轴的真实尺寸；无来源时说明这些
-      批量维前向已被独立求和、梯度对其为常数，占位 1 等待广播；
-    - 可用索引：仅其「首次出现」消耗偏梯度的一个轴，重复出现处填 1，留待
-      _restore_diagonal_tensor 施加对角线约束；
-    - 不可用索引（前向已被独立求和）：填 1，后续通过广播补齐。
-
-    省略号维按其在目标中的真实位置插入，故省略号位于中间/末尾（如 i...j、ij...k）时也能
-    与目标形状对齐；由于消耗轴的顺序与该顺序完全一致，reshape 不会打乱已有数据。
-    """
-    target_eq_clean = target_eq.replace('.', '')
-    # 目标中的省略号维数量：目标秩减去显式索引个数
-    n_ellipsis = len(target_shape) - len(target_eq_clean)
-    # 省略号之前的显式索引个数（无省略号时视为全部索引之后），即省略号维的插入位置
-    n_before = len(target_eq.split('...')[0]) if '...' in target_eq else len(target_eq_clean)
-
-    # 按目标真实布局逐个列出「槽位」：省略号前的索引、省略号维、省略号后的索引
-    slots = ([('char', p) for p in range(n_before)] +
-             [('ellipsis', k) for k in range(n_ellipsis)] +
-             [('char', p) for p in range(n_before, len(target_eq_clean))])
-
-    expand_shape = []      # 目标的完整秩形状（含省略号维）
-    result_data_idx = 0    # partial_grad 中下一个待消费的轴下标
-    seen_available = set()
-
-    for kind, p in slots:
-        if kind == 'ellipsis':
-            consume = has_ellipsis
-        else:
-            c = target_eq_clean[p]
-            # 仅索引的首次出现消耗一个轴；重复出现处留待对角线约束处理
-            consume = c in available_indices and c not in seen_available
-            if consume:
-                seen_available.add(c)
-        if consume and result_data_idx < partial_grad.ndim:
-            expand_shape.append(partial_grad.shape[result_data_idx])
-            result_data_idx += 1
-        else:
-            expand_shape.append(1)
-
-    partial_grad = partial_grad.reshape(expand_shape)
-    return partial_grad.expand(_broadcast_expand_shape(expand_shape, target_shape))
-
-
-def _broadcast_expand_shape(shape: tuple, target_shape: tuple) -> tuple:
-    """
-    按广播语义对齐源形状与目标形状，用于 expand。
-
-    目标维为1而源维更大的维度（如省略号批量维被其他操作数广播放大）保留源尺寸，使 expand
-    合法；此类维度随后由 _unbroadcast_grad 求和还原为目标尺寸（前向共享同一份数据，梯度
-    应按广播份数累加）。其余维度取目标尺寸以正常广播。
-    """
-    return tuple(src if tgt == 1 else tgt for src, tgt in zip(shape, target_shape))
-
-@api_registry.register("trace")
-def trace(input: TN) -> TN:
-    """
-    返回输入2-D矩阵对角线元素的和。
+    计算 input 和 other 的克罗内克积（Kronecker product），记作 :math:`\\otimes`。
+    
+    如果 input 是 :math:`(a_0 \\times a_1 \\times \\dots \\times a_n)` 张量，
+    other 是 :math:`(b_0 \\times b_1 \\times \\dots \\times b_n)` 张量，
+    则结果将是 :math:`(a_0 \\cdot b_0 \\times a_1 \\cdot b_1 \\times \\dots \\times a_n \\cdot b_n)` 张量。
+    
+    计算公式:
+    :math:`(A \\otimes B)_{k_0, k_1, \\dots, k_n} = A_{i_0, i_1, \\dots, i_n} \\cdot B_{j_0, j_1, \\dots, j_n}`
+    
+    其中 :math:`k_t = i_t \\cdot b_t + j_t`
     
     参数:
-        input: 输入的2-D张量
+        input: 第一个输入张量
+        other: 第二个输入张量
+        out: 可选的输出张量，用于存储结果
         
     返回:
-        对角线元素之和的标量张量
+        克罗内克积结果张量
         
     示例:
-        >>> x = rm.arange(1., 10.).view(3, 3)
-        >>> x
-        tensor([[1., 2., 3.],
-                [4., 5., 6.],
-                [7., 8., 9.]])
-        >>> rm.trace(x)
-        tensor(15.)
+        >>> mat1 = rm.eye(3)
+        >>> mat2 = rm.ones(5, 3)
+        >>> rm.kron(mat1, mat2).shape
+        torch.Size([15, 9])
+        
+        >>> A = rm.tensor([[1, 2], [3, 4]])
+        >>> B = rm.tensor([[0, 5], [6, 7]])
+        >>> rm.kron(A, B)
+        tensor([[ 0,  5,  0, 10],
+                [ 6,  7, 12, 14],
+                [ 0, 15,  0, 20],
+                [18, 21, 24, 28]])
     """
-    if input.ndim != 2:
-        raise ValueError(f"trace: expected a 2-D tensor, but got {input.ndim}-D tensor")
+    # 使用einsum计算克罗内克积
+    # 对于2D矩阵，克罗内克积可以通过外积和reshape实现
+    # A ⊗ B 的 (i0*i1, j0*j1) 位置元素 = A[i0, j0] * B[i1, j1]
     
-    # 使用 diagonal 函数提取主对角线元素，然后求和
-    # diagonal 函数支持非方阵，自动取 min(m, n)
-    diag = diagonal(input, offset=0, dim1=0, dim2=1)
-    return diag.sum()
+    input_shape = input.shape
+    other_shape = other.shape
+    
+    # 确保两个张量维度相同
+    if len(input_shape) != len(other_shape):
+        raise ValueError(f"kron: input and other must have the same number of dimensions, "
+                        f"got {len(input_shape)} and {len(other_shape)}")
+    
+    ndim = len(input_shape)
+    
+    if ndim == 0:
+        # 标量情况
+        result = input * other
+    elif ndim == 1:
+        # 1D向量: 外积后展平
+        # input: (a,), other: (b,) -> result: (a*b,)
+        result = einsum('i,j->ij', input, other).reshape(-1)
+    elif ndim == 2:
+        # 2D矩阵: 使用einsum计算外积后reshape
+        # input: (a0, a1), other: (b0, b1) -> result: (a0*b0, a1*b1)
+        outer = einsum('ij,kl->ikjl', input, other)
+        result = outer.reshape(input_shape[0] * other_shape[0], input_shape[1] * other_shape[1])
+    else:
+        # 高维张量
+        # 构建einsum方程: 例如3D时 'abc,def->adbecf'
+        input_indices = ''.join(chr(ord('a') + i) for i in range(ndim))
+        other_indices = ''.join(chr(ord('a') + ndim + i) for i in range(ndim))
+        output_indices = ''.join(f'{input_indices[i]}{other_indices[i]}' for i in range(ndim))
+        equation = f'{input_indices},{other_indices}->{output_indices}'
+        
+        outer = einsum(equation, input, other)
+        
+        # reshape到最终形状
+        result_shape = tuple(input_shape[i] * other_shape[i] for i in range(ndim))
+        result = outer.reshape(result_shape)
+    
+    return _apply_out(out, result, (input, other), "kron")
 
 
-def attach_zero_grad_sources(self:TN, sources:tuple|list):
-    """
-    将多个张量作为来源张量依附到self张量上，不改变self的值，但self可以向这些张量传递0梯度。
+def _get_diagonal_len_start_pop(m:int, n:int, offset:int):
+    ''' 根据矩阵长宽、对角线偏移值，计算对角线长度和起点位置的坐标'''
 
-    该函数用于将张量加入计算图，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
-    当调用backward时，self会向依附的来源张量传递全0梯度。
+    if offset >= 0:
+        # 主对角线以上
+        new_n = n - offset
+        new_n = new_n if new_n > 0 else 0
+        diagonal_len = m if m < new_n else new_n
+        start_row, start_col = 0, offset  # 计算起始索引
+    else:
+        # 主对角线以下
+        new_m = m + offset
+        new_m = new_m if new_m > 0 else 0
+        diagonal_len = n if n < new_m else new_m
+        start_row, start_col = -offset, 0 # 计算起始索引
 
-    参数:
-        sources: 要依附的来源张量集合，可以是tuple、list或set。
-                只有需要梯度(requires_grad=True)且不是self本身的张量才会被依附。
+    return diagonal_len,start_row,start_col
 
-    返回:
-        self: 返回修改后的self张量，便于链式调用。
 
-    示例:
-        >>> a = tensor([1.0, 2.0], requires_grad=True)
-        >>> b = tensor([3.0, 4.0], requires_grad=True)
-        >>> c = tensor([5.0, 6.0], requires_grad=True)
-        >>> c.attach_zero_grad_sources([a, b])  # 将a,b加入c的计算图
-        >>> # c的值不变，但backward时c会向a,b传递0梯度
-    """
-    def _zero_grad_backward(result:TN, i):
-        return zeros_like(result.fromvars[i])
-
-    # 过滤有效来源张量（需要梯度且不是self本身）
-    valid_sources = [
-        var for var in sources
-        if var is not self and isinstance(var, TN) and var.requires_grad
-    ]
-    if not valid_sources:
-        return self
-
-    # 直接扩展fromvars和gradfuncs，避免创建中间列表
-    self.fromvars = self.fromvars + tuple(valid_sources)
-    self.gradfuncs = self.gradfuncs + tuple(_zero_grad_backward for _ in valid_sources)
-    self.requires_grad = True
-
-    return self
-
-def share_grad_map(tensors:tuple|list):
-    """
-    将一组张量相互连接到一个共享的计算图中，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
-
-    核心机制：
-    1. 对每个需要梯度的张量进行克隆，克隆张量通过clone操作依赖原始张量（梯度透传）
-    2. 将其他张量（排除自身）作为零梯度来源依附到克隆张量上
-    3. 这样每个张量既保持与原始张量的梯度关系，又与其他张量形成0梯度连接
-
-    设计优化：
-    - 使用 `[s for s in tensors if s is not t]` 排除自身，避免双路径依赖
-    - 单路径设计：克隆张量只通过clone依赖原始张量，不通过attach重复依赖
-
-    参数:
-        tensors: 输入张量序列，必须是tuple或list类型。
-                序列中的每个张量都会被处理：
-                - 需要梯度的张量会被克隆，并将其他张量（排除自身）作为零梯度来源依附到克隆张量
-                - 不需要梯度的张量或非TN对象保持原样
-
-    返回:
-        与输入类型相同的张量序列（tuple或list）。
-        返回的张量与输入张量值相同，但计算图已相互连接。
-        注意：对于需要梯度的张量，返回的是克隆张量而非原始张量。
-
-    异常:
-        ValueError: 当tensors不是tuple或list类型时抛出。
-
-    示例:
-        >>> a = tensor([1.0, 2.0], requires_grad=True)
-        >>> b = tensor([3.0, 4.0], requires_grad=True)
-        >>> c = tensor([5.0, 6.0], requires_grad=True)
-        >>>
-        >>> # 定义前向计算函数，只使用a和b
-        >>> def func(t):
-        ...     a, b, c = t
-        ...     return (a * b).sum()
-        >>>
-        >>> # 映射前：c不参与计算，不会收到梯度
-        >>> y1 = func((a, b, c))
-        >>> y1.backward()
-        >>> print(f"a.grad={a.grad}, b.grad={b.grad}, c.grad={c.grad}")
-        a.grad=tensor([3., 4.]), b.grad=tensor([1., 2.]), c.grad=None
-        >>>
-        >>> # 重置张量
-        >>> a = tensor([1.0, 2.0], requires_grad=True)
-        >>> b = tensor([3.0, 4.0], requires_grad=True)
-        >>> c = tensor([5.0, 6.0], requires_grad=True)
-        >>>
-        >>> # 映射后：所有张量相互连接，c会收到0梯度
-        >>> a_new, b_new, c_new = share_grad_map((a, b, c))
-        >>> y2 = func((a_new, b_new, c_new))
-        >>> y2.backward()
-        >>> print(f"a.grad={a_new.grad}, b.grad={b_new.grad}, c.grad={c_new.grad}")
-        a.grad=tensor([3., 4.]), b.grad=tensor([1., 2.]), c.grad=tensor([0., 0.])
-        >>>
-        >>> # 验证：前向值不变，a和b梯度不变，c从None变为0
-        >>> assert float(y1._array) == float(y2._array)
-        >>> assert (a_new.grad == tensor([3., 4.])).all()
-        >>> assert (b_new.grad == tensor([1., 2.])).all()
-        >>> assert (c_new.grad == tensor([0., 0.])).all()
-    """
-    if not isinstance(tensors,(tuple,list)):
-        raise ValueError("'tensors' need to be tuple or list of TN tensors")
-
-    target_list = []
-    for t in tensors:
-        if isinstance(t,TN) and t.requires_grad:
-            # 克隆张量并通过clone依赖原始张量（梯度透传）
-            # 将其他张量（排除自身）作为零梯度来源依附，避免双路径依赖
-            target_list.append(
-                attach_zero_grad_sources(t.clone(),[s for s in tensors if s is not t])
-            )
-        else:
-            target_list.append(t)
-
-    return type(tensors)(target_list)
-
-@api_registry.register('tril')
+@api_registry.register
 def tril(input_tensor: TN, diagonal: int = 0) -> TN:
     """
     返回矩阵的下三角部分
@@ -4266,6 +6168,7 @@ def tril(input_tensor: TN, diagonal: int = 0) -> TN:
     
     return ret
 
+
 def _tril_backward(result_tensor: TN, i: int) -> TN:
     """
     tril函数的反向传播实现。
@@ -4275,7 +6178,8 @@ def _tril_backward(result_tensor: TN, i: int) -> TN:
     # 重要：使用tril函数获取梯度的下三角部分，而不是numpy.tril
     return tril(result_tensor.grad_value, diagonal)
 
-@api_registry.register('triu')
+
+@api_registry.register
 def triu(input_tensor: TN, diagonal: int = 0) -> TN:
     """
     返回矩阵的上三角部分
@@ -4306,6 +6210,7 @@ def triu(input_tensor: TN, diagonal: int = 0) -> TN:
     
     return ret
 
+
 def _triu_backward(result_tensor: TN, i: int) -> TN:
     """
     triu函数的反向传播实现。
@@ -4316,25 +6221,7 @@ def _triu_backward(result_tensor: TN, i: int) -> TN:
     return triu(result_tensor.grad_value, diagonal)
 
 
-def _get_diagonal_len_start_pop(m:int, n:int, offset:int):
-    ''' 根据矩阵长宽、对角线偏移值，计算对角线长度和起点位置的坐标'''
-
-    if offset >= 0:
-        # 主对角线以上
-        new_n = n - offset
-        new_n = new_n if new_n > 0 else 0
-        diagonal_len = m if m < new_n else new_n
-        start_row, start_col = 0, offset  # 计算起始索引
-    else:
-        # 主对角线以下
-        new_m = m + offset
-        new_m = new_m if new_m > 0 else 0
-        diagonal_len = n if n < new_m else new_m
-        start_row, start_col = -offset, 0 # 计算起始索引
-
-    return diagonal_len,start_row,start_col
-
-@api_registry.register('diagonal')
+@api_registry.register
 def diagonal(
     input: TN, 
     offset: int = 0, 
@@ -4434,7 +6321,8 @@ def diagonal(
     return result    
 # end of diagonal
 
-@api_registry.register('diag')
+
+@api_registry.register
 def diag(input: TN, offset: int = 0) -> TN:
     """
     提取张量的对角线元素或从1D张量创建对角矩阵。
@@ -4497,7 +6385,37 @@ def diag(input: TN, offset: int = 0) -> TN:
 
 # end of diag
 
-@api_registry.register('fill_diagonal')
+
+@api_registry.register
+def trace(input: TN) -> TN:
+    """
+    返回输入2-D矩阵对角线元素的和。
+    
+    参数:
+        input: 输入的2-D张量
+        
+    返回:
+        对角线元素之和的标量张量
+        
+    示例:
+        >>> x = rm.arange(1., 10.).view(3, 3)
+        >>> x
+        tensor([[1., 2., 3.],
+                [4., 5., 6.],
+                [7., 8., 9.]])
+        >>> rm.trace(x)
+        tensor(15.)
+    """
+    if input.ndim != 2:
+        raise ValueError(f"trace: expected a 2-D tensor, but got {input.ndim}-D tensor")
+    
+    # 使用 diagonal 函数提取主对角线元素，然后求和
+    # diagonal 函数支持非方阵，自动取 min(m, n)
+    diag = diagonal(input, offset=0, dim1=0, dim2=1)
+    return diag.sum()
+
+
+@api_registry.register
 def fill_diagonal(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int = -1) -> TN:
     """
     用指定值填充张量指定维度之间的对角线元素，返回新张量。
@@ -4572,7 +6490,8 @@ def fill_diagonal(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int =
 
 # end of fill_diagonal
 
-@api_registry.register('fill_diagonal_')
+
+@api_registry.register
 def fill_diagonal_(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int = -1) -> TN:
     """
     用指定值原地填充张量指定维度之间的对角线元素，返回原张量。
@@ -4647,36 +6566,370 @@ def fill_diagonal_(input: TN, value, offset: int = 0, dim1: int = -2, dim2: int 
 
 # end of fill_diagonal_
 
-# 从批量1D张量生成批量对角矩阵的函数
-@api_registry.register('batch_diag')
-def batch_diag(v):
-    """从批量1D张量生成批量对角矩阵
+
+# ===========================================================================
+# 12. 其余工具（masked_fill / clamp / 梯度来源共享）
+# ===========================================================================
+
+
+@api_registry.register
+def masked_fill_(input: TN, mask: TN, value: Any) -> TN:
+    """
+    原地将张量中掩码为 True 的元素填充为指定值，等价于 torch.Tensor.masked_fill_。
+
+    掩码必须是可广播到 input 形状的布尔张量。
+
+    参数:
+        input: 输入张量（会被原地修改）
+        mask: 布尔类型的张量掩码，形状需与 input 可广播
+        value: 用于填充的值，可以是标量或 0 维张量
+
+    返回:
+        TN: input 自身（已原地修改）
+
+    异常:
+        RuntimeError: input 是需要梯度的叶子节点、mask 不是布尔类型、
+            value 不是 0 维张量，或 mask 无法广播到 input 形状
+    """
+    # 检查是否是需要梯度的叶子节点，原地操作不允许对需要梯度的叶子节点执行
+    if is_grad_enabled() and input.requires_grad and input.is_leaf:
+        raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
+
+    # 检查mask是否为布尔类型
+    if mask.dtype != np.bool_:
+        raise RuntimeError(f"masked_fill_ only supports boolean masks, but got mask with dtype {mask.dtype}")
+
+    # 处理不同类型的value参数
+    if isinstance(value, TN):
+        if value.ndim != 0:  # type: ignore
+            raise RuntimeError(f'masked_fill_ only supports 0-dimension value tensor but got tensor with {value.ndim} dimensions.')  # type: ignore
+
+    # 执行原地填充操作
+    try:
+        if mask.shape != input.shape:
+            # 如果需要广播，先广播掩码
+            broadcasted_mask = mask.broadcast_to(input.shape)
+            input[broadcasted_mask] = value
+        else:
+            input[mask] = value
+    except Exception as e:
+        raise RuntimeError(f"mask with shape {mask.shape} is not broadcastable to tensor shape {input.shape}") from e
+
+    # 返回自身以支持链式调用
+    return input
+
+
+@api_registry.register
+def masked_fill(input: TN, mask: TN, value: Any) -> TN:
+    """
+    使用标量值填充张量中对应掩码为True的位置（非原地操作）
     
     参数:
-        v: 输入张量，形状为(*, n)，其中*表示任意数量的批处理维度
-        
+        input: 输入张量
+        mask: 布尔类型的掩码张量，形状需与输入张量广播兼容
+        value: 填充值，可以是标量或0维张量
+    
     返回:
-        形状为(*, n, n)的对角矩阵，对角线元素为输入张量的值
+        填充后的新张量
+    
+    示例:
+        使用标量值填充:
+            arr = tensor([1, 2, 3, 4, 5])
+            mask = tensor([False, True, False, True, False])
+            new_arr = arr.masked_fill(mask, -1)
+            print(new_arr)  # 输出: [1, -1, 3, -1, 5]
+            print(arr)      # 输出: [1, 2, 3, 4, 5] (原张量不变)
     """
-    # 验证输入
-    if not isinstance(v, TN):
-        raise TypeError(f"Input must be TN type, got {type(v)}")
+    # 检查mask是否为布尔类型
+    if mask.dtype != np.bool_:
+        raise RuntimeError(f"masked_fill only supports boolean masks, but got mask with dtype {mask.dtype}")
     
-    # 获取输入形状
-    shape = v.shape
-    n = shape[-1]  # 最后一维的大小
+    # 处理不同类型的value参数
+    if isinstance(value, TN):
+        if value.ndim != 0:  # type: ignore
+            raise RuntimeError(f'masked_fill only supports 0-dimension value tensor but got tensor with {value.ndim} dimensions.')  # type: ignore
     
-    # 创建单位矩阵模板，确保与输入张量的数据类型一致
-    identity_tensor = eye(n, device=v.device, dtype=v.dtype)
-    
-    # 使用广播机制生成对角矩阵
-    # 将输入张量扩展维度，然后与单位矩阵相乘
-    # 形状变化：(*, n) -> (*, 1, n) -> (*, n, n)
-    batch_eye = identity_tensor.expand(shape[:-1] + (n, n))
-    v_expanded = v.unsqueeze(-2)  # 扩展为 (*, 1, n)
-    
-    # 逐元素相乘，利用广播机制
-    result = v_expanded * batch_eye
-    return result
+    # 执行填充操作
+    try:
+        if mask.shape != input.shape:
+            # 如果需要广播，先广播掩码
+            broadcasted_mask = mask.broadcast_to(input.shape)
+            # 使用where执行非原地填充
+            return where(broadcasted_mask, value, input)
+        else:
+            # 使用where执行非原地填充
+            return where(mask, value, input)
+    except Exception as e:
+        raise RuntimeError(f"mask with shape {mask.shape} is not broadcastable to tensor shape {input.shape}") from e
 
-# end of batch_diag
+
+@api_registry.register
+def clamp_(input: TN, min: float | TN | None = None, max: float | TN | None = None) -> TN:
+    """
+    将张量的每个元素限制在 [min, max] 范围内（原地操作），等价于 torch.Tensor.clamp_。
+
+    参数:
+        input: 输入张量（会被原地修改）
+        min: 最小值，可以是标量或张量。为 None 时不限制最小值
+        max: 最大值，可以是标量或张量。为 None 时不限制最大值
+
+    返回:
+        TN: input 自身（已原地修改）
+
+    边界相等时的处理（对齐 PyTorch 的 clamp_）:
+        - 标量边界：开区间严格比较。元素恰等于 min/max 时同样改写为边界值，其自身梯度为 0
+        - 张量边界：闭区间
+          * 元素仅等于一侧边界（x==lo<hi 或 lo<x==hi）：梯度对半分给该元素与该边界张量（各 0.5）
+          * 元素同时等于上下界（x==lo==hi）：梯度全部归该元素自身（dx=1）
+          * lo>hi（区间无效）：结果全部取 hi，梯度全部归 hi
+        - min>max（均为标量时）：不报错，所有元素的结果值都等于 max（即先被抬到 min、再统一压到上界 max）
+
+    注意:
+        - 若本张量是需要梯度的叶子节点，会抛出运行时错误
+        - min 与 max 必须同为标量或同为张量
+    """
+    # 若本张量是需要梯度的叶子节点，原地改写会破坏计算图，直接报错（与 PyTorch 一致）
+    if is_grad_enabled() and input.requires_grad and input.is_leaf:
+        raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
+
+    # 标量与张量边界不可混用（与 PyTorch 的重载约束一致）
+    min_is_tn = isinstance(min, TN)
+    max_is_tn = isinstance(max, TN)
+    if (min_is_tn and max is not None and not max_is_tn) or \
+       (max_is_tn and min is not None and not min_is_tn):
+        raise TypeError("clamp_(): min and max must be both scalars or both tensors")
+    if not min_is_tn and not max_is_tn:
+        # 标量边界：开区间严格比较 —— x<=min 或 x>=max 的元素改写为边界值；
+        # 元素恰等于边界时也按越界处理（值取边界、自身梯度为 0）。
+        # 标量可直接广播，无需掩码聚集；min>max（均为标量）不报错，
+        # 所有元素的结果值都等于 max（与 torch/numpy 一致）
+        if min is not None:
+            setat_(input, input <= min, min)
+        if max is not None:
+            setat_(input, input >= max, max)
+        return input
+
+    # 张量边界：缺失一侧以 ±inf 作哨兵填充，比较时该侧条件恒为假，等价于不设限
+    lo = min if min_is_tn else -float('inf')
+    hi = max if max_is_tn else float('inf')
+
+    # 原地操作不得改变形状：边界广播后的形状必须与原形状一致（与 PyTorch 一致）
+    out_shape = np.broadcast_shapes(input.shape, np.shape(lo), np.shape(hi))
+    if out_shape != input.shape:
+        raise RuntimeError(f"output with shape {input.shape} doesn't match the broadcast shape {out_shape}")
+
+    def gather(bound, mask):
+        # setat_/addat_ 的掩码右值尺寸须等于被选中元素个数：先把边界广播到 input 形状，再按掩码聚集
+        b = bound._expand(input.shape) if bound.shape != input.shape else bound
+        return b[mask]
+
+    # 相等掩码须在改写数据前、基于原始数据算出（下面的 setat_ 会改动数据）；
+    # (lo < hi) 用于排除无效区间 lo>hi，并让三重相等 x==lo==hi 不落入对半分
+    t_lo = (input == lo) & (lo < hi)
+    t_hi = (input == hi) & (lo < hi)
+
+    # 数据裁剪：先抬下限、再压上限。above 必须在下限改写之后计算，
+    # 这样 lo>hi 时被抬到 lo 的元素也能一并压到 hi，其梯度一并转给 hi
+    below = input < lo
+    setat_(input, below, gather(lo, below) if min_is_tn else lo)
+    above = input > hi
+    setat_(input, above, gather(hi, above) if max_is_tn else hi)
+
+    # 单边相等（x==lo<hi 或 lo<x==hi）处需把梯度对半分给元素与边界张量：
+    # addat_ 使数据变为 2*bound，再 mulat_(0.5) 既还原数据、又把 input 梯度缩为一半
+    #（mulat_ 是缩放而非置零），恰好得到 dx=0.5、dbound=0.5；
+    # 双重/三重相等被上面的 (lo<hi) 排除，保持 dx=1
+    if min_is_tn:
+        addat_(input, t_lo, gather(lo, t_lo))
+        mulat_(input, t_lo, 0.5)
+    if max_is_tn:
+        addat_(input, t_hi, gather(hi, t_hi))
+        mulat_(input, t_hi, 0.5)
+
+    # 返回自身以支持链式调用
+    return input
+
+
+@api_registry.register
+def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, out: TN | None = None) -> TN:
+    """
+    将张量的元素限制在 [min, max] 范围内（非原地）
+    
+    参数:
+        x: 输入张量
+        min: 下限值，可以是标量或张量
+        max: 上限值，可以是标量或张量
+        out: 输出张量（可选）；指定后结果写入 out，且不支持自动微分
+    
+    返回:
+        限制在指定范围内的张量
+
+    边界相等时的处理（对齐 PyTorch 的 clamp）:
+        - 标量边界：开区间严格比较。元素恰等于 min/max 时不改写，其自身梯度为 0
+        - 张量边界：闭区间
+          * 元素仅等于一侧边界（x==lo<hi 或 lo<x==hi）：梯度对半分给该元素与该边界张量（各 0.5）
+          * 元素同时等于上下界（x==lo==hi）：梯度全部归该元素（dx=1）
+          * lo>hi（区间无效）：结果全部取 hi，梯度全部归 hi
+        - min>max（均为标量时）：不报错，所有元素的结果值都等于 max（即先被抬到 min、再统一压到上界 max）
+        - min 与 max 必须同为标量或同为张量；两者均为 None 时报 ValueError
+    """
+    # 参数缺省检查：min 与 max 不能同时为 None
+    if min is None and max is None:
+        raise ValueError("clamp(): min or max must be specified")
+    
+    # 标量与张量边界不可混用（与 PyTorch 的重载约束一致）
+    min_is_tn = isinstance(min, TN)
+    max_is_tn = isinstance(max, TN)
+    if (min_is_tn and max is not None and not max_is_tn) or \
+       (max_is_tn and min is not None and not min_is_tn):
+        raise TypeError("clamp(): min and max must be both scalars or both tensors")
+
+    if not min_is_tn and not max_is_tn:
+        # 标量边界：开区间严格比较 —— 仅 x<min 或 x>max 的元素改写为边界值；
+        # 元素恰等于边界时不改写、其自身梯度为 0（与 PyTorch 一致）。
+        # min>max（均为标量）不报错，所有元素的结果值都等于 max（与 torch/numpy 一致）
+        y = x
+        if min is not None:
+            y = where(x <= min, min, y)
+        if max is not None:
+            y = where(y >= max, max, y)
+    else:
+        # 张量边界：缺失一侧以 ±inf 作哨兵填充，比较时该侧条件恒为假，等价于不设限
+        lo = min if min_is_tn else -float('inf')
+        hi = max if max_is_tn else float('inf')
+
+        # 值：先 max(x,lo) 再 min(hi)；lo>hi 时结果全部落到 hi（与 PyTorch 一致）
+        m = where(x < lo, lo, x)
+        y = where(m > hi, hi, m)
+        # 闭区间下元素可能落在边界上，需按 PyTorch 规则分配梯度：
+        # 单边相等（x==lo<hi 或 lo<x==hi）时元素与边界张量各得 0.5 —— 取值用 0.5*(x+bound)，
+        # 因 x==bound 数值上恰好等于 bound，而梯度精确为 dx=0.5、dbound=0.5；
+        # 三重相等 x==lo==hi 被 (lo<hi) 排除，保持 dx=1；
+        # 仅对真实张量边界施加对半分：None 侧为 ±inf 哨兵，若 x 恰为 ±inf 不应参与
+        if min_is_tn:
+            t_lo = (x == lo) & (lo < hi)
+            y = where(t_lo, 0.5 * (x + lo), y)
+        if max_is_tn:
+            t_hi = (x == hi) & (lo < hi)
+            y = where(t_hi, 0.5 * (x + hi), y)
+
+    # 若指定 out，把结果写入其中并返回（out 场景不支持自动微分）
+    return _apply_out(out, y, (x, min, max), "clamp")
+
+
+def attach_zero_grad_sources(self:TN, sources:tuple|list):
+    """
+    将多个张量作为来源张量依附到self张量上，不改变self的值，但self可以向这些张量传递0梯度。
+
+    该函数用于将张量加入计算图，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
+    当调用backward时，self会向依附的来源张量传递全0梯度。
+
+    参数:
+        sources: 要依附的来源张量集合，可以是tuple、list或set。
+                只有需要梯度(requires_grad=True)且不是self本身的张量才会被依附。
+
+    返回:
+        self: 返回修改后的self张量，便于链式调用。
+
+    示例:
+        >>> a = tensor([1.0, 2.0], requires_grad=True)
+        >>> b = tensor([3.0, 4.0], requires_grad=True)
+        >>> c = tensor([5.0, 6.0], requires_grad=True)
+        >>> c.attach_zero_grad_sources([a, b])  # 将a,b加入c的计算图
+        >>> # c的值不变，但backward时c会向a,b传递0梯度
+    """
+    def _zero_grad_backward(result:TN, i):
+        return zeros_like(result.fromvars[i])
+
+    # 过滤有效来源张量（需要梯度且不是self本身）
+    valid_sources = [
+        var for var in sources
+        if var is not self and isinstance(var, TN) and var.requires_grad
+    ]
+    if not valid_sources:
+        return self
+
+    # 直接扩展fromvars和gradfuncs，避免创建中间列表
+    self.fromvars = self.fromvars + tuple(valid_sources)
+    self.gradfuncs = self.gradfuncs + tuple(_zero_grad_backward for _ in valid_sources)
+    self.requires_grad = True
+
+    return self
+
+
+def share_grad_map(tensors:tuple|list):
+    """
+    将一组张量相互连接到一个共享的计算图中，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
+
+    核心机制：
+    1. 对每个需要梯度的张量进行克隆，克隆张量通过clone操作依赖原始张量（梯度透传）
+    2. 将其他张量（排除自身）作为零梯度来源依附到克隆张量上
+    3. 这样每个张量既保持与原始张量的梯度关系，又与其他张量形成0梯度连接
+
+    设计优化：
+    - 使用 `[s for s in tensors if s is not t]` 排除自身，避免双路径依赖
+    - 单路径设计：克隆张量只通过clone依赖原始张量，不通过attach重复依赖
+
+    参数:
+        tensors: 输入张量序列，必须是tuple或list类型。
+                序列中的每个张量都会被处理：
+                - 需要梯度的张量会被克隆，并将其他张量（排除自身）作为零梯度来源依附到克隆张量
+                - 不需要梯度的张量或非TN对象保持原样
+
+    返回:
+        与输入类型相同的张量序列（tuple或list）。
+        返回的张量与输入张量值相同，但计算图已相互连接。
+        注意：对于需要梯度的张量，返回的是克隆张量而非原始张量。
+
+    异常:
+        ValueError: 当tensors不是tuple或list类型时抛出。
+
+    示例:
+        >>> a = tensor([1.0, 2.0], requires_grad=True)
+        >>> b = tensor([3.0, 4.0], requires_grad=True)
+        >>> c = tensor([5.0, 6.0], requires_grad=True)
+        >>>
+        >>> # 定义前向计算函数，只使用a和b
+        >>> def func(t):
+        ...     a, b, c = t
+        ...     return (a * b).sum()
+        >>>
+        >>> # 映射前：c不参与计算，不会收到梯度
+        >>> y1 = func((a, b, c))
+        >>> y1.backward()
+        >>> print(f"a.grad={a.grad}, b.grad={b.grad}, c.grad={c.grad}")
+        a.grad=tensor([3., 4.]), b.grad=tensor([1., 2.]), c.grad=None
+        >>>
+        >>> # 重置张量
+        >>> a = tensor([1.0, 2.0], requires_grad=True)
+        >>> b = tensor([3.0, 4.0], requires_grad=True)
+        >>> c = tensor([5.0, 6.0], requires_grad=True)
+        >>>
+        >>> # 映射后：所有张量相互连接，c会收到0梯度
+        >>> a_new, b_new, c_new = share_grad_map((a, b, c))
+        >>> y2 = func((a_new, b_new, c_new))
+        >>> y2.backward()
+        >>> print(f"a.grad={a_new.grad}, b.grad={b_new.grad}, c.grad={c_new.grad}")
+        a.grad=tensor([3., 4.]), b.grad=tensor([1., 2.]), c.grad=tensor([0., 0.])
+        >>>
+        >>> # 验证：前向值不变，a和b梯度不变，c从None变为0
+        >>> assert float(y1._array) == float(y2._array)
+        >>> assert (a_new.grad == tensor([3., 4.])).all()
+        >>> assert (b_new.grad == tensor([1., 2.])).all()
+        >>> assert (c_new.grad == tensor([0., 0.])).all()
+    """
+    if not isinstance(tensors,(tuple,list)):
+        raise ValueError("'tensors' need to be tuple or list of TN tensors")
+
+    target_list = []
+    for t in tensors:
+        if isinstance(t,TN) and t.requires_grad:
+            # 克隆张量并通过clone依赖原始张量（梯度透传）
+            # 将其他张量（排除自身）作为零梯度来源依附，避免双路径依赖
+            target_list.append(
+                attach_zero_grad_sources(t.clone(),[s for s in tensors if s is not t])
+            )
+        else:
+            target_list.append(t)
+
+    return type(tensors)(target_list)

@@ -48,7 +48,9 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import numpy as np
-from ..core import *
+# 显式导入所需符号：星号导入会把 abs/round 等内置名遮蔽成张量版本，
+# 容易在误差比较等纯数值场景中误用（历史上 gradcheck 就踩过这个坑）
+from ..core import TN, api_registry, set_grad_enabled, tensor, zeros_like
 
 def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, create_graph: bool = False):
         """执行反向模式自动微分（反向传播）。
@@ -74,7 +76,7 @@ def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, crea
         """
         return self.backward(gradient=gradient, create_graph=create_graph)
 
-@api_registry.register("grad")
+@api_registry.register
 def grad(outputs:TN,
          inputs:TN|list[TN]|tuple[TN],
          retain_graph: bool = False,
@@ -478,7 +480,7 @@ def _slow_gradcheck(func, inputs, outputs, out_sizes, eps, atol, rtol, nondet_to
 
             if an_grad is None:
                 if not check_undefined_grad:
-                    invalids = abs(num_col) > (atol + nondet_tol)
+                    invalids = np.abs(num_col) > (atol + nondet_tol)
                     if np.any(invalids):
                         failures.append(
                             f"input {i}, output element {j}: analytical grad is undefined "
@@ -602,10 +604,10 @@ def _fast_gradcheck(func, inputs, outputs, eps, atol, rtol, nondet_tol,
             effective_atol = atol * sum_u * sum_v
 
             num_val, an_val = numerical[i][j], analytical[i][j]
-            abs_error = abs(num_val - an_val)
-            rel_error = abs_error / (abs(num_val) + abs(an_val) + 1e-10)
+            abs_error = np.abs(num_val - an_val)
+            rel_error = abs_error / (np.abs(num_val) + np.abs(an_val) + 1e-10)
 
-            if abs_error > effective_atol + rtol * abs(an_val) and abs_error > nondet_tol:
+            if abs_error > effective_atol + rtol * np.abs(an_val) and abs_error > nondet_tol:
                 failures.append(
                     f"input {i}, output {j}: projected absolute error {abs_error:.6e}, "
                     f"relative error {rel_error:.6e}")
