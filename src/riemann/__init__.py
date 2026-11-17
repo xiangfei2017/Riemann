@@ -41,7 +41,7 @@ if 'com.termux' in sys.prefix or 'ANDROID_DATA' in os.environ:
 # os/sys 只在本文件初始化时使用，用完即清理，避免暴露为 riemann.os / riemann.sys
 del os, sys
 
-__version__ = "0.6.95"        # 包版本
+__version__ = "0.6.98"        # 包版本
 
 # 定义当使用 `from riemann import *` 时要导出的内容
 # __all__ = [] 
