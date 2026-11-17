@@ -134,10 +134,10 @@ def count_graph_nodes(root_tensor):
         visited.add(tensor)
         count += 1
         
-        # 遍历梯度函数的输入变量
+        # 只遍历TN来源；非TN操作数不是计算图节点，且list等对象不可哈希
         if tensor.fromvars:
             for var in tensor.fromvars:
-                if var not in visited:
+                if isinstance(var, rm.TN) and var not in visited:
                     queue.append(var)
     
     return count

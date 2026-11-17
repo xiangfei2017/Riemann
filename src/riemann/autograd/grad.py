@@ -720,6 +720,8 @@ class Function:
         requires_grad = any(input.requires_grad for input in inputs)
         
         if requires_grad:
+            # 自定义Function会覆盖forward内部算子的计算图，旧融合钩子不再有效
+            outputs.gradfunc_fused = None
             # 设置输出张量的梯度跟踪信息
             outputs.requires_grad = True
             

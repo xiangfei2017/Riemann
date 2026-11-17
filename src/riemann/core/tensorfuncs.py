@@ -3748,6 +3748,7 @@ def _inplace_unary_at_(input:TN, index, data_func, backward_func):
         input.fromvars = (placeholder,) + input.fromvars
         input.parms = ((target_copy,index_val),) + input.parms
         input.gradfuncs = (backward_func, ) + input.gradfuncs
+        input.gradfunc_fused = None
 
     return input
 
@@ -3838,6 +3839,7 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, backward_func, vector_fun
         # 注意(target_copy,index_val)必须以元组的形式整体插入到parms元组前面
         input.parms = ((target_copy,index_val),) + input.parms
         input.gradfuncs = (backward_func, ) + input.gradfuncs
+        input.gradfunc_fused = None
 
     return input
 
@@ -4212,7 +4214,7 @@ def _graph_contains(var, target):
         visited.add(id(item))
         if not item.requires_grad:
             continue
-        stack.extend(item.fromvars)
+        stack.extend(var for var in item.fromvars if isinstance(var, TN))
     return False
 
 
@@ -7487,6 +7489,7 @@ def attach_zero_grad_sources(self:TN, sources:tuple|list):
     # 直接扩展fromvars和gradfuncs，避免创建中间列表
     self.fromvars = self.fromvars + tuple(valid_sources)
     self.gradfuncs = self.gradfuncs + tuple(_zero_grad_backward for _ in valid_sources)
+    self.gradfunc_fused = None
     self.requires_grad = True
 
     return self

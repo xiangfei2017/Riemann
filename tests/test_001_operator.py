@@ -389,6 +389,219 @@ class TestOperatorFunctions(unittest.TestCase):
                     test_name = f"Power non-tensor base gradient [{type(base).__name__}] {riemann_dtype} (device: {device_name})"
                     success, error = compare_values(exp.grad, texp.grad, test_name)
                     print_test_result(test_name, success, error)
+
+    def test_conj_numpy_scalar_and_binary_grad(self):
+        """测试numpy/cupy标量共轭及其在乘法、除法反向中的使用"""
+        scalar_values = [
+            np.float32(2.5), np.float64(2.5), np.int64(2), np.bool_(True),
+            np.complex64(2.0 + 1.0j), np.complex128(2.0 + 1.0j),
+        ]
+        if CUDA_AVAILABLE:
+            scalar_values.extend([rm.cuda.cp.float32(2.5), rm.cuda.cp.complex64(2.0 + 1.0j)])
+
+        for value in scalar_values:
+            result = rm.conj(value)
+            self.assertIs(type(result), type(value))
+            self.assertEqual(result, value.conjugate())
+
+        for device in device_list:
+            for use_div in (False, True):
+                x = tensor([1.0 + 2.0j, 3.0 - 1.0j], dtype=complex64,
+                           device=device, requires_grad=True)
+                right = np.complex64(2.0 + 1.0j)
+                y = x / right if use_div else x * right
+                output_grad = tensor(1.0 + 0.0j, dtype=complex64, device=device)
+                grad = rm.autograd.grad(y.sum(), x, grad_outputs=output_grad)[0]
+                expected = 1.0 / np.conj(right) if use_div else np.conj(right)
+                np.testing.assert_allclose(
+                    grad.detach().cpu().numpy(),
+                    np.full(x.shape, expected, dtype=np.complex64),
+                    rtol=1e-6, atol=1e-6,
+                )
+        print_test_result("Conjugate numpy/cupy scalars and binary gradients", True)
+
+    def test_pow_non_tensor_base_second_order(self):
+        """测试非TN底数时指数的一阶、二阶梯度及设备一致性"""
+        for riemann_dtype, torch_dtype in [(float32, torch.float32), (float64, torch.float64)]:
+            for device in device_list:
+                bases = [2, 2.5, np.float32(2.5)]
+                if riemann_dtype == float64:
+                    bases.append(np.float64(2.5))
+                if device == 'cpu':
+                    bases.append(np.array([2.0, 3.0], dtype=riemann_dtype))
+                    if riemann_dtype == float64:
+                        bases.append([2.0, 3.0])
+
+                for base in bases:
+                    x = tensor([1.0, 2.0], dtype=riemann_dtype,
+                               device=device, requires_grad=True)
+                    y = base ** x
+                    grad1 = rm.autograd.grad(y.sum(), x, create_graph=True)[0]
+                    grad2 = rm.autograd.grad(grad1.sum(), x)[0]
+                    self.assertEqual(grad1.device, x.device)
+
+                    tx = torch.tensor([1.0, 2.0], dtype=torch_dtype,
+                                      device=torch.device(device), requires_grad=True)
+                    tbase = torch.tensor(base, dtype=torch_dtype, device=torch.device(device))
+                    ty = tbase ** tx
+                    tgrad1 = torch.autograd.grad(ty.sum(), tx, create_graph=True)[0]
+                    tgrad2 = torch.autograd.grad(tgrad1.sum(), tx)[0]
+
+                    test_name = f"Power non-tensor base second-order [{type(base).__name__}] {riemann_dtype} ({device})"
+                    success, error = compare_values(grad1, tgrad1, test_name)
+                    self.assertTrue(success, error)
+                    success, error = compare_values(grad2, tgrad2, test_name)
+                    print_test_result(test_name, success, error)
+
+    def test_pow_container_exponent_grad(self):
+        """测试list/tuple/range指数不会在前向成功后因减法操作导致反向失败"""
+        exponents = [[2.0, 3.0, 4.0], (2.0, 3.0, 4.0), range(2, 5)]
+        for exponent in exponents:
+            x = tensor([1.5, 2.0, 2.5], dtype=float64, requires_grad=True)
+            y = x ** exponent
+            grad = rm.autograd.grad(y.sum(), x)[0]
+
+            tx = torch.tensor([1.5, 2.0, 2.5], dtype=torch.float64, requires_grad=True)
+            texponent = torch.tensor(list(exponent), dtype=torch.float64)
+            ty = tx ** texponent
+            tgrad = torch.autograd.grad(ty.sum(), tx)[0]
+
+            test_name = f"Power container exponent gradient [{type(exponent).__name__}]"
+            success, error = compare_values(grad, tgrad, test_name)
+            print_test_result(test_name, success, error)
+
+    def test_binary_graph_keeps_original_operands(self):
+        """二元算子始终按原始左右顺序保存两个操作数及对应梯度函数"""
+        binary_ops = [rm.add, rm.sub, rm.mul, rm.div, rm.pow, rm.floor_divide, rm.remainder]
+        for device in device_list:
+            for op in binary_ops:
+                x = tensor([1.0, 2.0], dtype=float32, device=device, requires_grad=True)
+                y = tensor([3.0, 4.0], dtype=float32, device=device, requires_grad=True)
+                constant = tensor([5.0, 6.0], dtype=float32, device=device)
+                cases = [
+                    (op(x, 2.0), (x, 2.0)),
+                    (op(2.0, x), (2.0, x)),
+                    (op(x, y), (x, y)),
+                    (op(x, constant), (x, constant)),
+                ]
+                for result, expected_sources in cases:
+                    with self.subTest(op=op.__name__, device=device, sources=expected_sources):
+                        self.assertEqual(len(result.fromvars), 2)
+                        self.assertEqual(len(result.gradfuncs), 2)
+                        self.assertEqual(result.parms, ())
+                        for actual, expected in zip(result.fromvars, expected_sources):
+                            if isinstance(expected, rm.TN):
+                                self.assertIs(actual, expected)
+                            else:
+                                self.assertEqual(actual, expected)
+        print_test_result("Binary graph preserves original operand positions", True)
+
+    def test_binary_non_tensor_container_broadcast_grad(self):
+        """非TN容器位于左右两侧时，广播反向均与torch一致"""
+        op_cases = [
+            (rm.add, torch.add),
+            (rm.sub, torch.sub),
+            (rm.mul, torch.mul),
+            (rm.div, torch.div),
+            (rm.pow, torch.pow),
+            (rm.remainder, torch.remainder),
+        ]
+        x_data = np.array([[2.0], [3.0]], dtype=np.float64)
+        constant_values = [5.0, 7.0]
+        for device in device_list:
+            # 保持前向不转换非TN：CPU使用list，CUDA使用CuPy原生数组
+            constant_data = constant_values if device == 'cpu' else rm.cuda.cp.asarray(
+                constant_values, dtype=rm.cuda.cp.float64)
+            for rm_op, torch_op in op_cases:
+                for constant_on_left in (False, True):
+                    x = tensor(x_data, dtype=float64, device=device, requires_grad=True)
+                    tx = torch.tensor(x_data, dtype=torch.float64,
+                                      device=torch.device(device), requires_grad=True)
+                    tconstant = torch.tensor(constant_values, dtype=torch.float64,
+                                             device=torch.device(device))
+                    if constant_on_left:
+                        result = rm_op(constant_data, x)
+                        tresult = torch_op(tconstant, tx)
+                    else:
+                        result = rm_op(x, constant_data)
+                        tresult = torch_op(tx, tconstant)
+                    result.sum().backward()
+                    tresult.sum().backward()
+
+                    side = "left" if constant_on_left else "right"
+                    test_name = f"Binary container gradient {rm_op.__name__} {side} ({device})"
+                    success, error = compare_values(x.grad, tx.grad, test_name)
+                    print_test_result(test_name, success, error)
+
+    def test_binary_fused_backward_hook(self):
+        """加减乘除和pow的标准backward实际调用融合钩子，且梯度结果保持正确"""
+        op_cases = [(rm.add, torch.add), (rm.sub, torch.sub),
+                    (rm.mul, torch.mul), (rm.div, torch.div),
+                    (rm.pow, torch.pow)]
+        x_data = np.array([2.0, 3.0], dtype=np.float64)
+        y_data = np.array([5.0, 7.0], dtype=np.float64)
+        for device in device_list:
+            for op, torch_op in op_cases:
+                x = tensor(x_data, dtype=float64, device=device, requires_grad=True)
+                y = tensor(y_data, dtype=float64, device=device, requires_grad=True)
+                tx = torch.tensor(x_data, dtype=torch.float64,
+                                  device=torch.device(device), requires_grad=True)
+                ty = torch.tensor(y_data, dtype=torch.float64,
+                                  device=torch.device(device), requires_grad=True)
+                result = op(x, y)
+                tresult = torch_op(tx, ty)
+                original_fused = result.gradfunc_fused
+                calls = []
+
+                def fused_wrapper(r, fused=original_fused):
+                    calls.append(r)
+                    return fused(r)
+
+                result.gradfunc_fused = fused_wrapper
+                result.sum().backward()
+                tresult.sum().backward()
+
+                self.assertEqual(len(calls), 1)
+                for grad, expected in ((x.grad, tx.grad), (y.grad, ty.grad)):
+                    test_name = f"Fused backward {op.__name__} ({device})"
+                    success, error = compare_values(grad, expected, test_name)
+                    print_test_result(test_name, success, error)
+
+        # 图结构被扩展后必须回退到逐来源gradfuncs，避免遗漏新增来源
+        x = tensor(2.0, requires_grad=True)
+        y = tensor(3.0, requires_grad=True)
+        z = tensor(0.0, requires_grad=True)
+        result = rm.mul(x, y)
+        rm.attach_zero_grad_sources(result, [z])
+        result.backward()
+        self.assertEqual(z.grad.item(), 0.0)
+        self.assertEqual(x.grad.item(), 3.0)
+        self.assertEqual(y.grad.item(), 2.0)
+
+    def test_infer_dtype_in_binoper_torch_rules(self):
+        """测试二元运算的弱标量规则及NumPy/CuPy数组dtype保留规则"""
+        from riemann.core.dtype import infer_dtype_in_binoper
+
+        cases = [
+            (2, float32, float32),
+            (2.0, complex64, complex64),
+            (2, int32, int32),
+            (2.0, int64, rm.get_default_dtype()),
+            (np.int64(2), float32, float32),
+            (np.float32(2), np.dtype('float16'), np.dtype('float16')),
+            (np.float64(2), int64, rm.get_default_dtype()),
+            (np.complex128(2.0j), float32, rm.get_default_complex()),
+            (np.float64(2), complex64, complex64),
+            (np.asarray(2.0, dtype=np.float64), float32, float64),
+            (np.asarray(2.0, dtype=np.float64), complex64, float64),
+            (np.asarray(2.0j, dtype=np.complex128), complex64, complex128),
+            ([2.0], complex64, rm.get_default_dtype()),
+        ]
+        for value, tensor_dtype, expected in cases:
+            actual = infer_dtype_in_binoper(value, tensor_dtype)
+            self.assertEqual(np.dtype(actual), np.dtype(expected),
+                             f"value={value!r}, tensor_dtype={tensor_dtype}")
+        print_test_result("Binary operation dtype inference follows torch scalar rules", True)
     
     def test_comparison_operators(self):
         """测试比较运算符：>、>=、<、<=、==、!="""

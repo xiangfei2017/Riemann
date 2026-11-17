@@ -345,6 +345,33 @@ class TestDefineGradFunc(unittest.TestCase):
             return forward_ok and np.allclose(to_np(a.grad), np.ones_like(np_a)) \
                 and np.allclose(to_np(b.grad), np.ones_like(np_b))
 
+        def case_fused_single_call(device):
+            # 标准backward只调用一次用户梯度函数，并能正确处理冻结左输入
+            calls = []
+
+            def _mul_derivative(result, x, y):
+                calls.append(None)
+                return (result.grad_value * y, result.grad_value * x)
+
+            @track_grad(_mul_derivative)
+            def mymul(x, y):
+                return x * y
+
+            x = make(2.0, device)
+            y = make(3.0, device)
+            result = mymul(x, y)
+            result.backward()
+            both_ok = (len(calls) == 1 and np.allclose(to_np(x.grad), 3.0)
+                       and np.allclose(to_np(y.grad), 2.0))
+
+            calls.clear()
+            x = make(2.0, device, requires_grad=False)
+            y = make(3.0, device, requires_grad=True)
+            mymul(x, y).backward()
+            partial_ok = (len(calls) == 1 and x.grad is None
+                          and np.allclose(to_np(y.grad), 2.0))
+            return both_ok and partial_ok
+
         def case_multi_keyword(device):
             np_a = np.array([1.0, 2.0], dtype=np.float32)
             np_b = np.array([3.0, 4.0], dtype=np.float32)
@@ -564,6 +591,7 @@ class TestDefineGradFunc(unittest.TestCase):
         test_cases = [
             ("单输入基础函数", case_single_input),
             ("多输入位置参数", case_multi_positional),
+            ("融合梯度单次调用及冻结输入", case_fused_single_call),
             ("多输入关键字参数", case_multi_keyword),
             ("关键字参数顺序打乱", case_keyword_order),
             ("多输入不同梯度值(除法)", case_divide),

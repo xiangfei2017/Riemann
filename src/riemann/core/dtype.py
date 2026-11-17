@@ -201,22 +201,29 @@ def infer_data_type(v):
 
 def infer_dtype_in_binoper(non_tensor_value,tensor_dtype):
     '''
-    推断二元操作符运算中非TN量的数据类型
+    推断二元操作符运算中非TN量的数据类型。
+
+    Python及NumPy/CuPy标量按torch的弱标量规则处理，不因其存储精度
+    提升同类别TN的dtype；ndarray仍保留自身dtype，参与常规类型提升。
     '''
+    if isinstance(non_tensor_value, np.generic):
+        # cupy标量类型与numpy标量类型兼容；item()后统一走Python弱标量规则
+        non_tensor_value = non_tensor_value.item()
 
-    if np.issubdtype(tensor_dtype, np.floating) and \
-       isinstance(non_tensor_value,(int,float,bool)):
-        return tensor_dtype
-    
-    if np.issubdtype(tensor_dtype, np.complexfloating):
-        return tensor_dtype
-    
-    if np.issubdtype(tensor_dtype, np.integer) and \
-       isinstance(non_tensor_value,(int,bool)):
+    kind = getattr(tensor_dtype, 'kind', None)
+    if kind is None:
+        kind = np.dtype(tensor_dtype).kind
+
+    if kind == 'f' and isinstance(non_tensor_value,(int,float,bool)):
         return tensor_dtype
 
-    dt = infer_data_type(non_tensor_value)
-    return dt
+    if kind == 'c' and isinstance(non_tensor_value,(int,float,complex,bool)):
+        return tensor_dtype
+
+    if kind in 'iu' and isinstance(non_tensor_value,(int,bool)):
+        return tensor_dtype
+
+    return infer_data_type(non_tensor_value)
 
 def is_scalar(value):
     '''检查value是否为标量：int、float、complex、numpy标量、TN标量'''

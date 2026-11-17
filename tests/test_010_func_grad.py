@@ -418,6 +418,10 @@ class _TestFuncsCases:
 
         _run_case("jvp - matches_finite_diff", lambda: self._check_jvp_fd())
 
+        # 非 TN 操作数保留在 fromvars 中，但不参与拓扑遍历和 tangent 传播
+        _run_case("jvp - non_tensor_operands",
+                  lambda: self._check_jvp_non_tensor_operands())
+
         # 多输入 primals/tangents
         _run_case("jvp - multi_input",
                   lambda: self._check_jvp_multi_input())
@@ -456,6 +460,26 @@ class _TestFuncsCases:
              ((x_np - eps * v_np) ** 2 + 3 * (x_np - eps * v_np)).sum()
         fd /= (2 * eps)
         return _close(jvp_res, fd, atol=1e-4)
+
+    def _check_jvp_non_tensor_operands(self):
+        x_np = np.array([1.5, 2.0, 4.0])
+        v_np = np.array([0.5, 1.0, -0.5])
+        x = _rm_tensor(x_np)
+        v = _rm_tensor(v_np, requires_grad=False)
+
+        def f(t):
+            return 2.0 * t + 3.0 / (t + 1.0) + 2.0 ** t + 11.0 % t
+
+        expected_out = 2.0 * x_np + 3.0 / (x_np + 1.0) + 2.0 ** x_np + 11.0 % x_np
+        expected_jvp = (
+            2.0 - 3.0 / (x_np + 1.0) ** 2
+            + np.log(2.0) * 2.0 ** x_np - np.floor(11.0 / x_np)
+        ) * v_np
+        passed = True
+        for create_graph in (False, True):
+            out, jvp_res = func.jvp(f, x, v, create_graph=create_graph)
+            passed = passed and _close(out, expected_out) and _close(jvp_res, expected_jvp)
+        return passed
 
     def _check_jvp_multi_input(self):
         f = lambda x, y: (x * y).sum()

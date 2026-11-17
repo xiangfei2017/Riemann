@@ -329,8 +329,8 @@ def _vjp_with_output(out: TN, inputs, cotangent: TN,
 def _make_shadow(node: TN, leaf_map: dict) -> TN:
     """构造计算图节点的"局部影子"。
 
-    影子节点与真实节点共享底层数据，但其 fromvars 全是叶子副本，
-    因此在影子上求局部 VJP 的转置时只会遍历当前算子，而不会回溯整张图。
+    影子节点与真实节点共享底层数据，其中 TN 来源替换为叶子副本，
+    非 TN 原始操作数保持不变，因此在影子上求局部 VJP 的转置时只会遍历当前算子。
 
     参数:
         node: 前向图中的真实节点。
@@ -338,12 +338,16 @@ def _make_shadow(node: TN, leaf_map: dict) -> TN:
             共用同一个叶子副本。
 
     返回:
-        影子节点：共享 node._array 与 node.parms，fromvars 均为无计算图的叶子。
+        影子节点：共享 node._array 与 node.parms，TN 来源为无计算图的叶子，
+        非 TN 来源保留原值。
     """
     shadow = TN(node._array, requires_grad=False)
     shadow.parms = node.parms
     fromvars = []
     for var in node.fromvars:
+        if not isinstance(var, TN):
+            fromvars.append(var)
+            continue
         var_shadow = leaf_map.get(id(var))
         if var_shadow is None:
             var_shadow = TN(var._array, requires_grad=False)
@@ -482,9 +486,10 @@ def _graph_topological_order(outputs):
             if node_id in visited:
                 continue
             stack.append((node, True))
-            # reversed 让 fromvars 中靠前的输入先被展开，保持与正向求值一致的顺序
+            # reversed 让 fromvars 中靠前的输入先被展开，保持与正向求值一致的顺序；
+            # 非 TN 原始操作数不是计算图节点，不参与拓扑遍历
             for var in reversed(node.fromvars):
-                if id(var) not in visited:
+                if isinstance(var, TN) and id(var) not in visited:
                     stack.append((var, False))
     return order
 
@@ -586,6 +591,8 @@ def _jvp_with_prepared(prepared, tangents, create_graph: bool, strict: bool,
         if node.fromvars:
             shadow = None if shadow_map is None else shadow_map.get(node_id)
             for i, var in enumerate(node.fromvars):
+                if not isinstance(var, TN):
+                    continue
                 var_id = id(var)
                 mask |= node_mask.get(var_id, 0)
                 tangent = node_tangent.get(var_id)
