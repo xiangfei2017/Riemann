@@ -210,27 +210,19 @@ def cross(input, other, *, dim=-1, out=None):
     
     if requires_grad:
         ret.fromvars = (input, other)
-        ret.gradfuncs = (_cross_grad_left, _cross_grad_right)
+        ret._grad_rule = _cross_grad
         ret.parms = (dim, dim)
     
     # 处理out参数
     return _apply_out(out, ret, (input, other), "cross")
 
 
-def _cross_grad_left(result_tensor, i):
-    """grad_a = b × grad_c"""
-    dim = result_tensor.parms[i]
-    b = result_tensor.fromvars[i + 1]
+def _cross_grad(result_tensor: TN):
+    """grad_a = b × grad_c；grad_b = grad_c × a"""
+    dim = result_tensor.parms[0]
+    a, b = result_tensor.fromvars
     grad = result_tensor.grad_value
-    return cross(b, grad, dim=dim)
-
-
-def _cross_grad_right(result_tensor, i):
-    """grad_b = grad_c × a"""
-    dim = result_tensor.parms[i]
-    a = result_tensor.fromvars[i - 1]
-    grad = result_tensor.grad_value
-    return cross(grad, a, dim=dim)
+    return (cross(b, grad, dim=dim), cross(grad, a, dim=dim))
 
 @api_registry.register
 def norm(A, ord:int|float|str|None=None, dim=None, keepdim=False, out=None, dtype=None):
@@ -1167,11 +1159,11 @@ def det(A:TN):
     
     if ret.requires_grad:
         ret.fromvars = (A,)
-        ret.gradfuncs = (_matdet_backward,)
+        ret._grad_rule = _det_grad
     
     return ret
 
-def _matdet_backward(result_tensor:TN, i:int)->TN:
+def _det_grad(result_tensor:TN):
     """计算行列式的反向传播梯度。"""
     
     A = result_tensor.fromvars[0]
@@ -1183,7 +1175,7 @@ def _matdet_backward(result_tensor:TN, i:int)->TN:
     inv_trans = pinv(A).mH
 
     grad = grad_value * new_result * inv_trans
-    return grad
+    return (grad,)
 
 @api_registry.register
 def inv(A:TN):
@@ -1228,17 +1220,17 @@ def inv(A:TN):
         
     if ret.requires_grad:
         ret.fromvars = (A,)
-        ret.gradfuncs = (_matinv_backward,)
+        ret._grad_rule = _inv_grad
     
     return ret
 
-def _matinv_backward(result_tensor:TN, i:int)->TN:
+def _inv_grad(result_tensor:TN):
     """计算矩阵求逆的反向传播梯度。"""
     
     inv_trans = result_tensor.mH    
     grad = - inv_trans @ result_tensor.grad_value @ inv_trans
     
-    return grad
+    return (grad,)
 
 def skew(A:TN):
     """计算方阵的反对称部分。
@@ -1318,29 +1310,29 @@ def svd(A, full_matrices=True, driver=None, out=None):
     S = as_tensor(S_data, device=dev, requires_grad=requires_grad)
     Vh = as_tensor(Vh_data, device=dev, requires_grad=requires_grad)
     
-    # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
+    # 如果需要梯度，设置fromvars和梯度规则，并保存中间计算结果到parms中
     if requires_grad:
         U.fromvars = (A,)
-        U.gradfuncs = (_svd_backward_u,)
+        U._grad_rule = _svd_u_grad
         U.parms = ((U, S, Vh, full_matrices),)  # 保存full_matrices参数供梯度计算使用
         
         S.fromvars = (A,)
-        S.gradfuncs = (_svd_backward_s,)
+        S._grad_rule = _svd_s_grad
         S.parms = ((U, S, Vh, full_matrices),)  # 保存full_matrices参数供梯度计算使用
         
         Vh.fromvars = (A,)
-        Vh.gradfuncs = (_svd_backward_vh,)
+        Vh._grad_rule = _svd_vh_grad
         Vh.parms = ((U, S, Vh, full_matrices),)  # 保存full_matrices参数供梯度计算使用
     
     # 处理out参数
     return _apply_out_tuple(out, (U, S, Vh), (A,), "svd")
 
 # U的梯度计算函数 - 支持full_matrices参数
-def _svd_backward_u(result_tensor: TN, i: int) -> TN:
+def _svd_u_grad(result_tensor: TN):
     """根据数学公式修正：计算SVD中U矩阵的反向传播梯度。"""
     # 从parms中获取保存的SVD张量结果
-    U, S, Vh, full_matrices = result_tensor.parms[i]
-    A = result_tensor.fromvars[i]
+    U, S, Vh, full_matrices = result_tensor.parms[0]
+    A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dU
     G = result_tensor.grad_value
@@ -1401,13 +1393,13 @@ def _svd_backward_u(result_tensor: TN, i: int) -> TN:
         # 最终梯度为两项之和
         grad_A = term1  # 形状 (m, n)
     
-    return grad_A
+    return (grad_A,)
 
 # Vh的梯度计算函数 - 支持full_matrices参数
-def _svd_backward_vh(result_tensor: TN, i: int) -> TN:
+def _svd_vh_grad(result_tensor: TN):
     """计算SVD中Vh矩阵的反向传播梯度"""
-    U, S, Vh, full_matrices = result_tensor.parms[i]
-    A = result_tensor.fromvars[i]
+    U, S, Vh, full_matrices = result_tensor.parms[0]
+    A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dVh
     H = result_tensor.grad_value  # 形状 (n, n)
@@ -1471,14 +1463,14 @@ def _svd_backward_vh(result_tensor: TN, i: int) -> TN:
     else:
         grad_A = term1
     
-    return grad_A
+    return (grad_A,)
 
 # S的梯度计算函数 - 支持full_matrices参数
-def _svd_backward_s(result_tensor, i: int):
+def _svd_s_grad(result_tensor: TN):
     """SVD分解中S的反向梯度传播函数 - 支持full_matrices参数"""
     # 从result_tensor中获取所需参数
-    U, S, Vh, full_matrices = result_tensor.parms[i]
-    A = result_tensor.fromvars[i]  # 原始输入张量
+    U, S, Vh, full_matrices = result_tensor.parms[0]
+    A = result_tensor.fromvars[0]  # 原始输入张量
     grad_S = result_tensor.grad_value
     
     # 1. 首先检查并获取正确的维度信息
@@ -1502,7 +1494,7 @@ def _svd_backward_s(result_tensor, i: int):
     # 4. 计算梯度
     grad_A = U @ S_grad_diag @ Vh
     
-    return grad_A
+    return (grad_A,)
 
 @api_registry.register
 def pinv(A, atol=None, rtol=None, hermitian=False, out=None):
@@ -1621,26 +1613,26 @@ def eig(A, *, out=None):
     w = as_tensor(w_data, device=dev, requires_grad = requires_grad)
     V = as_tensor(V_data, device=dev, requires_grad = requires_grad)
         
-    # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
+    # 如果需要梯度，设置fromvars和梯度规则，并保存中间计算结果到parms中
     if requires_grad:
         U = inv(V).mH # 计算左特征向量矩阵U
 
         w.fromvars = (A,)
-        w.gradfuncs = (_eig_backward_w,)
+        w._grad_rule = _eig_w_grad
         w.parms = ((w, V, U),)  # 保存特征值和特征向量供梯度计算使用
         
         V.fromvars = (A,)
-        V.gradfuncs = (_eig_backward_V,)
+        V._grad_rule = _eig_v_grad
         V.parms = ((w, V, U),)  # 保存特征值和特征向量供梯度计算使用
     
     # 处理out参数
     return _apply_out_tuple(out, (w, V), (A,), "eig")
 
 
-def _eig_backward_w(result_tensor: TN, i: int) -> TN:
+def _eig_w_grad(result_tensor: TN):
     """计算特征值的反向传播梯度 - 使用正确的解析公式"""
-    w, V, U = result_tensor.parms[i]
-    A = result_tensor.fromvars[i]
+    w, V, U = result_tensor.parms[0]
+    A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dw
     G = result_tensor.grad_value
@@ -1655,14 +1647,14 @@ def _eig_backward_w(result_tensor: TN, i: int) -> TN:
     # 计算梯度：dL/dA = V^(-H) @ G_diag @ V^H - 使用Riemann张量计算
     grad_A = U @ G_diag @ V.mH
     
-    return grad_A
+    return (grad_A,)
 
-def _eig_backward_V(result_tensor: TN, i: int) -> TN:
+def _eig_v_grad(result_tensor: TN):
     """
     基于严格数学推导的非对称矩阵特征向量反向传播
     """
-    w, V, U = result_tensor.parms[i]  # V_l 是左特征向量
-    A = result_tensor.fromvars[i]
+    w, V, U = result_tensor.parms[0]  # V_l 是左特征向量
+    A = result_tensor.fromvars[0]
     dL_dV_r = result_tensor.grad_value  # ∂L/∂V_r
     
     n = A.shape[-1]
@@ -1691,7 +1683,7 @@ def _eig_backward_V(result_tensor: TN, i: int) -> TN:
     # 4. 变换回原空间
     grad_A = U @ M @ V.mH
     
-    return grad_A.type(A.dtype)
+    return (grad_A.type(A.dtype),)
 
 def lstsq(A, B, *, rcond=None, out=None):
     """
@@ -1863,23 +1855,23 @@ def eigh(A, *, UPLO='L', out=None):
     w = as_tensor(w_data, device=dev, requires_grad = requires_grad)
     V = as_tensor(V_data, device=dev, requires_grad=requires_grad)
     
-    # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
+    # 如果需要梯度，设置fromvars和梯度规则，并保存中间计算结果到parms中
     if requires_grad:
         w.fromvars = (A,)
-        w.gradfuncs = (_eigh_backward_w,)
+        w._grad_rule = _eigh_w_grad
         w.parms = ((w, V),)  # 保存特征值和特征向量供梯度计算使用
         
         V.fromvars = (A,)
-        V.gradfuncs = (_eigh_backward_V,)
+        V._grad_rule = _eigh_v_grad
         V.parms = ((w, V),)  # 保存特征值和特征向量供梯度计算使用
     
     # 处理out参数
     return _apply_out_tuple(out, (w, V), (A,), "eigh")
 
-def _eigh_backward_w(result_tensor: TN, i: int) -> TN:
+def _eigh_w_grad(result_tensor: TN):
     """计算特征值的反向传播梯度 - 使用正确的解析公式"""
-    w, V = result_tensor.parms[i]
-    A = result_tensor.fromvars[i]
+    w, V = result_tensor.parms[0]
+    A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dw
     G = result_tensor.grad_value
@@ -1899,12 +1891,12 @@ def _eigh_backward_w(result_tensor: TN, i: int) -> TN:
     # 计算梯度：dL/dA = V^(-H) @ G_diag @ V^H
     grad_A = V_inv_H @ G_diag @ V.mH
     
-    return grad_A
+    return (grad_A,)
 
-def _eigh_backward_V(result_tensor: TN, i: int) -> TN:
+def _eigh_v_grad(result_tensor: TN):
     """改进的特征向量梯度计算"""
-    w, V = result_tensor.parms[i]
-    A = result_tensor.fromvars[i]
+    w, V = result_tensor.parms[0]
+    A = result_tensor.fromvars[0]
     G = result_tensor.grad_value
     
     n = A.shape[-1]
@@ -1934,7 +1926,7 @@ def _eigh_backward_V(result_tensor: TN, i: int) -> TN:
     grad = V_inv_H @ F @ Vh    
     grad_A = (grad + grad.mH) / 2.0
 
-    return grad_A.type(A.dtype)
+    return (grad_A.type(A.dtype),)
 
 def _plu(arrlib,a):
     """
@@ -2244,24 +2236,24 @@ def _squared_mat_lu(A, *, pivot=True):
     L = as_tensor(L_data, device=dev, requires_grad=requires_grad)
     U = as_tensor(U_data, device=dev, requires_grad=requires_grad)
     
-    # 如果需要梯度，设置fromvars和gradfuncs，并保存中间计算结果到parms中
+    # 如果需要梯度，设置fromvars和梯度规则，并保存中间计算结果到parms中
     if requires_grad:
         L.fromvars = (A,)
-        L.gradfuncs = (_lu_backward_l,)
+        L._grad_rule = _lu_l_grad
         L.parms = ((P, L, U),)  # 保存P, L, U和pivot参数供梯度计算使用
         
         U.fromvars = (A,)
-        U.gradfuncs = (_lu_backward_u,)
+        U._grad_rule = _lu_u_grad
         U.parms = ((P, L, U),)  # 保存P, L, U和pivot参数供梯度计算使用
     
     return P, L, U
 
-def _lu_backward_l(result_tensor: TN, i: int) -> TN:
+def _lu_l_grad(result_tensor: TN):
     """L的反向传播梯度计算
     梯度公式: d y / d A = P * L^{-T} * tril( L^T * (d y / d L) ) * U^{-T}
     """
     # scipy lu分解A=PLU，此时的P就是理论分解(PA=LU)中P的转置P^T
-    P, L, U = result_tensor.parms[i] 
+    P, L, U = result_tensor.parms[0] 
     
     # 获取上游传来的梯度 dL/dL
     G = result_tensor.grad_value
@@ -2274,17 +2266,17 @@ def _lu_backward_l(result_tensor: TN, i: int) -> TN:
     else:
         grad_A = pinv(L_T) @ tril(L_T @ G, diagonal=-1) @ pinv(U.mH)
     
-    return grad_A
+    return (grad_A,)
 
 
-def _lu_backward_u(result_tensor: TN, i: int) -> TN:
+def _lu_u_grad(result_tensor: TN):
     """U的反向传播梯度计算。
     
     梯度公式: d y / d A = P * L^{-T} * upper_triangular((d y / d U) * U^T) * U^{-T}
     
     """
     # scipy lu分解A=PLU，此时的P就是理论分解(PA=LU)中P的转置P^T
-    P, L, U = result_tensor.parms[i]
+    P, L, U = result_tensor.parms[0]
     
     # 获取上游传来的梯度 dL/dU
     G = result_tensor.grad_value
@@ -2297,7 +2289,7 @@ def _lu_backward_u(result_tensor: TN, i: int) -> TN:
     else:
         grad_A = pinv(L.mH) @ triu(G @ U_T) @ pinv(U_T)
     
-    return grad_A
+    return (grad_A,)
 
 def lu(A, *, pivot=True, out=None):
     """
@@ -2563,24 +2555,24 @@ def qr(A, mode='reduced', *, out=None):
         Q = as_tensor(Q_data, device=dev, requires_grad=requires_grad)
         R = as_tensor(R_data, device=dev, requires_grad=requires_grad)
     
-    # 如果需要梯度，设置fromvars和gradfuncs（mode='r'除外）
+    # 如果需要梯度，设置fromvars和梯度规则（mode='r'除外）
     if requires_grad and mode != 'r':
         Q.fromvars = (A,)
-        Q.gradfuncs = (_qr_backward_q,)
+        Q._grad_rule = _qr_q_grad
         Q.parms = ((Q, R, mode),)  # 保存Q, R和mode参数供梯度计算使用
         
         R.fromvars = (A,)
-        R.gradfuncs = (_qr_backward_r,)
+        R._grad_rule = _qr_r_grad
         R.parms = ((Q, R, mode),)  # 保存Q, R和mode参数供梯度计算使用
     
     # 处理out参数
     return _apply_out_tuple(out, (Q, R), (A,), "qr")
 
 # Q的梯度计算函数
-def _qr_backward_q(result_tensor: TN, i: int) -> TN:
+def _qr_q_grad(result_tensor: TN):
     """QR分解中Q矩阵的反向传播梯度计算。"""
-    Q, R, mode = result_tensor.parms[i]
-    A = result_tensor.fromvars[i]
+    Q, R, mode = result_tensor.parms[0]
+    A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dQ
     G = result_tensor.grad_value
@@ -2619,7 +2611,7 @@ def _qr_backward_q(result_tensor: TN, i: int) -> TN:
     try:
         R_inv_T = inv(R_squared.mH)
     except RuntimeError:
-        return full_like(A, arrlib.nan, device=dev, dtype=A.dtype)
+        return (full_like(A, arrlib.nan, device=dev, dtype=A.dtype),)
     
     # R^{-T}右侧补0，恢复形状为(*, m, n)
     if m < n:
@@ -2650,13 +2642,13 @@ def _qr_backward_q(result_tensor: TN, i: int) -> TN:
     else:
         grad_A = term1
     
-    return grad_A
+    return (grad_A,)
 
 # R的梯度计算函数
-def _qr_backward_r(result_tensor: TN, i: int) -> TN:
+def _qr_r_grad(result_tensor: TN):
     """QR分解中R矩阵的反向传播梯度计算。"""
-    Q, R, mode = result_tensor.parms[i]
-    A = result_tensor.fromvars[i]
+    Q, R, mode = result_tensor.parms[0]
+    A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dR
     H = result_tensor.grad_value
@@ -2691,7 +2683,7 @@ def _qr_backward_r(result_tensor: TN, i: int) -> TN:
     try:
         R_inv_T = inv(R_squared.mH)
     except RuntimeError:
-        return full_like(A, arrlib.nan, device=dev, dtype=A.dtype)
+        return (full_like(A, arrlib.nan, device=dev, dtype=A.dtype),)
     
     # R^{-T}右侧补0，恢复形状为(*, m, n)
     if m < n:
@@ -2705,7 +2697,7 @@ def _qr_backward_r(result_tensor: TN, i: int) -> TN:
     # grad_A = Q @ (H + skew_part.tril(diagonal = -1) @ R_inv_T)
     grad_A = Q @ (H + skew_part @ R_inv_T)
 
-    return grad_A
+    return (grad_A,)
 
 def cholesky(input: TN, upper: bool = False, *, out: TN = None) -> TN:
     """计算对称正定矩阵的 Cholesky 分解。
@@ -2757,16 +2749,16 @@ def cholesky(input: TN, upper: bool = False, *, out: TN = None) -> TN:
     requires_grad = is_grad_enabled() and input.requires_grad
     result = as_tensor(L_data, device=dev, requires_grad=requires_grad)
     
-    # 如果需要梯度，设置fromvars和gradfuncs
+    # 如果需要梯度，设置fromvars和梯度规则
     if requires_grad:
         result.fromvars = (input,)
-        result.gradfuncs = (_cholesky_backward,)
+        result._grad_rule = _cholesky_grad
         result.parms = (upper,)  # 保存upper参数供梯度计算使用
     
     # 处理out参数
     return _apply_out(out, result, (input,), "cholesky")
 
-def _cholesky_backward(result_tensor: TN, i: int) -> TN:
+def _cholesky_grad(result_tensor: TN):
     """Cholesky 分解的反向梯度计算函数。
     
     数学背景：
@@ -2806,7 +2798,7 @@ def _cholesky_backward(result_tensor: TN, i: int) -> TN:
     返回:
         TN: 输入矩阵 A 的梯度 ∂ℓ/∂A
     """
-    upper = result_tensor.parms[i]
+    upper = result_tensor.parms[0]
     grad_L = result_tensor.grad_value
     
     L = result_tensor
@@ -2831,4 +2823,4 @@ def _cholesky_backward(result_tensor: TN, i: int) -> TN:
     # 4. 对称化
     grad_A = (grad_A + grad_A.mH) * 0.5
     
-    return grad_A
+    return (grad_A,)

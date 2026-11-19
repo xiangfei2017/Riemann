@@ -204,12 +204,12 @@ def sigmoid(x: TN) -> TN:
     
     if ret.requires_grad:
         ret.fromvars = (x,)
-        ret.gradfuncs = (_sigmoid_backward,)
+        ret._grad_rule = _sigmoid_grad
     return ret
 
-def _sigmoid_backward(result_tensor: TN, i: int) -> TN:
+def _sigmoid_grad(result_tensor: TN):
     """梯度计算：sigmoid(x) * (1. - sigmoid(x))"""
-    return result_tensor.grad_value * result_tensor * (1.0 - result_tensor)
+    return (result_tensor.grad_value * result_tensor * (1.0 - result_tensor),)
 
 def silu(input: TN) -> TN:
     """
@@ -289,17 +289,17 @@ def softmax(x:TN, dim:int)->TN:
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = (dim,)
-        ret.gradfuncs = (_softmax_backward,)
+        ret._grad_rule = _softmax_grad
 
     return ret
 
-def _softmax_backward(result_tensor: TN, i: int) -> TN:
+def _softmax_grad(result_tensor: TN):
     """梯度计算：y * (g - sum(y*g))"""
     y = result_tensor
     g = y.grad_value
-    dim = y.parms[i]
+    dim = y.parms[0]
     d = (y*g).sum(dim=dim, keepdim=True)
-    return y * (g - d)
+    return (y * (g - d),)
 
 def log_softmax(x: TN, dim: int = -1) -> TN:
     """
@@ -345,16 +345,16 @@ def log_softmax(x: TN, dim: int = -1) -> TN:
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = (dim,)
-        ret.gradfuncs = (_log_softmax_backward,)
+        ret._grad_rule = _log_softmax_grad
 
     return ret
 
-def _log_softmax_backward(result_tensor: TN, i: int) -> TN:
+def _log_softmax_grad(result_tensor: TN):
     """梯度：g - softmax(y) * sum(g)，其中 exp(y) 即 softmax 概率"""
     y = result_tensor
     g = y.grad_value
-    dim = y.parms[i]
-    return g - exp(y) * g.sum(dim=dim, keepdim=True)
+    dim = y.parms[0]
+    return (g - exp(y) * g.sum(dim=dim, keepdim=True),)
 
 def relu(x: TN) -> TN:
     """
@@ -389,14 +389,14 @@ def relu(x: TN) -> TN:
     # 注册梯度函数
     if ret.requires_grad:
         ret.fromvars = (x,)
-        ret.gradfuncs = (_relu_backward,)
+        ret._grad_rule = _relu_grad
     return ret
 
-def _relu_backward(result_tensor: TN, i: int) -> TN:
+def _relu_grad(result_tensor: TN):
     """梯度计算：输入>0时梯度为1，否则为0"""
     x = result_tensor.fromvars[0]
     mask = (x > 0.0) 
-    return result_tensor.grad_value * mask
+    return (result_tensor.grad_value * mask,)
 
 def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
     """
@@ -428,16 +428,16 @@ def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = (alpha,)  # 保存alpha值供反向传播使用
-        ret.gradfuncs = (_leaky_relu_backward,)
+        ret._grad_rule = _leaky_relu_grad
     return ret
 
-def _leaky_relu_backward(result_tensor: TN, i: int) -> TN:
+def _leaky_relu_grad(result_tensor: TN):
     alpha = result_tensor.parms[0]
     x = result_tensor.fromvars[0]
     # 计算梯度：x>0时梯度为1，否则为alpha
     mask = (x > 0.) 
     grad = result_tensor.grad_value * (mask + (1.0 - mask) * alpha).type(x.dtype)
-    return grad
+    return (grad,)
 
 def prelu(x: TN, alpha: TN) -> TN:
     if not isinstance(x, TN): 
@@ -453,22 +453,17 @@ def prelu(x: TN, alpha: TN) -> TN:
     
     if ret.requires_grad:
         ret.fromvars = (x, alpha)
-        # 梯度函数分别处理x和alpha的梯度
-        ret.gradfuncs = (_prelu_grad_x, _prelu_grad_alpha)
+        # 融合梯度规则同时计算x和alpha的梯度
+        ret._grad_rule = _prelu_grad
     return ret
 
-def _prelu_grad_x(result_tensor: TN, i: int) -> TN:
+def _prelu_grad(result_tensor: TN):
     x, alpha = result_tensor.fromvars
     mask = (x > 0.) 
-    grad_x = result_tensor.grad_value * (mask + (1.0 - mask) * alpha).type(x.dtype)
-    return grad_x
-
-def _prelu_grad_alpha(result_tensor: TN, i: int) -> TN:
-    x, alpha = result_tensor.fromvars
-    mask = (x <= 0.) 
+    grad_x = result_tensor.grad_value * (mask + (~mask) * alpha).type(x.dtype)
     # 对alpha的梯度需要求和（假设alpha为标量或向量）
-    grad_alpha = sum(result_tensor.grad_value * mask * x)
-    return grad_alpha
+    grad_alpha = sum(result_tensor.grad_value * (~mask) * x)
+    return (grad_x, grad_alpha)
 
 def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool = True) -> TN:
     if not isinstance(x, TN): 
@@ -493,15 +488,15 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = (training, lower, upper, alpha)
-        ret.gradfuncs = (_rrelu_grad_x,)
+        ret._grad_rule = _rrelu_grad
     return ret
 
-def _rrelu_grad_x(result_tensor: TN, i: int) -> TN:
+def _rrelu_grad(result_tensor: TN):
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[3]
     mask = (x > 0.) 
     grad = result_tensor.grad_value * (mask + (1.0 - mask) * alpha).type(x.dtype)
-    return grad
+    return (grad,)
 
 def elu(x: TN, alpha: float = 1.0) -> TN:
     """
@@ -546,11 +541,11 @@ def elu(x: TN, alpha: float = 1.0) -> TN:
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = (alpha,)
-        ret.gradfuncs = (_elu_backward,)
+        ret._grad_rule = _elu_grad
     
     return ret
 
-def _elu_backward(result_tensor: TN, i: int) -> TN:
+def _elu_grad(result_tensor: TN):
     """ELU 梯度计算函数"""
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[0]
@@ -560,7 +555,7 @@ def _elu_backward(result_tensor: TN, i: int) -> TN:
     negative_grad = alpha * exp(x)
     grad = where(x > 0, positive_grad, negative_grad)
     
-    return result_tensor.grad_value * grad
+    return (result_tensor.grad_value * grad,)
 
 def celu(x: TN, alpha: float = 1.0) -> TN:
     """
@@ -610,11 +605,11 @@ def celu(x: TN, alpha: float = 1.0) -> TN:
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = (alpha,)
-        ret.gradfuncs = (_celu_backward,)
+        ret._grad_rule = _celu_grad
     
     return ret
 
-def _celu_backward(result_tensor: TN, i: int) -> TN:
+def _celu_grad(result_tensor: TN):
     """CELU 梯度计算函数"""
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[0]
@@ -624,7 +619,7 @@ def _celu_backward(result_tensor: TN, i: int) -> TN:
     negative_grad = exp(x / alpha)
     grad = where(x > 0, positive_grad, negative_grad)
     
-    return result_tensor.grad_value * grad
+    return (result_tensor.grad_value * grad,)
 
 def tanh(input: TN) -> TN:
     """
@@ -663,11 +658,11 @@ def tanh(input: TN) -> TN:
     
     if ret.requires_grad:
         ret.fromvars = (input,)
-        ret.gradfuncs = (_tanh_backward,)
+        ret._grad_rule = _tanh_grad
     
     return ret
 
-def _tanh_backward(result_tensor: TN, i: int) -> TN:
+def _tanh_grad(result_tensor: TN):
     """Tanh 梯度计算函数
     
     导数公式: tanh'(x) = 1 - tanh(x)^2
@@ -676,7 +671,7 @@ def _tanh_backward(result_tensor: TN, i: int) -> TN:
     tanh_x = result_tensor
     grad = 1.0 - tanh_x * tanh_x
     
-    return result_tensor.grad_value * grad
+    return (result_tensor.grad_value * grad,)
 
 def selu(x: TN) -> TN:
     """
@@ -725,11 +720,11 @@ def selu(x: TN) -> TN:
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = (alpha, scale)
-        ret.gradfuncs = (_selu_backward,)
+        ret._grad_rule = _selu_grad
     
     return ret
 
-def _selu_backward(result_tensor: TN, i: int) -> TN:
+def _selu_grad(result_tensor: TN):
     """SELU 梯度计算函数"""
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[0]
@@ -740,7 +735,7 @@ def _selu_backward(result_tensor: TN, i: int) -> TN:
     negative_grad = scale * alpha * exp(x)
     grad = where(x > 0, positive_grad, negative_grad)
     
-    return result_tensor.grad_value * grad
+    return (result_tensor.grad_value * grad,)
 
 # 修改gelu函数实现，使用PyTorch兼容的精确版本
 def gelu(x: TN) -> TN:
@@ -777,17 +772,17 @@ def gelu(x: TN) -> TN:
     
     if ret.requires_grad:
         ret.fromvars = (x,)
-        ret.gradfuncs = (_gelu_backward,)
+        ret._grad_rule = _gelu_grad
     return ret
 
-def _gelu_backward(result_tensor: TN, i: int) -> TN:
+def _gelu_grad(result_tensor: TN):
     """GELU导数计算，使用与PyTorch兼容的实现"""
     x = result_tensor.fromvars[0]
     
     c = (2. / pi) ** 0.5  # 标量运算，避免走 riemann.sqrt（其入参会经 as_tensor 转为张量）
     tanh_term = tanh(c * (x + 0.044715 * x**3.))
     grad = 0.5 * (1. + tanh_term) + 0.5 * x * (1. - tanh_term**2.) * c * (1. + 0.134145*(x**2.))
-    return result_tensor.grad_value * grad
+    return (result_tensor.grad_value * grad,)
 
 def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
     """
@@ -1538,8 +1533,6 @@ def unfold2d(input: TN, kernel_size, dilation=1, padding=0, padvalue=0.0, stride
             raise RuntimeError(f"pad should be at most half of effective kernel size, but got pad={ph}, kernel_size={kh} and dilation={dh}")
         if pw > max_pad_w:
             raise RuntimeError(f"pad should be at most half of effective kernel size, but got pad={pw}, kernel_size={kw} and dilation={dw}")
-    
-    L = H_out * W_out
     
     # 创建展开张量
     # 首先，根据需要对输入进行填充
@@ -3280,20 +3273,19 @@ def embedding(
         output.parms = ((input, scale_grad_by_freq, freq),)
                 
         # 定义反向传播函数
-        def _embedding_backward(result_tensor: TN, i: int) -> TN:
+        def _embedding_grad(result_tensor: TN):
             """
             embedding的反向传播函数
             
             参数:
                 result_tensor: 结果张量
-                i: 当前处理的变量索引
             
             返回:
                 梯度张量
             """
             # 获取相关变量和参数
-            weight_var = result_tensor.fromvars[i]
-            input_tensor,scale_grad,freq_tensor = result_tensor.parms[i]
+            weight_var = result_tensor.fromvars[0]
+            input_tensor,scale_grad,freq_tensor = result_tensor.parms[0]
             grad_value = result_tensor.grad_value
             
             # 初始化权重梯度
@@ -3316,10 +3308,10 @@ def embedding(
             if padding_idx is not None:
                 weight_grad[padding_idx] = 0.0
             
-            return weight_grad
+            return (weight_grad,)
         
-        # 设置gradfuncs，记录反向传播函数
-        output.gradfuncs = (_embedding_backward,)
+        # 设置梯度规则，记录反向传播函数
+        output._grad_rule = _embedding_grad
     
     return output
 

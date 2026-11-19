@@ -2045,10 +2045,10 @@ Manually Modifying the Computational Graph
 
 Riemann provides functions for manually manipulating the computational graph. These functions are designed for special use cases where you need to connect tensors to the computational graph without affecting forward computation values or backward gradient values. These are low-level tools typically used in framework internals (such as Riemann's hook handling mechanism) rather than common user scenarios.
 
-share_grad_map Function
+map_value_connect_grad Function
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``share_grad_map`` function fully connects and maps a group of tensors to another group of tensors with the same count. The corresponding positions between the two groups have an identity mapping: forward pass transparently transmits tensor values, backward pass transparently transmits gradient values (equivalent to a clone relationship). For other connections, forward pass transmits zero values (i.e., does not affect the new tensor values), backward pass transmits zero gradients.
+The ``map_value_connect_grad`` function fully connects and maps a group of tensors to another group of tensors with the same count. The corresponding positions between the two groups have an identity mapping: forward pass transparently transmits tensor values, backward pass transparently transmits gradient values (equivalent to a clone relationship). For other connections, forward pass transmits zero values (i.e., does not affect the new tensor values), backward pass transmits zero gradients.
 
 **Purpose:**
 Ensure all tensors in a group participate in the computational graph and receive gradients (zero for tensors not directly involved in computation) rather than None. This is particularly useful when you want certain tensors to receive zero gradients without changing the existing computational graph's forward or backward computation values.
@@ -2086,7 +2086,7 @@ A tuple or list of tensors with the same values but connected to a shared comput
     def func(a, b, c):
         return (a * b).sum()
     
-    # Before share_grad_map: c doesn't participate, receives None
+    # Before map_value_connect_grad: c doesn't participate, receives None
     y1 = func(a, b, c)
     y1.backward()
     print(f"c.grad = {c.grad}")  # Output: None
@@ -2096,8 +2096,8 @@ A tuple or list of tensors with the same values but connected to a shared comput
     b = rm.tensor([3.0, 4.0], requires_grad=True)
     c = rm.tensor([5.0, 6.0], requires_grad=True)
     
-    # After share_grad_map: all tensors connected, c receives zero gradient
-    a_new, b_new, c_new = rm.share_grad_map((a, b, c))
+    # After map_value_connect_grad: all tensors connected, c receives zero gradient
+    a_new, b_new, c_new = rm.map_value_connect_grad((a, b, c))
     y2 = func(a_new, b_new, c_new)
     y2.backward()
     # Note: gradients flow back to the ORIGINAL tensors a/b/c;
@@ -2112,7 +2112,7 @@ A tuple or list of tensors with the same values but connected to a shared comput
 
 **Typical Use Cases:**
 
-1. **Module Hook Handling**: In Riemann's module hook mechanism, ``share_grad_map`` is used to create new module output tensors to replace the original output tensors. When only some tensors of a module participate in or contribute to the loss function computation, ``share_grad_map`` produces a new module output without changing forward computation or backward gradient values. This ensures that output tensors that previously didn't participate in loss computation can now receive zero gradients, and input tensors depending on these outputs will also receive zero gradients.
+1. **Module Hook Handling**: In Riemann's module hook mechanism, ``map_value_connect_grad`` is used to create new module output tensors to replace the original output tensors. When only some tensors of a module participate in or contribute to the loss function computation, ``map_value_connect_grad`` produces a new module output without changing forward computation or backward gradient values. This ensures that output tensors that previously didn't participate in loss computation can now receive zero gradients, and input tensors depending on these outputs will also receive zero gradients.
 
 2. **Multi-task Learning**: When some parameters don't participate in certain task's loss computation but you want them to receive zero gradients rather than None for gradient accumulation.
 
@@ -2125,11 +2125,11 @@ A tuple or list of tensors with the same values but connected to a shared comput
 Supporting Functions and Methods
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The following functions and methods are used internally by ``share_grad_map`` and are rarely needed directly by users:
+The following are low-level computational graph helpers that user code rarely needs to call directly:
 
-**attach_zero_grad_sources Method**
+**attach_zero_grad_sources Function**
 
-Attaches multiple tensors as source tensors to a tensor. This doesn't change the tensor's value, but allows it to pass zero gradients to these sources during backward pass. Used internally to connect tensors to the computational graph so they receive zero gradients instead of None.
+Returns a new tensor with the same value that passes gradients through to the input tensor and sends zero gradients to the given sources during backward. It does not modify the original tensor's computational graph, and sources not involved in the loss receive zero gradients instead of None.
 
 Gradient Checking
 -----------------

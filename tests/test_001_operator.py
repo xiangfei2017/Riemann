@@ -487,7 +487,7 @@ class TestOperatorFunctions(unittest.TestCase):
                 for result, expected_sources in cases:
                     with self.subTest(op=op.__name__, device=device, sources=expected_sources):
                         self.assertEqual(len(result.fromvars), 2)
-                        self.assertEqual(len(result.gradfuncs), 2)
+                        self.assertIsNotNone(result._grad_rule)
                         self.assertEqual(result.parms, ())
                         for actual, expected in zip(result.fromvars, expected_sources):
                             if isinstance(expected, rm.TN):
@@ -550,14 +550,14 @@ class TestOperatorFunctions(unittest.TestCase):
                                   device=torch.device(device), requires_grad=True)
                 result = op(x, y)
                 tresult = torch_op(tx, ty)
-                original_fused = result.gradfunc_fused
+                original_fused = result._grad_rule
                 calls = []
 
                 def fused_wrapper(r, fused=original_fused):
                     calls.append(r)
                     return fused(r)
 
-                result.gradfunc_fused = fused_wrapper
+                result._grad_rule = fused_wrapper
                 result.sum().backward()
                 tresult.sum().backward()
 
@@ -567,16 +567,18 @@ class TestOperatorFunctions(unittest.TestCase):
                     success, error = compare_values(grad, expected, test_name)
                     print_test_result(test_name, success, error)
 
-        # 图结构被扩展后必须回退到逐来源gradfuncs，避免遗漏新增来源
+        # attach_zero_grad_sources 返回新节点：梯度透传原节点，同时向依附来源传零梯度
         x = tensor(2.0, requires_grad=True)
         y = tensor(3.0, requires_grad=True)
         z = tensor(0.0, requires_grad=True)
-        result = rm.mul(x, y)
-        rm.attach_zero_grad_sources(result, [z])
+        mul_result = rm.mul(x, y)
+        result = rm.attach_zero_grad_sources(mul_result, [z])
         result.backward()
         self.assertEqual(z.grad.item(), 0.0)
         self.assertEqual(x.grad.item(), 3.0)
         self.assertEqual(y.grad.item(), 2.0)
+        # 原节点结构不变
+        self.assertEqual(len(mul_result.fromvars), 2)
 
     def test_infer_dtype_in_binoper_torch_rules(self):
         """测试二元运算的弱标量规则及NumPy/CuPy数组dtype保留规则"""

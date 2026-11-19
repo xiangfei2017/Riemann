@@ -45,7 +45,7 @@ def clear_screen():
 def has_compute_graph(tsobj:rm.TN):
     """检查张量是否包含计算图的辅助函数"""
     if tsobj.requires_grad :
-        if tsobj.gradfuncs and tsobj.gradfuncs != ():
+        if tsobj._grad_rule is not None:
             return True
     return False
 

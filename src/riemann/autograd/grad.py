@@ -721,33 +721,30 @@ class Function:
         
         if requires_grad:
             # 自定义Function会覆盖forward内部算子的计算图，旧融合钩子不再有效
-            outputs.gradfunc_fused = None
+            outputs._grad_rule = None
             # 设置输出张量的梯度跟踪信息
             outputs.requires_grad = True
             
             # 收集所有需要跟踪的输入张量
             fromvars = tuple(input for input in inputs if input.requires_grad)
             
-            # 创建梯度函数（闭包直接捕获cls、ctx、inputs变量）
-            def _function_grad(result_tensor: TN, i: int) -> TN:
-                
-                # 执行反向传播
-                grad_output = result_tensor.grad_value
-                grad_inputs = cls.backward(ctx, grad_output)
+            # 创建融合梯度规则（闭包直接捕获cls、ctx、inputs变量）
+            grad_required_indices = tuple(idx for idx, item in enumerate(inputs) if item.requires_grad)
+            
+            def _apply_grad(result_tensor: TN):
+                # 执行一次反向传播
+                grad_inputs = cls.backward(ctx, result_tensor.grad_value)
                 
                 # 确保返回值是元组
                 if not isinstance(grad_inputs, tuple):
                     grad_inputs = (grad_inputs,)
                 
-                # 找到当前梯度对应的原始输入索引
-                grad_required_indices = [idx for idx, input in enumerate(inputs) if input.requires_grad]
-                original_index = grad_required_indices[i]
-                
-                return grad_inputs[original_index]
+                # 按图来源顺序返回所需的输入梯度
+                return tuple(grad_inputs[idx] for idx in grad_required_indices)
             
-            # 设置fromvars和gradfuncs
+            # 设置fromvars和梯度规则
             outputs.fromvars = fromvars
-            outputs.gradfuncs = tuple(_function_grad for _ in fromvars)
+            outputs._grad_rule = _apply_grad
             outputs.parms = ()
             
         return outputs

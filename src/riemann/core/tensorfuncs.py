@@ -57,8 +57,7 @@ from .tensordef import *
 from .tensordef import (
     _validate_shape, _require_tn, _get_device,
     _get_broadcast_axis, _apply_out, _apply_out_tuple,
-    _convert_TNindex_to_numpy, _floordiv_grad_left, _floordiv_grad_right,
-    _same_device
+    _convert_TNindex_to_numpy, _same_device
 )
 
 
@@ -98,22 +97,22 @@ _INDEX_TYPES = (slice, int) + _ARRAY_TYPES
 # add/sub/set 的反向只用索引和梯度，不需要备份，可省去一次整块内存拷贝。
 # 用回调函数名而不是函数对象做判断，避免这些函数定义在本类之后造成前向引用问题。
 _LEFT_VALUE_BACKWARD_NAMES = {
-    '_mulat_inplace_backward',
-    '_divat_inplace_backward',
-    '_powat_inplace_backward',
-    '_modat_inplace_backward',
+    '_mulat_inplace_grad',
+    '_divat_inplace_grad',
+    '_powat_inplace_grad',
+    '_modat_inplace_grad',
 }
 
-# 原地操作梯度回调函数名 -> 对应的原地操作方法名，__setitem__ 据此重放副本上的操作。
+# 原地操作梯度规则函数名 -> 对应的原地操作方法名，__setitem__ 据此重放副本上的操作。
 # 只收录复合赋值运算（+=、-=、*=、/=、**=、%=）；setat_ 不在此列——它本身是覆盖写，
 # 直接按数据 setat 即可得到相同结果，无需重放。
 _INPLACE_AT_METHODS = {
-    '_addat_inplace_backward': 'addat_',
-    '_subat_inplace_backward': 'subat_',
-    '_mulat_inplace_backward': 'mulat_',
-    '_divat_inplace_backward': 'divat_',
-    '_powat_inplace_backward': 'powat_',
-    '_modat_inplace_backward': 'modat_',
+    '_addat_inplace_grad': 'addat_',
+    '_subat_inplace_grad': 'subat_',
+    '_mulat_inplace_grad': 'mulat_',
+    '_divat_inplace_grad': 'divat_',
+    '_powat_inplace_grad': 'powat_',
+    '_modat_inplace_grad': 'modat_',
 }
 
 
@@ -769,9 +768,9 @@ def square(x:TN)->TN:
     return x ** 2.0
 
 
-def _sin_grad(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    return result_tensor.grad_value * cos(x).conj()
+def _sin_grad(result_tensor:TN):
+    x = result_tensor.fromvars[0]
+    return (result_tensor.grad_value * cos(x).conj(),)
 
 
 @api_registry.register
@@ -800,14 +799,14 @@ def sin(x:TN)->TN:
         
     if ret.requires_grad:
         ret.fromvars = (x,)
-        ret.gradfuncs = (_sin_grad,)
+        ret._grad_rule = _sin_grad
 
     return ret
 
 
-def _cos_grad(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    return result_tensor.grad_value * (-sin(x).conj())
+def _cos_grad(result_tensor:TN):
+    x = result_tensor.fromvars[0]
+    return (result_tensor.grad_value * (-sin(x).conj()),)
 
 
 @api_registry.register
@@ -836,14 +835,14 @@ def cos(x:TN)->TN:
     
     if ret.requires_grad:
         ret.fromvars = (x,)
-        ret.gradfuncs = (_cos_grad,)
+        ret._grad_rule = _cos_grad
 
     return ret
 
 
-def _tan_grad(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    return result_tensor.grad_value * (1. + (tan(x.conj()))**2.)
+def _tan_grad(result_tensor:TN):
+    x = result_tensor.fromvars[0]
+    return (result_tensor.grad_value * (1. + (tan(x.conj()))**2.),)
 
 
 @api_registry.register
@@ -872,7 +871,7 @@ def tan(x:TN)->TN:
     
     if ret.requires_grad:
         ret.fromvars = (x,)
-        ret.gradfuncs = (_tan_grad,)
+        ret._grad_rule = _tan_grad
 
     return ret
 
@@ -1219,9 +1218,9 @@ def sqrt(x:TN)->TN:
     return x ** 0.5
 
 
-def _log_grad(result_tensor:TN, i:int)->TN:
-    x = result_tensor.fromvars[i]
-    return result_tensor.grad_value * (1. / x.conj())
+def _log_grad(result_tensor:TN):
+    x = result_tensor.fromvars[0]
+    return (result_tensor.grad_value * (1. / x.conj()),)
 
 
 @api_registry.register
@@ -1252,7 +1251,7 @@ def log(x:TN)->TN:
     
     if requires_grad:
         ret.fromvars = (x,)
-        ret.gradfuncs = (_log_grad,)
+        ret._grad_rule = _log_grad
 
     return ret
 
@@ -1313,8 +1312,8 @@ def log10(x:TN)->TN:
     return log(x) / np.log(10.0)
     
 
-def _exp_grad(result_tensor:TN, i:int)->TN:
-    return result_tensor.grad_value * result_tensor.conj()
+def _exp_grad(result_tensor:TN):
+    return (result_tensor.grad_value * result_tensor.conj(),)
 
 
 @api_registry.register
@@ -1343,7 +1342,7 @@ def exp(x:TN)->TN:
     
     if ret.requires_grad:
         ret.fromvars = (x,)
-        ret.gradfuncs = (_exp_grad,)
+        ret._grad_rule = _exp_grad
 
     return ret
 
@@ -1380,7 +1379,7 @@ def maximum(input: TN, other: TN) -> TN:
         other = as_tensor(other,device=dev)
     
     if not _same_device(input, other):
-        raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
+        raise RuntimeError('Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
     
     # 前向计算：使用numpy的maximum
     value = arrlib.maximum(input._array, other._array)
@@ -1389,85 +1388,73 @@ def maximum(input: TN, other: TN) -> TN:
     # 注册梯度函数
     if ret.requires_grad:
         ret.fromvars = (input, other)
-        ret.gradfuncs = (_maximum_backward_input, _maximum_backward_other)
+        ret._grad_rule = _maximum_grad
     
     return ret
 
-def _maximum_backward_input(result_tensor: TN, i: int) -> TN:
+def _maximum_grad(result_tensor: TN):
     """
-    maximum函数对第一个输入的梯度计算
-    
+    maximum函数的融合梯度计算，返回值与 fromvars=(input, other) 对齐。
+
     梯度规则：
-    - 当input > other时，梯度为1（传递梯度）
-    - 当input < other时，梯度为0（阻断梯度）
-    - 当input == other时，梯度为0.5（与PyTorch行为一致，平均分配）
+    - 当 input > other 时，input 梯度为 1（传递梯度）
+    - 当 input < other 时，input 梯度为 0（阻断梯度）
+    - 当 input == other 时，input 梯度为 0.5（与PyTorch行为一致，平均分配）
+    other 的梯度按对称规则计算。
     """
-    input_tensor = result_tensor.fromvars[i]  # 第一个输入
-    other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
-    
-    
-    # 计算梯度掩码
+    input_tensor = result_tensor.fromvars[0]
+    other_tensor = result_tensor.fromvars[1]
+    result_shape = result_tensor.shape
+
+    # 计算 input 的梯度掩码
     # input > other: 1.0
     # input == other: 0.5  # 与PyTorch一致
     # input < other: 0.0
     # 使用riemann的where函数，自动处理设备上下文
-    mask = where(
+    input_mask = where(
         input_tensor > other_tensor, 
         1.0, 
         where(input_tensor < other_tensor, 0.0, 0.5)
     ).type(input_tensor.dtype)
-    
+
     # 应用梯度掩码
-    grad = result_tensor.grad_value * mask
-    
+    grad = result_tensor.grad_value * input_mask
+
     # 处理广播情况
     input_shape = input_tensor.shape
-    result_shape = result_tensor.shape
-    
+
     if input_shape != result_shape:
         # 获取需要缩减的广播轴
         broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
         grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
-    
-    return grad
 
-def _maximum_backward_other(result_tensor: TN, i: int) -> TN:
-    """
-    maximum函数对第二个输入的梯度计算
-    
-    梯度规则：
-    - 当other > input时，梯度为1（传递梯度）
-    - 当other <= input时，梯度为0（阻断梯度）
-    - 当other == input时，梯度为0.5（平均分配）
-    """
-    other_tensor = result_tensor.fromvars[i]  # 第二个输入
-    input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
-    
-    
-    # 计算梯度掩码
+    input_grad = grad
+
+    # 计算 other 的梯度掩码
     # other > input: 1.0
     # other == input: 0.5  # 与PyTorch一致
     # other < input: 0.0
     # 使用riemann的where函数，自动处理设备上下文
-    mask = where(
+    other_mask = where(
         other_tensor > input_tensor, 
         1.0,
         where(other_tensor < input_tensor, 0.0, 0.5)
     ).type(other_tensor.dtype)
-    
+
     # 应用梯度掩码
-    grad = result_tensor.grad_value * mask
-    
+    grad = result_tensor.grad_value * other_mask
+
     # 处理广播情况
     other_shape = other_tensor.shape
-    result_shape = result_tensor.shape
-    
+
     if other_shape != result_shape:
         # 获取需要缩减的广播轴
         broadcast_axes = _get_broadcast_axis(result_shape, other_shape)
         grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(other_shape)
-    
-    return grad
+
+    other_grad = grad
+
+    return input_grad, other_grad
 
 
 @api_registry.register
@@ -1502,7 +1489,7 @@ def minimum(input: TN, other: TN) -> TN:
         other = as_tensor(other,device=dev)
     
     if not _same_device(input, other):
-        raise RuntimeError(f'Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
+        raise RuntimeError('Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
         
     # 前向计算：使用numpy的minimum
     value = arrlib.minimum(input._array, other._array)
@@ -1511,83 +1498,73 @@ def minimum(input: TN, other: TN) -> TN:
     # 注册梯度函数
     if ret.requires_grad:
         ret.fromvars = (input, other)
-        ret.gradfuncs = (_minimum_grad_input, _minimum_grad_other)
+        ret._grad_rule = _minimum_grad
     
     return ret
 
-def _minimum_grad_input(result_tensor: TN, i: int) -> TN:
+def _minimum_grad(result_tensor: TN):
     """
-    minimum函数对第一个输入的梯度计算
-    
+    minimum函数的融合梯度计算，返回值与 fromvars=(input, other) 对齐。
+
     梯度规则：
-    - 当input < other时，梯度为1（传递梯度）
-    - 当input >= other时，梯度为0（阻断梯度）
-    - 当input == other时，梯度为0.5（平均分配）
+    - 当 input < other 时，input 梯度为 1（传递梯度）
+    - 当 input >= other 时，input 梯度为 0（阻断梯度）
+    - 当 input == other 时，input 梯度为 0.5（平均分配）
+    other 的梯度按对称规则计算。
     """
-    input_tensor = result_tensor.fromvars[i]  # 第一个输入
-    other_tensor = result_tensor.fromvars[i+1]  # 第二个输入
-    
-    # 计算梯度掩码
+    input_tensor = result_tensor.fromvars[0]
+    other_tensor = result_tensor.fromvars[1]
+    result_shape = result_tensor.shape
+
+    # 计算 input 的梯度掩码
     # input < other: 1.0
     # input == other: 0.5  
     # input > other: 0.0
     # 使用riemann的where函数，自动处理设备上下文
-    mask = where(
+    input_mask = where(
         input_tensor < other_tensor, 
         1.0, 
         where(input_tensor > other_tensor, 0.0, 0.5)
     ).type(input_tensor.dtype)
-    
+
     # 应用梯度掩码
-    grad = result_tensor.grad_value * mask
-    
+    grad = result_tensor.grad_value * input_mask
+
     # 处理广播情况
     input_shape = input_tensor.shape
-    result_shape = result_tensor.shape
-    
+
     if input_shape != result_shape:
         # 获取需要缩减的广播轴
         broadcast_axes = _get_broadcast_axis(result_shape, input_shape)
         grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(input_shape)
-    
-    return grad
 
-def _minimum_grad_other(result_tensor: TN, i: int) -> TN:
-    """
-    minimum函数对第二个输入的梯度计算
-    
-    梯度规则：
-    - 当other < input时，梯度为1（传递梯度）
-    - 当other >= input时，梯度为0（阻断梯度）
-    - 当other == input时，梯度为0.5（平均分配）
-    """
-    other_tensor = result_tensor.fromvars[i]  # 第二个输入
-    input_tensor = result_tensor.fromvars[i-1]  # 第一个输入
-    
-    # 计算梯度掩码
+    input_grad = grad
+
+    # 计算 other 的梯度掩码
     # other < input: 1.0
     # other == input: 0.5
     # other > input: 0.0
     # 使用riemann的where函数，自动处理设备上下文
-    mask = where(
+    other_mask = where(
         other_tensor < input_tensor, 
         1.0,
         where(other_tensor > input_tensor, 0.0, 0.5)
     ).type(other_tensor.dtype)
-    
+
     # 应用梯度掩码
-    grad = result_tensor.grad_value * mask
-    
+    grad = result_tensor.grad_value * other_mask
+
     # 处理广播情况
     other_shape = other_tensor.shape
-    result_shape = result_tensor.shape
-    
+
     if other_shape != result_shape:
         # 获取需要缩减的广播轴
         broadcast_axes = _get_broadcast_axis(result_shape, other_shape)
         grad = sum(grad, dim=broadcast_axes, keepdim=False)._reshape(other_shape)
-    
-    return grad
+
+    other_grad = grad
+
+    return input_grad, other_grad
 
 
 # ===========================================================================
@@ -1863,8 +1840,8 @@ def var2(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)-
     return variance.real
 
 
-def _prod_backward(result_tensor:TN, i:int)->TN:
-    dim, keepdims = result_tensor.parms[i]
+def _prod_grad(result_tensor:TN):
+    dim, keepdims = result_tensor.parms[0]
 
     # 如果prod计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
     if keepdims == False:
@@ -1872,7 +1849,7 @@ def _prod_backward(result_tensor:TN, i:int)->TN:
     else:
         new_result_grad = result_tensor.grad_value
     
-    x = result_tensor.fromvars[i]
+    x = result_tensor.fromvars[0]
     
     # 创建一个与x相同形状的结果张量 - 保持计算图连续性
     if dim is None:
@@ -1996,7 +1973,7 @@ def _prod_backward(result_tensor:TN, i:int)->TN:
     # 对regular_grad取共轭以支持复数张量的Wirtinger梯度
     grad = new_result_grad * regular_grad.conj()
     
-    return grad
+    return (grad,)
 
 
 @api_registry.register
@@ -2025,17 +2002,17 @@ def prod(x:TN, dim:int|tuple|None=None, keepdim:bool=False)->TN:
     if ret.requires_grad:
         ret.fromvars = (x,)
         ret.parms = ((dim, keepdim),)
-        ret.gradfuncs = (_prod_backward,)
+        ret._grad_rule = _prod_grad
     
     return ret
 
 
-def _cumsum_backward(result_tensor: TN, i: int) -> TN:
+def _cumsum_grad(result_tensor: TN):
     """
-    cumsum函数的反向传播实现。
+    cumsum函数的融合梯度规则。
     累积和的梯度是反向累积和。
     """
-    dim, dtype_param = result_tensor.parms[i]  # 直接使用转换后的dtype
+    dim, dtype_param = result_tensor.parms[0]  # 直接使用转换后的dtype
     
     # 获取梯度值，使用Riemann的张量操作保持计算图
     grad_value = result_tensor.grad_value
@@ -2050,7 +2027,7 @@ def _cumsum_backward(result_tensor: TN, i: int) -> TN:
     if dtype_param != input_grad.dtype:
         input_grad = input_grad.type(dtype_param)
     
-    return input_grad
+    return (input_grad,)
 
 
 @api_registry.register
@@ -2113,20 +2090,20 @@ def cumsum(input: TN, dim: int, *, dtype: str | np.dtype | None = None, out: TN 
     if ret.requires_grad:
         ret.fromvars = (input,)
         ret.parms = ((dim, result_dtype),)
-        ret.gradfuncs = (_cumsum_backward,)
+        ret._grad_rule = _cumsum_grad
     
     return _apply_out(out, ret, (input,), "cumsum")
 
 
-def _sort_backward(result_tensor: TN, i: int) -> TN:
+def _sort_grad(result_tensor: TN):
     """
-    排序操作的反向传播函数
+    排序操作的融合梯度规则
     对于排序后的张量，梯度需要按照原始索引重新排列
     """
     # 获取原始输入张量
-    input_tensor = result_tensor.fromvars[i]
+    input_tensor = result_tensor.fromvars[0]
     # 获取排序时使用的索引、排序维度
-    sorted_indices, sort_dim = result_tensor.parms[i]
+    sorted_indices, sort_dim = result_tensor.parms[0]
     # 获取梯度值
     grad_value = result_tensor.grad_value
     
@@ -2150,7 +2127,7 @@ def _sort_backward(result_tensor: TN, i: int) -> TN:
         # 使用这些坐标将梯度值分配回原始位置
         grad[tuple(coords)] = grad_value
     
-    return grad
+    return (grad,)
 
 
 @api_registry.register
@@ -2204,8 +2181,6 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
         # 创建一个与sorted_indices形状相同的数组，用于存储反转后的索引
         with device_context(input):
             reverse_indices = arrlib.empty_like(sorted_indices)
-        # 获取指定维度的大小
-        dim_size = input._array.shape[dim]
         # 对每个子数组进行处理
         # 注意：nditer在CPU上执行，但操作的是已有数组
         it = np.nditer(sorted_indices, flags=['multi_index', 'refs_ok'])
@@ -2231,22 +2206,22 @@ def sort(input: TN, dim: int = -1, descending: bool = False, stable: bool = Fals
     if sorted_values.requires_grad:
         sorted_values.fromvars = (input,)
         sorted_values.parms = ((sorted_indices_tensor, dim),)
-        sorted_values.gradfuncs = (_sort_backward,)
+        sorted_values._grad_rule = _sort_grad
     
     # 处理out参数
     return _apply_out_tuple(out, (sorted_values, sorted_indices_tensor), (input,), "sort")
 
 
-def _topk_backward(result_tensor: TN, i: int) -> TN:
+def _topk_grad(result_tensor: TN):
     """
-    topk操作的反向传播函数。
+    topk操作的融合梯度规则。
     将输出位置上的梯度按照topk索引散射回输入张量的对应位置，
     未被选中的输入位置梯度为0。
     """
     # 获取原始输入张量
-    input_tensor = result_tensor.fromvars[i]
+    input_tensor = result_tensor.fromvars[0]
     # 获取topk选择时使用的索引和维度
-    topk_indices, topk_dim = result_tensor.parms[i]
+    topk_indices, topk_dim = result_tensor.parms[0]
     # 获取梯度值
     grad_value = result_tensor.grad_value
 
@@ -2268,7 +2243,7 @@ def _topk_backward(result_tensor: TN, i: int) -> TN:
         # 使用这些坐标将梯度值分配回原始位置
         grad[tuple(coords)] = grad_value
 
-    return grad
+    return (grad,)
 
 
 @api_registry.register
@@ -2384,7 +2359,7 @@ def topk(input: TN, k: int, dim: int = -1, largest: bool = True, sorted: bool = 
     if values_tensor.requires_grad:
         values_tensor.fromvars = (input,)
         values_tensor.parms = ((indices_tensor, dim),)
-        values_tensor.gradfuncs = (_topk_backward,)
+        values_tensor._grad_rule = _topk_grad
 
     # 处理out参数
     return _apply_out_tuple(out, (values_tensor, indices_tensor), (input,), "topk")
@@ -2435,9 +2410,9 @@ def nonzero(input: TN, *, as_tuple: bool = False) -> TN | tuple[TN, ...]:
     return result
 
 
-def _var_backward(result_tensor:TN, i:int)->TN:
-    dim,unbiased,keepdim = result_tensor.parms[i]     
-    x=result_tensor.fromvars[i]
+def _var_grad(result_tensor:TN):
+    dim,unbiased,keepdim = result_tensor.parms[0]     
+    x=result_tensor.fromvars[0]
     
     # 计算样本数量n
     if dim is None:
@@ -2470,7 +2445,7 @@ def _var_backward(result_tensor:TN, i:int)->TN:
     
     # 计算最终梯度
     grad = grad_value * diff * factor
-    return grad
+    return (grad,)
 
 
 @api_registry.register
@@ -2488,7 +2463,7 @@ def var(x:TN, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False)->
     if ret.requires_grad:
         ret.fromvars=(x,)
         ret.parms=((dim,unbiased,keepdim),)
-        ret.gradfuncs=(_var_backward,)
+        ret._grad_rule=_var_grad
     
     return ret
 
@@ -2579,7 +2554,7 @@ class _IndexDescriptor:
         elif self.type == _IndexDescriptor.LOOKUP:
             return f"LOOKUP(indices={self.params['indices']})"
         else:
-            return f"NONE()"
+            return "NONE()"
 
 
 def _normalize_index_to_tuple(index):
@@ -3296,35 +3271,29 @@ def _iset_full(numpy_arr, right):
     return numpy_arr
 
 
-def _setat_backward_left(result_tensor:TN, i:int)->TN:
-    """非原地 setat 反向中传给左值的梯度：索引位置已被覆盖写，故把该位置梯度清零。
+def _setat_grad(result_tensor:TN):
+    """非原地 setat 的融合反向：返回 (左值梯度, 右值梯度)。
 
-    调用者: setat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
-    """
-    index = result_tensor.parms[0]
-    grad = result_tensor.grad_value.setat(index,0.)
-    return grad
+    左值：索引位置已被覆盖写，故把该位置梯度清零；
+    右值：取 self 梯度在索引位置的取值。
 
-
-def _setat_backward_right(result_tensor:TN, i:int)->TN:
-    """非原地 setat 反向中传给右值的梯度：取 self 梯度在索引位置的取值。
-
-    调用者: setat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    调用者: setat（作为 grad_rule 实参传入 _non_inplace_oper_at）
     """
     index = result_tensor.parms[0]
 
-    # result_tensor就是原地赋值时的self
-    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    # result_tensor就是赋值结果的副本
+    # 将grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
     right_var_grad = result_tensor.grad_value[index]
-    return right_var_grad
+    left_var_grad = result_tensor.grad_value.setat(index,0.)
+    return (left_var_grad, right_var_grad)
 
 
-def _setat_inplace_backward(result_tensor:TN, i:int)->TN: 
+def _setat_inplace_grad(result_tensor:TN):
     """原地 setat_ 的反向：右值梯度取索引位置的梯度，并把 self 该位置梯度清零。
 
-    调用者: setat_（作为 backward_func 实参传入 _inplace_oper_at_）
+    调用者: setat_（作为 grad_rule 实参传入 _inplace_oper_at_）
     """
-    index = result_tensor.parms[i][1]
+    index = result_tensor.parms[0][1]
 
     # result_tensor就是原地赋值时的self
     # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
@@ -3333,37 +3302,32 @@ def _setat_inplace_backward(result_tensor:TN, i:int)->TN:
     # 所以要将self的grad_value中索引位置的梯度设为0
     clone_self_grad = result_tensor.grad_value.setat(index,0.)
     result_tensor.grad_value = clone_self_grad
-    
+
     return right_var_grad
 
 
-def _addat_backward_left(result_tensor:TN, i:int)->TN:
-    """非原地 addat 反向中传给左值的梯度：加法不改变左值梯度，原样返回。
+def _addat_grad(result_tensor:TN):
+    """非原地 addat 的融合反向：返回 (左值梯度, 右值梯度)。
 
-    调用者: addat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
-    """
-    return result_tensor.grad_value
+    左值：加法不改变左值梯度，原样返回；
+    右值：取 self 梯度在索引位置的取值。
 
-
-def _addat_backward_right(result_tensor: TN, i: int) -> TN:
-    """非原地 addat 反向中传给右值的梯度：取 self 梯度在索引位置的取值。
-
-    调用者: addat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    调用者: addat（作为 grad_rule 实参传入 _non_inplace_oper_at）
     """
     index = result_tensor.parms[0]
 
-    # result_tensor就是原地赋值时的self
-    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
-    right_var_grad = result_tensor.grad_value[index]    
-    return right_var_grad
+    # result_tensor就是赋值结果的副本
+    # 将grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor.grad_value[index]
+    return (result_tensor.grad_value, right_var_grad)
 
 
-def _addat_inplace_backward(result_tensor:TN, i:int)->TN:    
+def _addat_inplace_grad(result_tensor:TN):
     """原地 addat_ 的反向：右值梯度即 self 梯度在索引位置的取值。
 
-    调用者: addat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS，供 setitem 重放
+    调用者: addat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS，供 setitem 重放
     """
-    index = result_tensor.parms[i][1]
+    index = result_tensor.parms[0][1]
 
     # result_tensor就是原地赋值时的self
     # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
@@ -3371,32 +3335,28 @@ def _addat_inplace_backward(result_tensor:TN, i:int)->TN:
     return right_var_grad
 
 
-def _subat_backward_left(result_tensor:TN, i:int)->TN:
-    """非原地 subat 反向中传给左值的梯度：减法不改变左值梯度，原样返回。
+def _subat_grad(result_tensor:TN):
+    """非原地 subat 的融合反向：返回 (左值梯度, 右值梯度)。
 
-    调用者: subat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
-    """
-    return result_tensor.grad_value
+    左值：减法不改变左值梯度，原样返回；
+    右值：索引位置梯度取负。
 
-def _subat_backward_right(result_tensor: TN, i: int) -> TN:
-    """非原地 subat 反向中传给右值的梯度：索引位置梯度取负。
-
-    调用者: subat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    调用者: subat（作为 grad_rule 实参传入 _non_inplace_oper_at）
     """
     index = result_tensor.parms[0]
 
-    # result_tensor就是原地赋值时的self
-    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
-    right_var_grad = result_tensor.grad_value[index]    
-    return right_var_grad
+    # result_tensor就是赋值结果的副本
+    # 将grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = -result_tensor.grad_value[index]
+    return (result_tensor.grad_value, right_var_grad)
 
 
-def _subat_inplace_backward(result_tensor:TN, i:int)->TN:    
+def _subat_inplace_grad(result_tensor:TN):
     """原地 subat_ 的反向：右值梯度为 self 在索引位置梯度的相反数。
 
-    调用者: subat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS，供 setitem 重放
+    调用者: subat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS，供 setitem 重放
     """
-    index = result_tensor.parms[i][1]
+    index = result_tensor.parms[0][1]
 
     # result_tensor就是原地赋值时的self
     # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
@@ -3404,41 +3364,31 @@ def _subat_inplace_backward(result_tensor:TN, i:int)->TN:
     return right_var_grad
 
 
-def _mulat_backward_left(result_tensor:TN, i:int)->TN:
-    """非原地 mulat 反向中传给左值的梯度：用右值的共轭修正索引位置的梯度。
+def _mulat_grad(result_tensor:TN):
+    """非原地 mulat 的融合反向：返回 (左值梯度, 右值梯度)。
 
-    调用者: mulat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    左值：用右值的共轭修正索引位置的梯度；
+    右值：索引位置梯度乘左值（按索引）的共轭。
+
+    调用者: mulat（作为 grad_rule 实参传入 _non_inplace_oper_at）
     """
     left_var = result_tensor.fromvars[0]
     right_var = result_tensor.fromvars[1]
     index = result_tensor.parms[0]
 
     left_var_grad = result_tensor.grad_value[index] * right_var.conj()
-    grad = result_tensor.grad_value.setat(index,left_var_grad)
-    return grad
-
-
-def _mulat_backward_right(result_tensor: TN, i: int) -> TN:
-    """非原地 mulat 反向中传给右值的梯度：索引位置梯度乘左值（按索引）的共轭。
-
-    调用者: mulat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
-    """
-    left_var = result_tensor.fromvars[0]
-    right_var = result_tensor.fromvars[1]
-    index = result_tensor.parms[0]
-
     right_var_grad = result_tensor.grad_value[index] * left_var[index].conj()
-    return right_var_grad
+    return (result_tensor.grad_value.setat(index,left_var_grad), right_var_grad)
 
 
-def _mulat_inplace_backward(result_tensor: TN, i: int) -> TN:
+def _mulat_inplace_grad(result_tensor: TN):
     """原地 mulat_ 的反向：由备份的左值算出右值梯度，并把 self 索引位置梯度替换为左值梯度。
 
-    调用者: mulat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
+    调用者: mulat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
     """
-    right_var = result_tensor.fromvars[i]
-    left_var = result_tensor.parms[i][0]    
-    index = result_tensor.parms[i][1]
+    right_var = result_tensor.fromvars[0]
+    left_var = result_tensor.parms[0][0]
+    index = result_tensor.parms[0][1]
 
     result_grad = result_tensor.grad_value[index]
     right_var_grad = result_grad * left_var.conj()
@@ -3446,7 +3396,7 @@ def _mulat_inplace_backward(result_tensor: TN, i: int) -> TN:
     # 由于self的在原地索引赋值时index位置已被乘积值覆盖，
     # 所以要将self的grad_value中索引位置的梯度设为左值的梯度
     left_var_grad = result_grad * right_var.conj()
-    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)    
+    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)
     result_tensor.grad_value = clone_self_grad
 
     return right_var_grad
@@ -3471,78 +3421,66 @@ def _abs_inplace_data(array, index)->None:
     array[index] = array[index].__abs__()
 
 
-def _placeholder_zero_grad(result_tensor: TN, i: int) -> TN:
+def _placeholder_zero_grad(result_tensor: TN) -> TN:
     """为不传播梯度的一元原地运算返回0标量梯度，供占位变量接收。
 
-    调用者: _negat_inplace_backward、_absat_inplace_backward
+    调用者: _negat_inplace_grad、_absat_inplace_grad
     """
-    placeholder = result_tensor.fromvars[i]
+    placeholder = result_tensor.fromvars[0]
     return TN(placeholder._get_array_lib().zeros((), dtype=placeholder.dtype))
 
 
-def _negat_inplace_backward(result_tensor: TN, i: int) -> TN:
+def _negat_inplace_grad(result_tensor: TN) -> TN:
     """neg_ 的反向：把流向自身历史算子的梯度取负（d(-x)/dx = -1）。
 
-    调用者: neg_（作为 backward_func 实参传入 _inplace_unary_at_）
+    调用者: neg_（作为 grad_rule 实参传入 _inplace_unary_at_）
     """
-    index = result_tensor.parms[i][1]
+    index = result_tensor.parms[0][1]
 
     result_grad = result_tensor.grad_value[index]
     result_tensor.grad_value = result_tensor.grad_value.setat(index, -result_grad)
 
-    return _placeholder_zero_grad(result_tensor, i)
+    return _placeholder_zero_grad(result_tensor)
 
 
-def _absat_inplace_backward(result_tensor: TN, i: int) -> TN:
+def _absat_inplace_grad(result_tensor: TN) -> TN:
     """abs_ 的反向：d|x|/dx = sign(x)，符号取自操作前的左值副本。
 
-    调用者: abs_（作为 backward_func 实参传入 _inplace_unary_at_）
+    调用者: abs_（作为 grad_rule 实参传入 _inplace_unary_at_）
     """
-    left_copy = result_tensor.parms[i][0]
-    index = result_tensor.parms[i][1]
+    left_copy = result_tensor.parms[0][0]
+    index = result_tensor.parms[0][1]
 
     result_grad = result_tensor.grad_value[index]
     left_grad = result_grad * left_copy._get_array_lib().sign(left_copy._array)
     result_tensor.grad_value = result_tensor.grad_value.setat(index, left_grad)
 
-    return _placeholder_zero_grad(result_tensor, i)
+    return _placeholder_zero_grad(result_tensor)
 
 
-def _divat_backward_left(result_tensor:TN, i:int)->TN:
-    """非原地 divat 反向中传给左值的梯度：索引位置梯度除以右值的共轭。
+def _divat_grad(result_tensor:TN):
+    """非原地 divat 的融合反向：返回 (左值梯度, 右值梯度)。
 
-    调用者: divat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    左值：索引位置梯度除以右值的共轭；
+    右值：-x/right 的共轭乘以索引位置梯度。
+
+    调用者: divat（作为 grad_rule 实参传入 _non_inplace_oper_at）
     """
-    left_var = result_tensor.fromvars[0]
     right_var = result_tensor.fromvars[1]
     index = result_tensor.parms[0]
 
     left_var_grad = result_tensor.grad_value[index] / right_var.conj()
-    grad = result_tensor.grad_value.setat(index,left_var_grad)
-    return grad
-
-
-def _divat_backward_right(result_tensor: TN, i: int) -> TN:
-    """非原地 divat 反向中传给右值的梯度：-x/right 的共轭乘以索引位置梯度。
-
-    调用者: divat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
-    """
-    left_var = result_tensor.fromvars[0]
-    right_var = result_tensor.fromvars[1]
-    index = result_tensor.parms[0]
-
     right_var_grad = result_tensor.grad_value[index] * (-result_tensor[index]/right_var).conj()
-    return right_var_grad
+    return (result_tensor.grad_value.setat(index,left_var_grad), right_var_grad)
 
 
-def _divat_inplace_backward(result_tensor: TN, i: int) -> TN:
+def _divat_inplace_grad(result_tensor: TN):
     """原地 divat_ 的反向：算出右值梯度，并把 self 索引位置梯度设为左值梯度。
 
-    调用者: divat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
+    调用者: divat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
     """
-    right_var = result_tensor.fromvars[i]
-    left_var = result_tensor.parms[i][0]    
-    index = result_tensor.parms[i][1]
+    right_var = result_tensor.fromvars[0]
+    index = result_tensor.parms[0][1]
 
     result_grad = result_tensor.grad_value[index]
     right_var_grad = result_grad * (-result_tensor[index]/right_var).conj()
@@ -3550,25 +3488,19 @@ def _divat_inplace_backward(result_tensor: TN, i: int) -> TN:
     # 由于self的在原地索引赋值时index位置已被覆盖，
     # 所以要将self的grad_value中索引位置的梯度设为左值的梯度
     left_var_grad = result_grad / right_var.conj()
-    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)    
+    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)
     result_tensor.grad_value = clone_self_grad
 
     return right_var_grad
 
 
-def _modat_backward_left(result_tensor:TN, i:int)->TN:
-    """非原地 modat 反向中传给左值的梯度：取余对左值的导数为 1，梯度原样返回。
+def _modat_grad(result_tensor:TN):
+    """非原地 modat 的融合反向：返回 (左值梯度, 右值梯度)。
 
-    调用者: modat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
-    """
-    # d(left % right)/d(left) = 1，结果梯度即为左值梯度
-    return result_tensor.grad_value
+    左值：取余对左值的导数为 1，梯度原样返回；
+    右值：-floor(left/right) 乘以索引位置梯度。
 
-
-def _modat_backward_right(result_tensor: TN, i: int) -> TN:
-    """非原地 modat 反向中传给右值的梯度：-floor(left/right) 乘以索引位置梯度。
-
-    调用者: modat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
+    调用者: modat（作为 grad_rule 实参传入 _non_inplace_oper_at）
     """
     left_var = result_tensor.fromvars[0]
     right_var = result_tensor.fromvars[1]
@@ -3576,33 +3508,37 @@ def _modat_backward_right(result_tensor: TN, i: int) -> TN:
 
     # d(left % right)/d(right) = -floor(left/right)
     right_var_grad = -result_tensor.grad_value[index] * floor(left_var[index] / right_var)
-    return right_var_grad
+    # d(left % right)/d(left) = 1，结果梯度即为左值梯度
+    return (result_tensor.grad_value, right_var_grad)
 
 
-def _modat_inplace_backward(result_tensor: TN, i: int) -> TN:
+def _modat_inplace_grad(result_tensor: TN):
     """原地 modat_ 的反向：算出右值梯度，并把 self 索引位置梯度设为左值梯度。
 
-    调用者: modat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
+    调用者: modat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
     """
-    right_var = result_tensor.fromvars[i]
-    left_var = result_tensor.parms[i][0]    
-    index = result_tensor.parms[i][1]
+    right_var = result_tensor.fromvars[0]
+    left_var = result_tensor.parms[0][0]
+    index = result_tensor.parms[0][1]
 
     result_grad = result_tensor.grad_value[index]
     right_var_grad = -result_grad * floor(left_var / right_var)
 
     # 由于self在原地索引赋值时index位置已被取余结果覆盖，
     # 所以要将self的grad_value中索引位置的梯度设为左值的梯度（导数恒为1）
-    clone_self_grad = result_tensor.grad_value.setat(index, result_grad)    
+    clone_self_grad = result_tensor.grad_value.setat(index, result_grad)
     result_tensor.grad_value = clone_self_grad
 
     return right_var_grad
 
 
-def _powat_backward_left(result_tensor:TN, i:int)->TN:
-    """非原地 powat 反向中传给左值的梯度：right*left**(right-1) 的共轭乘以索引位置梯度。
+def _powat_grad(result_tensor:TN):
+    """非原地 powat 的融合反向：返回 (左值梯度, 右值梯度)。
 
-    调用者: powat（作为 left_backward_func 实参传入 _non_inplace_oper_at）
+    左值：right*left**(right-1) 的共轭乘以索引位置梯度；
+    右值：result*log(left) 的共轭乘以索引位置梯度。
+
+    调用者: powat（作为 grad_rule 实参传入 _non_inplace_oper_at）
     """
     left_var = result_tensor.fromvars[0]
     right_var = result_tensor.fromvars[1]
@@ -3610,32 +3546,18 @@ def _powat_backward_left(result_tensor:TN, i:int)->TN:
 
     result_grad = result_tensor.grad_value[index]
     left_var_grad = result_grad * (right_var * (left_var[index] ** (right_var - 1.))).conj()
-    grad = result_tensor.grad_value.setat(index,left_var_grad)
-    return grad
-
-
-def _powat_backward_right(result_tensor: TN, i: int) -> TN:
-    """非原地 powat 反向中传给右值的梯度：result*log(left) 的共轭乘以索引位置梯度。
-
-    调用者: powat（作为 right_backward_func 实参传入 _non_inplace_oper_at）
-    """
-    left_var = result_tensor.fromvars[0]
-    right_var = result_tensor.fromvars[1]
-    index = result_tensor.parms[0]
-
-    result_grad = result_tensor.grad_value[index]
     right_var_grad = result_grad * result_tensor[index].conj() * log(left_var[index].conj())
-    return right_var_grad
+    return (result_tensor.grad_value.setat(index,left_var_grad), right_var_grad)
 
 
-def _powat_inplace_backward(result_tensor: TN, i: int) -> TN:
+def _powat_inplace_grad(result_tensor: TN):
     """原地 powat_ 的反向：算出右值梯度，并把 self 索引位置梯度设为左值梯度。
 
-    调用者: powat_（作为 backward_func 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
+    调用者: powat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
     """
-    right_var = result_tensor.fromvars[i]
-    left_var = result_tensor.parms[i][0]    
-    index = result_tensor.parms[i][1]
+    right_var = result_tensor.fromvars[0]
+    left_var = result_tensor.parms[0][0]
+    index = result_tensor.parms[0][1]
 
     result_grad = result_tensor.grad_value[index]
     right_var_grad = result_grad * result_tensor[index].conj() * log(left_var.conj())
@@ -3643,16 +3565,29 @@ def _powat_inplace_backward(result_tensor: TN, i: int) -> TN:
     # 由于self的在原地索引赋值时index位置已被乘积值覆盖，
     # 所以要将self的grad_value中索引位置的梯度设为左值的梯度
     left_var_grad = result_grad * (right_var * (left_var ** (right_var - 1.))).conj()
-    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)    
+    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)
     result_tensor.grad_value = clone_self_grad
 
     return right_var_grad
 
 
-def _floordivat_inplace_backward(result_tensor:TN, i:int)->TN:
+def _floordivat_grad(result_tensor:TN):
+    """非原地 floordivat 的融合反向：向下取整除法不可导，有来源需要梯度时抛 RuntimeError。
+
+    调用者: floordivat（作为 grad_rule 实参传入 _non_inplace_oper_at）
+    """
+    left_var = result_tensor.fromvars[0]
+    right_var = result_tensor.fromvars[1]
+    if ((isinstance(left_var, TN) and left_var.requires_grad)
+            or (isinstance(right_var, TN) and right_var.requires_grad)):
+        raise RuntimeError('derivative for aten::floor_divide is not implemented')
+    return (None, None)
+
+
+def _floordivat_inplace_grad(result_tensor:TN):
     """原地 floordivat_ 的反向：向下取整除法不可导，直接抛 RuntimeError（与 torch 一致）。
 
-    调用者: floordivat_（作为 backward_func 实参传入 _inplace_oper_at_）
+    调用者: floordivat_（作为 grad_rule 实参传入 _inplace_oper_at_）
     """
     raise RuntimeError('derivative for aten::floor_divide is not implemented')
 
@@ -3701,18 +3636,55 @@ def _adjust_right_val(input:TN, target_data, val):
     return right_val
 
 
-def _inplace_unary_at_(input:TN, index, data_func, backward_func):
+def _compose_inplace_grad(input:TN, grad_rule):
+    """把本次原地操作的融合梯度规则叠加到 input 已有的 _grad_rule 上。
+
+    原地操作只能修改 input 自身，因此每做一次操作就要在它的计算图上追加一条依赖。
+    新规则先计算本次操作的梯度，再调用旧规则计算历史来源的梯度，并把二者按
+    “当前 fromvars 顺序”拼接返回。
+
+    必须在把本次操作插入 fromvars/parms 之前调用：旧规则是按它记录时的
+    fromvars/parms 位置计算梯度的，而本次操作会把新条目插到首部使位置整体后移。
+    fused 内部因此临时去掉首条记录（当前的前缀）后再调用旧规则，调用结束后恢复；
+    这里按 result.fromvars[1:] 现取历史记录，而不是捕获调用时刻的张量对象，
+    这样在 JVP 的影子节点上调用时仍使用影子自己的来源，不会泄漏到真实计算图。
+
+    调用者: _inplace_unary_at_、_inplace_oper_at_
+    """
+    old_rule = input._grad_rule
+
+    def fused(result:TN):
+        # 先按当前记录计算本次原地操作的梯度（首部即本操作的右值/参数）
+        first = grad_rule(result)
+
+        # 临时去掉首条记录，让旧规则按其记录时的位置计算
+        new_fromvars = result.fromvars
+        new_parms = result.parms
+        result.fromvars = new_fromvars[1:]
+        result.parms = new_parms[1:]
+        try:
+            rest = old_rule(result) if old_rule is not None else ()
+        finally:
+            result.fromvars = new_fromvars
+            result.parms = new_parms
+
+        return (first,) + tuple(rest)
+
+    input._grad_rule = fused
+
+
+def _inplace_unary_at_(input:TN, index, data_func, grad_rule):
     """在指定索引位置对 input 执行一元原地运算，并记录反向传播所需的依赖。
 
     与 _inplace_oper_at_ 的区别：一元运算没有右值，data_func 直接依据左值
-    改写数据，因此梯度只需修正 input 自身历史算子的梯度（由 backward_func
-    完成），不用记录右值依赖；占位变量仅用于承载该梯度回调。
+    改写数据，因此梯度只需修正 input 自身历史算子的梯度（由 grad_rule
+    完成），不用记录右值依赖；占位变量仅用于承载该梯度规则。
 
     参数:
         input: 被操作的张量
         index: 目标索引；空元组 () 表示整个张量
         data_func: 执行函数，签名 (数组, 索引)，直接在数组上改写数据
-        backward_func: 该操作对应的梯度回调，写入 input.gradfuncs
+        grad_rule: 该操作对应的融合梯度规则
 
     视图重定向：若 input 是视图，先合并视图索引与 index，再在 input._base 上执行，
     保证写入落到真实存储；返回值仍是视图对象本身。
@@ -3725,7 +3697,7 @@ def _inplace_unary_at_(input:TN, index, data_func, backward_func):
     # 检查是否为视图对象
     if hasattr(input, '_is_view') and input._is_view:
         combined_index = merge_indices(input, input._view_index, index_val)
-        _inplace_unary_at_(input._base, combined_index, data_func, backward_func)
+        _inplace_unary_at_(input._base, combined_index, data_func, grad_rule)
         return input
 
     # 是否记录计算图：no_grad 下既不记录依赖，也不改动 requires_grad
@@ -3741,19 +3713,19 @@ def _inplace_unary_at_(input:TN, index, data_func, backward_func):
     data_func(input._array, index_val)  # 执行原地操作
 
     if need_grad:
-        # 一元原地运算没有右值，用不依赖任何输入的占位变量承载梯度回调；
+        # 一元原地运算没有右值，用不依赖任何输入的占位变量承载梯度规则；
         # 插入位置与 _inplace_oper_at_ 一致，保证“后做的原地操作先处理梯度”
         placeholder = zeros((), dtype=input.dtype, device=input.device, requires_grad=True)
         input.requires_grad = True
+        _compose_inplace_grad(input, grad_rule)
         input.fromvars = (placeholder,) + input.fromvars
         input.parms = ((target_copy,index_val),) + input.parms
-        input.gradfuncs = (backward_func, ) + input.gradfuncs
-        input.gradfunc_fused = None
+        input._inplace_ops = ((None, placeholder),) + input._inplace_ops
 
     return input
 
 
-def _inplace_oper_at_(input:TN, index, val, oper_func, backward_func, vector_func=None):
+def _inplace_oper_at_(input:TN, index, val, oper_func, grad_rule, vector_func=None):
     """在指定索引位置对 input 执行原地运算，并记录反向传播所需的依赖。
 
     参数:
@@ -3762,16 +3734,16 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, backward_func, vector_fun
         val: 右值，标量或张量
         oper_func: 通用执行函数，签名 (数组, 索引, 右值数组)；
                    必须是 ufunc.at 一类支持重复索引累加的实现
-        backward_func: 该操作对应的梯度回调，写入 input.gradfuncs
+        grad_rule: 该操作对应的融合梯度规则
         vector_func: 可选的全量索引加速函数，签名 (数组, 右值数组)；
                      仅当 index 为 () 时使用，为 None 时全部走 oper_func
 
     视图重定向：若 input 是视图，先合并视图索引与 index，再在 input._base 上执行，
     保证写入落到真实存储；返回值仍是视图对象本身，调用方无需区分。
 
-    计算图记录顺序“最新在前”：每次原地操作把右值、索引（含左值副本）、梯度回调
-    分别插入 fromvars/parms/gradfuncs 的首部，反向传播按逆序处理，从而实现
-    “后做的原地操作先处理梯度”。
+    计算图记录顺序“最新在前”：每次原地操作把右值、索引（含左值副本）、重放记录
+    分别插入 fromvars/parms/_inplace_ops 的首部，并把本次操作的梯度规则组合进
+    _grad_rule；反向传播按逆序处理，从而实现“后做的原地操作先处理梯度”。
 
     调用者: setat_、addat_、subat_、mulat_、divat_、powat_、floordivat_、modat_
     （另在视图重定向时递归调用自身）
@@ -3785,7 +3757,7 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, backward_func, vector_fun
         combined_index = merge_indices(input, input._view_index, index_val)
 
         # input是视图时，直接在原张量input._base上执行操作
-        _inplace_oper_at_(input._base, combined_index, val, oper_func, backward_func, vector_func)
+        _inplace_oper_at_(input._base, combined_index, val, oper_func, grad_rule, vector_func)
 
         # 返回视图对象本身
         return input
@@ -3805,7 +3777,7 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, backward_func, vector_fun
     # 因为反向传播要用到左值，而原地操作后 input 对应位置的数据已被覆盖
     # 只有 mul/div/pow 的反向需要左值（_LEFT_VALUE_BACKWARD_NAMES），
     # add/sub/set 的反向只用索引，可省去这次整块内存拷贝
-    if need_grad and getattr(backward_func, '__name__', '') in _LEFT_VALUE_BACKWARD_NAMES:
+    if need_grad and getattr(grad_rule, '__name__', '') in _LEFT_VALUE_BACKWARD_NAMES:
         if target_data.base is not None:
             target_data = target_data.copy()  # 复制共享内存的视图，确保独立性
         target_copy = TN(target_data)
@@ -3824,10 +3796,10 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, backward_func, vector_fun
     if need_grad:
         # 原地赋值时，须在input的现有计算图上增加依赖关系，注意:
         # 1、只能记录右值的依赖关系，不能记录input，避免依赖循环
-        # 2、右值的梯度回调函数里同时传递右值梯度和更新input的梯度，所以右值requires_grad=False时，
-        #    需要复制一个右值的副本用于跟踪梯度，将副本的requires_grad置True，以便backward里副本的梯度跟踪函数被调用
+        # 2、本操作的梯度规则同时给出右值梯度与历史来源梯度；右值requires_grad=False时，
+        #    复制一个detach副本并置True，使该来源能接收梯度
         # 3、原地赋值依赖关系需要优先处理，须插入到fromvars元组前面
-        # 4、多次原地赋值时，遵循先赋值的右值后处理梯度跟踪原则，要从0位置插入右值、索引、梯度回调函数
+        # 4、多次原地赋值时，遵循后做的操作先处理梯度的原则，从0位置插入右值与索引
         # 5、若右值依赖 input（如 t = a[[0,4]]; a[1:3] = t），这里会形成环；
         #    该情况由 __setitem__ 的 _assign_without_cycle 提前拦截，不会走到这里
         if right_val.requires_grad == False:
@@ -3835,16 +3807,16 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, backward_func, vector_fun
             right_val = right_val.detach().requires_grad_(True)
 
         input.requires_grad = True
+        _compose_inplace_grad(input, grad_rule)
         input.fromvars = (right_val,) + input.fromvars
         # 注意(target_copy,index_val)必须以元组的形式整体插入到parms元组前面
         input.parms = ((target_copy,index_val),) + input.parms
-        input.gradfuncs = (backward_func, ) + input.gradfuncs
-        input.gradfunc_fused = None
+        input._inplace_ops = ((_INPLACE_AT_METHODS.get(grad_rule.__name__), input.fromvars[0]),) + input._inplace_ops
 
     return input
 
 
-def _non_inplace_oper_at(input:TN, index, val, oper_func, left_backward_func, right_backward_func):
+def _non_inplace_oper_at(input:TN, index, val, oper_func, grad_rule):
     """在 input 的副本上按索引执行运算并返回新张量，input 本身不变。
 
     调用者: setat、addat、subat、mulat、divat、powat、floordivat、modat
@@ -3865,7 +3837,7 @@ def _non_inplace_oper_at(input:TN, index, val, oper_func, left_backward_func, ri
     if ret.requires_grad:
         ret.fromvars = (input,right_val)
         ret.parms = (index_val,)
-        ret.gradfuncs = (left_backward_func,right_backward_func)
+        ret._grad_rule = grad_rule
 
     return ret
 
@@ -3885,8 +3857,7 @@ def setat_(input:TN, index, val):
         numpy_arr[index] = right_numpy_arr
         return numpy_arr
 
-    return _inplace_oper_at_(input, index, val, _set_numpy_item,
-                             _setat_inplace_backward, _iset_full)
+    return _inplace_oper_at_(input, index, val, _set_numpy_item, _setat_inplace_grad, _iset_full)
 
 
 @api_registry.register
@@ -3896,24 +3867,21 @@ def setat(input:TN, index, val):
         numpy_arr[index] = right_numpy_arr
         return numpy_arr
 
-    return _non_inplace_oper_at(input, index, val, _set_numpy_item,
-                                _setat_backward_left, _setat_backward_right)
+    return _non_inplace_oper_at(input, index, val, _set_numpy_item, _setat_grad)
 
 
 @api_registry.register
 def addat_(input:TN, index, val):
     """原地执行 input[index] += val（重复索引累加），返回 input。"""
     arrlib = input._get_array_lib()
-    return _inplace_oper_at_(input, index, val, arrlib.add.at,
-                             _addat_inplace_backward, _iadd_full)
+    return _inplace_oper_at_(input, index, val, arrlib.add.at, _addat_inplace_grad, _iadd_full)
 
 
 @api_registry.register
 def addat(input:TN, index, val):
     """非原地执行 input[index] += val，返回新张量。"""
     arrlib = input._get_array_lib()
-    return _non_inplace_oper_at(input, index, val, arrlib.add.at,
-                                _addat_backward_left, _addat_backward_right)
+    return _non_inplace_oper_at(input, index, val, arrlib.add.at, _addat_grad)
 
 
 @api_registry.register
@@ -3930,8 +3898,7 @@ def subat_(input:TN, index, val):
         oper_func = _subat_numpy_item
     else:
         oper_func = np.subtract.at
-    return _inplace_oper_at_(input, index, val, oper_func,
-                             _subat_inplace_backward, _isub_full)
+    return _inplace_oper_at_(input, index, val, oper_func, _subat_inplace_grad, _isub_full)
 
 
 @api_registry.register
@@ -3945,8 +3912,7 @@ def subat(input:TN, index, val):
         oper_func = _subat_numpy_item
     else:
         oper_func = np.subtract.at
-    return _non_inplace_oper_at(input, index, val, oper_func,
-                                _subat_backward_left, _subat_backward_right)
+    return _non_inplace_oper_at(input, index, val, oper_func, _subat_grad)
 
 
 @api_registry.register
@@ -3964,8 +3930,7 @@ def mulat_(input:TN, index, val):
     else:
         oper_func = np.multiply.at
 
-    return _inplace_oper_at_(input, index, val, oper_func,
-                             _mulat_inplace_backward, _imul_full)
+    return _inplace_oper_at_(input, index, val, oper_func, _mulat_inplace_grad, _imul_full)
 
 
 @api_registry.register
@@ -3980,8 +3945,7 @@ def mulat(input:TN, index, val):
     else:
         oper_func = np.multiply.at
 
-    return _non_inplace_oper_at(input, index, val, oper_func,
-                                _mulat_backward_left, _mulat_backward_right)
+    return _non_inplace_oper_at(input, index, val, oper_func, _mulat_grad)
 
 
 @api_registry.register
@@ -3998,8 +3962,7 @@ def divat_(input:TN, index, val):
         oper_func = _divat_numpy_item
     else:
         oper_func = np.divide.at
-    return _inplace_oper_at_(input, index, val, oper_func,
-                             _divat_inplace_backward, _idiv_full)
+    return _inplace_oper_at_(input, index, val, oper_func, _divat_inplace_grad, _idiv_full)
 
 
 @api_registry.register
@@ -4013,8 +3976,7 @@ def divat(input:TN, index, val):
         oper_func = _divat_numpy_item
     else:
         oper_func = np.divide.at
-    return _non_inplace_oper_at(input, index, val, oper_func,
-                                _divat_backward_left, _divat_backward_right)
+    return _non_inplace_oper_at(input, index, val, oper_func, _divat_grad)
 
 
 @api_registry.register
@@ -4031,8 +3993,7 @@ def powat_(input:TN, index, val):
         oper_func = _powat_numpy_item
     else:
         oper_func = np.power.at
-    return _inplace_oper_at_(input, index, val, oper_func,
-                             _powat_inplace_backward, _ipow_full)
+    return _inplace_oper_at_(input, index, val, oper_func, _powat_inplace_grad, _ipow_full)
 
 
 @api_registry.register
@@ -4046,8 +4007,7 @@ def powat(input:TN, index, val):
         oper_func = _powat_numpy_item
     else:
         oper_func = np.power.at
-    return _non_inplace_oper_at(input, index, val, oper_func,
-                                _powat_backward_left, _powat_backward_right)
+    return _non_inplace_oper_at(input, index, val, oper_func, _powat_grad)
 
 
 @api_registry.register
@@ -4066,7 +4026,7 @@ def floordivat_(input:TN, index, val):
     else:
         oper_func = np.floor_divide.at
     return _inplace_oper_at_(input, index, val, oper_func,
-                             _floordivat_inplace_backward, _ifloordiv_full)
+                             _floordivat_inplace_grad, _ifloordiv_full)
 
 
 @api_registry.register
@@ -4080,8 +4040,7 @@ def floordivat(input:TN, index, val):
         oper_func = _floordivat_numpy_item
     else:
         oper_func = np.floor_divide.at
-    return _non_inplace_oper_at(input, index, val, oper_func,
-                                _floordiv_grad_left, _floordiv_grad_right)
+    return _non_inplace_oper_at(input, index, val, oper_func, _floordivat_grad)
 
 
 @api_registry.register
@@ -4098,8 +4057,7 @@ def modat_(input:TN, index, val):
         oper_func = _modat_numpy_item
     else:
         oper_func = np.remainder.at
-    return _inplace_oper_at_(input, index, val, oper_func,
-                             _modat_inplace_backward, _imod_full)
+    return _inplace_oper_at_(input, index, val, oper_func, _modat_inplace_grad, _imod_full)
 
 
 @api_registry.register
@@ -4113,8 +4071,7 @@ def modat(input:TN, index, val):
         oper_func = _modat_numpy_item
     else:
         oper_func = np.remainder.at
-    return _non_inplace_oper_at(input, index, val, oper_func,
-                                _modat_backward_left, _modat_backward_right)
+    return _non_inplace_oper_at(input, index, val, oper_func, _modat_grad)
 
 
 @api_registry.register
@@ -4148,7 +4105,7 @@ def abs_(x:TN)->TN:
     if np.issubdtype(x.dtype, np.complexfloating):
         raise RuntimeError("In-place abs is not supported for complex tensors.")
 
-    return _inplace_unary_at_(x, (), _abs_inplace_data, _absat_inplace_backward)
+    return _inplace_unary_at_(x, (), _abs_inplace_data, _absat_inplace_grad)
 
 
 @api_registry.register
@@ -4186,7 +4143,7 @@ def neg_(x)->TN:
 
     # 一元原地运算没有右值，传入空索引表示对整个视图操作（视图索引由
     # _inplace_unary_at_ 自动合并），无符号整型取负由底层按位宽回绕
-    return _inplace_unary_at_(x, (), _neg_inplace_data, _negat_inplace_backward)
+    return _inplace_unary_at_(x, (), _neg_inplace_data, _negat_inplace_grad)
 
 
 # ===========================================================================
@@ -4288,8 +4245,9 @@ def _collect_replay_ops(input, val, index_val):
         若副本上做过局部原地操作（如 t[0] += 1），重演需要再合并一层索引，
         这里不做该推导，直接放弃重演。
 
-    原地操作记录连续插入在计算图首部且“最新在前”，遇到第一条非原地记录即停止；
-    返回的列表同样保持“最新在前”，调用方需 reversed 后按时间顺序执行。
+    原地操作记录连续插入在 _inplace_ops 首部且“最新在前”，遇到不可重放记录
+    （op_name 为 None）即停止；返回的列表同样保持“最新在前”，调用方需 reversed
+    后按时间顺序执行。
 
     参数:
         val: __getitem__ 返回的副本张量。
@@ -4302,10 +4260,9 @@ def _collect_replay_ops(input, val, index_val):
         return []
 
     ops = []
-    for i, func in enumerate(val.gradfuncs):
-        op_name = _INPLACE_AT_METHODS.get(getattr(func, '__name__', ''))
+    for i, (op_name, _right) in enumerate(val._inplace_ops):
         if op_name is None:
-            # 原地操作记录连续插入在计算图首部，遇到非原地操作即可停止
+            # 原地操作记录连续插入在 _inplace_ops 首部，遇到不可重放记录即可停止
             break
         parm = val.parms[i]
         # 原地操作的 parms 为 (target_copy, stored_index)，stored_index 为 ()
@@ -4420,6 +4377,11 @@ def _setitem(input: TN, index, val):
     - 视图且索引一致（场景 A）：第 2 步已改写 a，直接返回 self；
     - 副本（场景 B）：第 2 步只改了副本，需要把副本上的原地操作重放到 a。
 
+    场景 B 的重放依据是副本上的 _inplace_ops：原地操作在 _inplace_oper_at_ /
+    _inplace_unary_at_ 中按“最新在前”插入 (方法名或 None, 右值)，与
+    fromvars/parms 同位置对齐。None 表示该操作不可重放（setat_、floordivat_、
+    abs_、neg_ 等），重放到此为止。
+
     重放依赖两个前提：副本取自同一索引、且所有原地操作都作用于整个副本；
     否则退化为按数据赋值（_assign_without_cycle）。这样数据始终正确，代价是
     不可重放的场景中“副本 → self”这条梯度路径会被切断。
@@ -4468,9 +4430,9 @@ def _setitem(input: TN, index, val):
         return _assign_without_cycle(input, index, val)
 
     # 场景 B：非视图对象（如整数数组索引 a[[0,4]] += 1）
-    # 副本记录着它相对 self 做过的原地操作，按时间顺序全部重放即可完整还原数据，
-    # 且不会在计算图中引入环路。重放的成立条件是：副本取自同一索引，且所有
-    # 原地操作都作用于整个副本（见 _collect_replay_ops）。
+    # 副本的 _inplace_ops 记录着它相对 self 做过的原地操作，按时间顺序全部重放
+    # 即可完整还原数据，且不会在计算图中引入环路。重放的成立条件是：副本取自
+    # 同一索引，且所有原地操作都作用于整个副本（见 _collect_replay_ops）。
     replay_ops = _collect_replay_ops(input, val, index_val)
     if replay_ops:
         # 记录按“最新在前”存放，重放必须按“最早在前”的顺序执行
@@ -4724,7 +4686,7 @@ def scatter_(input, dim, index, src=None, *, value=None):
         
         # 确保src和self的dtype相同
         if src.dtype != input.dtype:
-            raise RuntimeError(f"scatter_(): Expected input.dtype to be equal to src.dtype")
+            raise RuntimeError("scatter_(): Expected input.dtype to be equal to src.dtype")
         
         # 确保src和index的形状相同
         if src.shape != index.shape:
@@ -4823,7 +4785,7 @@ def scatter(input, dim, index, src=None, *, value=None):
         
         # 确保src和self的dtype相同
         if src.dtype != input.dtype:
-            raise RuntimeError(f"scatter(): Expected input.dtype to be equal to src.dtype")
+            raise RuntimeError("scatter(): Expected input.dtype to be equal to src.dtype")
 
         # 确保src和index的形状相同
         if src.shape != index.shape:
@@ -4874,7 +4836,7 @@ def scatter_add_(input, dim, index, src):
 
     # 确保src和self的dtype相同
     if src.dtype != input.dtype:
-        raise RuntimeError(f"scatter_add_(): Expected input.dtype to be equal to src.dtype")
+        raise RuntimeError("scatter_add_(): Expected input.dtype to be equal to src.dtype")
 
     # 对于张量，确保形状与index相同
     if src.shape != index.shape:
@@ -4926,7 +4888,7 @@ def scatter_add(input, dim, index, src):
 
     # 确保src和self的dtype相同
     if src.dtype != input.dtype:
-        raise RuntimeError(f"scatter_add_(): Expected input.dtype to be equal to src.dtype")
+        raise RuntimeError("scatter_add_(): Expected input.dtype to be equal to src.dtype")
 
     # 对于张量，确保形状与index相同
     if src.shape != index.shape:
@@ -5060,9 +5022,9 @@ def broadcast_tensors(*tensors: TN) -> tuple[TN, ...]:
     
     return tuple(broadcasted_tensors)
 
-def _split_backward(result_tensor: TN, i: int) -> TN:
-    split_sizes, dim, split_pos = result_tensor.parms[i]
-    parent = result_tensor.fromvars[i]
+def _split_grad(result_tensor: TN):
+    split_sizes, dim, split_pos = result_tensor.parms[0]
+    parent = result_tensor.fromvars[0]
     
     grad = zeros_like(parent)
 
@@ -5075,7 +5037,7 @@ def _split_backward(result_tensor: TN, i: int) -> TN:
     slice_obj[dim] = slice(int(start), int(end))
     grad[tuple(slice_obj)] = result_tensor.grad_value
     
-    return grad
+    return (grad,)
 
 
 def _split_with_indices(input: TN, indices_or_sections, dim: int) -> tuple[TN, ...]:
@@ -5135,7 +5097,7 @@ def _split_with_indices(input: TN, indices_or_sections, dim: int) -> tuple[TN, .
         if input.requires_grad:
             subt.fromvars = (input,)
             subt.parms = ((split_sizes, dim, i),)
-            subt.gradfuncs = (_split_backward,)
+            subt._grad_rule = _split_grad
         
         sub_tensors.append(subt)
     
@@ -5272,12 +5234,15 @@ def tensor_split(input: TN, indices_or_sections, dim: int = 0) -> tuple[TN, ...]
     return _split_with_indices(input, indices_or_sections, dim)
 
 
-def _stack_backward(result_tensor: TN, i: int) -> TN:
-    dim = result_tensor.parms[i]
+def _stack_grad(result_tensor: TN):
+    dim = result_tensor.parms[0]
     grad = result_tensor.grad_value
     slices = [slice(None)] * grad._array.ndim
-    slices[dim] = i  # type: ignore
-    return grad[tuple(slices)]
+    grads = []
+    for i in range(len(result_tensor.fromvars)):
+        slices[dim] = i  # type: ignore
+        grads.append(grad[tuple(slices)])
+    return tuple(grads)
 
 
 @api_registry.register
@@ -5295,13 +5260,13 @@ def stack(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
         ret.fromvars = tuple(tensors)  # 确保tuple类型
         num = len(tensors)
         ret.parms = (dim,) * num
-        ret.gradfuncs = (_stack_backward,) * num
+        ret._grad_rule = _stack_grad
     
     return ret
 
 
-def _concatenate_backward(result_tensor: TN, i: int) -> TN:
-    dim = result_tensor.parms[i]
+def _concatenate_grad(result_tensor: TN):
+    dim = result_tensor.parms[0]
     grad_data = result_tensor.grad_value
     
     # 获取所有输入张量在拼接轴上的尺寸
@@ -5313,10 +5278,10 @@ def _concatenate_backward(result_tensor: TN, i: int) -> TN:
     try:
         # 使用 _split_with_indices 进行分割（numpy风格语义）
         grads = _split_with_indices(grad_data, split_points, dim=dim)
-        return grads[i]
-    
     except ValueError as e:
         raise RuntimeError(f"梯度分割失败: {e}") from None
+
+    return tuple(grads)
 
 
 def concatenate(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
@@ -5332,7 +5297,7 @@ def concatenate(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
         ret.fromvars = tuple(tensors)  # 确保tuple类型
         num = len(tensors)
         ret.parms = (dim,) * num
-        ret.gradfuncs = (_concatenate_backward,) * num
+        ret._grad_rule = _concatenate_grad
     
     return ret
 
@@ -5611,7 +5576,7 @@ def repeat(input: TN, repeats: tuple[int, ...]) -> TN:
     
     # 设置梯度传播
     if result.requires_grad:
-        def _repeat_backward(result_tensor: TN, i: int) -> TN:
+        def _repeat_grad(result_tensor: TN):
             # 重复操作的梯度是将结果的梯度在重复的维度上求和
             grad_value = result_tensor.grad_value
             
@@ -5633,10 +5598,10 @@ def repeat(input: TN, repeats: tuple[int, ...]) -> TN:
             # 将梯度的形状调整为输入张量的原始形状
             grad_value = grad_value._reshape(original_shape)
             
-            return grad_value
+            return (grad_value,)
         
         result.fromvars = (input,)
-        result.gradfuncs = (_repeat_backward,)
+        result._grad_rule = _repeat_grad
     
     return result
 
@@ -5737,8 +5702,8 @@ def fold(tensor_obj:TN, dimension: int, size: int, step: int = None, output_size
 #     └─ _precompute_grad_info       需要梯度时逐输入预分类
 #          └─ _has_duplicate_indices
 #
-# 反向（所有操作数共享 _einsum_backward，参数 i 指定当前求导的输入）
-#   _einsum_backward(result_tensor, i)   依据 grad_infos[i]['grad_type'] 路由
+# 反向（_einsum_grad 一次性计算所有操作数的梯度，逐来源按 grad_infos[i] 路由）
+#   _einsum_grad(result_tensor)   依据 grad_infos[i]['grad_type'] 路由
 #     ├─ 'simple'       → _compute_simple_einsum_grad    一次梯度方程
 #     ├─ 'trace'        → _compute_trace_grad            → batch_diag / eye
 #     │                     └─ _ellipsis_after_indices
@@ -5930,7 +5895,7 @@ def _unbroadcast_grad(grad_tensor: TN, target_shape: tuple) -> TN:
 
     形状本就一致时原样返回，故对迹/对角线等已对齐的路径无副作用。
 
-    调用者: _einsum_backward（所有 grad_type 分支的统一收尾）
+    调用者: _einsum_grad（所有 grad_type 分支的统一收尾）
     """
     grad = grad_tensor
     while grad.ndim > len(target_shape):
@@ -6154,7 +6119,7 @@ def _compute_simple_einsum_grad(
     直接使用预计算的梯度方程，性能最优。
     grad_value的方程为output_eq（空输出时为''），确保非单位梯度正确参与计算。
 
-    调用者: _einsum_backward（grad_type='simple'）
+    调用者: _einsum_grad（grad_type='simple'）
     """
     grad_inputs = [grad_value]
 
@@ -6176,7 +6141,7 @@ def _compute_trace_grad(grad_value: TN, target_operand: TN, target_eq: str) -> T
     重复索引对默认位于目标最后两维；但当省略号位于该索引对之后（如 ii...）时，该对实际
     落在目标最前两维，此时 grad_value 对应的是尾部的省略号批量维，需按前两维施加对角约束。
 
-    调用者: _einsum_backward（grad_type='trace'）
+    调用者: _einsum_grad（grad_type='trace'）
     """
     target_shape = target_operand.shape
     rank = len(target_shape)
@@ -6208,7 +6173,7 @@ def _compute_diag_extract_grad(grad_value: TN, target_operand: TN, target_eq: st
     梯度是一个对角张量；输出缺少目标的省略号维度时（如 ...ii->i）需先扩展批量维度。
     省略号位于索引对之后时（ii...），对角约束施加在目标最前两维、grad_value 对应首维。
 
-    调用者: _einsum_backward（grad_type='diag_extract'）
+    调用者: _einsum_grad（grad_type='diag_extract'）
     """
     target_shape = target_operand.shape
     rank = len(target_shape)
@@ -6239,7 +6204,7 @@ def _compute_complex_einsum_grad(
     2. 扩展维度：把偏梯度 reshape/expand 回目标的完整形状（缺失维、重复维先补1再广播）；
     3. 恢复对角线：对重复索引施加对角线约束，保证非对角位置梯度为0。
 
-    调用者: _einsum_backward（grad_type='complex'）
+    调用者: _einsum_grad（grad_type='complex'）
     """
     available_indices = info['available_indices']
     # 偏梯度中的省略号维度对应「目标自身的批量维度」，能否保留取决于该批量维在反向
@@ -6406,52 +6371,59 @@ def _precompute_grad_info(input_eqs: list[str], output_eq: str,
     return grad_infos
 
 
-def _einsum_backward(result_tensor: TN, i: int) -> TN:
+def _einsum_grad(result_tensor: TN):
     """
-    einsum 的反向传播函数（外置版本）。
+    einsum 的融合梯度规则。
 
-    所有操作数共享这同一个梯度函数，通过参数 i（当前输入在操作数列表中的位置）
-    区分本次要计算的是哪个输入的梯度。前向已将反向所需信息存入 parms：
+    一次性计算所有输入操作数的梯度，返回值与 fromvars（操作数列表）按位置对齐，
+    不需要梯度的来源返回 None。前向已将反向所需信息存入 parms：
         parms = (equation, input_eqs, output_eq, grad_infos)
-    本函数按 grad_infos[i] 的 grad_type 路由到对应的处理函数。
+    逐来源按 grad_infos[i] 的 grad_type 路由到对应的处理函数。
 
-    调用者: einsum 前向注册的 gradfuncs（所有操作数共享此函数，用 i 区分）
+    调用者: einsum 前向注册的 _grad_rule
     """
     grad_value = result_tensor.grad_value
     input_eqs = result_tensor.parms[1]
     output_eq = result_tensor.parms[2]
     grad_infos = result_tensor.parms[3]
     all_operands = result_tensor.fromvars
-    
-    # 获取预计算的梯度信息
-    info = grad_infos[i]
-    grad_type = info['grad_type']
-    target_eq = info['target_eq']
-    target_operand = all_operands[i]
-    
-    # 快速路由到对应处理函数
-    if grad_type == 'simple':
-        # 简单情况：直接使用预计算的梯度方程
-        grad = _compute_simple_einsum_grad(
-            grad_value, output_eq, all_operands, i, info['grad_equation']
-        )
-    elif grad_type == 'trace':
-        # 迹操作
-        grad = _compute_trace_grad(grad_value, target_operand, target_eq)
-    elif grad_type == 'diag_extract':
-        # 对角线提取
-        grad = _compute_diag_extract_grad(grad_value, target_operand, target_eq)
-    else:
-        # 复杂情况
-        other_indices = [eq for j, eq in enumerate(input_eqs) if j != i]
-        other_operands = [op for j, op in enumerate(all_operands) if j != i]
-        grad = _compute_complex_einsum_grad(
-            grad_value, output_eq, other_indices, other_operands, 
-            target_eq, target_operand, info
-        )
 
-    # 目标省略号批量维可能小于输出（前向发生广播），需按 torch 语义对广播维求和还原形状
-    return _unbroadcast_grad(grad, target_operand.shape)
+    grads = []
+    for i, info in enumerate(grad_infos):
+        target_operand = all_operands[i]
+        if not (isinstance(target_operand, TN) and target_operand.requires_grad):
+            grads.append(None)
+            continue
+
+        # 获取预计算的梯度信息
+        grad_type = info['grad_type']
+        target_eq = info['target_eq']
+
+        # 快速路由到对应处理函数
+        if grad_type == 'simple':
+            # 简单情况：直接使用预计算的梯度方程
+            grad = _compute_simple_einsum_grad(
+                grad_value, output_eq, all_operands, i, info['grad_equation']
+            )
+        elif grad_type == 'trace':
+            # 迹操作
+            grad = _compute_trace_grad(grad_value, target_operand, target_eq)
+        elif grad_type == 'diag_extract':
+            # 对角线提取
+            grad = _compute_diag_extract_grad(grad_value, target_operand, target_eq)
+        else:
+            # 复杂情况
+            other_indices = [eq for j, eq in enumerate(input_eqs) if j != i]
+            other_operands = [op for j, op in enumerate(all_operands) if j != i]
+            grad = _compute_complex_einsum_grad(
+                grad_value, output_eq, other_indices, other_operands, 
+                target_eq, target_operand, info
+            )
+
+        # 目标省略号批量维可能小于输出（前向发生广播），需按 torch 语义对广播维求和还原形状
+        grads.append(_unbroadcast_grad(grad, target_operand.shape))
+
+    return tuple(grads)
 
 
 @api_registry.register
@@ -6470,7 +6442,7 @@ def einsum(equation: str, *operands: TN) -> TN:
     本函数接口与 PyTorch 的 torch.einsum() 兼容。
 
     实现要点（完整调用关系见本节顶部）：
-        - 前向：解析方程 → 设备检查 → 选择 optimize/naive 路径 → 记录 parms 与 gradfuncs
+        - 前向：解析方程 → 设备检查 → 选择 optimize/naive 路径 → 记录 parms 与融合梯度规则
         - 反向：按 _precompute_grad_info 预分类的四类 grad_type 路由，
           最后统一经 _unbroadcast_grad 还原前向发生的广播
         - cupy 限制：输出不含 '...' 而输入含 '...' 时，内部改写为保留省略号维再求和
@@ -6566,8 +6538,8 @@ def einsum(equation: str, *operands: TN) -> TN:
         grad_infos = _precompute_grad_info(input_eqs, output_eq, operands)
         # parms 保存反向所需信息：完整方程、输入/输出索引、每个输入的预计算梯度信息
         result.parms = (equation, input_eqs, output_eq, grad_infos)
-        # 所有输入共享同一个外置梯度函数，反向时用 i 参数区分当前求导的输入
-        result.gradfuncs = (_einsum_backward,) * len(operands)
+        # 融合梯度规则一次性计算所有输入的梯度，按 fromvars 位置对齐
+        result._grad_rule = _einsum_grad
     
     return result
 
@@ -6801,19 +6773,19 @@ def tril(input_tensor: TN, diagonal: int = 0) -> TN:
     if ret.requires_grad:
         ret.fromvars = (input_tensor,)
         ret.parms = (diagonal,)
-        ret.gradfuncs = (_tril_backward,)
+        ret._grad_rule = _tril_grad
     
     return ret
 
 
-def _tril_backward(result_tensor: TN, i: int) -> TN:
+def _tril_grad(result_tensor: TN):
     """
-    tril函数的反向传播实现。
+    tril函数的融合梯度规则。
     下三角矩阵的梯度是保留结果梯度的下三角部分。
     """
-    diagonal = result_tensor.parms[i]
+    diagonal = result_tensor.parms[0]
     # 重要：使用tril函数获取梯度的下三角部分，而不是numpy.tril
-    return tril(result_tensor.grad_value, diagonal)
+    return (tril(result_tensor.grad_value, diagonal),)
 
 
 @api_registry.register
@@ -6843,19 +6815,19 @@ def triu(input_tensor: TN, diagonal: int = 0) -> TN:
     if ret.requires_grad:
         ret.fromvars = (input_tensor,)
         ret.parms = (diagonal,)
-        ret.gradfuncs = (_triu_backward,)
+        ret._grad_rule = _triu_grad
     
     return ret
 
 
-def _triu_backward(result_tensor: TN, i: int) -> TN:
+def _triu_grad(result_tensor: TN):
     """
-    triu函数的反向传播实现。
+    triu函数的融合梯度规则。
     上三角矩阵的梯度是保留结果梯度的上三角部分。
     """
-    diagonal = result_tensor.parms[i]
+    diagonal = result_tensor.parms[0]
     # 重要：使用triu函数获取梯度的上三角部分，而不是numpy.triu
-    return triu(result_tensor.grad_value, diagonal)
+    return (triu(result_tensor.grad_value, diagonal),)
 
 
 @api_registry.register
@@ -7454,70 +7426,72 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
     return _apply_out(out, y, (x, min, max), "clamp")
 
 
-def attach_zero_grad_sources(self:TN, sources:tuple|list):
+def attach_zero_grad_sources(input:TN, sources:tuple|list) -> TN:
     """
-    将多个张量作为来源张量依附到self张量上，不改变self的值，但self可以向这些张量传递0梯度。
+    返回一个新张量：值不变，梯度透传给 input，同时向 sources 传递全 0 梯度。
 
-    该函数用于将张量加入计算图，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
-    当调用backward时，self会向依附的来源张量传递全0梯度。
+    该函数用于把张量加入计算图，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
+    与原张量不同，返回的是一个新的计算图节点，其 fromvars 为
+    (input, source1, source2, ...)，因此不会原地修改任何已有节点的计算图结构。
 
     参数:
+        input: 要依附来源的张量。
         sources: 要依附的来源张量集合，可以是tuple、list或set。
-                只有需要梯度(requires_grad=True)且不是self本身的张量才会被依附。
+                只有需要梯度(requires_grad=True)且不是input本身的张量才会被依附。
 
     返回:
-        self: 返回修改后的self张量，便于链式调用。
+        TN: 新张量；没有有效来源时原样返回 input。
 
     示例:
         >>> a = tensor([1.0, 2.0], requires_grad=True)
         >>> b = tensor([3.0, 4.0], requires_grad=True)
         >>> c = tensor([5.0, 6.0], requires_grad=True)
-        >>> c.attach_zero_grad_sources([a, b])  # 将a,b加入c的计算图
-        >>> # c的值不变，但backward时c会向a,b传递0梯度
+        >>> d = attach_zero_grad_sources(c, [a, b])  # 将a,b加入d的计算图
+        >>> # d的值与c相同，但backward时d会向a,b传递0梯度
     """
-    def _zero_grad_backward(result:TN, i):
-        return zeros_like(result.fromvars[i])
-
-    # 过滤有效来源张量（需要梯度且不是self本身）
+    # 过滤有效来源张量（需要梯度且不是input本身）
     valid_sources = [
         var for var in sources
-        if var is not self and isinstance(var, TN) and var.requires_grad
+        if var is not input and isinstance(var, TN) and var.requires_grad
     ]
     if not valid_sources:
-        return self
+        return input
 
-    # 直接扩展fromvars和gradfuncs，避免创建中间列表
-    self.fromvars = self.fromvars + tuple(valid_sources)
-    self.gradfuncs = self.gradfuncs + tuple(_zero_grad_backward for _ in valid_sources)
-    self.gradfunc_fused = None
-    self.requires_grad = True
+    # 新节点的来源顺序固定为 (原张量, 依附来源...)，融合梯度按同一顺序返回：
+    # 第0位透传梯度，其余位置为零梯度
+    result = TN(input._array.copy(), requires_grad=True)
+    result.fromvars = (input,) + tuple(valid_sources)
 
-    return self
+    def _attach_zero_grad_sources_grad(result:TN):
+        return (result.grad_value,) + tuple(
+            zeros_like(var) for var in result.fromvars[1:]
+        )
+
+    result._grad_rule = _attach_zero_grad_sources_grad
+    return result
 
 
-def share_grad_map(tensors:tuple|list):
+def map_value_connect_grad(tensors:tuple|list):
     """
-    将一组张量相互连接到一个共享的计算图中，但不改变现有计算图的前向计算值和反向传播计算的梯度值。
+    为一组张量生成一一对应的副本，副本序列与原张量序列构成全连接梯度图。
 
-    核心机制：
-    1. 对每个需要梯度的张量进行克隆，克隆张量通过clone操作依赖原始张量（梯度透传）
-    2. 将其他张量（排除自身）作为零梯度来源依附到克隆张量上
-    3. 这样每个张量既保持与原始张量的梯度关系，又与其他张量形成0梯度连接
+    每个副本的值与其对应原张量相同。反向传播时，副本与对应张量之间透传梯度，
+    副本与非对应张量之间传递零梯度，因此组内每个张量都能获得梯度
+    （未参与前向计算的张量得到零梯度），而前向计算值和原有梯度值均不受影响。
 
-    设计优化：
-    - 使用 `[s for s in tensors if s is not t]` 排除自身，避免双路径依赖
-    - 单路径设计：克隆张量只通过clone依赖原始张量，不通过attach重复依赖
+    实现上，对副本 t 而言，fromvars 为 (t, 其余原张量...)：第0位透传梯度，
+    其余位置为零梯度，由副本的融合梯度规则 _map_value_connect_grad_rule 按序返回。
 
     参数:
         tensors: 输入张量序列，必须是tuple或list类型。
                 序列中的每个张量都会被处理：
-                - 需要梯度的张量会被克隆，并将其他张量（排除自身）作为零梯度来源依附到克隆张量
+                - 需要梯度的张量会被复制，并将其他张量（排除自身）作为零梯度来源依附
                 - 不需要梯度的张量或非TN对象保持原样
 
     返回:
         与输入类型相同的张量序列（tuple或list）。
         返回的张量与输入张量值相同，但计算图已相互连接。
-        注意：对于需要梯度的张量，返回的是克隆张量而非原始张量。
+        注意：对于需要梯度的张量，返回的是数据副本而非原始张量。
 
     异常:
         ValueError: 当tensors不是tuple或list类型时抛出。
@@ -7544,7 +7518,7 @@ def share_grad_map(tensors:tuple|list):
         >>> c = tensor([5.0, 6.0], requires_grad=True)
         >>>
         >>> # 映射后：所有张量相互连接，c会收到0梯度
-        >>> a_new, b_new, c_new = share_grad_map((a, b, c))
+        >>> a_new, b_new, c_new = map_value_connect_grad((a, b, c))
         >>> y2 = func((a_new, b_new, c_new))
         >>> y2.backward()
         >>> print(f"a.grad={a_new.grad}, b.grad={b_new.grad}, c.grad={c_new.grad}")
@@ -7559,14 +7533,26 @@ def share_grad_map(tensors:tuple|list):
     if not isinstance(tensors,(tuple,list)):
         raise ValueError("'tensors' need to be tuple or list of TN tensors")
 
+    # 只有需要梯度的张量参与共享，其余张量不进入零梯度依附
+    valid_tensors = [t for t in tensors if isinstance(t,TN) and t.requires_grad]
+
+    def _map_value_connect_grad_rule(result:TN):
+        # fromvars 为 (原始输出, 其他输出1, ...)：第0位透传梯度，其余为零梯度
+        return (result.grad_value,) + tuple(
+            zeros_like(var) for var in result.fromvars[1:]
+        )
+
     target_list = []
     for t in tensors:
         if isinstance(t,TN) and t.requires_grad:
-            # 克隆张量并通过clone依赖原始张量（梯度透传）
-            # 将其他张量（排除自身）作为零梯度来源依附，避免双路径依赖
-            target_list.append(
-                attach_zero_grad_sources(t.clone(),[s for s in tensors if s is not t])
-            )
+            # 直接构造输出副本：fromvars 与融合梯度规则由本函数一并确立，
+            # 顺序固定为 (原始输出, 其他输出...)，与 _map_value_connect_grad_rule 的返回顺序一致
+            others = tuple(s for s in valid_tensors if s is not t)
+            node = TN(t._array.copy(), requires_grad=is_grad_enabled())
+            if node.requires_grad:
+                node.fromvars = (t,) + others
+                node._grad_rule = _map_value_connect_grad_rule
+            target_list.append(node)
         else:
             target_list.append(t)
 

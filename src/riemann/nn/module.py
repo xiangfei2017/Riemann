@@ -381,7 +381,7 @@ class Module:
         反向传播缓存（用于支持反向钩子机制）:
             _backward_hook_cache (dict): 统一存储反向钩子所需的所有信息
                 设计原则：
-                1. 涉及钩子的张量只可能是一个模块的输入/输出（通过clone输入、share_grad_map/显式clone输出保证）
+                1. 涉及钩子的张量只可能是一个模块的输入/输出（通过clone输入、map_value_connect_grad/显式clone输出保证）
                 2. 使用单引用替代列表，简化代码并提高查询效率
                 3. 将原本分散的4个缓存字典合并为1个，降低维护复杂度
 
@@ -1038,11 +1038,11 @@ class Module:
             forward_inputs = tuple(forward_input_tensors)
             
             if isinstance(output, (tuple, list)):
-                # 多输出模块：使用share_grad_map克隆输出并建立零梯度连接
+                # 多输出模块：使用map_value_connect_grad复制输出并建立零梯度连接
                 # 目的：1) 确保所有输出（包括不参与损失计算的）都能收到梯度，触发反向钩子
                 #      2) 产生新张量副本，使_output_of可使用单引用，简化数据结构
                 #      3) 兼容PyTorch行为：未参与计算的输入返回0梯度而非None
-                output = share_grad_map(output)
+                output = map_value_connect_grad(output)
 
                 all_outputs = tuple([out for out in output if isinstance(out, TN)])
                 if all_outputs:
@@ -1069,7 +1069,7 @@ class Module:
         - 涉及钩子的张量只可能是一个模块的输入/输出
         - 这是通过以下机制保证的：
           1) 输入clone：在__call__中，注册了反向钩子的模块会clone输入，确保输入不被共享
-          2) 输出clone：多输出模块通过share_grad_map clone输出，单输出模块在__call__中显式clone
+          2) 输出clone：多输出模块通过map_value_connect_grad复制输出，单输出模块在__call__中显式clone
         - 因此_output_of和_module_input_of可以直接赋值，无需检查是否为None
 
         Args:

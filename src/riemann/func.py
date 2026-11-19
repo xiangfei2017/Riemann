@@ -56,7 +56,7 @@ hessian 复用 _jacobian_via_vjp 内核，对 grad 的结果再求一次 Jacobia
 import builtins
 from typing import Callable, Any, Optional, Union
 from .core import *
-from .core.tensordef import _getitem_backward
+from .core.tensordef import _getitem_grad
 from .autograd.grad import grad as _grad
 
 
@@ -350,15 +350,38 @@ def _make_shadow(node: TN, leaf_map: dict) -> TN:
             continue
         var_shadow = leaf_map.get(id(var))
         if var_shadow is None:
-            var_shadow = TN(var._array, requires_grad=False)
+            # 叶子副本仍需 requires_grad=True：梯度规则按来源是否需要梯度决定
+            # 是否返回梯度，若为 False 会得到 None，导致局部 JVP 无法进行。
+            # 这里它没有 fromvars/_grad_rule，反向仍不会越过当前算子。
+            var_shadow = TN(var._array, requires_grad=True)
             leaf_map[id(var)] = var_shadow
         fromvars.append(var_shadow)
     shadow.fromvars = tuple(fromvars)
     return shadow
 
 
+def _local_vjp(node: TN, target: TN, i: int) -> TN:
+    """计算第 i 条入边的局部 VJP，即 J_iᵀ g_out。
+
+    梯度规则统一为 (result) -> tuple，按 fromvars 位置返回各来源的梯度。
+    target 可能是影子节点（共享数据、来源换成叶子），因此规则取自真实节点
+    node，而作用对象是 target。
+    """
+    rule = node._grad_rule
+    if rule is None:
+        raise RuntimeError(
+            f"node {type(node).__name__} has no gradient rule; "
+            "cannot compute local JVP"
+        )
+    grads = rule(target)
+    grad = grads[i] if i < len(grads) else None
+    if grad is None:
+        raise RuntimeError(f"gradient rule returned no gradient for source {i}")
+    return grad
+
+
 def _local_jvp_by_basis(node: TN, i: int, target: TN, tangent: TN) -> TN:
-    """gradfunc 未建立计算图时的回退：用输出基向量显式构造局部 Jacobian。
+    """梯度规则未建立计算图时的回退：用输出基向量显式构造局部 Jacobian。
 
     全程使用张量运算（不经过 numpy），因此 CPU/CUDA 都适用：对输出的每个
     基向量 k 求局部 VJP 得到 J_i 的第 k 列，堆叠为 (numel_in, numel_out) 的
@@ -366,8 +389,8 @@ def _local_jvp_by_basis(node: TN, i: int, target: TN, tangent: TN) -> TN:
 
     参数:
         node: 当前算子的输出节点，提供形状、dtype、device 与 numel。
-        i: 入边下标，对应 node.gradfuncs[i]。
-        target: 调用 gradfunc 的目标节点（真实节点或影子节点），其 grad_value
+        i: 入边下标，对应 node.fromvars[i]。
+        target: 调用梯度规则的目标节点（真实节点或影子节点），其 grad_value
             会被临时改写为各基向量。
         tangent: 与第 i 个输入同形的切向量。
 
@@ -381,11 +404,11 @@ def _local_jvp_by_basis(node: TN, i: int, target: TN, tangent: TN) -> TN:
     try:
         for k in range(numel_out):
             target.grad_value = basis[k].reshape(node.shape)
-            cols.append(node.gradfuncs[i](target, i).reshape(-1))
+            cols.append(_local_vjp(node, target, i).reshape(-1))
     finally:
         target.grad_value = saved
     mat_t = stack(cols, dim=-1)
-    # 局部 VJP 登记的是共轭转置形式（gradfunc 中对局部导数取 conj），
+    # 局部 VJP 登记的是共轭转置形式（梯度规则中对局部导数取 conj），
     # 故此处用共轭转置还原 J；实数情形与 T 等价。
     out = mat_t.mH @ tangent.reshape(-1)
     return out.reshape(node.shape)
@@ -395,25 +418,25 @@ def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
                create_graph: bool, cache: Optional[dict] = None) -> TN:
     """计算单个节点的局部 JVP：J_i @ tangent。
 
-    背景：每个算子只登记了反向规则 gradfunc，它把 node 的余切 g_out（与输出
-    同形）映射为 g_in = J_iᵀ g_out（与输入同形），并没有前向规则。这里用
+    背景：每个算子只登记了梯度规则 node._grad_rule，它把 node 的余切 g_out
+    （与输出同形）映射为 g_in = J_iᵀ g_out（与输入同形），并没有前向规则。这里用
     "对局部 VJP 再做一次反向"补出前向结果：
 
-    1. 以零值 g_out 调 gradfunc，只为得到 g_in = J_iᵀ g_out 这张小图；
+    1. 以零值 g_out 调梯度规则，只为得到 g_in = J_iᵀ g_out 这张小图；
     2. 小图对应线性映射 L(g) = J_iᵀ g，线性映射的 VJP 就是其转置，
        (J_iᵀ)ᵀ = J_i；
     3. 以 tangent 作为 g_in 的余切对 L 反向，得到 Lᵀ tangent = J_i @ tangent。
 
     注意角色互换：node 的余切始终是 g_out；tangent 只在内层反向里充当 g_in
-    的余切，因此形状与输入一致，与输出同形的 g_out 无关。复数情形 gradfunc
+    的余切，因此形状与输入一致，与输出同形的 g_out 无关。复数情形梯度规则
     登记的是 J_iᴴ，两次共轭随两次转置一起抵消，结果同样是 J_i。
 
     参数:
-        node: 前向图中的当前算子输出节点，node.gradfuncs[i] 是第 i 条入边的
+        node: 前向图中的当前算子输出节点，node._grad_rule 给出各入边的
             局部 VJP 规则。
         shadow: node 的局部影子节点（共享底层数据、fromvars 换成叶子副本），
             让内层反向只遍历当前算子；为 None 时退化为 node 本身。
-        i: 入边下标，同时索引 node.fromvars[i] 与 node.gradfuncs[i]。
+        i: 入边下标，同时索引 node.fromvars[i] 与梯度规则返回值。
         tangent: 沿该入边传入的切向量，形状与第 i 个输入一致。
         create_graph: 为 True 时保留内层反向的计算图以支持高阶导数，此时必须
             使用真实节点（影子节点会与原始输入断链）。
@@ -436,25 +459,24 @@ def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
     target = node if create_graph else shadow
     if target is None:
         target = node
-    fn = node.gradfuncs[i]
     # 局部 VJP 关于输出余切是线性的，这里用零值 seed 只为拿到 g_in 的图结构
     g_out = zeros_like(node, requires_grad=True)
     saved = target.grad_value
     target.grad_value = g_out
     try:
-        g_in = fn(target, i)
+        g_in = _local_vjp(node, target, i)
     finally:
         target.grad_value = saved
 
     if not isinstance(g_in, TN):
-        raise RuntimeError("gradfunc must return a tensor")
+        raise RuntimeError("gradient rule must return a tensor")
     if g_in.requires_grad:
-        # 常规路径：gradfunc 建了图，再反传一次即得 J_i @ tangent
+        # 常规路径：梯度规则建了图，再反传一次即得 J_i @ tangent
         if cache is not None:
             cache[(id(node), i)] = (g_in, g_out)
         return _grad(g_in, [g_out], grad_outputs=tangent,
                      create_graph=create_graph, allow_unused=True)[0]
-    # 回退路径：gradfunc 未建图（如梯度开关关闭），只能显式构造局部 Jacobian
+    # 回退路径：梯度规则未建图（如梯度开关关闭），只能显式构造局部 Jacobian
     return _local_jvp_by_basis(node, i, target, tangent)
 
 
@@ -1094,7 +1116,7 @@ def _batch_slice(tensor: TN, index: tuple) -> TN:
 
     仅用于基础索引（slice / 整数）且索引已由调用方归一化为非负的情形：
     直接取底层数组的视图，并在需要梯度时保留到原张量的梯度边
-    （fromvars / parms / gradfuncs 与 __getitem__ 完全一致）。
+    （fromvars / parms / _grad_rule 与 __getitem__ 完全一致）。
     """
     data = tensor._array[index]
     # 标量索引可能返回 numpy/cupy 标量而非 0 维数组，
@@ -1110,7 +1132,7 @@ def _batch_slice(tensor: TN, index: tuple) -> TN:
     if ret.requires_grad:
         ret.fromvars = (tensor,)
         ret.parms = (index,)
-        ret.gradfuncs = (_getitem_backward,)
+        ret._grad_rule = _getitem_grad
     return ret
 
 def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
