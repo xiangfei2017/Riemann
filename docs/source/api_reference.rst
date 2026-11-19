@@ -2540,7 +2540,7 @@ Data Type Inference
 Gradient Mode Control
 ---------------------
 
-.. module:: riemann.gradmode
+.. module:: riemann.core.ad_context
 
 .. function:: riemann.is_grad_enabled()
 

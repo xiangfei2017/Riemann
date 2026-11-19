@@ -98,7 +98,7 @@ riemann包的模块结构
     │   ├── tensordef        # 张量定义（TN 类）、动态计算图与自动微分
     │   ├── tensorfuncs      # 函数式张量运算（仅单向依赖 tensordef）
     │   ├── dtype            # 数据类型定义
-    │   ├── gradmode         # 梯度模式控制
+    │   ├── ad_context       # 自动微分上下文控制
     │   └── serialization    # 对象保存与加载
     ├── func                 # torch.func 风格函数式自动求导 API
     ├── linalg               # 线性代数模块

@@ -60,7 +60,7 @@ Riemann/
 │       │   ├── tensordef.py      # Tensor definition (TN class), dynamic graph and autograd
 │       │   ├── tensorfuncs.py    # Functional tensor operations (one-way dependency on tensordef)
 │       │   ├── dtype.py          # Data type definitions
-│       │   ├── gradmode.py       # Gradient mode control
+│       │   ├── ad_context.py     # AD context control
 │       │   └── serialization.py  # Object saving and loading
 │       ├── nn/               # Neural network modules
 │       ├── optim/            # Optimizers
@@ -96,7 +96,7 @@ The code directory `src/riemann/` is the location of Riemann library's core sour
   - `tensordef.py`: Tensor definition (TN class), dynamic graph and autograd
   - `tensorfuncs.py`: Functional tensor operations (trigonometric functions, index selection, random generators, einsum, etc.), with a one-way dependency on `tensordef.py`
   - `dtype.py`: Data type definitions
-  - `gradmode.py`: Gradient mode control
+  - `ad_context.py`: AD context control
   - `serialization.py`: Object saving and loading
 - **nn/**: Neural network-related components, such as various layers, activation functions, and loss functions
 - **optim/**: Optimizers, such as SGD, Adam, etc., and learning rate schedulers

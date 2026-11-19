@@ -72,7 +72,7 @@ from contextlib import contextmanager
 import numpy as np
 from ..cuda import Device, cp, get_default_device
 from .dtype import *
-from .gradmode import *
+from .ad_context import *
 
 class APIRegistry:
     def __init__(self):
@@ -99,6 +99,18 @@ api_registry = APIRegistry()
 def _call_regapi(name: str, *args, **kwargs):
     """统一入口，根据名字调用注册函数"""
     return api_registry.get(name)(*args, **kwargs)
+
+
+# 原地操作的自包含记录：反向梯度规则和 __setitem__ 重放都只读这一条记录，
+# 不再依赖 _inplace_ops 与 fromvars/parms 的下标一一对应关系。
+#   method:       可用于重放的原地方法名；None 表示该操作不可重放
+#   right:        本次操作的右值；一元原地运算为占位变量
+#   stored_index: 本次操作实际作用的索引；() 表示作用于整个张量
+#   left_copy:    覆盖前备份的左值副本，供 mul/div/pow/mod/abs 的反向使用，其余为 None
+InplaceRecord = namedtuple(
+    'InplaceRecord', ('method', 'right', 'stored_index', 'left_copy')
+)
+
 
 class TN:
     """
@@ -226,8 +238,8 @@ class TN:
         self.fromvars = ()              #按运算顺序记录来源张量及原始非张量操作数
         self.parms = ()                 #对张量进行函数运算时用到的参数，比如sum函数的dim和keepdim参数
         self._grad_rule = None          #梯度规则：接收本节点，返回与fromvars对齐的梯度元组
-        self._inplace_ops = ()          #原地操作记录，最新在前，元素为(method_name或None, right_val)，
-                                        #仅供__setitem__重放，None表示不可重放的操作
+        self._inplace_ops = ()          #原地操作记录，最新在前，元素为InplaceRecord；
+                                        #同时供反向梯度规则和__setitem__重放使用
         self.grad:TN = None             #与data的shape一致的张量对象，用于存放梯度，
                                         #初始化为None是为了节省空间，计算梯度时才分配空间
         self.retains_grad = False
@@ -2718,228 +2730,6 @@ class TN:
     def norm(self, ord:int|float|str|None = "fro", dim: int|tuple|None = None, keepdim: bool = False):  # type: ignore
         return _call_regapi('norm', self, ord=ord, dim=dim, keepdim=keepdim)
 
-    def _init_calc_graph(self) -> bool:
-        '''初始化以self为根的计算图中的缓存信息，包括：grad_value、rcv_grad_count
-
-           该函数被backward和grad函数调用，用于：
-           1、将从self开始的反向计算图中所有节点的梯度缓存grad_value置None
-           2、初始化各节点应收到反向传播梯度的次数rcv_grad_count
-           3、检查计算图中是否存在需要钩子处理的模块
-
-           实现细节：
-           - 使用visited set跟踪已访问节点，确保即使计算图缓存未清理也能正确初始化
-           - 使用rcv_grad_count == 0判断节点是否首次访问，避免重复入栈
-           - 钩子检查使用短路逻辑，一旦确定需要钩子处理则跳过后续检查
-
-           返回:
-               bool: 是否需要钩子处理（True表示需要）
-        '''
-        stack = [self]  # 初始化一个栈
-        visited = {self}  # 使用set跟踪已访问节点，确保彻底初始化
-        self.rcv_grad_count = 0
-        need_hook_processing = False
-
-        while stack:
-            item: TN = stack.pop(-1)  # pop(-1)效率o(1),表示从list尾弹出
-            item.grad_value = None    # 梯度值置None
-
-            # 检查是否需要钩子处理（只在尚未确定需要钩子时检查）
-            # 短路逻辑：一旦need_hook_processing为True，跳过所有后续检查
-            if not need_hook_processing and item._output_of is not None:
-                module = item._output_of
-                if module._backward_pre_hooks or module._backward_hooks:
-                    need_hook_processing = True
-
-            # 叶子节点不要再往下遍历
-            if item.is_leaf:
-                continue
-
-            varlist = item.fromvars
-            for var in varlist:
-                if isinstance(var, TN) and var.requires_grad:
-                    # 使用visited set判断首次访问，确保rcv_grad_count被正确初始化
-                    if var not in visited:
-                        var.rcv_grad_count = 0  # 显式初始化
-                        stack.append(var)
-                        visited.add(var)
-                    var.rcv_grad_count += 1  # 累计当前节点可接受梯度的次数
-
-        return need_hook_processing
-
-    def _clear_calc_graph_cache(self):
-        '''清理以self为根的计算图中的临时梯度状态
-
-        将所有节点的 rcv_grad_count 置 0、grad_value 置 None。
-        与 _init_calc_graph 的区别：
-          - _init_calc_graph 会重新累加 rcv_grad_count（从子节点数推导正确值）
-          - _clear_calc_graph_cache 仅将 rcv_grad_count 置 0，不做重新累加
-        因此前者可独立完成初始化，后者仅作为辅助清理工具保留。
-        '''
-
-        stack = [self]
-
-        while stack:
-            item:TN = stack.pop(-1)
-            item.rcv_grad_count = 0
-            item.grad_value = None  # type: ignore
-
-            if item.is_leaf:
-                continue
-
-            for var in item.fromvars:
-                if isinstance(var, TN) and var.requires_grad:
-                    stack.append(var)
-        
-        return
-
-    def _save_grad(self:TN):
-        '''将self的grad_value保存到self的grad中，返回是否是叶子节点
-        
-        1._backward_with_hooks或_backward_without_hooks里调用_save_grad，
-          self是出栈节点，已保证了self是一个requires_grad=True的叶子节点或中间节点。
-        2.叶子节点（is_leaf=True）总是保存梯度到self.grad，
-          中间节点只有在retains_grad=True时才保存梯度。
-        
-        '''
-        
-        is_leaf = not self.fromvars
-        
-        # 叶子节点：总是保存梯度
-        # 注意：is_leaf为True意味着requires_grad=True且没有fromvars
-        if is_leaf:
-            if self.grad is None:
-                # 如还没有梯度值，直接赋值
-                self.grad = self.grad_value
-            else:
-                # 如已有梯度值，累计梯度，注意不要使用原地+=
-                self.grad = self.grad + self.grad_value
-            
-            # 叶子节点存完梯度后，梯度缓存置None
-            self.grad_value = None
-        
-        # 中间节点：只有retains_grad=True时才保存梯度
-        elif self.retains_grad:
-            if self.grad is None:
-                self.grad = self.grad_value
-            else:
-                self.grad = self.grad + self.grad_value
-            
-            # 中间节点保存梯度后，不清空grad_value，因为还要传播
-        
-        return is_leaf
-
-    def _add_received_grad_value(self:TN, grad_value:TN):
-        '''将grad_value添加到self的grad_value中
-        '''
-
-        # 如果收到的梯度为None，直接返回
-        if grad_value is None:
-            return
-        
-        # 确保self和target的dtype一致
-        # grad_value是待累加的梯度，由于计算过程中精度会出现提升现象(float32 to float64)
-        # 及时精度转换虽然可能会导致梯度张量被复制到一个新类型，但由于保证了梯度一直是低级度，
-        # 计算性能反而会提升
-        if grad_value.dtype != self.dtype:
-            warnings.warn(f'self.dtype={self.dtype}, received grad_value.dtype={grad_value.dtype}')
-            grad_value = grad_value.type(self.dtype)
-        
-        if self.grad_value is None:
-            # 如还没有梯度值，直接赋值
-            self.grad_value = grad_value
-        else:
-            # 如self已有梯度值，累计梯度
-            # 多个节点可能共享了同一个grad_value张量，
-            # 比如c=a+b，c收到的梯度grad_value会原封不动地传递给a和b,
-            # a和b的grad_value是同一个张量，所以不能用原地+=累加梯度
-            self.grad_value = self.grad_value + grad_value
-        return
-
-    def _propagate_grad_to_sources(self: TN, vars_received_grad: set) -> None:
-        """将当前节点的梯度传播到其所有来源节点
-
-        反向传播核心方法，遍历当前节点的所有来源节点，计算并传播梯度。
-        直接修改vars_received_grad集合，添加已收集完梯度的节点。
-
-        参数：
-            vars_received_grad: 已收集完梯度、可入栈的源变量集合（会被直接修改）
-        """
-        fromvars = self.fromvars
-
-        # 梯度规则一次调用返回与 fromvars 对齐的梯度元组
-        rule = self._grad_rule
-        if rule is None:
-            return
-        for var, grad in zip(fromvars, rule(self)):
-            if grad is not None and isinstance(var, TN) and var.requires_grad:
-                var._add_received_grad_value(grad)
-                var.rcv_grad_count -= 1
-                if var.rcv_grad_count == 0:
-                    vars_received_grad.add(var)
-        return
-
-    def _backward_with_hooks(self) -> None:
-        """带钩子处理的反向传播核心逻辑
-
-        在反向传播过程中统一处理反向预处理钩子和反向钩子：
-        1. 反向预处理钩子：在模块所有输出梯度就绪时调用，可修改输出梯度
-        2. 反向钩子：在模块所有输入梯度就绪时调用，可修改输入梯度
-        """
-        hook_manager = _BackwardHookManager()
-        stack = [self]
-
-        while stack:
-            item: TN = stack.pop(-1)
-
-            # 以下代码调测时用于检查栈内节点是否都是已收到梯度的节点或梯度没有被异常置None
-            # if item.grad_value is None:
-            #     warnings.warn(f'item poped from stack has no grad_value, skip backward')
-            #     continue
-
-            # 在反向传播前统一检查和处理两种钩子
-            items_for_propagate = hook_manager.process_module_hooks(item)
-
-            # 在调用钩子之后保存梯度，确保钩子可以访问所有输入的梯度grad_value
-            item._save_grad()
-
-            # 如果没有可传播节点（模块输入或输出梯度未收集齐），跳过本次循环
-            if not items_for_propagate:
-                continue
-
-            # 处理需要钩子的节点
-            vars_received_grad = set()
-            for current_item in items_for_propagate:
-                current_item._propagate_grad_to_sources(vars_received_grad)
-                # 传播完梯度的节点，使命完成，清空grad_value节省内存
-                current_item.grad_value = None
-            stack.extend(vars_received_grad)
-
-        # 清理钩子缓存
-        hook_manager.cleanup()
-
-    def _backward_without_hooks(self) -> None:
-        """无钩子处理的反向传播核心逻辑（快速路径）
-
-        标准的反向传播实现，无钩子处理开销。
-        """
-        stack = [self]
-
-        while stack:
-            item: TN = stack.pop(-1)
-            
-            # 保存叶子节点或retains_grad=True的中间节点的梯度，
-            # 如item是叶子节点，无须传播梯度，快速进入下一次循环
-            if item._save_grad():
-                continue
-            
-            # 传播梯度到来源节点
-            vars_received_grad = set()
-            item._propagate_grad_to_sources(vars_received_grad)
-            item.grad_value = None
-
-            # 将收到梯度的节点入栈
-            stack.extend(vars_received_grad)
-
     def backward(self, gradient: TN|None = None,
                  retain_graph: bool = False,
                  create_graph: bool = False):
@@ -2963,7 +2753,7 @@ class TN:
         钩子处理机制（仅在need_hook_processing为True时启用）：
         - 反向预处理钩子：在模块所有输出梯度就绪时调用，可修改输出梯度
         - 反向钩子：在模块所有输入梯度就绪时调用，可修改输入梯度
-        - 由BackwardHookManager统一管理钩子调用时机和状态
+        - 由_BackwardHookManager统一管理钩子调用时机和状态
 
         性能优化：
         - 无钩子场景使用快速路径，避免钩子管理开销
@@ -2986,6 +2776,7 @@ class TN:
                         或外部梯度形状不匹配时抛出
             TypeError: 当gradient参数类型不正确时抛出
         """
+                
         # 参数验证和梯度准备
         if not self.requires_grad:
             raise RuntimeError('Only a tensor require grad can call backward()')
@@ -2996,14 +2787,14 @@ class TN:
             if self.is_complex():
                 raise RuntimeError(f'grad can be implicitly created only for real scalar outputs but got {self.dtype}')
 
-            # _init_calc_graph返回是否需要钩子处理
-            need_hook_processing = self._init_calc_graph()
-            self.grad_value = tensor(1.0, dtype=self.dtype, device=self.device, requires_grad=create_graph)
+            # _init_calc_graph 返回是否需要钩子处理
+            need_hook_processing = _init_calc_graph(self)
+            self.grad_value = tensor(1.0, dtype=self.dtype, device=self.device,
+                                    requires_grad=create_graph)
 
         elif isinstance(gradient, TN):
             if gradient._array.shape == self._array.shape:
-                # _init_calc_graph返回是否需要钩子处理
-                need_hook_processing = self._init_calc_graph()
+                need_hook_processing = _init_calc_graph(self)
                 self.grad_value = gradient.to(self.device).detach().requires_grad_(create_graph)
             else:
                 raise RuntimeError('shape of gradient need to be same as the shape of outputs')
@@ -3013,11 +2804,9 @@ class TN:
         # 执行反向传播
         with set_grad_enabled(create_graph):
             if need_hook_processing:
-                self._backward_with_hooks()
+                _backward_with_hooks([self])
             else:
-                self._backward_without_hooks()
-
-        return
+                _backward_without_hooks([self])
     
     def d(self, *args, create_graph=False):
         r"""
@@ -3069,101 +2858,223 @@ class TN:
                  (autograd.grad 只接受标量 outputs，所以必须逐元素)
             3. reshape 回 shape = ⊕ shape(vi) × ki
         """
-        _grad = api_registry.get("grad")
-        _rstack = api_registry.get("stack")
-        
-        # ---- 1. 前置校验 ----
-        if self.ndim > 0 or not self.requires_grad:
-            raise ValueError("self must be a scalar tensor with requires_grad=True")
-        if not args:
-            raise ValueError("At least one variable must be provided")
-
-        # ---- 2. 解析 args → [(var, 总阶数), ...] ----
-        # 先累加同一变量的阶数，再从 dict 构造 specs
-        vid_to_order: dict[int, int] = {}   # id(var) → 累计阶数
-        var_order: list[TN] = []             # 保持首次出现的顺序
-
-        for item in args:
-            if isinstance(item, TN):
-                var, k = item, 1
-            elif isinstance(item, (tuple, list)) and len(item) == 2 \
-                    and isinstance(item[0], TN) and isinstance(item[1], int):
-                var, k = item
-            else:
-                raise ValueError(
-                    f"Each arg must be a TN or (TN, int), got {type(item).__name__}"
-                )
-            if k < 1:
-                raise ValueError(f"Derivative order k must be >= 1, got {k}")
-            if not var.requires_grad:
-                raise ValueError("Variable must have requires_grad=True")
-
-            vid = id(var)
-            if vid in vid_to_order:
-                vid_to_order[vid] += k
-            else:
-                vid_to_order[vid] = k
-                var_order.append(var)
-
-        specs: list[tuple[TN, int]] = [(var, vid_to_order[id(var)]) for var in var_order]
-
-        # ---- 3. 预计算 ----
-        total_steps = 0
-        for _, k in specs:
-            total_steps += k
-        final_shape: tuple[int, ...] = ()
-        for var, k in specs:
-            final_shape += var.shape * k
-
-        # ---- 4. 核心: total_steps 次顺序 grad ----
-        # 局部 helper: 对单个标量 outputs 求一次 grad
-        def _grad_once(scalar_out: TN, var_in: TN,
-                       need_graph: bool, retain_graph: bool) -> TN | None:
-            return _grad(scalar_out, var_in,
-                         create_graph=need_graph,
-                         allow_unused=True,
-                         retain_graph=retain_graph)[0]
-
-        current: TN = self
-        step = 0
-
-        for var, order in specs:
-            for _ in range(order):
-                is_last = (step == total_steps - 1)
-                need_graph = create_graph if is_last else True  # 中间步骤必须追踪图
-                retain_graph = not is_last
-
-                if current.ndim == 0:
-                    # 标量 → 一次 grad
-                    g = _grad_once(current, var, need_graph, retain_graph)
-                    if g is None:
-                        return zeros_like(self, requires_grad=False)
-                    current = g
-                else:
-                    # 张量 → 逐元素标量 grad，再 stack 保持计算图
-                    # 注：autograd.grad outputs 必须是标量，所以对张量 outputs
-                    #     必须逐个元素求导再拼回形状
-                    flat = current.reshape(-1)
-                    elem_grads: list[TN] = []
-                    for ei in range(flat.shape[0]):
-                        g_elem = _grad_once(flat[ei], var, need_graph, retain_graph)
-                        if g_elem is None:
-                            elem_grads.append(zeros_like(var, requires_grad=False))
-                        else:
-                            elem_grads.append(g_elem)
-
-                    stacked = _rstack(elem_grads, dim=0)
-                    target_shape = current.shape + var.shape
-                    current = stacked if stacked.shape == target_shape \
-                        else stacked.reshape(*target_shape)
-
-                step += 1
-
-        # ---- 5. reshape 回最终形状 ----
-        if current.shape != final_shape:
-            current = current.reshape(*final_shape)
-        return current
+        from ..autograd.grad import diff
+        return diff(self, *args, create_graph=create_graph)
 # end of class TN
+
+def _init_calc_graph(outputs):
+    """从多个反向根初始化计算图缓存。
+
+    供 TN.backward、autograd.backward、autograd.grad 共用的图初始化入口：
+
+    1. 把从 outputs 可达的所有节点的 grad_value 置 None；
+    2. 重新计算各节点应收到反向梯度的次数 rcv_grad_count；
+    3. 检查计算图中是否存在需要钩子处理的模块。
+
+    多根时，某个根若同时是另一个根的前驱，其内部入边计数大于 0，
+    调用方不应立即把它入栈，需要等上游根的梯度传播到达。
+
+    本函数只负责图初始化，不处理 .grad 累积范围和 inputs 过滤，
+    这些语义由调用方维护。
+
+    参数:
+        outputs: 单个 TN 或非空 TN 序列，反向传播的起点（根）。
+                 内部函数，调用方保证元素均为 TN。
+
+    返回:
+        bool: 计算图中是否需要钩子处理。
+    """
+    
+    visited = set()
+
+    if isinstance(outputs, TN):
+        stack = [outputs]
+        outputs.rcv_grad_count = 0
+    else:
+        stack = []
+        for root in outputs:
+            # 使用 id 而不是 TN 本身作为 visited 元素：TN.__eq__ 是逐元素比较，
+            # 不能用于集合成员判断。
+            if id(root) not in visited:
+                visited.add(id(root))
+                root.rcv_grad_count = 0
+                stack.append(root)
+    
+    need_hook_processing = False
+    while stack:
+        item = stack.pop()
+        item.grad_value = None
+
+        # 检查是否需要钩子处理（短路逻辑：一旦为 True 就跳过后续检查）
+        if not need_hook_processing and item._output_of is not None:
+            module = item._output_of
+            if module._backward_pre_hooks or module._backward_hooks:
+                need_hook_processing = True
+
+        # 叶子节点不要再往下遍历
+        if item.is_leaf:
+            continue
+
+        for var in item.fromvars:
+            if isinstance(var, TN) and var.requires_grad:
+                if id(var) not in visited:
+                    visited.add(id(var))
+                    var.rcv_grad_count = 0
+                    stack.append(var)
+                var.rcv_grad_count += 1
+
+    return need_hook_processing
+
+
+def _clear_calc_graph_cache(outputs) -> None:
+    """清理从多个反向根可达节点中的临时梯度状态。
+
+    将所有可达节点的 rcv_grad_count 置 0、grad_value 置 None。
+    与 _init_calc_graph 的区别：
+      - _init_calc_graph 会重新累加 rcv_grad_count（从子节点数推导正确值），
+        并检查计算图是否需要钩子处理；
+      - _clear_calc_graph_cache 仅将 rcv_grad_count 置 0，不做重新累加，
+        也不检查钩子。
+
+    本函数目前没有调用方，作为辅助清理工具保留。
+
+    参数:
+        outputs: 单个 TN 或 TN 序列，清理范围的起点（根）。
+    """
+    visited = set()
+
+    if isinstance(outputs, TN):
+        stack = [outputs]
+        outputs.rcv_grad_count = 0
+    else:
+        stack = []
+        for root in outputs:
+            # 使用 id 而不是 TN 本身作为 visited 元素：TN.__eq__ 是逐元素比较，
+            # 不能用于集合成员判断。
+            if id(root) not in visited:
+                visited.add(id(root))
+                root.rcv_grad_count = 0
+                stack.append(root)
+
+    while stack:
+        item = stack.pop(-1)
+
+        # 叶子节点不要再往下遍历
+        if item.is_leaf:
+            continue
+
+        for var in item.fromvars:
+            if isinstance(var, TN) and var.requires_grad and id(var) not in visited:
+                visited.add(id(var))
+                var.rcv_grad_count = 0
+                var.grad_value = None
+                stack.append(var)
+
+def _save_grad(item: TN) -> bool:
+    """将 item 的 grad_value 保存到 item.grad 中，返回是否为叶子节点。
+
+    1. _backward_with_hooks 或 _backward_without_hooks 里调用 _save_grad，
+       item 是出栈节点，已保证是 requires_grad=True 的叶子节点或中间节点。
+    2. 叶子节点（is_leaf=True）总是保存梯度到 item.grad，
+       中间节点只有在 retains_grad=True 时才保存梯度。
+    """
+    is_leaf = not item.fromvars
+
+    # 叶子节点：总是保存梯度
+    if is_leaf:
+        if item.grad is None:
+            item.grad = item.grad_value
+        else:
+            # 如已有梯度值，累计梯度，注意不要使用原地 +=
+            item.grad = item.grad + item.grad_value
+
+        # 叶子节点存完梯度后，梯度缓存置 None
+        item.grad_value = None
+
+    # 中间节点：只有 retains_grad=True 时才保存梯度
+    elif item.retains_grad:
+        if item.grad is None:
+            item.grad = item.grad_value
+        else:
+            item.grad = item.grad + item.grad_value
+
+        # 中间节点保存梯度后，不清空 grad_value，因为还要传播
+
+    return is_leaf
+
+def _save_grad_filtered(item, input_ids) -> bool:
+    """保存梯度并按需过滤累积目标，返回 item 是否为叶子节点。
+
+    input_ids 为 None 时复用 _save_grad 的完整语义（叶子节点总是保存，
+    中间节点仅在 retains_grad=True 时保存）；提供时只向集合中的张量
+    累积 .grad，叶子节点仍会清空 grad_value 以避免重复累积。
+
+    参数:
+        item: 当前出栈的反向节点。
+        input_ids: 允许累积 .grad 的张量 id 集合；None 表示不限制。
+
+    返回:
+        bool: item 是否为叶子节点。
+    """
+    if input_ids is None:
+        return _save_grad(item)
+
+    is_leaf = not item.fromvars
+    if id(item) in input_ids:
+        if item.grad is None:
+            item.grad = item.grad_value
+        else:
+            item.grad = item.grad + item.grad_value
+
+    # 叶子节点不再传播，清空梯度缓存
+    if is_leaf:
+        item.grad_value = None
+    return is_leaf
+
+def _add_received_grad_value(item: TN, grad_value: TN) -> None:
+    """将 grad_value 添加到 item 的 grad_value 中。"""
+    # 如果收到的梯度为 None，直接返回
+    if grad_value is None:
+        return
+
+    # 确保 item 和 grad_value 的 dtype 一致。
+    # grad_value 是待累加的梯度，计算过程中精度可能提升（float32 -> float64）。
+    if grad_value.dtype != item.dtype:
+        warnings.warn(f'item.dtype={item.dtype}, received grad_value.dtype={grad_value.dtype}')
+        grad_value = grad_value.type(item.dtype)
+
+    if item.grad_value is None:
+        # 如还没有梯度值，直接赋值
+        item.grad_value = grad_value
+    else:
+        # 如 item 已有梯度值，累计梯度。
+        # 多个节点可能共享同一个 grad_value 张量，不能用原地 += 累加。
+        item.grad_value = item.grad_value + grad_value
+
+
+def _propagate_grad_to_sources(item: TN, vars_received_grad: set) -> None:
+    """将当前节点的梯度传播到其所有来源节点。
+
+    反向传播核心步骤，遍历当前节点的所有来源节点，计算并传播梯度。
+    直接修改 vars_received_grad 集合，添加已收集完梯度的节点。
+
+    参数：
+        item: 当前完成梯度收集的节点
+        vars_received_grad: 已收集完梯度、可入栈的源变量集合（会被直接修改）
+    """
+    fromvars = item.fromvars
+
+    # 梯度规则一次调用返回与 fromvars 对齐的梯度元组
+    rule = item._grad_rule
+    if rule is None:
+        return
+    for var, grad in zip(fromvars, rule(item)):
+        if grad is not None and isinstance(var, TN) and var.requires_grad:
+            _add_received_grad_value(var, grad)
+            var.rcv_grad_count -= 1
+            if var.rcv_grad_count == 0:
+                vars_received_grad.add(var)
+
 
 class _BackwardHookManager:
     """
@@ -3885,7 +3796,68 @@ class _BackwardHookManager:
         self._module_output_ids_to_cleanup.clear()
         self._popped_tensors.clear()
 
+def _backward_with_hooks(stack, input_ids=None) -> None:
+    """从多个反向根执行带钩子的反向传播。
 
+    在标准遍历的基础上，于节点出栈时统一处理模块的反向预处理钩子和
+    反向钩子，并在结束后清理钩子缓存。
+
+    参数:
+        stack: 已就绪、待处理的根节点列表；函数会消费该列表。
+        input_ids: 允许累积 .grad 的张量 id 集合；None 表示不限制。
+    """
+    hook_manager = _BackwardHookManager()
+
+    while stack:
+        item = stack.pop(-1)
+
+        # 在反向传播前统一检查和处理两种钩子
+        items_for_propagate = hook_manager.process_module_hooks(item)
+
+        # 在调用钩子之后保存梯度，确保钩子可以访问所有输入的梯度grad_value
+        _save_grad_filtered(item, input_ids)
+
+        # 如果没有可传播节点（模块输入或输出梯度未收集齐），跳过本次循环
+        if not items_for_propagate:
+            continue
+
+        # 处理需要钩子的节点
+        vars_received_grad = set()
+        for current_item in items_for_propagate:
+            _propagate_grad_to_sources(current_item, vars_received_grad)
+            # 传播完梯度的节点，使命完成，清空grad_value节省内存
+            current_item.grad_value = None
+        stack.extend(vars_received_grad)
+
+    # 清理钩子缓存
+    hook_manager.cleanup()
+
+
+def _backward_without_hooks(stack, input_ids=None) -> None:
+    """从多个反向根执行无钩子的反向传播（快速路径）。
+
+    不检查也不调用任何模块钩子，适用于计算图中没有反向钩子的场景。
+
+    参数:
+        stack: 已就绪、待处理的根节点列表；函数会消费该列表。
+        input_ids: 允许累积 .grad 的张量 id 集合；None 表示不限制。
+    """
+
+    while stack:
+        item = stack.pop(-1)
+
+        # 保存叶子节点或retains_grad=True的中间节点的梯度，
+        # 如item是叶子节点，无须传播梯度，快速进入下一次循环
+        if _save_grad_filtered(item, input_ids):
+            continue
+
+        # 传播梯度到来源节点
+        vars_received_grad = set()
+        _propagate_grad_to_sources(item, vars_received_grad)
+        item.grad_value = None
+
+        # 将收到梯度的节点入栈
+        stack.extend(vars_received_grad)
 
 def _getitem(t: TN, index):
     """TN.__getitem__ 的实现：执行索引并建立视图与梯度依赖。"""

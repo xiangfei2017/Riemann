@@ -59,7 +59,7 @@ Riemann/
 │       │   ├── tensordef.py      # 张量定义（TN 类）、动态计算图与自动微分
 │       │   ├── tensorfuncs.py    # 函数式张量运算（仅单向依赖 tensordef）
 │       │   ├── dtype.py          # 数据类型定义
-│       │   ├── gradmode.py       # 梯度模式控制
+│       │   ├── ad_context.py     # AD 上下文控制
 │       │   └── serialization.py  # 对象保存与加载
 │       ├── nn/               # 神经网络模块
 │       ├── optim/            # 优化器模块
@@ -95,7 +95,7 @@ Riemann/
   - `tensordef.py`: 张量定义（TN 类）、动态计算图与自动微分
   - `tensorfuncs.py`: 函数式张量运算（三角函数、索引选择、随机数、einsum 等），仅单向依赖 `tensordef.py`
   - `dtype.py`: 数据类型定义
-  - `gradmode.py`: 梯度模式控制
+  - `ad_context.py`: AD 上下文控制
   - `serialization.py`: 对象保存与加载
 - **nn/**: 神经网络相关组件，如各种层、激活函数和损失函数
 - **optim/**: 优化器模块，如SGD、Adam等优化器，以及学习率调度器

@@ -36,7 +36,7 @@ This module provides core gradient computation functionality for tensor differen
 including backpropagation implementation and gradient calculation utilities.
 
 Core components:
-- `backward`: Wrapper method that delegates to TN.backward() for reverse-mode autodiff
+- `backward`: Multi-root reverse-mode autodiff, compatible with torch.autograd.backward
 - `grad`: Computes gradients of outputs w.r.t. inputs, returning gradient tuples directly
 - `gradcheck`: Numerical gradient verification via finite differences
 - `Function`: Base class for custom autograd.Function-style forward/backward definitions
@@ -51,31 +51,119 @@ import numpy as np
 # 显式导入所需符号：星号导入会把 abs/round 等内置名遮蔽成张量版本，
 # 容易在误差比较等纯数值场景中误用（历史上 gradcheck 就踩过这个坑）
 from ..core import TN, api_registry, set_grad_enabled, tensor, zeros_like
-from ..core.tensordef import _same_device
+from ..core.tensordef import (_same_device,
+                            _init_calc_graph,
+                            _backward_with_hooks,
+                            _backward_without_hooks,
+                            _propagate_grad_to_sources
+)
 
-def backward(self:TN, gradient: TN|None = None, retain_graph: bool = False, create_graph: bool = False):
-        """执行反向模式自动微分（反向传播）。
 
-        该函数从当前张量开始，通过计算图向后传播梯度，为所有叶子节点
-        或设置了retains_grad=True的中间节点计算并存储梯度。
+def backward(tensors,
+             grad_tensors=None,
+             retain_graph: bool|None = None,
+             create_graph: bool = False,
+             inputs=None) -> None:
+    """计算给定张量对图叶子节点的梯度之和，并累积到 .grad。
 
-        参数：
-            self (TN): 用于触发反向传播的张量
-            retain_graph (bool, 可选): 该参数用于与PyTorch兼容，
-                                      riemann反向传播不依赖此参数，
-                                      无论为True还是False，riemann都支持多次反向传播调用
-            gradient (TN | None, 可选): 输出张量self的梯度，默认为None
-            create_graph (bool, 可选): 是否在梯度计算过程中创建计算图，
-                                      设置为True以进行高阶导数计算，默认为False
+    与 torch.autograd.backward 的接口一致（去掉了已废弃的 grad_variables）：
 
-        返回：
-            None: 此函数不返回值，梯度结果直接存储在每个节点的.grad属性中
+    参数：
+        tensors: 求导的起点，单个 TN 或 TN 序列。
+        grad_tensors: 各输出对应的“向量”，单个 TN、TN/None 序列或 None。
+                      为 None 时要求每个输出都是实标量，隐式使用 1.0。
+        retain_graph: 仅为与 PyTorch 兼容保留。Riemann 的反向传播不依赖
+                      此参数，始终支持多次调用。
+        create_graph: 是否为梯度计算建图，用于高阶导数。
+        inputs: 单个 TN 或 TN 序列。提供时只向这些张量累积 .grad，
+                其余叶子节点不接收梯度。
 
-        异常：
-            RuntimeError: 当当前张量是叶子节点、当前张量不是标量，
-                         或当前张量不需要梯度时抛出
-        """
-        return self.backward(gradient=gradient, create_graph=create_graph)
+    返回：
+        None: 梯度结果直接累积到相关张量的 .grad 属性中。
+    """
+    # 处理 tensors 为单个张量或张量序列
+    if not isinstance(tensors, (list, tuple)):
+        roots = (tensors,)
+    else:
+        roots = tuple(tensors)
+    if not roots:
+        raise RuntimeError('tensors must contain at least one tensor')
+    if any(not isinstance(out, TN) or not out.requires_grad for out in roots):
+        raise RuntimeError('all elements of tensors must be TN and require grad')
+
+    # 处理 grad_tensors 为与 roots 等长的列表
+    if grad_tensors is None:
+        grad_list = [None] * len(roots)
+    elif isinstance(grad_tensors, TN):
+        if len(roots) != 1:
+            raise RuntimeError(
+                f'grad_tensors must have length {len(roots)}, but got 1')
+        grad_list = [grad_tensors]
+    else:
+        grad_list = list(grad_tensors)
+        if len(grad_list) != len(roots):
+            raise RuntimeError(
+                f'grad_tensors must have length {len(roots)}, but got {len(grad_list)}')
+
+    # 处理 inputs
+    if inputs is None:
+        input_ids = None
+    else:
+        inputs = [inputs] if not isinstance(inputs, (list, tuple)) else list(inputs)
+        if any(not isinstance(inp, TN) for inp in inputs):
+            raise TypeError('inputs must contain only TN tensors')
+        input_ids = {id(t) for t in inputs}
+
+    # 生成各根的初始余切
+    seeds = []
+    for i, (out, g) in enumerate(zip(roots, grad_list)):
+        if g is None:
+            if out._array.ndim > 0:
+                raise RuntimeError(
+                    'grad can be implicitly created only for scalar outputs, '
+                    f'but tensors[{i}] has shape {out.shape}')
+            if out.is_complex():
+                raise RuntimeError(
+                    'grad can be implicitly created only for real scalar outputs '
+                    f'but got {out.dtype}')
+            seeds.append(tensor(1.0, dtype=out.dtype, device=out.device,
+                                requires_grad=create_graph))
+        elif isinstance(g, TN):
+            if g._array.shape != out._array.shape:
+                raise RuntimeError(
+                    f'invalid gradient at index {i} - expected shape {out.shape} '
+                    f'but got {g.shape}')
+            if not _same_device(g, out):
+                raise RuntimeError(
+                    f'invalid gradient at index {i} - expected device {out.device} '
+                    f'but got {g.device}')
+            # 与 torch.autograd.backward 一致，不对 grad_tensors 做 detach
+            seeds.append(g)
+        else:
+            raise TypeError(
+                f'grad_tensors[{i}] must be a TN or None, but got {type(g)}')
+
+    # 与 grad 一样初始化计算图，并把多个根放入栈
+    need_hook_processing = _init_calc_graph(roots)
+
+    # grad_tensors 直接作为各根的初始余切，不叠加已有的 .grad 状态；
+    # 同一根重复出现时，与 torch 一致，种子相加。
+    stack = []
+    queued = set()
+    for root, seed in zip(roots, seeds):
+        root.grad_value = (seed if root.grad_value is None
+                           else root.grad_value + seed)
+        # 根之间存在依赖时，等上游梯度到达后再入栈
+        if root.rcv_grad_count == 0 and id(root) not in queued:
+            queued.add(id(root))
+            stack.append(root)
+
+    # 复用 TN 的反向遍历：有钩子时走钩子路径，否则走快速路径
+    with set_grad_enabled(create_graph):
+        if need_hook_processing:
+            _backward_with_hooks(stack, input_ids)
+        else:
+            _backward_without_hooks(stack, input_ids)
 
 @api_registry.register
 def grad(outputs:TN,
@@ -97,8 +185,8 @@ def grad(outputs:TN,
         3. 使用 list 作为栈（pop(-1) O(1)）对计算图进行 DFS 反向遍历
         4. 在 with set_grad_enabled(create_graph) 上下文中执行梯度传播，
            确保 create_graph 参数能正确控制中间张量的 autograd 追踪
-        5. 复用 TN._propagate_grad_to_sources 向来源节点传播梯度，
-           与 TN._backward_without_hooks 使用完全相同的传播逻辑
+        5. 复用 _propagate_grad_to_sources 向来源节点传播梯度，
+           与 _backward_without_hooks 使用完全相同的传播逻辑
         6. 节点出栈时先检查是否是 inputs 之一，若是则保存梯度到返回列表；
            所有 inputs 的梯度一旦全部收集（O(1) 计数器检测），立即 break 提前退出
         7. 遍历结束后不再显式清理计算图缓存：下次 grad/backward 的 _init_calc_graph
@@ -195,11 +283,10 @@ def grad(outputs:TN,
         if outputs.is_complex():
             raise RuntimeError(f'grad can be implicitly created only for real scalar outputs but got {outputs.dtype}')
         
-        outputs._init_calc_graph()
-        outputs.grad_value = tensor(1.0,
-                                    dtype=outputs.dtype,
-                                    device=outputs.device,
-                                    requires_grad=create_graph)
+        seed = tensor(1.0,
+                      dtype=outputs.dtype,
+                      device=outputs.device,
+                      requires_grad=create_graph)
     
     elif isinstance(grad_outputs,TN):
         if grad_outputs._array.shape == outputs._array.shape:
@@ -209,33 +296,36 @@ def grad(outputs:TN,
                 raise RuntimeError(
                     f"invalid gradient at index 0 - expected device {outputs.device} "
                     f"but got {grad_outputs.device}")
-            outputs._init_calc_graph()
             # 与 torch.autograd.grad 一致，不 detach grad_outputs：
             # create_graph=True 时梯度结果对余切本身可微（func.jvp 对局部 VJP
             # 做转置时需要这条依赖）；create_graph=False 时下面的反向遍历在
             # set_grad_enabled(False) 下进行，保存的梯度同样不带计算图。
-            outputs.grad_value = grad_outputs
+            seed = grad_outputs
         else:
             raise RuntimeError('shape of grad_outputs need to be same as the shape of outputs')
     else:
         raise TypeError(f'grad_outputs can be either tensor or None, but got {type(grad_outputs)}')
-        
+    # 与 backward 共用同一套图初始化逻辑
+    _init_calc_graph(outputs)
+    outputs.grad_value = seed
+
     grad_list = [None] * len(inputs)      # 与 inputs 一一对应的返回梯度列表
     saved_flags = [False] * len(inputs)   # 标记 inputs[i] 是否已收集完梯度
     saved_count = 0                       # saved_flags[i]==True 的个数，O(1) 检测完成
-    q = [outputs]                         # list 作为栈：存放 rcv_grad_count==0 的节点
+    stack = [outputs]                         # list 作为栈：存放 rcv_grad_count==0 的节点
     
     with set_grad_enabled(create_graph):
-        while q:
-            item: TN = q.pop(-1)  # O(1) 队尾弹出
+        while stack:
+            item: TN = stack.pop(-1)  # O(1) 队尾弹出
 
             # 节点是 inputs 之一 → 保存梯度到返回列表
+            # 同一张量可能重复出现在 inputs 中，因此不 break，
+            # 一次访问填满所有匹配且尚未保存的槽位
             for i, var in enumerate(inputs):
                 if not saved_flags[i] and var is item:
                     saved_flags[i] = True
                     saved_count += 1
                     grad_list[i] = var.grad_value if create_graph else var.grad_value.detach()
-                    break  # 一个 item 不可能同时匹配 inputs 多个元素
 
             # 所有 inputs 的梯度已收集 → 立即退出（grad 的 lazy evaluation 核心优化）
             if saved_count == len(inputs):
@@ -243,9 +333,9 @@ def grad(outputs:TN,
 
             # 向 fromvars 传播梯度，rcv_grad_count==0 的来源节点加入 vars_received_grad
             vars_received_grad = set()
-            item._propagate_grad_to_sources(vars_received_grad)
+            _propagate_grad_to_sources(item, vars_received_grad)
             item.grad_value = None
-            q.extend(vars_received_grad)
+            stack.extend(vars_received_grad)
         # end of while
     # end of with
     
@@ -260,6 +350,120 @@ def grad(outputs:TN,
     
     return tuple(grad_list)  # type: ignore
 #end of grad
+
+
+def diff(tensor, *args, create_graph=False):
+    r"""计算标量张量对指定变量的高阶偏导数或混合偏导数。
+
+    实现 TN.d 的核心逻辑，由 TN.d 委托调用。
+
+    变量可以是任意形状（标量、向量、矩阵等）。同一变量可以多次出现，
+    阶数自动累加。按 args 顺序逐变量求导，输出形状 = 各变量形状按顺序扁平拼接。
+
+    参数:
+        tensor: 标量张量，必须 requires_grad=True
+        *args: 导数规格，两种形式可混用:
+            - TN                对该变量求一阶
+            - (TN, k)           对该变量求 k 阶 (k >= 1)
+        create_graph: 是否追踪结果计算图以支持继续高阶微分。默认 False。
+
+    返回:
+        张量，形状为各变量形状的扁平拼接。
+
+    异常:
+        ValueError: tensor 非标量或无梯度；args 含非法项
+    """
+    _rstack = api_registry.get("stack")
+
+    # ---- 1. 前置校验 ----
+    if tensor.ndim > 0 or not tensor.requires_grad:
+        raise ValueError("tensor must be a scalar tensor with requires_grad=True")
+    if not args:
+        raise ValueError("At least one variable must be provided")
+
+    # ---- 2. 解析 args → [(var, 总阶数), ...] ----
+    # 先累加同一变量的阶数，再从 dict 构造 specs
+    vid_to_order: dict[int, int] = {}   # id(var) → 累计阶数
+    var_order: list[TN] = []             # 保持首次出现的顺序
+
+    for item in args:
+        if isinstance(item, TN):
+            var, k = item, 1
+        elif isinstance(item, (tuple, list)) and len(item) == 2 \
+                and isinstance(item[0], TN) and isinstance(item[1], int):
+            var, k = item
+        else:
+            raise ValueError(
+                f"Each arg must be a TN or (TN, int), got {type(item).__name__}"
+            )
+        if k < 1:
+            raise ValueError(f"Derivative order k must be >= 1, got {k}")
+        if not var.requires_grad:
+            raise ValueError("Variable must have requires_grad=True")
+
+        vid = id(var)
+        if vid in vid_to_order:
+            vid_to_order[vid] += k
+        else:
+            vid_to_order[vid] = k
+            var_order.append(var)
+
+    specs: list[tuple[TN, int]] = [(var, vid_to_order[id(var)]) for var in var_order]
+
+    # ---- 3. 预计算 ----
+    total_steps = 0
+    for _, k in specs:
+        total_steps += k
+    final_shape: tuple[int, ...] = ()
+    for var, k in specs:
+        final_shape += var.shape * k
+
+    # ---- 4. 核心: total_steps 次顺序 grad ----
+    current: TN = tensor
+    step = 0
+
+    for var, order in specs:
+        for _ in range(order):
+            is_last = (step == total_steps - 1)
+            need_graph = create_graph if is_last else True  # 中间步骤必须追踪图
+            retain_graph = not is_last
+
+            if current.ndim == 0:
+                # 标量 → 一次 grad
+                g = grad(current, var,
+                         create_graph=need_graph,
+                         allow_unused=True,
+                         retain_graph=retain_graph)[0]
+                if g is None:
+                    return zeros_like(tensor, requires_grad=False)
+                current = g
+            else:
+                # 张量 → 逐元素标量 grad，再 stack 保持计算图
+                # 注：autograd.grad outputs 必须是标量，所以对张量 outputs
+                #     必须逐个元素求导再拼回形状
+                flat = current.reshape(-1)
+                elem_grads: list[TN] = []
+                for ei in range(flat.shape[0]):
+                    g_elem = grad(flat[ei], var,
+                                  create_graph=need_graph,
+                                  allow_unused=True,
+                                  retain_graph=retain_graph)[0]
+                    if g_elem is None:
+                        elem_grads.append(zeros_like(var, requires_grad=False))
+                    else:
+                        elem_grads.append(g_elem)
+
+                stacked = _rstack(elem_grads, dim=0)
+                target_shape = current.shape + var.shape
+                current = stacked if stacked.shape == target_shape \
+                    else stacked.reshape(*target_shape)
+
+            step += 1
+
+    # ---- 5. reshape 回最终形状 ----
+    if current.shape != final_shape:
+        current = current.reshape(*final_shape)
+    return current
 
 
 def _as_output_list(result):

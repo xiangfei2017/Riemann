@@ -30,10 +30,10 @@
 
 
 """
-Riemann Library Gradient Mode Module: Automatic Differentiation Control
+Riemann Library AD Context Module: Automatic Differentiation Control
 
-This module provides gradient calculation mode control functionality for the Riemann
-automatic differentiation framework. It implements context managers and decorators
+This module provides automatic differentiation context control functionality for the
+Riemann automatic differentiation framework. It implements context managers and decorators
 to enable or disable gradient tracking during computation, similar to PyTorch's
 corresponding functionality. The module uses thread-local storage to ensure
 thread-safe operations in multi-threaded environments.

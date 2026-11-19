@@ -52,7 +52,7 @@ from itertools import accumulate
 from collections import Counter, defaultdict
 from ..cuda import Device
 from .dtype import *
-from .gradmode import *
+from .ad_context import *
 from .tensordef import *
 from .tensordef import (
     _validate_shape, _require_tn, _get_device,
@@ -3293,7 +3293,7 @@ def _setat_inplace_grad(result_tensor:TN):
 
     调用者: setat_（作为 grad_rule 实参传入 _inplace_oper_at_）
     """
-    index = result_tensor.parms[0][1]
+    index = result_tensor._inplace_ops[0].stored_index
 
     # result_tensor就是原地赋值时的self
     # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
@@ -3327,7 +3327,7 @@ def _addat_inplace_grad(result_tensor:TN):
 
     调用者: addat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS，供 setitem 重放
     """
-    index = result_tensor.parms[0][1]
+    index = result_tensor._inplace_ops[0].stored_index
 
     # result_tensor就是原地赋值时的self
     # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
@@ -3356,7 +3356,7 @@ def _subat_inplace_grad(result_tensor:TN):
 
     调用者: subat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS，供 setitem 重放
     """
-    index = result_tensor.parms[0][1]
+    index = result_tensor._inplace_ops[0].stored_index
 
     # result_tensor就是原地赋值时的self
     # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
@@ -3386,9 +3386,10 @@ def _mulat_inplace_grad(result_tensor: TN):
 
     调用者: mulat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
     """
+    record = result_tensor._inplace_ops[0]
     right_var = result_tensor.fromvars[0]
-    left_var = result_tensor.parms[0][0]
-    index = result_tensor.parms[0][1]
+    left_var = record.left_copy
+    index = record.stored_index
 
     result_grad = result_tensor.grad_value[index]
     right_var_grad = result_grad * left_var.conj()
@@ -3435,7 +3436,7 @@ def _negat_inplace_grad(result_tensor: TN) -> TN:
 
     调用者: neg_（作为 grad_rule 实参传入 _inplace_unary_at_）
     """
-    index = result_tensor.parms[0][1]
+    index = result_tensor._inplace_ops[0].stored_index
 
     result_grad = result_tensor.grad_value[index]
     result_tensor.grad_value = result_tensor.grad_value.setat(index, -result_grad)
@@ -3448,8 +3449,9 @@ def _absat_inplace_grad(result_tensor: TN) -> TN:
 
     调用者: abs_（作为 grad_rule 实参传入 _inplace_unary_at_）
     """
-    left_copy = result_tensor.parms[0][0]
-    index = result_tensor.parms[0][1]
+    record = result_tensor._inplace_ops[0]
+    left_copy = record.left_copy
+    index = record.stored_index
 
     result_grad = result_tensor.grad_value[index]
     left_grad = result_grad * left_copy._get_array_lib().sign(left_copy._array)
@@ -3480,7 +3482,7 @@ def _divat_inplace_grad(result_tensor: TN):
     调用者: divat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
     """
     right_var = result_tensor.fromvars[0]
-    index = result_tensor.parms[0][1]
+    index = result_tensor._inplace_ops[0].stored_index
 
     result_grad = result_tensor.grad_value[index]
     right_var_grad = result_grad * (-result_tensor[index]/right_var).conj()
@@ -3517,9 +3519,10 @@ def _modat_inplace_grad(result_tensor: TN):
 
     调用者: modat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
     """
+    record = result_tensor._inplace_ops[0]
     right_var = result_tensor.fromvars[0]
-    left_var = result_tensor.parms[0][0]
-    index = result_tensor.parms[0][1]
+    left_var = record.left_copy
+    index = record.stored_index
 
     result_grad = result_tensor.grad_value[index]
     right_var_grad = -result_grad * floor(left_var / right_var)
@@ -3555,9 +3558,10 @@ def _powat_inplace_grad(result_tensor: TN):
 
     调用者: powat_（作为 grad_rule 实参传入 _inplace_oper_at_）；函数名亦登记在 _INPLACE_AT_METHODS 与 _LEFT_VALUE_BACKWARD_NAMES
     """
+    record = result_tensor._inplace_ops[0]
     right_var = result_tensor.fromvars[0]
-    left_var = result_tensor.parms[0][0]
-    index = result_tensor.parms[0][1]
+    left_var = record.left_copy
+    index = record.stored_index
 
     result_grad = result_tensor.grad_value[index]
     right_var_grad = result_grad * result_tensor[index].conj() * log(left_var.conj())
@@ -3643,30 +3647,33 @@ def _compose_inplace_grad(input:TN, grad_rule):
     新规则先计算本次操作的梯度，再调用旧规则计算历史来源的梯度，并把二者按
     “当前 fromvars 顺序”拼接返回。
 
-    必须在把本次操作插入 fromvars/parms 之前调用：旧规则是按它记录时的
-    fromvars/parms 位置计算梯度的，而本次操作会把新条目插到首部使位置整体后移。
-    fused 内部因此临时去掉首条记录（当前的前缀）后再调用旧规则，调用结束后恢复；
+    必须在把本次操作插入 fromvars/_inplace_ops 之前调用：旧规则是按它记录时的
+    位置计算梯度的，而本次操作会把新条目插到首部使位置整体后移。fused 内部因此
+    临时去掉首条 fromvars 与首条 InplaceRecord 后再调用旧规则，调用结束后恢复；
     这里按 result.fromvars[1:] 现取历史记录，而不是捕获调用时刻的张量对象，
     这样在 JVP 的影子节点上调用时仍使用影子自己的来源，不会泄漏到真实计算图。
+
+    parms 不再参与原地操作的插入与剥离：每个原地操作所需的左值副本与索引都由
+    InplaceRecord 自带，parms 保持算子自身的静态参数含义。
 
     调用者: _inplace_unary_at_、_inplace_oper_at_
     """
     old_rule = input._grad_rule
 
     def fused(result:TN):
-        # 先按当前记录计算本次原地操作的梯度（首部即本操作的右值/参数）
+        # 先按当前记录计算本次原地操作的梯度（首条记录即本操作的上下文）
         first = grad_rule(result)
 
         # 临时去掉首条记录，让旧规则按其记录时的位置计算
         new_fromvars = result.fromvars
-        new_parms = result.parms
+        new_inplace_ops = result._inplace_ops
         result.fromvars = new_fromvars[1:]
-        result.parms = new_parms[1:]
+        result._inplace_ops = new_inplace_ops[1:]
         try:
             rest = old_rule(result) if old_rule is not None else ()
         finally:
             result.fromvars = new_fromvars
-            result.parms = new_parms
+            result._inplace_ops = new_inplace_ops
 
         return (first,) + tuple(rest)
 
@@ -3719,8 +3726,9 @@ def _inplace_unary_at_(input:TN, index, data_func, grad_rule):
         input.requires_grad = True
         _compose_inplace_grad(input, grad_rule)
         input.fromvars = (placeholder,) + input.fromvars
-        input.parms = ((target_copy,index_val),) + input.parms
-        input._inplace_ops = ((None, placeholder),) + input._inplace_ops
+        input._inplace_ops = (
+            InplaceRecord(None, placeholder, index_val, target_copy),
+        ) + input._inplace_ops
 
     return input
 
@@ -3741,9 +3749,10 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, grad_rule, vector_func=No
     视图重定向：若 input 是视图，先合并视图索引与 index，再在 input._base 上执行，
     保证写入落到真实存储；返回值仍是视图对象本身，调用方无需区分。
 
-    计算图记录顺序“最新在前”：每次原地操作把右值、索引（含左值副本）、重放记录
-    分别插入 fromvars/parms/_inplace_ops 的首部，并把本次操作的梯度规则组合进
-    _grad_rule；反向传播按逆序处理，从而实现“后做的原地操作先处理梯度”。
+    计算图记录顺序“最新在前”：每次原地操作把右值插入 fromvars 首部，并把索引、
+    左值副本和重放信息合并为一条 InplaceRecord 插入 _inplace_ops 首部，同时把
+    本次操作的梯度规则组合进 _grad_rule；反向传播按逆序处理，从而实现
+    “后做的原地操作先处理梯度”。parms 不再记录原地操作上下文。
 
     调用者: setat_、addat_、subat_、mulat_、divat_、powat_、floordivat_、modat_
     （另在视图重定向时递归调用自身）
@@ -3809,9 +3818,14 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, grad_rule, vector_func=No
         input.requires_grad = True
         _compose_inplace_grad(input, grad_rule)
         input.fromvars = (right_val,) + input.fromvars
-        # 注意(target_copy,index_val)必须以元组的形式整体插入到parms元组前面
-        input.parms = ((target_copy,index_val),) + input.parms
-        input._inplace_ops = ((_INPLACE_AT_METHODS.get(grad_rule.__name__), input.fromvars[0]),) + input._inplace_ops
+        input._inplace_ops = (
+            InplaceRecord(
+                _INPLACE_AT_METHODS.get(grad_rule.__name__),
+                input.fromvars[0],
+                index_val,
+                target_copy,
+            ),
+        ) + input._inplace_ops
 
     return input
 
@@ -4245,8 +4259,11 @@ def _collect_replay_ops(input, val, index_val):
         若副本上做过局部原地操作（如 t[0] += 1），重演需要再合并一层索引，
         这里不做该推导，直接放弃重演。
 
+    每条记录都是自包含的：重演只读 InplaceRecord，不再按下标访问
+    fromvars/parms，因此 parms 可以始终只表示算子自身的静态参数。
+
     原地操作记录连续插入在 _inplace_ops 首部且“最新在前”，遇到不可重放记录
-    （op_name 为 None）即停止；返回的列表同样保持“最新在前”，调用方需 reversed
+    （method 为 None）即停止；返回的列表同样保持“最新在前”，调用方需 reversed
     后按时间顺序执行。
 
     参数:
@@ -4260,17 +4277,16 @@ def _collect_replay_ops(input, val, index_val):
         return []
 
     ops = []
-    for i, (op_name, _right) in enumerate(val._inplace_ops):
-        if op_name is None:
+    for record in val._inplace_ops:
+        if record.method is None:
             # 原地操作记录连续插入在 _inplace_ops 首部，遇到不可重放记录即可停止
             break
-        parm = val.parms[i]
-        # 原地操作的 parms 为 (target_copy, stored_index)，stored_index 为 ()
-        # 表示该操作作用于整个副本；否则说明副本上还做过局部原地操作
-        if not (isinstance(parm, tuple) and len(parm) >= 2
-                and isinstance(parm[1], tuple) and len(parm[1]) == 0):
+        # stored_index 为 () 表示该操作作用于整个副本；
+        # 否则说明副本上还做过局部原地操作，重演需要合并索引，这里直接放弃
+        if not (isinstance(record.stored_index, tuple)
+                and len(record.stored_index) == 0):
             return []
-        ops.append((op_name, val.fromvars[i]))
+        ops.append((record.method, record.right))
     return ops
 
 
@@ -4378,9 +4394,9 @@ def _setitem(input: TN, index, val):
     - 副本（场景 B）：第 2 步只改了副本，需要把副本上的原地操作重放到 a。
 
     场景 B 的重放依据是副本上的 _inplace_ops：原地操作在 _inplace_oper_at_ /
-    _inplace_unary_at_ 中按“最新在前”插入 (方法名或 None, 右值)，与
-    fromvars/parms 同位置对齐。None 表示该操作不可重放（setat_、floordivat_、
-    abs_、neg_ 等），重放到此为止。
+    _inplace_unary_at_ 中按“最新在前”插入自包含的 InplaceRecord（方法名、
+    右值、索引、左值副本）。method 为 None 表示该操作不可重放（setat_、
+    floordivat_、abs_、neg_ 等），重放到此为止。
 
     重放依赖两个前提：副本取自同一索引、且所有原地操作都作用于整个副本；
     否则退化为按数据赋值（_assign_without_cycle）。这样数据始终正确，代价是

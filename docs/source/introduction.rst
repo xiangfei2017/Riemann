@@ -98,7 +98,7 @@ Riemann Package Module Structure
     │   ├── tensordef        # Tensor definition (TN class), dynamic graph and autograd
     │   ├── tensorfuncs      # Functional tensor operations (one-way dependency on tensordef)
     │   ├── dtype            # Data type definitions
-    │   ├── gradmode         # Gradient mode control
+    │   ├── ad_context       # AD context control
     │   └── serialization    # Object saving and loading
     ├── func                 # torch.func-style functional autodiff API
     ├── linalg               # Linear algebra module

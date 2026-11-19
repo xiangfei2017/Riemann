@@ -2642,7 +2642,7 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
 梯度模式控制
 ------------
 
-.. module:: riemann.gradmode
+.. module:: riemann.core.ad_context
 
 .. function:: riemann.is_grad_enabled()
 
