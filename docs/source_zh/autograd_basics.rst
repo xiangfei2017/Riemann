@@ -72,8 +72,14 @@ Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()
 **参数说明**
 
 - gradient （可选）：当输出张量不是标量时，需要提供一个与输出张量形状相同的梯度张量。对于标量输出，可以省略此参数，默认为 ``None`` （相当于传入标量 1）。
-- retain_graph （可选）：是否保留计算图。默认为 ``False`` ，表示反向传播后释放计算图。如果需要多次调用 ``backward()`` ，应设置为 ``True`` 。
+- retain_graph （可选）：仅为 PyTorch 兼容保留。Riemann 的反向传播不依赖此参数，默认即可多次调用 ``backward()``，无需设置为 ``True``。
 - create_graph （可选）：是否记录梯度的计算图，以便后续计算高阶导数，默认为 ``False`` 。
+
+**与 torch.Tensor.backward 的差异**
+
+- ``retain_graph`` 仅为兼容保留，不影响多次反向传播；
+- ``TN.backward`` 不接受 ``inputs`` 参数；如需只向指定张量累积梯度，请使用 ``riemann.autograd.backward(..., inputs=...)``；
+- ``gradient`` 的语义与 torch 一致。
 
 **使用场景**
 
@@ -157,12 +163,18 @@ Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()
 
 **参数说明**
 
-- outputs ：输出张量（标量或张量），用于计算梯度的起点
+- outputs ：输出张量（标量或张量）或输出张量序列，用于计算梯度的起点；支持多个根
 - inputs ：输入张量或张量元组，指定需要计算梯度的张量
-- grad_outputs （可选）：当 ``outputs`` 不是标量时，需要提供梯度张量
-- retain_graph （可选）：是否保留计算图，默认为 ``False``
+- grad_outputs （可选）：各根的初始余切（即初始梯度、上游梯度）。显式余切可为任意形状，但必须与对应根同形状、同设备；单个根可用单个张量，多根需传与 ``outputs`` 等长的序列（元素可为 TN 或 None）。当整体为 ``None`` 或某元素为 ``None`` 时，该位置隐式使用 1.0，只有对应根是实标量时才允许这样省略；非标量根必须显式提供余切。
+- retain_graph （可选）：仅为 PyTorch 兼容保留，不影响多次调用，默认为 ``False``
 - create_graph （可选）：是否记录梯度的计算图，以便后续计算高阶导数，默认为 ``False``
 - allow_unused （可选）：是否允许某些输入张量未被使用，默认为 ``False``
+
+**与 torch.autograd.grad 的差异**
+
+- ``retain_graph`` 仅为兼容保留；未实现 ``materialize_grads``、``is_grads_batched`` 等可选参数；
+- 返回元组、不写 ``.grad``、``allow_unused`` 的语义与 torch 一致；
+- 多根、重复根以及根之间互相依赖的处理语义也与 torch 一致；当 ``grad_outputs=None`` 或序列中某个元素为 ``None`` 时，该位置隐式使用 1.0，因此对应根必须是实标量（非标量根需显式提供余切）。
 
 **使用场景**
 
@@ -176,6 +188,7 @@ Riemann 提供了两种计算梯度的方法：``backward()`` 方法和 ``grad()
 - 只有 ``inputs`` 中指定的张量才会计算梯度
 - 不会修改 输入张量的 ``grad`` 属性
 - 中间节点即使调用了 ``retain_grad()`` ，也不会在 ``grad()`` 中自动计算梯度，必须显式指定
+- ``outputs`` 支持多个根：重复根等价于 ``grad_outputs`` 相加；若某个根同时是另一个根的前驱，会等上游根的梯度传播到达后再处理
 
 **示例 1：计算指定张量的梯度**
 
@@ -639,7 +652,8 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 ``TN.d()`` 方法
 ~~~~~~~~~~~~~~~~
 
-张量对象的 ``d()`` 方法是计算高阶混合偏导数最方便的接口。它将对多个变量的各阶求导自然地串在一起：
+``TN.d()`` 是 **Riemann 特有** 的张量方法，PyTorch 没有对应方法；它等价于
+``riemann.autograd.diff(self, ...)``。该方法将对多个变量的各阶求导自然地串在一起：
 
 **功能用途**
 
@@ -984,17 +998,278 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
      - 直接 ``autograd.grad`` 循环
      - 最底层、最灵活，想插什么逻辑都可以
 
-autograd.functional 模块求导函数
----------------------------------
+autograd 模块求导函数
+------------------------------
 
-Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功能函数，
-用于计算更高级的导数结构，如雅可比矩阵、Hessian 矩阵、雅可比向量积等。
-这些函数接收**具体的输入张量**和**前向函数**，直接返回导数结果。
+``riemann.autograd`` 模块既提供底层反向传播与梯度计算函数，也通过
+``riemann.autograd.functional`` 子模块提供更高层的导数结构。本章按功能分组介绍：
 
-``jacobian()`` 函数
+- 反向传播与梯度：``backward()``、``grad()``、``diff()``
+- 梯度校验：``gradcheck()``
+- ``autograd.functional`` 子模块：``jacobian()``、``hessian()``、``derivative()``、
+  ``jvp()``、``vjp()``、``hvp()``、``vhp()``
+
+**术语说明：余切与初始梯度**
+
+``grad_outputs`` / ``grad_tensors`` 在数学上是输出侧的余切向量，可以直观理解为
+“初始梯度”或“上游梯度”。余切概念来自微分几何：切空间描述增量方向，其对偶空间
+称为余切空间，余切向量是作用在增量上的线性泛函。实际使用时，只需把它看作与对应
+输出同形状、用于加权反向传播的张量，无需几何背景。
+
+**术语说明：根（root）**
+
+“根”指反向传播的起点：它既是前向计算产生的输出张量，也是 ``backward()`` /
+``grad()`` 开始反向遍历计算图的节点。单个输出就是一个根，多个输出就是多个根；
+根可以彼此依赖，也可以是同一个张量（重复根）。
+
+``backward()`` 函数
+~~~~~~~~~~~~~~~~~~~
+
+**功能**
+
+从 ``tensors`` 中的根出发执行反向模式自动微分，把梯度累积到相关叶子节点的
+``.grad`` 属性。
+
+**与 torch.autograd.backward 的差异**
+
+- 接口一致，但移除了已废弃的 ``grad_variables``；
+- ``retain_graph`` 仅为兼容保留，Riemann 不依赖该参数，可重复反向传播；
+- 梯度累积到 ``.grad`` 的语义与 torch 一致。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.backward(tensors, grad_tensors=None, retain_graph=None,
+                              create_graph=False, inputs=None)
+
+**参数**
+
+- ``tensors``：单个 TN 或 TN 序列，反向传播的根。
+- ``grad_tensors``：各根的初始余切（即初始梯度、上游梯度）。显式余切可为任意形状，
+  但必须与对应根同形状、同设备；也可传单个 TN（仅单根）或与 ``tensors`` 等长的序列
+  （元素可为 TN 或 None）。当整体为 ``None`` 或某元素为 ``None`` 时，该位置隐式使用
+  1.0，只有对应根是实标量时才允许这样省略；非标量根必须显式提供余切。
+  重复根等价于余切相加。
+- ``retain_graph``：仅为兼容 PyTorch 保留；Riemann 的反向传播不依赖该参数。
+- ``create_graph``：是否对梯度计算建图，用于高阶导数。
+- ``inputs``：单个 TN 或序列。提供时只向这些张量累积 ``.grad``；为 ``None`` 时，
+  叶子节点总是累积，中间节点仅在 ``retains_grad=True`` 时累积。
+
+**返回值**
+
+``None``。梯度写入相关张量的 ``.grad``，多次调用会累加。
+
+**示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 单根
+    x = rm.tensor([1.0, 2.0], requires_grad=True)
+    y = (x * x).sum()
+    rm.autograd.backward(y)
+    print(x.grad)              # tensor([2., 4.])
+
+    # 多根：各根的梯度传播后累加
+    x2 = rm.tensor([1.0, 2.0], requires_grad=True)
+    y2 = (x2 * x2).sum()
+    z2 = (x2 * 3.0).sum()
+    rm.autograd.backward([y2, z2])
+    print(x2.grad)             # tensor([5., 7.])
+
+``grad()`` 函数
+~~~~~~~~~~~~~~~
+
+**功能**
+
+计算一个或多个输出相对于 ``inputs`` 的梯度，并以元组返回，不修改任何张量的
+``.grad``。支持多根、重复根以及互相依赖的根。
+
+**与 torch.autograd.grad 的差异**
+
+- 接口基本一致，但 ``retain_graph`` 仅为兼容保留，不影响多次调用；
+- 未实现 torch 的 ``materialize_grads``、``is_grads_batched`` 等可选参数；
+- 返回元组、不写 ``.grad``、``allow_unused`` 的语义与 torch 一致；
+- 多根、重复根、根之间依赖的处理语义与 torch 一致；当 ``grad_outputs=None`` 或序列中某个元素为 ``None`` 时，该位置隐式使用 1.0，因此对应根必须是实标量（非标量根需显式提供余切）。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.grad(outputs, inputs, retain_graph=False, grad_outputs=None,
+                          create_graph=False, allow_unused=False)
+
+**参数**
+
+- ``outputs``：单个 TN 或 TN 序列（可多根），每个根都必须 ``requires_grad=True``。
+- ``inputs``：单个 TN 或序列，需要求导的输入。
+- ``retain_graph``：仅为兼容 PyTorch 保留。
+- ``grad_outputs``：各根的初始余切（即初始梯度、上游梯度）。显式余切可为任意形状，
+  但必须与对应根同形状、同设备；单个 TN 仅适用于单根，多根需传与 ``outputs`` 等长的
+  序列（元素可为 TN 或 None）。当整体为 ``None`` 或某元素为 ``None`` 时，该位置隐式
+  使用 1.0，只有对应根是实标量时才允许这样省略；非标量根必须显式提供余切。
+  显式余切不会被 detach。
+- ``create_graph``：是否对梯度计算建图，用于高阶导数。
+- ``allow_unused``：``False`` 时若某个输入与所有输出都无关则报错；``True`` 时
+  对应位置返回 ``None``。
+
+**返回值**
+
+``tuple[TN, ...]``，与 ``inputs`` 顺序一致。重复输入在元组中重复出现且值相同；
+与输出无关的输入在 ``allow_unused=True`` 时返回 ``None``。
+
+**示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([1.0, 2.0], requires_grad=True)
+    y1 = x.sum()
+    y2 = (x * x).sum()
+
+    # 多根：返回 d(y1)/dx + d(y2)/dx
+    gx, = rm.autograd.grad([y1, y2], x)
+    print(gx)                  # tensor([3., 5.])：1 + 2x
+
+    # 重复输入：返回两个相同的梯度
+    g1, g2 = rm.autograd.grad(y1, [x, x])
+    print(g1, g2)              # tensor([1., 1.]) tensor([1., 1.])
+
+``diff()`` 函数（``TN.d`` 的底层实现）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**功能**
+
+计算标量张量对指定变量的高阶偏导数或混合偏导数。``TN.d(...)`` 等价于
+``riemann.autograd.diff(tensor, ...)``。
+
+``diff()`` 是 **Riemann 特有** 的接口，PyTorch 中没有同名函数；PyTorch 通常用
+``torch.autograd.grad`` 或 ``torch.func`` 组合实现高阶导数。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.diff(tensor, *args, create_graph=False)
+
+**参数**
+
+- ``tensor``：标量 TN，必须 ``requires_grad=True``。
+- ``*args``：导数规格，两种形式可混用：``TN`` 表示对该变量求一阶，
+  ``(TN, k)`` 表示求 ``k`` 阶；同一变量多次出现时阶数累加。
+- ``create_graph``：是否追踪导数结果的计算图，用于继续求更高阶导数。
+
+**返回值**
+
+TN，形状为各变量形状按顺序重复对应阶数后拼接。例如 ``f.d(x, y)`` 中
+``x.shape=(2,)``、``y.shape=(3,)`` 时，返回形状 ``(2, 3)`` 的混合偏导矩阵。
+
+**示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 标量高阶导
+    x = rm.tensor(3.0, requires_grad=True)
+    f = x ** 3
+    print(rm.autograd.diff(f, x))          # 27.0  (3x^2)
+    print(rm.autograd.diff(f, (x, 2)))     # 18.0  (6x)
+
+    # 多向量混合偏导
+    xv = rm.tensor([1.0, 2.0], requires_grad=True)
+    yv = rm.tensor([3.0, 4.0], requires_grad=True)
+    fv = (xv * yv).sum() ** 2
+    print(rm.autograd.diff(fv, xv, yv).shape)   # (2, 2)
+
+``gradcheck()`` 函数
 ~~~~~~~~~~~~~~~~~~~~
 
-``jacobian()`` 函数用于计算函数从输入到输出的雅可比矩阵 (Jacobian matrix)，展示了函数输出对输入的所有一阶偏导数。
+**功能**
+
+通过中心差分数值 Jacobian 校验解析梯度是否正确。与 PyTorch 一致，对每个输出
+元素分别比较，而不是把多个输出求和后退化为弱校验。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.gradcheck(func, inputs, *, eps=1e-6, atol=1e-5, rtol=1e-3,
+                               raise_exception=True, nondet_tol=0.0,
+                               check_undefined_grad=True, check_grad_dtypes=False,
+                               check_batched_grad=False,
+                               check_batched_forward_grad=False,
+                               check_forward_ad=False, check_backward_ad=True,
+                               fast_mode=False, masked=None)
+
+**参数**
+
+- ``func``：待校验函数，返回单个 TN 或 TN 的元组/列表。
+- ``inputs``：单个 TN 或 TN 序列；每个输入都必须 ``requires_grad=True`` 且为
+  ``float64`` （双精度）。
+- ``eps``：中心差分扰动步长，默认 ``1e-6``。
+- ``atol`` / ``rtol``：绝对/相对误差容限，默认 ``1e-5`` / ``1e-3``。
+- ``raise_exception``：失败时是否抛 ``RuntimeError``，默认 ``True``。
+- ``nondet_tol``：非确定性容限，绝对误差低于该值时视为通过，默认 ``0.0``。
+- ``check_undefined_grad``：解析梯度为 ``None`` 时是否按零梯度参与比较，默认 ``True``。
+- ``check_grad_dtypes``：是否校验解析梯度 dtype 与输入一致，默认 ``False``。
+- ``check_backward_ad``：是否执行反向模式检查，仅支持 ``True``。
+- ``fast_mode``：快速模式，用随机方向投影比较，默认 ``False`` （全量逐元素检查）。
+- ``check_batched_grad``、``check_batched_forward_grad``、``check_forward_ad``、
+  ``masked``：当前版本未实现，启用时抛 ``NotImplementedError``。
+
+**返回值**
+
+``bool``：检查通过返回 ``True``；失败且 ``raise_exception=False`` 时返回 ``False``。
+
+**示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    def f(x, y):
+        return x * y
+
+    x = rm.tensor(2.0, requires_grad=True, dtype=rm.float64)
+    y = rm.tensor(3.0, requires_grad=True, dtype=rm.float64)
+    print(rm.autograd.gradcheck(f, (x, y)))   # True
+
+``autograd.functional.jacobian()`` 函数
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**功能**
+
+计算函数从输入到输出的雅可比矩阵 (Jacobian matrix)，展示输出对输入的所有一阶
+偏导数；支持单/多输入、单/多输出。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.functional.jacobian(func, inputs, create_graph=False, strict=True)
+
+**参数**
+
+- ``func``：前向函数，输入 TN（或序列），返回 TN 或 TN 序列。
+- ``inputs``：单个 TN 或 TN 序列。
+- ``create_graph``：是否对导数计算建图，用于高阶导数。
+- ``strict``：``True`` 时若输出与某个输入无关则报错；``False`` 时该输入对应的
+  雅可比块填零。
+
+**返回值**
+
+按输入/输出结构返回：
+
+- 单输入单输出：TN，形状 ``output.shape + input.shape``。
+- 单输入多输出：``tuple[TN]``，按输出顺序。
+- 多输入单输出：``tuple[TN]``，按输入顺序，每项形状 ``output.shape + input_i.shape``。
+- 多输入多输出：``tuple[tuple[TN, ...], ...]``，外层按输出、内层按输入。
+
+**示例**
 
 .. code-block:: python
 
@@ -1012,10 +1287,34 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     print(jac)
     print(jac.shape)  # (3, 3)  # 对于向量输入/向量输出，结果形状为 (n_outputs, n_inputs)
 
-``hessian()`` 函数
-~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.hessian()`` 函数
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``hessian()`` 函数用于计算标量值函数的 Hessian 矩阵，显示函数相对于其输入的所有二阶偏导数。
+**功能**
+
+计算标量值函数的 Hessian 矩阵（梯度的雅可比），展示函数相对于输入的所有二阶
+偏导数；支持单/多输入。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.functional.hessian(func, inputs, create_graph=False, strict=True)
+
+**参数**
+
+- ``func``：返回标量 TN 的前向函数。
+- ``inputs``：单个 TN 或 TN 序列。
+- ``create_graph``：是否对导数计算建图，用于高阶导数。
+- ``strict``：``True`` 时若输出与某个输入无关则报错；``False`` 时对应块填零。
+
+**返回值**
+
+- 单输入：TN，形状 ``input.shape + input.shape``。
+- 多输入：``tuple[tuple[TN, ...], ...]``，其中 ``result[i][j]`` 是
+  ``∂²f / (∂input_i ∂input_j)``，形状 ``input_i.shape + input_j.shape``。
+
+**示例**
 
 .. code-block:: python
 
@@ -1033,12 +1332,32 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     print(hess)
     print(hess.shape)  # ()  # 标量输入返回标量二阶导
 
-``derivative()`` 函数
-~~~~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.derivative()`` 函数
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``derivative()`` 函数用于为给定函数创建导函数。返回的新函数在调用时，计算原函数在给定输入处的雅可比矩阵（即导数）。
+**功能**
 
-返回值始终为 tuple：每个输入对应一个导数张量；若原函数有多个输出，则每个输出再嵌套一层 tuple，与 ``jacobian()`` 的多输入/多输出返回结构一致。
+返回原函数的导函数：调用导函数时，计算原函数在该输入处的雅可比矩阵（即导数）。
+内部基于 ``jacobian()`` 实现。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.functional.derivative(func, create_graph=False)
+
+**参数**
+
+- ``func``：前向函数，输入一个或多个 TN。
+- ``create_graph``：是否对导数计算建图，用于高阶导数。
+
+**返回值**
+
+一个可调用对象，接受与原函数相同的输入。调用结果始终为 ``tuple``：每个输入
+对应一个导数张量；原函数有多个输出时，再按输出嵌套一层，结构与
+``jacobian()`` 的多输入/多输出返回一致。
+
+**示例**
 
 .. code-block:: python
 
@@ -1068,10 +1387,34 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     d2f = rm.autograd.functional.derivative(lambda t: t ** 3, create_graph=True)
     print(d2f(x))  # (tensor(12.),) — 3x^2，结果 requires_grad=True，可再次求导
 
-``jvp()`` (雅可比向量积) 函数
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.jvp()`` 函数（雅可比向量积）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``jvp()`` 函数计算雅可比矩阵与给定向量的乘积。
+**功能**
+
+计算函数在给定点的雅可比向量积 J·v。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.functional.jvp(func, inputs, v=None, create_graph=False, strict=False)
+
+**参数**
+
+- ``func``：前向函数，输入 TN（或序列），返回 TN 或 TN 序列。
+- ``inputs``：单个 TN 或 TN 序列。
+- ``v``：输入方向，形状必须与对应输入一致。单输入且为标量时可省略（默认 1.0）；
+  多输入时必须提供与 ``inputs`` 等长的序列。
+- ``create_graph``：是否对导数计算建图，用于高阶导数。
+- ``strict``：``True`` 时若输出与某个输入无关则报错。
+
+**返回值**
+
+``(func_output, jvp_result)``：``func_output`` 与 ``func`` 的返回结构一致；
+单输出时 ``jvp_result`` 为 TN，多输出时为按输出顺序排列的 tuple。
+
+**示例**
 
 .. code-block:: python
 
@@ -1091,10 +1434,34 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     f_x, jvp_val = rm.autograd.functional.jvp(f, x, v)
     print(jvp_val)
 
-``vjp()`` (向量雅可比积) 函数
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.vjp()`` 函数（向量雅可比积）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``vjp()`` 函数用于计算给定向量与雅可比矩阵的乘积 (Vector-Jacobian Product)。
+**功能**
+
+计算给定向量与雅可比矩阵的乘积 vᵀJ (Vector-Jacobian Product)。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.functional.vjp(func, inputs, v=None, create_graph=False, strict=False)
+
+**参数**
+
+- ``func``：前向函数，输入 TN（或序列），返回 TN 或 TN 序列。
+- ``inputs``：单个 TN 或 TN 序列。
+- ``v``：输出侧余切，形状必须与 ``func`` 的对应输出一致。``None`` 时自动按输出
+  形状填全 1；多输出时需提供与输出等长的序列。
+- ``create_graph``：是否对导数计算建图，用于高阶导数。
+- ``strict``：``True`` 时若输出与某个输入无关则报错；``False`` 时对应输入返回零张量。
+
+**返回值**
+
+``(func_output, vjp_result)``：``func_output`` 与 ``func`` 的返回结构一致；
+单输入时 ``vjp_result`` 为 TN，多输入时为按输入顺序排列的 tuple。
+
+**示例**
 
 .. code-block:: python
 
@@ -1114,10 +1481,34 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     f_x, vjp_val = rm.autograd.functional.vjp(f, x, v)
     print(vjp_val)
 
-``hvp()`` (Hessian-向量积) 和 ``vhp()`` 函数
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.hvp()`` 函数（Hessian-向量积）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``hvp()`` 和 ``vhp()`` 函数分别用于计算 Hessian-向量积 (Hessian-Vector Product) 和向量-Hessian-积 (Vector-Hessian Product)。由于 Hessian 矩阵是对称的，``hvp()`` 和 ``vhp()`` 实际上是相同的。
+**功能**
+
+计算 Hessian 矩阵与向量 v 的乘积 H·v，无需显式构建完整 Hessian 矩阵。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.functional.hvp(func, inputs, v, create_graph=False, strict=False)
+
+**参数**
+
+- ``func``：前向函数，必须返回标量 TN。
+- ``inputs``：单个 TN 或 TN 序列。
+- ``v``：与 ``inputs`` 形状一致的向量（多输入时为等长序列）。
+- ``create_graph``：是否对导数计算建图，用于高阶导数。
+- ``strict``：``True`` 时若输出与某个输入无关则报错；``False`` 时未使用输入的
+  结果为对应形状的零张量。
+
+**返回值**
+
+``(func_output, hvp_result)``：``func_output`` 是标量 TN；单输入时 ``hvp_result``
+为与输入同形状的 TN，多输入时为按输入顺序排列的 tuple。
+
+**示例**
 
 .. code-block:: python
 
@@ -1140,6 +1531,102 @@ Riemann 在 ``riemann.autograd.functional`` 模块中提供了一系列底层功
     # vhp 的计算方式与 hvp 相同
     f_x, vhp_val = rm.autograd.functional.vhp(f, x, v)
     print(vhp_val)
+
+``autograd.functional.vhp()`` 函数（向量-Hessian-积）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**功能**
+
+计算向量 v 与 Hessian 矩阵的乘积 vᵀH。由于 Hessian 矩阵对称，数值结果与
+``hvp()`` 相同。
+
+**函数签名**
+
+.. code-block:: python
+
+    riemann.autograd.functional.vhp(func, inputs, v, create_graph=False, strict=False)
+
+**参数**
+
+- ``func``：前向函数，必须返回标量 TN。
+- ``inputs``：单个 TN 或 TN 序列。
+- ``v``：与 ``inputs`` 形状一致的向量（多输入时为等长序列）。
+- ``create_graph``：是否对导数计算建图，用于高阶导数。
+- ``strict``：``True`` 时若输出与某个输入无关则报错；``False`` 时未使用输入的
+  结果为对应形状的零张量。
+
+**返回值**
+
+``(func_output, vhp_result)``：``func_output`` 是标量 TN；单输入时 ``vhp_result``
+为与输入同形状的 TN，多输入时为按输入顺序排列的 tuple。
+
+**示例**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    def f(x):
+        return (x ** 3).sum()
+
+    x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+    v = rm.tensor([1.0, 1.0, 1.0])
+
+    f_x, vhp_val = rm.autograd.functional.vhp(f, x, v)
+    print(vhp_val)             # tensor([6., 12., 18.])：H = diag(6x)
+
+端到端示例：从定义函数到高阶导数
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+下面用一个完整例子串起本章的常用接口：定义前向函数 → 前向计算 → 一阶梯度 →
+Hessian/高阶导数 → 数值校验 → 反向累积到 ``.grad``。函数取
+``f(w, x) = (w·x)^2``，便于手工核对结果。
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 1. 定义前向函数
+    def loss_fn(w, x):
+        return (w * x).sum() ** 2
+
+    # 2. 创建叶子张量；使用 float64 便于后续 gradcheck
+    w = rm.tensor([1.0, 2.0], requires_grad=True, dtype=rm.float64)
+    x = rm.tensor([3.0, 4.0], requires_grad=True, dtype=rm.float64)
+
+    # 3. 前向计算：w·x = 11，loss = 121
+    loss = loss_fn(w, x)
+    print(loss)                    # tensor(121., dtype=float64, ...)
+
+    # 4. 一阶梯度（返回元组，不修改 .grad）
+    gw, gx = rm.autograd.grad(loss, [w, x])
+    print(gw)                      # tensor([66., 88.], dtype=float64)
+    print(gx)                      # tensor([22., 44.], dtype=float64)
+
+    # 5. 高阶导数：对 w 的 Hessian
+    hess_w = rm.autograd.functional.hessian(lambda wv: loss_fn(wv, x), w)
+    print(hess_w)
+    # tensor([[18., 24.],
+    #         [24., 32.]], dtype=float64)
+
+    # 6. 用 diff 一步得到同样的二阶导数
+    d2 = rm.autograd.diff(loss, (w, 2))
+    print(d2)                      # 与上面的 Hessian 相同
+
+    # 7. 数值校验解析梯度
+    print(rm.autograd.gradcheck(lambda wv: loss_fn(wv, x), w))   # True
+
+    # 8. 训练式用法：反向传播把梯度累积到 .grad
+    loss = loss_fn(w, x)
+    loss.backward()
+    print(w.grad)                  # tensor([66., 88.], dtype=float64)
+
+**结果说明**
+
+- ``∂f/∂w = 2(w·x)x = [66, 88]``，``∂f/∂x = 2(w·x)w = [22, 44]``。
+- ``H = ∂²f/∂w² = 2xxᵀ = [[18, 24], [24, 32]]``。
+- ``grad()`` 与 ``functional.hessian()`` 不回写 ``.grad``；只有 ``backward()``
+  会把结果累积到 ``w.grad``。
 
 func 模块求导函数
 ------------------
@@ -1759,7 +2246,8 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        print(f"梯度: {x.grad}")  # 将自动计算正确的梯度
 
 2. **使用 track_grad 装饰器**
-   使用 ``track_grad`` 装饰器来包装你的函数，并提供显式的梯度计算。
+   ``track_grad`` 是 **Riemann 特有** 的算子梯度注册装饰器，PyTorch 中没有同名接口。
+   使用它来包装你的函数，并提供显式的梯度计算。
 
    **梯度函数接口要求：**
 
@@ -2028,7 +2516,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
 Riemann 提供了用于手动操作计算图的函数。这些函数专为特殊场景设计，用于在不影响前向计算值或反向传播梯度值的情况下将张量连接到计算图。这些函数是底层工具，通常用于框架内部（如 Riemann 的钩子处理机制），而非普通用户场景。
 
 map_value_connect_grad 函数
-~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``map_value_connect_grad`` 函数将一组张量全连接映射为个数一样的另一组张量，两组张量间对应位置恒等映射，前向透传张量值，反向透传梯度值，相当于clone关系，其它连接上，前向透传0值（即不影响新张量值），反向传递0梯度。
 

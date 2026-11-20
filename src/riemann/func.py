@@ -309,7 +309,7 @@ def _vjp_with_output(out: TN, inputs, cotangent: TN,
     """
     if not out.requires_grad:
         # 常量输出与所有输入都不连通：strict 时报错，否则返回同形零块，
-        # 避免落入 _grad 的 "Only a tensor require grad" 错误。
+        # 避免触发 grad 对不可求导输出根的校验错误。
         if strict:
             raise RuntimeError(
                 "Output is independent of input (0), "
@@ -745,11 +745,28 @@ def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
                     f"Shapes of output {i} ({out.shape}) and cotangents[{i}] ({cot.shape}) do not match")
             cot_list.append(cot)
 
-    results = [None] * len(inputs)
-    for out, cot in zip(out_list, cot_list):
-        grads = _vjp_with_output(out, inputs, cot, create_graph, strict)
-        for j, gv in enumerate(grads):
-            results[j] = gv if results[j] is None else results[j] + gv
+    if strict:
+        # strict 需要逐输出判断“该输出是否与输入无关”，无法合并为一次多根调用
+        results = [None] * len(inputs)
+        for out, cot in zip(out_list, cot_list):
+            grads = _vjp_with_output(out, inputs, cot, create_graph, strict)
+            for j, gv in enumerate(grads):
+                results[j] = gv if results[j] is None else results[j] + gv
+    else:
+        # VJP 对输出余切是线性的：sum_o grad(o, inputs; cot_o) 等价于
+        # grad(outputs, inputs; grad_outputs=cot_list)。过滤掉不可求导的常量
+        # 输出（其贡献为零），其余输出合并为一次多根调用。
+        active = [(out, cot) for out, cot in zip(out_list, cot_list) if out.requires_grad]
+        if active:
+            grads = _grad([out for out, _ in active], inputs,
+                          grad_outputs=[cot for _, cot in active],
+                          create_graph=create_graph, allow_unused=True)
+            results = [zeros_like(inp, requires_grad=create_graph) if gv is None else gv
+                       for inp, gv in zip(inputs, grads)]
+        elif out_list:
+            results = [zeros_like(inp, requires_grad=create_graph) for inp in inputs]
+        else:
+            results = [None] * len(inputs)
 
     out_values = out_list[0] if is_single_output else tuple(out_list)
     # 单个输入（含只含 1 个元素的序列）直接返回梯度张量，多输入返回元组

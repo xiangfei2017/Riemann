@@ -2864,37 +2864,56 @@ Automatic Differentiation
 Gradient Computation
 ~~~~~~~~~~~~~~~~~~~~
 
-.. function:: riemann.autograd.backward(self, gradient=None, retain_graph=False, create_graph=False)
+.. function:: riemann.autograd.backward(tensors, grad_tensors=None, retain_graph=None, create_graph=False, inputs=None)
 
-   Perform reverse-mode automatic differentiation (backpropagation).
+   Perform reverse-mode automatic differentiation from one or more roots and accumulate
+   gradients into the ``.grad`` attribute of the relevant tensors. A "root" is an output
+   tensor produced by the forward computation and the starting point of backpropagation.
 
-   Starting from the current tensor, propagate gradients backward through the computation graph, 
-   computing and storing gradients for all leaf nodes or intermediate nodes with retains_grad=True.
+   **Differences from torch.autograd.backward**: the interface matches torch, but the
+   deprecated ``grad_variables`` argument is removed; ``retain_graph`` is kept only for
+   compatibility (Riemann does not rely on it and allows repeated backward passes);
+   gradient accumulation into ``.grad`` follows torch semantics.
 
-   :param self: The tensor that triggers backpropagation
-   :type self: riemann.TN
-   :param gradient: Gradient of the output tensor, defaults to None
-   :type gradient: riemann.TN or None, optional
-   :param retain_graph: This parameter is for PyTorch compatibility, Riemann backpropagation does not rely on it
+   :param tensors: The starting point for differentiation, a single tensor or a sequence of tensors
+   :type tensors: riemann.TN or list/tuple of riemann.TN
+   :param grad_tensors: Initial cotangent(s) (initial/upstream gradients) for the roots. Explicit cotangents must match the corresponding root in shape and device; they may be a single tensor, a sequence of the same length as tensors, or None, and sequence elements may be TN or None. A whole-argument or per-element None uses an implicit 1.0, which is allowed only if the corresponding root is a real scalar; non-scalar roots must provide an explicit cotangent
+   :type grad_tensors: riemann.TN or list/tuple of (riemann.TN or None) or None, optional
+   :param retain_graph: Kept only for PyTorch compatibility; Riemann backpropagation does not rely on it
    :type retain_graph: bool, optional
    :param create_graph: Whether to create a computation graph during gradient computation, set to True for higher-order derivative calculations
    :type create_graph: bool, optional
+   :param inputs: When provided, gradients are accumulated only into these tensors; other leaf nodes receive no gradient
+   :type inputs: riemann.TN or list/tuple of riemann.TN, optional
+   :return: None
+   :rtype: None
 
 .. function:: riemann.autograd.grad(outputs, inputs, grad_outputs=None, retain_graph=False, create_graph=False, allow_unused=False)
 
-   Compute and return the gradients of outputs with respect to inputs.
+   Compute and return the gradients of outputs with respect to inputs. A "root" is an
+   output tensor produced by the forward computation and the starting point of
+   backpropagation.
 
    This is the core gradient computation function in the Riemann framework. Similar to the backward() method,
    but it directly returns the computed gradient tensors instead of storing them in the .grad attribute of input tensors.
    This makes it more suitable for advanced gradient computation scenarios, such as calculating Jacobian matrices,
    Hessian matrices, etc.
 
-   :param outputs: Output tensor(s) for which to compute gradients
-   :type outputs: riemann.TN
+   **Differences from torch.autograd.grad**: ``retain_graph`` is kept only for compatibility;
+   torch options such as ``materialize_grads`` and ``is_grads_batched`` are not implemented;
+   the tuple return value, the fact that ``.grad`` is not written, and ``allow_unused``
+   semantics match torch. Multiple roots, duplicate roots, and roots that depend on each
+   other are also handled the same way as in torch; when ``grad_outputs=None`` or an
+   element of the sequence is ``None``, that position uses an implicit 1.0, so the
+   corresponding root must be a real scalar (non-scalar roots must provide an explicit
+   cotangent).
+
+   :param outputs: One or more output tensors for which to compute gradients
+   :type outputs: riemann.TN or list/tuple of riemann.TN
    :param inputs: Input tensor(s) or list/tuple of input tensors for which to compute gradients
    :type inputs: riemann.TN or list/tuple of riemann.TN
-   :param grad_outputs: Gradient(s) of the output tensor(s), defaults to None
-   :type grad_outputs: riemann.TN or None, optional
+   :param grad_outputs: Initial cotangent(s) (initial/upstream gradients) for the roots. Explicit cotangents can have any shape but must match the corresponding root in shape and device; they may be a single tensor (single output only) or a sequence of the same length as outputs, and sequence elements may be TN or None. A whole-argument or per-element None uses an implicit 1.0, which is allowed only if the corresponding root is a real scalar; non-scalar roots must provide an explicit cotangent
+   :type grad_outputs: riemann.TN or list/tuple of (riemann.TN or None) or None, optional
    :param retain_graph: This parameter is for PyTorch compatibility, Riemann backpropagation does not rely on it
    :type retain_graph: bool, optional
    :param create_graph: Whether to create a computation graph during gradient computation
@@ -2951,6 +2970,8 @@ Gradient Computation
 .. function:: riemann.track_grad(grad_func)
 
    Create a gradient tracking decorator for adding automatic differentiation support to functions.
+
+   ``track_grad`` is a **Riemann-specific** interface; PyTorch has no decorator with this name.
 
    This decorator factory receives a gradient function and returns a decorator that can convert ordinary tensor operation functions
    into functions that support automatic differentiation. It automatically creates backpropagation functions and manages gradient computation graph construction.

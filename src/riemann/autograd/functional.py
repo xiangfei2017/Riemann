@@ -464,22 +464,30 @@ def vjp(func: Callable[..., TN | list[TN] | tuple[TN, ...]],
             if out.shape != vec.shape:  # type: ignore
                 raise RuntimeError(f"Shapes of output {i} and v[{i}] do not match: {out.shape} vs {vec.shape}")
 
-    # 计算VJP：对每个输出使用对应的v计算梯度并累加
-    # 先以 None 占位、首个可用梯度直接赋值，避免为每个输入创建零张量并做无谓加法
-    vjp_results = [None] * len(inputs)
+    if strict:
+        # strict 需要逐输出判断“该输出是否与输入无关”，无法合并为一次多根调用
+        vjp_results = [None] * len(inputs)
 
-    for out, vec in zip(outputs, v):
-        grads = grad(out, inputs, grad_outputs=vec, create_graph=create_graph, allow_unused=True)  # type: ignore
+        for out, vec in zip(outputs, v):
+            grads = grad(out, inputs, grad_outputs=vec, create_graph=create_graph, allow_unused=True)  # type: ignore
 
-        if strict:
             for j, grad_out in enumerate(grads):
                 if grad_out is None:
                     raise RuntimeError(f"At least one of the outputs is independent of input {j}")
 
-        for j in range(len(inputs)):
-            if grads[j] is not None:
-                prev = vjp_results[j]
-                vjp_results[j] = grads[j] if prev is None else prev + grads[j]
+            for j in range(len(inputs)):
+                if grads[j] is not None:
+                    prev = vjp_results[j]
+                    vjp_results[j] = grads[j] if prev is None else prev + grads[j]
+    else:
+        # VJP 对输出余切是线性的：sum_o grad(o, inputs; v_o) 等价于
+        # grad(outputs, inputs; grad_outputs=v)。合并为一次多根调用，
+        # 只初始化和遍历一次计算图，避免每个输出重复反传。
+        if outputs:
+            vjp_results = list(grad(outputs, inputs, grad_outputs=v,
+                                    create_graph=create_graph, allow_unused=True))
+        else:
+            vjp_results = [None] * len(inputs)
 
     # 所有输出都未使用某输入时，按 torch 语义返回零张量
     vjp_results = [zeros_like(inp, requires_grad=create_graph) if r is None else r

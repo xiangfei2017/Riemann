@@ -1403,8 +1403,11 @@ Riemann provides various statistical functions for tensor analysis. Here are the
     - Compute sum of tensor elements
     - ``rm.sum(x)``
   * - ``sumall``
-    - Compute sum of multiple tensors
+    - Compute sum of multiple tensors (Riemann-specific)
     - ``rm.sumall(x, y, z)``
+  * - ``isum``
+    - Intelligent sum that selects the appropriate summation method from its arguments (Riemann-specific)
+    - ``rm.isum(x, y, z)``
   * - ``mean``
     - Compute mean of tensor elements
     - ``rm.mean(x)``
@@ -1885,7 +1888,7 @@ Riemann provides various statistical functions for tensor analysis. Here are the
 
 **sumall Function Efficiency Advantage**
 
-The `sumall` function is more efficient than using tensor addition operations, especially in gradient tracking, because:
+``sumall`` is a **Riemann-specific** multi-tensor summation interface. It is more efficient than using tensor addition operations, especially in gradient tracking, because:
 
 1. **Reduced Computation Graph**: When using `sumall`, the computation graph is reduced to a single layer, regardless of the number of tensors being summed.
 2. **Scalable Efficiency**: With tensor addition operators (`+`), the computation graph grows linearly with each additional tensor, leading to increased graph complexity.

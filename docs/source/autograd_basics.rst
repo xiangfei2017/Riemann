@@ -72,8 +72,14 @@ The ``backward()`` method is suitable for computing gradients of multiple tensor
 **Parameters**:
 
 - **gradient** (optional): When the output tensor is not a scalar, a gradient tensor with the same shape as the output is required. For scalar outputs, this parameter can be omitted, defaulting to ``None`` (equivalent to passing scalar 1).
-- **retain_graph** (optional): Whether to retain the computation graph. Defaults to ``False``, meaning the graph is released after backpropagation. Set to ``True`` if you need to call ``backward()`` multiple times.
+- **retain_graph** (optional): Kept only for PyTorch compatibility. Riemann backpropagation does not rely on this argument; ``backward()`` can be called repeatedly with the default value, without setting it to ``True``.
 - **create_graph** (optional): Whether to record the computation graph of gradients for subsequent computation of higher-order derivatives, defaults to ``False``.
+
+**Differences from torch.Tensor.backward**:
+
+- ``retain_graph`` is kept only for compatibility and does not affect repeated backward passes.
+- ``TN.backward`` does not accept an ``inputs`` argument; use ``riemann.autograd.backward(..., inputs=...)`` when gradients should accumulate only into specific tensors.
+- The semantics of ``gradient`` match torch.
 
 **Use Cases**:
 
@@ -157,12 +163,18 @@ The ``grad()`` function is suitable for computing gradients of specific tensors,
 
 **Parameters**:
 
-- **outputs**: Output tensor(s) (scalar or tensor), the starting point for gradient computation
+- **outputs**: Output tensor(s) (scalar or tensor) or a sequence of output tensors, the starting point(s) for gradient computation
 - **inputs**: Input tensor or tuple of tensors, specifying which tensors to compute gradients for
-- **grad_outputs** (optional): Gradient tensor required when ``outputs`` is not a scalar
-- **retain_graph** (optional): Whether to retain the computation graph, defaults to ``False``
+- **grad_outputs** (optional): Initial cotangents (initial/upstream gradients) for the roots. Explicit cotangents can have any shape but must match the corresponding root in shape and device; a single tensor is allowed for a single root, and multiple roots require a sequence of the same length as ``outputs`` (elements may be TN or None). When the whole argument is ``None`` or an element is ``None``, that position uses an implicit 1.0, which is allowed only if the corresponding root is a real scalar; non-scalar roots must provide an explicit cotangent.
+- **retain_graph** (optional): Kept only for PyTorch compatibility and does not affect repeated calls, defaults to ``False``
 - **create_graph** (optional): Whether to record the computation graph of gradients for subsequent computation of higher-order derivatives, defaults to ``False``
 - **allow_unused** (optional): Whether to allow some input tensors to be unused, defaults to ``False``
+
+**Differences from torch.autograd.grad**:
+
+- ``retain_graph`` is kept only for compatibility; optional torch arguments such as ``materialize_grads`` and ``is_grads_batched`` are not implemented.
+- The tuple return value, the fact that ``.grad`` is not written, and ``allow_unused`` semantics match torch.
+- Multiple roots, duplicate roots, and roots that depend on each other are also handled the same way as in torch; when ``grad_outputs=None`` or an element of the sequence is ``None``, that position uses an implicit 1.0, so the corresponding root must be a real scalar (non-scalar roots must provide an explicit cotangent).
 
 **Use Cases**:
 
@@ -176,6 +188,7 @@ The ``grad()`` function is suitable for computing gradients of specific tensors,
 - Only tensors specified in ``inputs`` will have their gradients computed
 - **Does not modify** the ``grad`` attributes of input tensors
 - Intermediate nodes, even with ``retain_grad()`` called, will not automatically have gradients computed in ``grad()``; they must be explicitly specified
+- ``outputs`` supports multiple roots: duplicate roots sum their ``grad_outputs``; a root that is also a predecessor of another root waits until the upstream gradient arrives
 
 **Example 1: Computing Gradients for Specific Tensors**
 
@@ -639,7 +652,10 @@ Additionally, Riemann provides two more convenient ways to compute higher-order 
 ``TN.d()`` Method
 ~~~~~~~~~~~~~~~~~
 
-The ``d()`` method of tensor objects is the most convenient interface for computing higher-order mixed partial derivatives. It naturally chains multi-order derivatives with respect to multiple variables.
+``TN.d()`` is a **Riemann-specific** tensor method with no PyTorch equivalent;
+it is equivalent to ``riemann.autograd.diff(self, ...)``. It is the most
+convenient interface for computing higher-order mixed partial derivatives and
+naturally chains multi-order derivatives with respect to multiple variables.
 
 **Purpose**
 
@@ -989,19 +1005,322 @@ Both approaches produce identical results for the same computation:
      - Direct ``autograd.grad`` loop
      - Lowest level, most flexible
 
-autograd.functional Module Derivative Functions
-------------------------------------------------
+autograd Module Derivative Functions
+------------------------------------
 
-Riemann provides a set of low-level functional API functions in the
-``riemann.autograd.functional`` module for computing advanced derivative
-structures such as Jacobian matrices, Hessian matrices, Jacobian-vector
-products, etc. These functions accept **concrete input tensors** and a
-forward function, returning derivative results directly.
+The ``riemann.autograd`` module provides low-level reverse-mode autodiff and
+gradient functions, and exposes higher-level derivative structures through the
+``riemann.autograd.functional`` submodule. This chapter is organized as follows:
 
-``jacobian()`` Function
+- Backpropagation and gradients: ``backward()``, ``grad()``, ``diff()``
+- Gradient checking: ``gradcheck()``
+- ``autograd.functional`` submodule: ``jacobian()``, ``hessian()``,
+  ``derivative()``, ``jvp()``, ``vjp()``, ``hvp()``, ``vhp()``
+
+**Terminology: cotangents and initial gradients**
+
+``grad_outputs`` / ``grad_tensors`` are cotangent vectors on the output side in
+mathematical terms. They can be understood simply as the "initial gradient" or
+"upstream gradient". The term comes from differential geometry: the tangent
+space describes directions of increments, and its dual space is the cotangent
+space, whose elements are linear functionals acting on increments. In practice,
+just treat them as tensors with the same shape as the corresponding output that
+weight the backward pass; no geometry background is required.
+
+**Terminology: root**
+
+A "root" is the starting point of backpropagation: it is both an output tensor
+produced by the forward computation and the node from which ``backward()`` /
+``grad()`` starts traversing the computation graph. A single output is one root;
+multiple outputs are multiple roots. Roots may depend on each other, or refer to
+the same tensor (duplicate roots).
+
+``backward()`` Function
+~~~~~~~~~~~~~~~~~~~~~~~
+
+**Function**
+
+Runs reverse-mode autodiff from the roots in ``tensors`` and accumulates
+gradients into the ``.grad`` attribute of the relevant leaf tensors.
+
+**Differences from torch.autograd.backward**
+
+- The interface matches torch, except that the deprecated ``grad_variables``
+  argument is removed.
+- ``retain_graph`` is kept only for compatibility; Riemann does not rely on it
+  and supports repeated backward passes without it.
+- Gradient accumulation into ``.grad`` follows the same semantics as torch.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.backward(tensors, grad_tensors=None, retain_graph=None,
+                              create_graph=False, inputs=None)
+
+**Parameters**
+
+- ``tensors``: A single TN or a sequence of TNs, the roots of backpropagation.
+- ``grad_tensors``: Initial cotangents (initial/upstream gradients) for each root.
+  Explicit cotangents can have any shape but must match the corresponding root in
+  shape and device; a single TN is allowed only for a single root; otherwise pass
+  a sequence with the same length as ``tensors`` (elements may be TN or None).
+  When the whole argument is ``None`` or an element is ``None``, that position
+  uses an implicit 1.0, which is allowed only if the corresponding root is a real
+  scalar; non-scalar roots must provide an explicit cotangent. Duplicate roots
+  sum their cotangents.
+- ``retain_graph``: Kept only for PyTorch compatibility; Riemann does not rely
+  on this flag.
+- ``create_graph``: Whether to build a graph for the gradient computation, used
+  for higher-order derivatives.
+- ``inputs``: A single TN or a sequence. When provided, only these tensors
+  accumulate ``.grad``. When ``None``, leaves always accumulate, while
+  intermediate nodes accumulate only if ``retains_grad=True``.
+
+**Returns**
+
+``None``. Gradients are written to the ``.grad`` attributes and accumulate
+across repeated calls.
+
+**Example**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # Single root
+    x = rm.tensor([1.0, 2.0], requires_grad=True)
+    y = (x * x).sum()
+    rm.autograd.backward(y)
+    print(x.grad)              # tensor([2., 4.])
+
+    # Multiple roots: contributions from all roots are accumulated
+    x2 = rm.tensor([1.0, 2.0], requires_grad=True)
+    y2 = (x2 * x2).sum()
+    z2 = (x2 * 3.0).sum()
+    rm.autograd.backward([y2, z2])
+    print(x2.grad)             # tensor([5., 7.])
+
+``grad()`` Function
+~~~~~~~~~~~~~~~~~~~
+
+**Function**
+
+Computes gradients of one or more outputs with respect to ``inputs`` and returns
+them as a tuple, without modifying any ``.grad`` attribute. Multiple roots,
+duplicate roots, and roots that depend on each other are supported.
+
+**Differences from torch.autograd.grad**
+
+- The interface is essentially the same, but ``retain_graph`` is kept only for
+  compatibility and does not affect repeated calls.
+- Torch options such as ``materialize_grads`` and ``is_grads_batched`` are not
+  implemented.
+- The tuple return value, the fact that ``.grad`` is not written, and
+  ``allow_unused`` semantics match torch.
+- Multiple roots, duplicate roots, and roots that depend on each other are
+  handled the same way as in torch; when ``grad_outputs=None`` or an element of
+  the sequence is ``None``, that position uses an implicit 1.0, so the corresponding root must be a real scalar (non-scalar roots must provide an explicit cotangent).
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.grad(outputs, inputs, retain_graph=False, grad_outputs=None,
+                          create_graph=False, allow_unused=False)
+
+**Parameters**
+
+- ``outputs``: A single TN or a sequence of TNs (multiple roots); every root
+  must have ``requires_grad=True``.
+- ``inputs``: A single TN or a sequence, the inputs to differentiate with
+  respect to.
+- ``retain_graph``: Kept only for PyTorch compatibility.
+- ``grad_outputs``: Initial cotangents (initial/upstream gradients) for the roots.
+  Explicit cotangents can have any shape but must match the corresponding root in
+  shape and device; a single TN is allowed only for a single root; otherwise pass
+  a sequence with the same length as ``outputs`` (elements may be TN or None).
+  When the whole argument is ``None`` or an element is ``None``, that position
+  uses an implicit 1.0, which is allowed only if the corresponding root is a real
+  scalar; non-scalar roots must provide an explicit cotangent. Explicit
+  cotangents are not detached.
+- ``create_graph``: Whether to build a graph for the gradient computation, used
+  for higher-order derivatives.
+- ``allow_unused``: When ``False``, an error is raised if an input is unrelated
+  to all outputs; when ``True``, the corresponding result is ``None``.
+
+**Returns**
+
+``tuple[TN, ...]`` in the same order as ``inputs``. Duplicate inputs appear
+repeatedly with equal values; unrelated inputs are ``None`` when
+``allow_unused=True``.
+
+**Example**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    x = rm.tensor([1.0, 2.0], requires_grad=True)
+    y1 = x.sum()
+    y2 = (x * x).sum()
+
+    # Multiple roots: d(y1)/dx + d(y2)/dx
+    gx, = rm.autograd.grad([y1, y2], x)
+    print(gx)                  # tensor([3., 5.]): 1 + 2x
+
+    # Duplicate inputs: two identical gradients
+    g1, g2 = rm.autograd.grad(y1, [x, x])
+    print(g1, g2)              # tensor([1., 1.]) tensor([1., 1.])
+
+``diff()`` Function (underlying implementation of ``TN.d``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Function**
+
+Computes high-order or mixed partial derivatives of a scalar tensor with respect
+to the specified variables. ``TN.d(...)`` is equivalent to
+``riemann.autograd.diff(tensor, ...)``.
+
+``diff()`` is **Riemann-specific**: PyTorch has no function with this name;
+higher-order derivatives are typically assembled from ``torch.autograd.grad``
+or ``torch.func`` transforms.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.diff(tensor, *args, create_graph=False)
+
+**Parameters**
+
+- ``tensor``: A scalar TN with ``requires_grad=True``.
+- ``*args``: Derivative specifications, which may be mixed: ``TN`` means a
+  first derivative with respect to that variable; ``(TN, k)`` means order ``k``.
+  Repeated variables accumulate their orders.
+- ``create_graph``: Whether to track the graph of the derivative result so that
+  higher derivatives can be taken.
+
+**Returns**
+
+A TN whose shape is the concatenation of each variable's shape, repeated by the
+corresponding order. For example, in ``f.d(x, y)`` with ``x.shape=(2,)`` and
+``y.shape=(3,)``, the result is a ``(2, 3)`` mixed-partial matrix.
+
+**Example**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # Scalar high-order derivative
+    x = rm.tensor(3.0, requires_grad=True)
+    f = x ** 3
+    print(rm.autograd.diff(f, x))          # 27.0  (3x^2)
+    print(rm.autograd.diff(f, (x, 2)))     # 18.0  (6x)
+
+    # Mixed partials for multiple vectors
+    xv = rm.tensor([1.0, 2.0], requires_grad=True)
+    yv = rm.tensor([3.0, 4.0], requires_grad=True)
+    fv = (xv * yv).sum() ** 2
+    print(rm.autograd.diff(fv, xv, yv).shape)   # (2, 2)
+
+``gradcheck()`` Function
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``jacobian()`` function computes the Jacobian matrix of a function from input to output, showing all first-order partial derivatives of the function output with respect to the input.
+**Function**
+
+Validates analytical gradients against a numerical Jacobian computed by central
+differences. As in PyTorch, every output element is compared separately instead
+of summing multiple outputs into a weaker check.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.gradcheck(func, inputs, *, eps=1e-6, atol=1e-5, rtol=1e-3,
+                               raise_exception=True, nondet_tol=0.0,
+                               check_undefined_grad=True, check_grad_dtypes=False,
+                               check_batched_grad=False,
+                               check_batched_forward_grad=False,
+                               check_forward_ad=False, check_backward_ad=True,
+                               fast_mode=False, masked=None)
+
+**Parameters**
+
+- ``func``: The function to check; returns a single TN or a tuple/list of TNs.
+- ``inputs``: A single TN or a sequence of TNs. Every input must have
+  ``requires_grad=True`` and be ``float64`` (double precision).
+- ``eps``: Central-difference step, default ``1e-6``.
+- ``atol`` / ``rtol``: Absolute/relative tolerance, default ``1e-5`` / ``1e-3``.
+- ``raise_exception``: Whether to raise ``RuntimeError`` on failure, default ``True``.
+- ``nondet_tol``: Non-determinism tolerance; absolute errors below it are
+  accepted, default ``0.0``.
+- ``check_undefined_grad``: Whether to treat an analytical ``None`` gradient as
+  zero during comparison, default ``True``.
+- ``check_grad_dtypes``: Whether to also check that gradient dtypes match the
+  inputs, default ``False``.
+- ``check_backward_ad``: Whether to run the reverse-mode check; only ``True`` is
+  supported.
+- ``fast_mode``: Fast mode using random directional projections, default
+  ``False`` (full element-wise check).
+- ``check_batched_grad``, ``check_batched_forward_grad``, ``check_forward_ad``,
+  ``masked``: Not implemented in this version; enabling them raises
+  ``NotImplementedError``.
+
+**Returns**
+
+``bool``: ``True`` if the check passes; ``False`` if it fails when
+``raise_exception=False``.
+
+**Example**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    def f(x, y):
+        return x * y
+
+    x = rm.tensor(2.0, requires_grad=True, dtype=rm.float64)
+    y = rm.tensor(3.0, requires_grad=True, dtype=rm.float64)
+    print(rm.autograd.gradcheck(f, (x, y)))   # True
+
+``autograd.functional.jacobian()`` Function
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Function**
+
+Computes the Jacobian matrix of a function from inputs to outputs, showing all
+first-order partial derivatives of the outputs with respect to the inputs.
+Single/multiple inputs and single/multiple outputs are supported.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.functional.jacobian(func, inputs, create_graph=False, strict=True)
+
+**Parameters**
+
+- ``func``: Forward function taking TN(s) and returning a TN or a sequence of TNs.
+- ``inputs``: A single TN or a sequence of TNs.
+- ``create_graph``: Whether to build a graph for the derivative computation.
+- ``strict``: When ``True``, an error is raised if an output is unrelated to an
+  input; when ``False``, the corresponding Jacobian block is filled with zeros.
+
+**Returns**
+
+The structure follows the input/output structure:
+
+- Single input, single output: a TN of shape ``output.shape + input.shape``.
+- Single input, multiple outputs: ``tuple[TN]`` in output order.
+- Multiple inputs, single output: ``tuple[TN]`` in input order, each of shape
+  ``output.shape + input_i.shape``.
+- Multiple inputs, multiple outputs: ``tuple[tuple[TN, ...], ...]``, outer by
+  output and inner by input.
+
+**Example**
 
 .. code-block:: python
 
@@ -1019,10 +1338,36 @@ The ``jacobian()`` function computes the Jacobian matrix of a function from inpu
     print(jac)
     print(jac.shape)  # (3, 3)  # For vector input/vector output, shape is (n_outputs, n_inputs)
 
-``hessian()`` Function
-~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.hessian()`` Function
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``hessian()`` function computes the Hessian matrix of a scalar-valued function, showing all second-order partial derivatives of the function with respect to its inputs.
+**Function**
+
+Computes the Hessian matrix (the Jacobian of the gradient) of a scalar-valued
+function, showing all second-order partial derivatives with respect to the
+inputs. Single/multiple inputs are supported.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.functional.hessian(func, inputs, create_graph=False, strict=True)
+
+**Parameters**
+
+- ``func``: Forward function returning a scalar TN.
+- ``inputs``: A single TN or a sequence of TNs.
+- ``create_graph``: Whether to build a graph for the derivative computation.
+- ``strict``: When ``True``, an error is raised if the output is unrelated to an
+  input; when ``False``, the corresponding block is filled with zeros.
+
+**Returns**
+
+- Single input: a TN of shape ``input.shape + input.shape``.
+- Multiple inputs: ``tuple[tuple[TN, ...], ...]`` where ``result[i][j]`` is
+  ``∂²f / (∂input_i ∂input_j)`` with shape ``input_i.shape + input_j.shape``.
+
+**Example**
 
 .. code-block:: python
 
@@ -1040,12 +1385,35 @@ The ``hessian()`` function computes the Hessian matrix of a scalar-valued functi
     print(hess)
     print(hess.shape)  # ()  # Scalar input returns a scalar second derivative
 
-``derivative()`` Function
-~~~~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.derivative()`` Function
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``derivative()`` function creates a derivative function for the given function. When called, the returned function computes the Jacobian (i.e., the derivative) of the original function at the given inputs.
+**Function**
 
-The result is always a tuple: one derivative tensor per input; if the original function has multiple outputs, an extra tuple level is nested per output, consistent with the multi-input/multi-output return structure of ``jacobian()``.
+Returns the derivative function of the given function. When the returned
+function is called, it computes the Jacobian (i.e., the derivative) of the
+original function at the given inputs. It is implemented on top of
+``jacobian()``.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.functional.derivative(func, create_graph=False)
+
+**Parameters**
+
+- ``func``: Forward function taking one or more TNs.
+- ``create_graph``: Whether to build a graph for the derivative computation.
+
+**Returns**
+
+A callable accepting the same inputs as the original function. Its result is
+always a ``tuple``: one derivative tensor per input; for multiple outputs, an
+extra tuple level is nested per output, consistent with the multi-input /
+multi-output return structure of ``jacobian()``.
+
+**Example**
 
 .. code-block:: python
 
@@ -1075,10 +1443,37 @@ The result is always a tuple: one derivative tensor per input; if the original f
     d2f = rm.autograd.functional.derivative(lambda t: t ** 3., create_graph=True)
     print(d2f(x))  # (tensor(12.),) — 3x^2; requires_grad=True so it can be differentiated again
 
-``jvp()`` (Jacobian-Vector Product) Function
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.jvp()`` Function (Jacobian-Vector Product)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``jvp()`` function computes the product of a Jacobian matrix with a given vector.
+**Function**
+
+Computes the Jacobian-vector product J·v at the given point.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.functional.jvp(func, inputs, v=None, create_graph=False, strict=False)
+
+**Parameters**
+
+- ``func``: Forward function taking TN(s) and returning a TN or a sequence of TNs.
+- ``inputs``: A single TN or a sequence of TNs.
+- ``v``: Input direction; its shape must match the corresponding input. For a
+  single scalar input it may be omitted (defaults to 1.0); for multiple inputs a
+  sequence with the same length as ``inputs`` is required.
+- ``create_graph``: Whether to build a graph for the derivative computation.
+- ``strict``: When ``True``, an error is raised if an output is unrelated to an
+  input.
+
+**Returns**
+
+``(func_output, jvp_result)``. ``func_output`` has the same structure as the
+return value of ``func``; ``jvp_result`` is a TN for a single output, or a tuple
+in output order for multiple outputs.
+
+**Example**
 
 .. code-block:: python
 
@@ -1098,10 +1493,38 @@ The ``jvp()`` function computes the product of a Jacobian matrix with a given ve
     f_x, jvp_val = rm.autograd.functional.jvp(f, x, v)
     print(jvp_val)
 
-``vjp()`` (Vector-Jacobian Product) Function
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.vjp()`` Function (Vector-Jacobian Product)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``vjp()`` function computes the product of a given vector with a Jacobian matrix.
+**Function**
+
+Computes the vector-Jacobian product vᵀJ for a given vector.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.functional.vjp(func, inputs, v=None, create_graph=False, strict=False)
+
+**Parameters**
+
+- ``func``: Forward function taking TN(s) and returning a TN or a sequence of TNs.
+- ``inputs``: A single TN or a sequence of TNs.
+- ``v``: Output-side cotangent; its shape must match the corresponding output of
+  ``func``. When ``None``, it is automatically filled with ones matching each
+  output; for multiple outputs, a sequence with the same length as the outputs
+  is required.
+- ``create_graph``: Whether to build a graph for the derivative computation.
+- ``strict``: When ``True``, an error is raised if an output is unrelated to an
+  input; when ``False``, the corresponding input receives a zero tensor.
+
+**Returns**
+
+``(func_output, vjp_result)``. ``func_output`` has the same structure as the
+return value of ``func``; ``vjp_result`` is a TN for a single input, or a tuple
+in input order for multiple inputs.
+
+**Example**
 
 .. code-block:: python
 
@@ -1121,10 +1544,38 @@ The ``vjp()`` function computes the product of a given vector with a Jacobian ma
     f_x, vjp_val = rm.autograd.functional.vjp(f, x, v)
     print(vjp_val)
 
-``hvp()`` (Hessian-Vector Product) and ``vhp()`` Functions
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``autograd.functional.hvp()`` Function (Hessian-Vector Product)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``hvp()`` and ``vhp()`` functions compute Hessian-Vector Product and Vector-Hessian Product respectively. Since the Hessian matrix is symmetric, ``hvp()`` and ``vhp()`` are effectively the same.
+**Function**
+
+Computes the product of the Hessian matrix with a vector v as H·v, without
+explicitly constructing the full Hessian.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.functional.hvp(func, inputs, v, create_graph=False, strict=False)
+
+**Parameters**
+
+- ``func``: Forward function that must return a scalar TN.
+- ``inputs``: A single TN or a sequence of TNs.
+- ``v``: A vector with the same shape as ``inputs`` (a sequence of the same
+  length for multiple inputs).
+- ``create_graph``: Whether to build a graph for the derivative computation.
+- ``strict``: When ``True``, an error is raised if the output is unrelated to an
+  input; when ``False``, the result for an unused input is a zero tensor of the
+  same shape.
+
+**Returns**
+
+``(func_output, hvp_result)``. ``func_output`` is a scalar TN; ``hvp_result`` is
+a TN with the same shape as the input for a single input, or a tuple in input
+order for multiple inputs.
+
+**Example**
 
 .. code-block:: python
 
@@ -1147,6 +1598,106 @@ The ``hvp()`` and ``vhp()`` functions compute Hessian-Vector Product and Vector-
     # vhp computes the same result as hvp
     f_x, vhp_val = rm.autograd.functional.vhp(f, x, v)
     print(vhp_val)
+
+``autograd.functional.vhp()`` Function (Vector-Hessian Product)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Function**
+
+Computes the product of a vector v with the Hessian matrix as vᵀH. Because the
+Hessian is symmetric, the numerical result is the same as ``hvp()``.
+
+**Signature**
+
+.. code-block:: python
+
+    riemann.autograd.functional.vhp(func, inputs, v, create_graph=False, strict=False)
+
+**Parameters**
+
+- ``func``: Forward function that must return a scalar TN.
+- ``inputs``: A single TN or a sequence of TNs.
+- ``v``: A vector with the same shape as ``inputs`` (a sequence of the same
+  length for multiple inputs).
+- ``create_graph``: Whether to build a graph for the derivative computation.
+- ``strict``: When ``True``, an error is raised if the output is unrelated to an
+  input; when ``False``, the result for an unused input is a zero tensor of the
+  same shape.
+
+**Returns**
+
+``(func_output, vhp_result)``. ``func_output`` is a scalar TN; ``vhp_result`` is
+a TN with the same shape as the input for a single input, or a tuple in input
+order for multiple inputs.
+
+**Example**
+
+.. code-block:: python
+
+    import riemann as rm
+
+    def f(x):
+        return (x ** 3).sum()
+
+    x = rm.tensor([1.0, 2.0, 3.0], requires_grad=True)
+    v = rm.tensor([1.0, 1.0, 1.0])
+
+    f_x, vhp_val = rm.autograd.functional.vhp(f, x, v)
+    print(vhp_val)             # tensor([6., 12., 18.]): H = diag(6x)
+
+End-to-End Example: From Function Definition to Higher-Order Derivatives
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following complete example walks through the common interfaces in this
+chapter: define a forward function → forward computation → first-order gradient →
+Hessian / higher-order derivative → numerical check → accumulate into ``.grad``.
+Use ``f(w, x) = (w·x)^2`` so the results can be verified by hand.
+
+.. code-block:: python
+
+    import riemann as rm
+
+    # 1. Define the forward function
+    def loss_fn(w, x):
+        return (w * x).sum() ** 2
+
+    # 2. Create leaf tensors; float64 is used for gradcheck
+    w = rm.tensor([1.0, 2.0], requires_grad=True, dtype=rm.float64)
+    x = rm.tensor([3.0, 4.0], requires_grad=True, dtype=rm.float64)
+
+    # 3. Forward computation: w·x = 11, loss = 121
+    loss = loss_fn(w, x)
+    print(loss)                    # tensor(121., dtype=float64, ...)
+
+    # 4. First-order gradients (returned as a tuple, .grad untouched)
+    gw, gx = rm.autograd.grad(loss, [w, x])
+    print(gw)                      # tensor([66., 88.], dtype=float64)
+    print(gx)                      # tensor([22., 44.], dtype=float64)
+
+    # 5. Higher-order derivative: Hessian with respect to w
+    hess_w = rm.autograd.functional.hessian(lambda wv: loss_fn(wv, x), w)
+    print(hess_w)
+    # tensor([[18., 24.],
+    #         [24., 32.]], dtype=float64)
+
+    # 6. Obtain the same second-order result with diff
+    d2 = rm.autograd.diff(loss, (w, 2))
+    print(d2)                      # same as the Hessian above
+
+    # 7. Numerically validate the analytical gradients
+    print(rm.autograd.gradcheck(lambda wv: loss_fn(wv, x), w))   # True
+
+    # 8. Training-style usage: backpropagate and accumulate into .grad
+    loss = loss_fn(w, x)
+    loss.backward()
+    print(w.grad)                  # tensor([66., 88.], dtype=float64)
+
+**Result notes**
+
+- ``∂f/∂w = 2(w·x)x = [66, 88]`` and ``∂f/∂x = 2(w·x)w = [22, 44]``.
+- ``H = ∂²f/∂w² = 2xxᵀ = [[18, 24], [24, 32]]``.
+- ``grad()`` and ``functional.hessian()`` do not write ``.grad``; only
+  ``backward()`` accumulates into ``w.grad``.
 
 func Module Derivative Functions
 --------------------------------
@@ -1771,7 +2322,9 @@ Riemann provides three ways to implement custom functions with gradient tracking
        print(f"Gradient: {x.grad}")  # Will automatically compute correct gradient
 
 2. **Using track_grad Decorator**
-   Use the ``track_grad`` decorator to wrap your function and provide explicit gradient computation.
+   ``track_grad`` is a **Riemann-specific** operator-gradient registration
+   decorator with no PyTorch equivalent. Use it to wrap your function and
+   provide explicit gradient computation.
 
    **Gradient Function Interface Requirements:**
 
@@ -2046,7 +2599,7 @@ Manually Modifying the Computational Graph
 Riemann provides functions for manually manipulating the computational graph. These functions are designed for special use cases where you need to connect tensors to the computational graph without affecting forward computation values or backward gradient values. These are low-level tools typically used in framework internals (such as Riemann's hook handling mechanism) rather than common user scenarios.
 
 map_value_connect_grad Function
-~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The ``map_value_connect_grad`` function fully connects and maps a group of tensors to another group of tensors with the same count. The corresponding positions between the two groups have an identity mapping: forward pass transparently transmits tensor values, backward pass transparently transmits gradient values (equivalent to a clone relationship). For other connections, forward pass transmits zero values (i.e., does not affect the new tensor values), backward pass transmits zero gradients.
 

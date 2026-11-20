@@ -209,7 +209,7 @@ Riemann provides some features that PyTorch does not have:
 
 - **KAN Network Support**: Kolmogorov-Arnold Networks (KAN) implementation, including KAN, KANLinear modules
 - **Custom Gradient Decorator** (``@track_grad``): Quickly add automatic differentiation support to functions using decorators, without defining a complete Function class
-- **New functions**: ``sumall`` (add multiple tensors or non-tensors and return the total sum), ``isum`` (intelligent sum function that automatically selects the appropriate summation method based on parameters), ``d()`` (tensor method for chaining variables to compute higher-order mixed partial derivatives), etc.
+- **New functions**: ``sumall`` (add multiple tensors or non-tensors and return the total sum), ``isum`` (intelligent sum function that automatically selects the appropriate summation method based on parameters), ``d()`` (tensor method for chaining variables to compute higher-order mixed partial derivatives), etc. These are all Riemann-specific interfaces.
 - **Concise Code Structure**: Less code volume, clearer structure, easier for learning and research
 
 Installation Guide

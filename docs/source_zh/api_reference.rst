@@ -2961,36 +2961,50 @@ CUDA支持
 梯度计算
 ~~~~~~~~
 
-.. function:: riemann.autograd.backward(self, gradient=None, retain_graph=False, create_graph=False)
+.. function:: riemann.autograd.backward(tensors, grad_tensors=None, retain_graph=None, create_graph=False, inputs=None)
 
-   执行反向模式自动求导（反向传播）。
+   从单个或多个根执行反向模式自动求导（反向传播），并将梯度累积到相关张量的 ``.grad``。
+   这里“根”指前向计算产生的输出张量，也是反向传播的起点。
 
-   从当前张量开始，通过计算图向后传播梯度，为所有叶节点或设置了retains_grad=True的中间节点计算并存储梯度。
+   **与 torch.autograd.backward 的差异**：接口一致，但移除了已废弃的
+   ``grad_variables``；``retain_graph`` 仅为兼容保留，Riemann 不依赖该参数，
+   可重复反向传播；梯度累积到 ``.grad`` 的语义与 torch 一致。
 
-   :param self: 触发反向传播的张量
-   :type self: riemann.TN
-   :param gradient: 输出张量的梯度，默认为None
-   :type gradient: riemann.TN or None, optional
-   :param retain_graph: 此参数用于PyTorch兼容性，Riemann反向传播不依赖于此参数
+   :param tensors: 求导的起点，单个张量或张量序列
+   :type tensors: riemann.TN or list/tuple of riemann.TN
+   :param grad_tensors: 各根对应的初始余切（即初始梯度、上游梯度）。显式余切必须与对应根同形状、同设备；可为单个张量、与 tensors 等长的序列或 None，序列元素可为 TN 或 None。整体或元素为 None 时该位置隐式使用 1.0，仅对应根为实标量时允许；非标量根必须显式提供余切
+   :type grad_tensors: riemann.TN or list/tuple of (riemann.TN or None) or None, optional
+   :param retain_graph: 仅为 PyTorch 兼容保留，Riemann 反向传播不依赖此参数
    :type retain_graph: bool, optional
-   :param create_graph: 是否在梯度计算过程中创建计算图，设置为True以进行高阶导数计算
+   :param create_graph: 是否在梯度计算过程中创建计算图，设置为 True 以进行高阶导数计算
    :type create_graph: bool, optional
+   :param inputs: 提供时只向这些张量累积 ``.grad``，其余叶子节点不接收梯度
+   :type inputs: riemann.TN or list/tuple of riemann.TN, optional
+   :return: None
+   :rtype: None
 
 .. function:: riemann.autograd.grad(outputs, inputs, grad_outputs=None, retain_graph=False, create_graph=False, allow_unused=False)
 
    计算并返回输出相对于输入的梯度。
+   这里“根”指前向计算产生的输出张量，也是反向传播的起点。
 
    这是Riemann框架中的核心梯度计算函数。与backward()方法类似，
    但它直接返回计算出的梯度张量，而不是将它们存储在输入张量的.grad属性中。
    这使其更适合于高级梯度计算场景，如计算雅可比矩阵、
    海森矩阵等。
 
-   :param outputs: 要计算梯度的输出张量
-   :type outputs: riemann.TN
+   **与 torch.autograd.grad 的差异**：``retain_graph`` 仅为兼容保留；未实现
+   torch 的 ``materialize_grads``、``is_grads_batched`` 等可选参数；返回元组、
+   不写 ``.grad``、``allow_unused`` 的语义与 torch 一致。多根、重复根和根之间
+   依赖的处理也与 torch 一致；当 ``grad_outputs=None`` 或序列中某个元素为
+   ``None`` 时，该位置隐式使用 1.0，因此对应根必须是实标量（非标量根需显式提供余切）。
+
+   :param outputs: 一个或多个要计算梯度的输出张量（单个张量或张量序列）
+   :type outputs: riemann.TN or list/tuple of riemann.TN
    :param inputs: 要计算梯度的输入张量或输入张量列表/元组
    :type inputs: riemann.TN or list/tuple of riemann.TN
-   :param grad_outputs: 输出张量的梯度，默认为None
-   :type grad_outputs: riemann.TN or None, optional
+   :param grad_outputs: 各根对应的初始余切（即初始梯度、上游梯度）。显式余切可为任意形状，但必须与对应根同形状、同设备；可为单个张量（仅单输出）或与 outputs 等长的序列，序列元素可为 TN 或 None。整体或元素为 None 时该位置隐式使用 1.0，仅对应根为实标量时允许；非标量根必须显式提供余切
+   :type grad_outputs: riemann.TN or list/tuple of (riemann.TN or None) or None, optional
    :param retain_graph: 此参数用于PyTorch兼容性，Riemann反向传播不依赖于此参数
    :type retain_graph: bool, optional
    :param create_graph: 是否在梯度计算过程中创建计算图
@@ -3047,6 +3061,8 @@ CUDA支持
 .. function:: riemann.track_grad(grad_func)
 
    创建一个梯度跟踪装饰器，用于为函数添加自动求导支持。
+
+   ``track_grad`` 是 **Riemann 特有** 接口，PyTorch 中没有同名装饰器。
 
    这个装饰器工厂接收一个梯度函数，返回一个修饰器，该修饰器可以将普通的张量运算函数
    转换为支持自动求导的函数。它会自动创建反向传播函数，并管理梯度计算图的构建。

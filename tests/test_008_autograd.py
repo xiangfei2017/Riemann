@@ -5,6 +5,7 @@ riemann 自动微分接口统一测试（由 test_010 ~ test_014 合并而来）
 
 用例组（每个 test_xxx 方法 = 一个用例组）:
     grad        riemann.autograd.grad
+    backward    riemann.autograd.backward
     d           Tensor.d（标量张量的高阶 / 混合偏导）
     derivative  riemann.autograd.functional.derivative
     jacobian    riemann.autograd.functional.jacobian
@@ -31,7 +32,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 's
 try:
     import riemann as rm
     from riemann import tensor
-    from riemann.autograd.grad import grad as rm_grad
+    from riemann.autograd.grad import backward as rm_backward, grad as rm_grad
     from riemann.autograd.functional import (
         derivative, jacobian, hessian, jvp, vjp, hvp, vhp,
     )
@@ -273,6 +274,25 @@ def _run_case(case_name, fn, expect_error=False, match=None):
 # 用例表：grad
 # ---------------------------------------------------------------------------
 
+def _duplicate_sum_roots(x):
+    """返回同一个根两次，用于验证重复根的 seed 合并。"""
+    y = x.sum()
+    return [y, y]
+
+
+def _dependent_roots(x):
+    """b 由 a 构造，用于验证根之间依赖时的延迟入栈。"""
+    a = (2 * x).sum()
+    return [a, 3 * a]
+
+
+def _err_grad_none_non_scalar():
+    """非标量根使用 None 余切时应报错。"""
+    x = _t([1.0, 2.0])
+    rm_grad([x.sum(), x ** 2], x,
+            grad_outputs=[_t(1.0, requires_grad=False), None])
+
+
 GRAD_CASES = [
     # 基础：标量输入 / 标量函数
     dict(name='scalar_power', func=lambda x: x ** 2, inputs=[2.0], expected=(4.0,)),
@@ -280,6 +300,15 @@ GRAD_CASES = [
     # 多输入
     dict(name='multi_input', func=lambda x, y: 2 * x + y ** 2,
          inputs=[3.0, 4.0], expected=(2.0, 8.0)),
+    # 多根：d(sum)/dx + d(sum(x^2))/dx
+    dict(name='multi_root', roots=lambda x: [x.sum(), (x ** 2).sum()],
+         inputs=[[1.0, 2.0]], expected=([3.0, 5.0],)),
+    # 多根重复：同一个根出现两次，seed 相加
+    dict(name='duplicate_root', roots=_duplicate_sum_roots,
+         inputs=[[1.0, 2.0]], expected=([2.0, 2.0],)),
+    # 多根依赖：b = 3a，a 需等 b 的上游梯度到达后再处理
+    dict(name='dependent_roots', roots=_dependent_roots,
+         inputs=[[1.0, 2.0]], expected=([8.0, 8.0],)),
     # 三角函数参与（验证非多项式算子）
     dict(name='trig_mixed', func=lambda x, y: x * y + rm.sin(x),
          inputs=[np.pi, 2.0], expected=(2.0 + np.cos(np.pi), np.pi)),
@@ -289,6 +318,18 @@ GRAD_CASES = [
     # 张量输入 + 显式 grad_outputs
     dict(name='grad_outputs', func=lambda x: x ** 2, inputs=[[1.0, 2.0, 3.0]],
          grad_outputs=[1.0, 1.0, 1.0], expected=([2.0, 4.0, 6.0],)),
+    # 序列中 None 只作用于对应根：标量根可省略，非标量根显式给余切
+    dict(name='grad_outputs_none_mixed_scalar', roots=lambda x: [x.sum(), x ** 2],
+         inputs=[[1.0, 2.0]], grad_outputs_spec=[None, [1.0, 1.0]],
+         expected=([3.0, 5.0],)),
+    # 多个标量根的余切全部省略
+    dict(name='grad_outputs_none_all_scalar',
+         roots=lambda x: [x.sum(), (2 * x).sum()],
+         inputs=[[1.0, 2.0]], grad_outputs_spec=[None, None],
+         expected=([3.0, 3.0],)),
+    # 非标量根不能省略余切
+    dict(name='err_grad_outputs_none_non_scalar', expect_error=True, match='Only a scalar',
+         action=lambda: _err_grad_none_non_scalar()),
     # 高阶导数
     dict(name='second_order', func=lambda x: x ** 3, inputs=[2.0], order=2, expected=(12.0,)),
     dict(name='third_order', func=lambda x: x ** 4, inputs=[2.0], order=3, expected=(48.0,)),
@@ -301,6 +342,80 @@ GRAD_CASES = [
     dict(name='err_grad_outputs_shape', expect_error=True, match='shape of grad_outputs',
          action=lambda: rm_grad(_t([1.0, 2.0]) ** 2, [_t([1.0, 2.0])],
                                 grad_outputs=_t([1.0]))),
+]
+
+
+# ---------------------------------------------------------------------------
+# 用例表：backward
+# 每个用例自建独立的计算图，避免 .grad 跨用例累加
+# ---------------------------------------------------------------------------
+
+def _backward_single_root():
+    x = _t([1.0, 2.0])
+    (x ** 2).sum().backward()
+    _assert_tree(x.grad, [2.0, 4.0], 'backward.single_root')
+
+
+def _backward_multi_root():
+    x = _t([1.0, 2.0])
+    rm_backward([x.sum(), (x ** 2).sum()])
+    _assert_tree(x.grad, [3.0, 5.0], 'backward.multi_root')
+
+
+def _backward_duplicate_root():
+    x = _t([1.0, 2.0])
+    y = x.sum()
+    rm_backward([y, y])
+    _assert_tree(x.grad, [2.0, 2.0], 'backward.duplicate_root')
+
+
+def _backward_dependent_roots():
+    x = _t([1.0, 2.0])
+    a = (2 * x).sum()
+    b = 3 * a
+    rm_backward([a, b])
+    _assert_tree(x.grad, [8.0, 8.0], 'backward.dependent_roots')
+
+
+def _backward_multi_root_same_leaf():
+    """两个根各自连到同一个叶子张量，梯度应累加到该叶子。"""
+    x = _t([1.0, 2.0])
+    rm_backward([(2 * x).sum(), (3 * x).sum()])
+    _assert_tree(x.grad, [5.0, 5.0], 'backward.multi_root_same_leaf')
+
+
+def _backward_none_mixed_scalar():
+    """序列中的 None 只省略标量根的余切，非标量根显式给出余切。"""
+    x = _t([1.0, 2.0])
+    rm_backward([x.sum(), x ** 2],
+                grad_tensors=[None, _t([1.0, 1.0], requires_grad=False)])
+    _assert_tree(x.grad, [3.0, 5.0], 'backward.none_mixed_scalar')
+
+
+def _backward_none_all_scalar():
+    """多个标量根的余切可以全部省略。"""
+    x = _t([1.0, 2.0])
+    rm_backward([x.sum(), (2 * x).sum()], grad_tensors=[None, None])
+    _assert_tree(x.grad, [3.0, 3.0], 'backward.none_all_scalar')
+
+
+def _err_backward_none_non_scalar():
+    """非标量根使用 None 余切时应报错。"""
+    x = _t([1.0, 2.0])
+    rm_backward([x.sum(), x ** 2],
+                grad_tensors=[_t(1.0, requires_grad=False), None])
+
+
+BACKWARD_CASES = [
+    dict(name='single_root', action=_backward_single_root),
+    dict(name='multi_root', action=_backward_multi_root),
+    dict(name='duplicate_root', action=_backward_duplicate_root),
+    dict(name='dependent_roots', action=_backward_dependent_roots),
+    dict(name='multi_root_same_leaf', action=_backward_multi_root_same_leaf),
+    dict(name='none_mixed_scalar', action=_backward_none_mixed_scalar),
+    dict(name='none_all_scalar', action=_backward_none_all_scalar),
+    dict(name='err_none_non_scalar', action=_err_backward_none_non_scalar,
+         expect_error=True, match='implicitly created only for scalar outputs'),
 ]
 
 
@@ -695,11 +810,20 @@ def _grad_case(case):
 
     def _call():
         kwargs = {}
-        if 'grad_outputs' in case:
+        if 'grad_outputs_spec' in case:
+            # 逐根给出余切，允许某个根使用 None（隐式 1.0）
+            kwargs['grad_outputs'] = [
+                None if g is None else _t(g, requires_grad=False)
+                for g in case['grad_outputs_spec']
+            ]
+        elif 'grad_outputs' in case:
             kwargs['grad_outputs'] = _t(case['grad_outputs'], requires_grad=False)
         if case.get('allow_unused'):
             kwargs['allow_unused'] = True
-        y = case['func'](*ts)
+        if 'roots' in case:
+            y = case['roots'](*ts)
+        else:
+            y = case['func'](*ts)
         targets = ts[0] if len(ts) == 1 else ts
         if order == 1:
             result = rm_grad(y, targets, **kwargs)
@@ -711,6 +835,11 @@ def _grad_case(case):
         _assert_tree(result, case['expected'], case['name'])
 
     _run_case(case['name'], _call)
+
+
+def _backward_case(case):
+    _run_case(case['name'], case['action'],
+              case.get('expect_error', False), case.get('match'))
 
 
 def _d_case(case):
@@ -849,6 +978,13 @@ class TestAutograd(unittest.TestCase):
         _start_group('grad')
         for case in GRAD_CASES:
             _grad_case(case)
+        _end_group()
+
+    # ---------------- backward ----------------
+    def test_backward(self):
+        _start_group('backward')
+        for case in BACKWARD_CASES:
+            _backward_case(case)
         _end_group()
 
     # ---------------- Tensor.d ----------------
