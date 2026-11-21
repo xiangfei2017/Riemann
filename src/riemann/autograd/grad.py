@@ -243,7 +243,7 @@ def backward(tensors,
         else:
             _backward_without_hooks(stack, input_ids)
 
-@api_registry.register
+
 def grad(outputs:TN|list[TN]|tuple[TN],
          inputs:TN|list[TN]|tuple[TN],
          retain_graph: bool = False,
@@ -402,7 +402,7 @@ def grad(outputs:TN|list[TN]|tuple[TN],
 
     return tuple(grad_list)  # type: ignore
 
-
+@api_registry.register
 def diff(tensor, *args, create_graph=False):
     r"""计算标量张量对指定变量的高阶偏导数或混合偏导数。
 
@@ -477,14 +477,12 @@ def diff(tensor, *args, create_graph=False):
         for _ in range(order):
             is_last = (step == total_steps - 1)
             need_graph = create_graph if is_last else True  # 中间步骤必须追踪图
-            retain_graph = not is_last
 
             if current.ndim == 0:
                 # 标量 → 一次 grad
                 g = grad(current, var,
                          create_graph=need_graph,
-                         allow_unused=True,
-                         retain_graph=retain_graph)[0]
+                         allow_unused=True)[0]
                 if g is None:
                     return zeros_like(tensor, requires_grad=False)
                 current = g
@@ -497,8 +495,7 @@ def diff(tensor, *args, create_graph=False):
                 for ei in range(flat.shape[0]):
                     g_elem = grad(flat[ei], var,
                                   create_graph=need_graph,
-                                  allow_unused=True,
-                                  retain_graph=retain_graph)[0]
+                                  allow_unused=True)[0]
                     if g_elem is None:
                         elem_grads.append(zeros_like(var, requires_grad=False))
                     else:

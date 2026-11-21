@@ -186,8 +186,13 @@ class TN:
         
         属性：
             _array (np.ndarray | cp.ndarray): 存储张量数据的NumPy或Cupy数组
-            fromvars (tuple): 按运算顺序记录参与计算的来源变量（张量或非张量）
-            parms (tuple): 对张量进行函数运算时用到的参数，如sum函数的dim和keepdim参数
+            fromvars (tuple): 按正向运算顺序记录来源，可同时含 TN 与非 TN 操作数
+                （如 add(x, 2.0)、where(cond, x, 1.0)）。仅当结果 requires_grad=True
+                时才记录，因此非空 fromvars 至少含一个 requires_grad=True 的 TN；
+                全为 False 时保持空元组，节点即叶子
+            parms (tuple): 算子附加参数（如 sum 的 dim、where 的 cond），不参与反向图遍历
+            _grad_rule (callable | None): 局部梯度规则，返回与 fromvars 等长且按位置
+                对齐的元组；非 TN 或无需梯度的来源用 None 占位
             grad (TN): 与data的shape一致的张量，用于存放梯度，初始化为None以节省空间
             requires_grad (bool): 是否需要计算梯度，默认为False
             retains_grad (bool): 是否保留梯度，默认为False
@@ -235,9 +240,11 @@ class TN:
         self._array:np.ndarray|cp.ndarray = arr
         self.requires_grad = requires_grad
         
-        self.fromvars = ()              #按运算顺序记录来源张量及原始非张量操作数
-        self.parms = ()                 #对张量进行函数运算时用到的参数，比如sum函数的dim和keepdim参数
-        self._grad_rule = None          #梯度规则：接收本节点，返回与fromvars对齐的梯度元组
+        self.fromvars = ()              #按正向运算顺序记录来源（可含非 TN）；仅
+                                        #requires_grad=True 的节点才记录，全 False 时为空
+        self.parms = ()                 #算子附加参数（如sum的dim、where的cond），不参与图遍历
+        self._grad_rule = None          #梯度规则：接收本节点，返回与fromvars等长且按位置对齐
+                                        #的梯度元组，非可微来源用None占位
         self._inplace_ops = ()          #原地操作记录，最新在前，元素为InplaceRecord；
                                         #同时供反向梯度规则和__setitem__重放使用
         self.grad:TN = None             #与data的shape一致的张量对象，用于存放梯度，
@@ -2859,8 +2866,8 @@ class TN:
                   所以必须逐元素)
             3. reshape 回 shape = ⊕ shape(vi) × ki
         """
-        from ..autograd.grad import diff
-        return diff(self, *args, create_graph=create_graph)
+        
+        return _call_regapi('diff', self, *args, create_graph=create_graph)
 # end of class TN
 
 def _init_calc_graph(outputs):
@@ -2881,6 +2888,14 @@ def _init_calc_graph(outputs):
 
     本函数只负责图状态初始化，不处理 .grad 累积范围和 inputs 过滤，
     这些语义由调用方维护。
+
+    来源与入栈约定（与 _propagate_grad_to_sources 保持一致）:
+        - fromvars 可能混有非 TN 操作数（如 add(x, 2.0)）；反向图只沿
+          requires_grad=True 的 TN 来源建边和计数，非 TN 条目直接跳过。
+        - requires_grad=False 的节点不会记录 fromvars，故“fromvars 全为非 TN”
+          的节点不存在，空 fromvars 等价于叶子。
+        - 反向栈只含 TN：根由调用方保证是 TN，传播侧只把 TN 且 requires_grad=True
+          的来源入栈。
 
     参数:
         outputs: 单个 TN 或非空 TN 序列，反向传播的起点（根）。
@@ -2955,6 +2970,9 @@ def _clear_calc_graph_cache(outputs) -> None:
     grad 与 backward 遍历结束后不会主动调用本函数：下次图初始化时
     _init_calc_graph 会覆盖所有可达节点的状态。此函数作为备用清理工具保留。
 
+    遍历范围与 _init_calc_graph 一致：只沿 requires_grad=True 的 TN 来源，
+    fromvars 中的非 TN 条目直接跳过。
+
     参数:
         outputs: 单个 TN 或 TN 序列，清理范围的起点（根）。
     """
@@ -3003,6 +3021,10 @@ def _save_grad(item: TN, input_ids=None) -> bool:
     不受 retains_grad 限制。
 
     叶子节点保存后清空 grad_value，调用方可据此跳过后续传播。
+
+    is_leaf 依据“fromvars 为空”判定，该判定是可靠的：fromvars 仅在
+    requires_grad=True 时记录，且非空时至少含一个可微 TN 来源，因此不存在
+    “fromvars 全为非 TN”的节点；全为 False 的节点保持空 fromvars。
     """
     is_leaf = not item.fromvars
 
@@ -3051,13 +3073,23 @@ def _propagate_grad_to_sources(item: TN, vars_received_grad: set) -> None:
     反向传播核心步骤，遍历当前节点的所有来源节点，计算并传播梯度。
     直接修改 vars_received_grad 集合，添加已收集完梯度的节点。
 
+    约定：
+        - rule(item) 必须返回与 item.fromvars 等长、按位置对齐的元组；非 TN 或
+          requires_grad=False 的来源用 None 占位。这里用 zip 逐位配对，长度不一致
+          会被静默截断，因此长度必须严格一致。
+        - 只有 TN 且 requires_grad=True 的来源会被累加梯度并计入
+          vars_received_grad（即反向栈只含 TN）；fromvars 中的非 TN 条目即使
+          返回了梯度也不会入栈。
+        - 这里的过滤条件与 _init_calc_graph 的计数条件一致，保证每节点只在其
+          rcv_grad_count 归零后入栈一次。
+
     参数：
         item: 当前完成梯度收集的节点
         vars_received_grad: 已收集完梯度、可入栈的源变量集合（会被直接修改）
     """
     fromvars = item.fromvars
 
-    # 梯度规则一次调用返回与 fromvars 对齐的梯度元组
+    # 梯度规则一次调用返回与 fromvars 等长且按位置对齐的梯度元组
     rule = item._grad_rule
     if rule is None:
         return
@@ -4586,6 +4618,16 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         - 其余 TN / 非 TN 参数同样可自由使用。
         因此梯度运算不受形式限制，矩阵乘 @、转置等任意运算均可直接使用。
 
+    图来源与编号约定：
+        - ``fromvars`` 只登记 requires_grad=True 的 TN 实参，按实参顺序排列；
+          它表示“可微来源”，不是算子的全部输入。非 TN 参数以及 requires_grad=False
+          的 TN 不会进入 fromvars，但它们仍被 _grad_rule 的闭包捕获，grad_func
+          照常可以读取（例如 y 不需要梯度时仍可作为乘法因子参与求导）。
+        - grad_func 返回的梯度元组按“全部 TN 参数”的实参顺序编号，非 TN 参数不占位。
+        - fromvars 是上述编号空间的子集，两套序号不可混用：内部用 grad_indices[k]
+          记录“fromvars 第 k 项对应完整编号中的第几个 TN 参数”，反向时据此从
+          grad_func 的返回值中取出该来源的梯度。
+
     注意：
         若前向函数内部使用了可微算子，其返回张量已有的计算图会被本修饰器建立的
         计算图覆盖，因此 grad_func 必须给出完整梯度；若前向返回需要梯度的张量而所有
@@ -4674,7 +4716,7 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         1. 包装后的函数先执行前向计算，并根据“梯度模式是否开启、任一输入是否需要梯度”
            决定结果张量是否参与梯度跟踪
         2. 若需要跟踪，则按 grad_func 的签名顺序展平本次实参，并仅为 requires_grad=True
-           的 TN 输入登记图来源 fromvars
+           的 TN 输入登记图来源 fromvars（仅记录可微来源，约定见上节）
         3. 反向传播通过单一融合规则调用一次 grad_func，再按索引拆分各输入梯度
     """
     # grad_func 在装饰阶段固定，预先解析签名，避免每次前向调用重复解析
@@ -4689,7 +4731,11 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
 
     def decorator(forward_func:ForwardFunc)->ForwardFunc:
         def _build_grad_rule(xs, kwargs, grad_indices):
-            """调用一次用户梯度函数，并按图来源顺序返回所需梯度。"""
+            """调用一次用户梯度函数，并按 fromvars 顺序返回所需梯度。
+
+            grad_indices[k] 是 fromvars[k] 在“全部 TN 参数”编号空间中的下标，
+            因此返回的元组与 fromvars 一一对齐（见 track_grad 文档中的编号约定）。
+            """
             def grad_rule(result_tensor: TN):
                 grads = grad_func(result_tensor, *xs, **kwargs)
                 # 兼容单输入函数直接返回单个梯度（非元组）的写法
@@ -4766,9 +4812,13 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
                     else:
                         ordered_args.append(value)
 
-                # 按实参顺序为所有 TN 参数编号，并只为 requires_grad=True 的参数登记图来源。
-                # grad_index 对“所有 TN 参数”递增（与 grad_func 返回的梯度元组对齐），
-                # 而 fromvars 只含需要梯度的参数，两者序号不可混用。
+                # 两套编号空间，不可混用：
+                #   grad_index —— 对“全部 TN 参数”按实参顺序递增，与 grad_func
+                #                 返回的梯度元组下标一致（非 TN 参数不占位）；
+                #   fromvars 下标 —— 只含 requires_grad=True 的 TN，是完整编号的
+                #                 子集，同时也是反向传播中 fromvars 的位置。
+                # grad_indices[k] 记录 fromvars[k] 在完整编号空间中的下标，
+                # 反向时用它从 grad_func 返回值中取出该来源的梯度。
                 fromvars = []
                 grad_indices = []
                 grad_index = 0
@@ -6300,9 +6350,8 @@ def _where_branch_grad(r, i, mask):
         grad = grad.sum(dim=broadcast_axes, keepdim=False)._reshape(var_shape)
     
     # 仅在类型不一致时进行转换
-    grad = grad.type(var.dtype)
-    return grad
-
+    return grad.type(var.dtype)
+    
 
 def _where_grad(result_tensor:TN):
     """where 的融合梯度：fromvars 固定为 (x, y)，按各来源是否需要梯度分别计算。"""
