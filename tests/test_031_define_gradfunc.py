@@ -229,7 +229,7 @@ class TestDefineGradFunc(unittest.TestCase):
         # ==================== 被测函数（grad_func 签名为 (result, ...)） ====================
         # 1. 单输入：sin
         def _sin_derivative(result, x):
-            return (result.grad_value * x.cos(),)
+            return (result._grad_value * x.cos(),)
 
         @track_grad(_sin_derivative)
         def mysin(x):
@@ -237,7 +237,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         # 2. 多输入：加法
         def _add_derivative(result, x, y):
-            return (result.grad_value, result.grad_value)
+            return (result._grad_value, result._grad_value)
 
         @track_grad(_add_derivative)
         def myadd(x, y):
@@ -245,7 +245,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         # 3. 除法：两个输入的梯度值不同，可校验参数与梯度的对应关系
         def _divide_derivative(result, x, y):
-            return (result.grad_value / y, result.grad_value * (-x / (y * y)))
+            return (result._grad_value / y, result._grad_value * (-x / (y * y)))
 
         @track_grad(_divide_derivative)
         def mydivide(x, y):
@@ -253,7 +253,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         # 4. 非 TN 参数在前
         def _scale_derivative(result, scale, x):
-            return (result.grad_value * scale,)
+            return (result._grad_value * scale,)
 
         @track_grad(_scale_derivative)
         def myscale(scale, x):
@@ -261,7 +261,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         # 5. TN 与非 TN 参数交替
         def _weighted_sum_derivative(result, a, weight1, b, weight2):
-            return (result.grad_value * weight1, result.grad_value * weight2)
+            return (result._grad_value * weight1, result._grad_value * weight2)
 
         @track_grad(_weighted_sum_derivative)
         def weighted_sum(a, weight1, b, weight2):
@@ -270,7 +270,7 @@ class TestDefineGradFunc(unittest.TestCase):
         # 6. 带默认参数
         def _pow_derivative(result, x, exponent=2.0):
             local = exponent * (x.detach().array() ** (exponent - 1))
-            return (result.grad_value * rm.tensor(local, device=x.device),)
+            return (result._grad_value * rm.tensor(local, device=x.device),)
 
         @track_grad(_pow_derivative)
         def mypow(x, exponent=2.0):
@@ -278,7 +278,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         # 7. grad_func 使用 *args
         def _sum_derivative(result, *args):
-            return tuple(result.grad_value for _ in args)
+            return tuple(result._grad_value for _ in args)
 
         @track_grad(_sum_derivative)
         def mysum(*xs):
@@ -286,7 +286,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         # 8. grad_func 使用 **kwargs
         def _sum_kwargs_derivative(result, **kwargs):
-            return tuple(result.grad_value for _ in kwargs.values())
+            return tuple(result._grad_value for _ in kwargs.values())
 
         @track_grad(_sum_kwargs_derivative)
         def mysum_kwargs(**kwargs):
@@ -295,7 +295,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         # 9. 矩阵乘法：反向需要矩阵乘 @ 与转置
         def _matmul_derivative(result, x, y):
-            g = result.grad_value
+            g = result._grad_value
             return (g @ y.detach().T, x.detach().T @ g)
 
         @track_grad(_matmul_derivative)
@@ -304,7 +304,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         # 10. 前向返回非 TN（numpy 数组），由修饰器自动转换为 TN
         def _double_derivative(result, x):
-            return (result.grad_value * 2.0,)
+            return (result._grad_value * 2.0,)
 
         @track_grad(_double_derivative)
         def mydouble(x):
@@ -313,7 +313,7 @@ class TestDefineGradFunc(unittest.TestCase):
         # 11. grad_func 首参为裸 *args（args[0] 即 result）
         def _sum_bare_args_derivative(*args):
             result = args[0]
-            return tuple(result.grad_value for _ in args[1:])
+            return tuple(result._grad_value for _ in args[1:])
 
         @track_grad(_sum_bare_args_derivative)
         def mysum_bare(*xs):
@@ -351,7 +351,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
             def _mul_derivative(result, x, y):
                 calls.append(None)
-                return (result.grad_value * y, result.grad_value * x)
+                return (result._grad_value * y, result._grad_value * x)
 
             @track_grad(_mul_derivative)
             def mymul(x, y):
@@ -557,7 +557,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         def case_short_tuple_error(device):
             def _short_derivative(result, x, y):
-                return (result.grad_value,)
+                return (result._grad_value,)
 
             @track_grad(_short_derivative)
             def f(x, y):

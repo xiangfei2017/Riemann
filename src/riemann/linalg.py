@@ -221,7 +221,7 @@ def _cross_grad(result_tensor: TN):
     """grad_a = b × grad_c；grad_b = grad_c × a"""
     dim = result_tensor.parms[0]
     a, b = result_tensor.fromvars
-    grad = result_tensor.grad_value
+    grad = result_tensor._grad_value
     return (cross(b, grad, dim=dim), cross(grad, a, dim=dim))
 
 @api_registry.register
@@ -1167,7 +1167,7 @@ def _det_grad(result_tensor:TN):
     """计算行列式的反向传播梯度。"""
     
     A = result_tensor.fromvars[0]
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
 
     # 将行列式值从标量恢复为2D矩阵，并取共轭（考虑复数情况）
     new_result = result_tensor.unsqueeze((-1,-2)).conj()
@@ -1228,7 +1228,7 @@ def _inv_grad(result_tensor:TN):
     """计算矩阵求逆的反向传播梯度。"""
     
     inv_trans = result_tensor.mH    
-    grad = - inv_trans @ result_tensor.grad_value @ inv_trans
+    grad = - inv_trans @ result_tensor._grad_value @ inv_trans
     
     return (grad,)
 
@@ -1335,7 +1335,7 @@ def _svd_u_grad(result_tensor: TN):
     A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dU
-    G = result_tensor.grad_value
+    G = result_tensor._grad_value
     
     # 获取矩阵维度
     m, n = A.shape[-2], A.shape[-1]
@@ -1402,7 +1402,7 @@ def _svd_vh_grad(result_tensor: TN):
     A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dVh
-    H = result_tensor.grad_value  # 形状 (n, n)
+    H = result_tensor._grad_value  # 形状 (n, n)
     
     # 获取矩阵维度
     m, n = A.shape[-2], A.shape[-1]
@@ -1471,7 +1471,7 @@ def _svd_s_grad(result_tensor: TN):
     # 从result_tensor中获取所需参数
     U, S, Vh, full_matrices = result_tensor.parms[0]
     A = result_tensor.fromvars[0]  # 原始输入张量
-    grad_S = result_tensor.grad_value
+    grad_S = result_tensor._grad_value
     
     # 1. 首先检查并获取正确的维度信息
     orig_shape = A.shape
@@ -1635,7 +1635,7 @@ def _eig_w_grad(result_tensor: TN):
     A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dw
-    G = result_tensor.grad_value
+    G = result_tensor._grad_value
     
     # 使用特征值梯度解析公式：dL/dA = V^(-T) @ diag(G) @ V^T
     # 基于矩阵微分理论：如果 A = V @ diag(w) @ V^(-1)，那么
@@ -1655,7 +1655,7 @@ def _eig_v_grad(result_tensor: TN):
     """
     w, V, U = result_tensor.parms[0]  # V_l 是左特征向量
     A = result_tensor.fromvars[0]
-    dL_dV_r = result_tensor.grad_value  # ∂L/∂V_r
+    dL_dV_r = result_tensor._grad_value  # ∂L/∂V_r
     
     n = A.shape[-1]
     
@@ -1874,7 +1874,7 @@ def _eigh_w_grad(result_tensor: TN):
     A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dw
-    G = result_tensor.grad_value
+    G = result_tensor._grad_value
     
     # 使用特征值梯度解析公式：dL/dA = V^(-T) @ diag(G) @ V^T
     # 基于矩阵微分理论：如果 A = V @ diag(w) @ V^(-1)，那么
@@ -1897,7 +1897,7 @@ def _eigh_v_grad(result_tensor: TN):
     """改进的特征向量梯度计算"""
     w, V = result_tensor.parms[0]
     A = result_tensor.fromvars[0]
-    G = result_tensor.grad_value
+    G = result_tensor._grad_value
     
     n = A.shape[-1]
         
@@ -2256,7 +2256,7 @@ def _lu_l_grad(result_tensor: TN):
     P, L, U = result_tensor.parms[0] 
     
     # 获取上游传来的梯度 dL/dL
-    G = result_tensor.grad_value
+    G = result_tensor._grad_value
     L_T = L.mH
     
     # 梯度计算基于分解 A = P @ L @ U
@@ -2279,7 +2279,7 @@ def _lu_u_grad(result_tensor: TN):
     P, L, U = result_tensor.parms[0]
     
     # 获取上游传来的梯度 dL/dU
-    G = result_tensor.grad_value
+    G = result_tensor._grad_value
     U_T = U.mH
     
     # 梯度计算基于分解 A = P @ L @ U
@@ -2575,7 +2575,7 @@ def _qr_q_grad(result_tensor: TN):
     A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dQ
-    G = result_tensor.grad_value
+    G = result_tensor._grad_value
     
     # 获取矩阵维度
     m, n = A.shape[-2], A.shape[-1]
@@ -2651,7 +2651,7 @@ def _qr_r_grad(result_tensor: TN):
     A = result_tensor.fromvars[0]
     
     # 获取上游传来的梯度 dL/dR
-    H = result_tensor.grad_value
+    H = result_tensor._grad_value
     
     # 获取矩阵维度
     m, n = A.shape[-2], A.shape[-1]
@@ -2799,7 +2799,7 @@ def _cholesky_grad(result_tensor: TN):
         TN: 输入矩阵 A 的梯度 ∂ℓ/∂A
     """
     upper = result_tensor.parms[0]
-    grad_L = result_tensor.grad_value
+    grad_L = result_tensor._grad_value
     
     L = result_tensor
     if upper:

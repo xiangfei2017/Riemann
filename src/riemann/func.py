@@ -390,7 +390,7 @@ def _local_jvp_by_basis(node: TN, i: int, target: TN, tangent: TN) -> TN:
     参数:
         node: 当前算子的输出节点，提供形状、dtype、device 与 numel。
         i: 入边下标，对应 node.fromvars[i]。
-        target: 调用梯度规则的目标节点（真实节点或影子节点），其 grad_value
+        target: 调用梯度规则的目标节点（真实节点或影子节点），其 _grad_value
             会被临时改写为各基向量。
         tangent: 与第 i 个输入同形的切向量。
 
@@ -400,13 +400,13 @@ def _local_jvp_by_basis(node: TN, i: int, target: TN, tangent: TN) -> TN:
     numel_out = node.numel()
     basis = eye(numel_out, dtype=node.dtype, device=node.device)
     cols = []
-    saved = target.grad_value
+    saved = target._grad_value
     try:
         for k in range(numel_out):
-            target.grad_value = basis[k].reshape(node.shape)
+            target._grad_value = basis[k].reshape(node.shape)
             cols.append(_local_vjp(node, target, i).reshape(-1))
     finally:
-        target.grad_value = saved
+        target._grad_value = saved
     mat_t = stack(cols, dim=-1)
     # 局部 VJP 登记的是共轭转置形式（梯度规则中对局部导数取 conj），
     # 故此处用共轭转置还原 J；实数情形与 T 等价。
@@ -461,12 +461,12 @@ def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
         target = node
     # 局部 VJP 关于输出余切是线性的，这里用零值 seed 只为拿到 g_in 的图结构
     g_out = zeros_like(node, requires_grad=True)
-    saved = target.grad_value
-    target.grad_value = g_out
+    saved = target._grad_value
+    target._grad_value = g_out
     try:
         g_in = _local_vjp(node, target, i)
     finally:
-        target.grad_value = saved
+        target._grad_value = saved
 
     if not isinstance(g_in, TN):
         raise RuntimeError("gradient rule must return a tensor")

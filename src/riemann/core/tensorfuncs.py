@@ -679,7 +679,7 @@ def multinomial(input: TN, num_samples: int, replacement: bool = False, *, gener
 def _sign_derivative(result:TN, x:TN)->tuple[TN]:
     # sign函数在x=0处不可导，在其他点处梯度为0
     # 梯度为零，与上游梯度相乘后仍为零
-    return (result.grad_value * zeros_like(x),)
+    return (result._grad_value * zeros_like(x),)
 
 @api_registry.register
 @track_grad(_sign_derivative)
@@ -770,7 +770,7 @@ def square(x:TN)->TN:
 
 def _sin_grad(result_tensor:TN):
     x = result_tensor.fromvars[0]
-    return (result_tensor.grad_value * cos(x).conj(),)
+    return (result_tensor._grad_value * cos(x).conj(),)
 
 
 @api_registry.register
@@ -806,7 +806,7 @@ def sin(x:TN)->TN:
 
 def _cos_grad(result_tensor:TN):
     x = result_tensor.fromvars[0]
-    return (result_tensor.grad_value * (-sin(x).conj()),)
+    return (result_tensor._grad_value * (-sin(x).conj()),)
 
 
 @api_registry.register
@@ -842,7 +842,7 @@ def cos(x:TN)->TN:
 
 def _tan_grad(result_tensor:TN):
     x = result_tensor.fromvars[0]
-    return (result_tensor.grad_value * (1. + (tan(x.conj()))**2.),)
+    return (result_tensor._grad_value * (1. + (tan(x.conj()))**2.),)
 
 
 @api_registry.register
@@ -910,7 +910,7 @@ def csc(x:TN)->TN:
 
 
 def _arcsin_derivative(result:TN, x:TN)->tuple[TN]:
-    return (result.grad_value * (1./sqrt(1. - x**2.).conj()),)
+    return (result._grad_value * (1./sqrt(1. - x**2.).conj()),)
 
 
 @api_registry.register
@@ -922,7 +922,7 @@ def arcsin(x:TN)->TN:
 
 
 def _arccos_derivative(result:TN, x:TN)->tuple[TN]:
-    return (result.grad_value * (-1.0/sqrt(1. - x**2.).conj()),)
+    return (result._grad_value * (-1.0/sqrt(1. - x**2.).conj()),)
 
 
 @api_registry.register
@@ -934,7 +934,7 @@ def arccos(x:TN)->TN:
 
 
 def _arctan_derivative(result:TN, x:TN)->tuple[TN]:
-    return (result.grad_value * (1./(1. + x**2.).conj()),)
+    return (result._grad_value * (1./(1. + x**2.).conj()),)
 
 
 @api_registry.register
@@ -946,7 +946,7 @@ def arctan(x:TN)->TN:
 
 
 def _sinh_derivative(result:TN, x:TN)->tuple[TN]:
-    return (result.grad_value * cosh(x).conj(),)
+    return (result._grad_value * cosh(x).conj(),)
 
 
 @api_registry.register
@@ -976,7 +976,7 @@ def sinh(x:TN)->TN:
 
 
 def _cosh_derivative(result:TN, x:TN)->tuple[TN]:
-    return (result.grad_value * sinh(x).conj(),)
+    return (result._grad_value * sinh(x).conj(),)
 
 
 @api_registry.register
@@ -1006,7 +1006,7 @@ def cosh(x:TN)->TN:
 
 
 def _tanh_derivative(result:TN, x:TN)->tuple[TN]:
-    return (result.grad_value * (1.0 - tanh(x)**2.0).conj(),)
+    return (result._grad_value * (1.0 - tanh(x)**2.0).conj(),)
 
 
 @api_registry.register
@@ -1105,7 +1105,7 @@ def csch(x:TN)->TN:
 
 
 def _arcsinh_derivative(result:TN, x:TN)->tuple[TN]:
-    return (result.grad_value * (1. / sqrt(x**2. + 1.).conj()),)
+    return (result._grad_value * (1. / sqrt(x**2. + 1.).conj()),)
 
 
 @api_registry.register
@@ -1135,7 +1135,7 @@ def arcsinh(x:TN)->TN:
 
 
 def _arccosh_derivative(result:TN, x:TN)->tuple[TN]:
-    return (result.grad_value * (1. / sqrt(x**2. - 1.).conj()),)
+    return (result._grad_value * (1. / sqrt(x**2. - 1.).conj()),)
 
 
 @api_registry.register
@@ -1165,7 +1165,7 @@ def arccosh(x:TN)->TN:
 
 
 def _arctanh_derivative(result:TN, x:TN)->tuple[TN]:
-    return (result.grad_value * (1. / (1. - x**2.0).conj()),)
+    return (result._grad_value * (1. / (1. - x**2.0).conj()),)
 
 
 @api_registry.register
@@ -1220,7 +1220,7 @@ def sqrt(x:TN)->TN:
 
 def _log_grad(result_tensor:TN):
     x = result_tensor.fromvars[0]
-    return (result_tensor.grad_value * (1. / x.conj()),)
+    return (result_tensor._grad_value * (1. / x.conj()),)
 
 
 @api_registry.register
@@ -1313,7 +1313,7 @@ def log10(x:TN)->TN:
     
 
 def _exp_grad(result_tensor:TN):
-    return (result_tensor.grad_value * result_tensor.conj(),)
+    return (result_tensor._grad_value * result_tensor.conj(),)
 
 
 @api_registry.register
@@ -1418,7 +1418,7 @@ def _maximum_grad(result_tensor: TN):
     ).type(input_tensor.dtype)
 
     # 应用梯度掩码
-    grad = result_tensor.grad_value * input_mask
+    grad = result_tensor._grad_value * input_mask
 
     # 处理广播情况
     input_shape = input_tensor.shape
@@ -1442,7 +1442,7 @@ def _maximum_grad(result_tensor: TN):
     ).type(other_tensor.dtype)
 
     # 应用梯度掩码
-    grad = result_tensor.grad_value * other_mask
+    grad = result_tensor._grad_value * other_mask
 
     # 处理广播情况
     other_shape = other_tensor.shape
@@ -1528,7 +1528,7 @@ def _minimum_grad(result_tensor: TN):
     ).type(input_tensor.dtype)
 
     # 应用梯度掩码
-    grad = result_tensor.grad_value * input_mask
+    grad = result_tensor._grad_value * input_mask
 
     # 处理广播情况
     input_shape = input_tensor.shape
@@ -1552,7 +1552,7 @@ def _minimum_grad(result_tensor: TN):
     ).type(other_tensor.dtype)
 
     # 应用梯度掩码
-    grad = result_tensor.grad_value * other_mask
+    grad = result_tensor._grad_value * other_mask
 
     # 处理广播情况
     other_shape = other_tensor.shape
@@ -1679,7 +1679,7 @@ def _sumall_derivative(result: TN, *args) -> tuple:
     非 TN 参数不占梯度元组的位置；不需要梯度的 TN 参数返回 None。
 
     Args:
-        result: sumall() 的输出张量，可通过 result.grad_value 获取上游梯度
+        result: sumall() 的输出张量，可通过 result._grad_value 获取上游梯度
         *args: sumall() 的全部输入参数
 
     Returns:
@@ -1695,11 +1695,11 @@ def _sumall_derivative(result: TN, *args) -> tuple:
 
         input_shape = arg.shape
         if input_shape == result.shape:
-            grads.append(result.grad_value)
+            grads.append(result._grad_value)
         else:
-            # 计算广播轴并对grad_value进行求和
+            # 计算广播轴并对 _grad_value 进行求和
             broadcast_axes = _get_broadcast_axis(result.shape, input_shape)
-            grads.append(sum(result.grad_value, dim=broadcast_axes, keepdim=False)._reshape(input_shape))
+            grads.append(sum(result._grad_value, dim=broadcast_axes, keepdim=False)._reshape(input_shape))
     return tuple(grads)
 
 
@@ -1845,9 +1845,9 @@ def _prod_grad(result_tensor:TN):
 
     # 如果prod计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
     if keepdims == False:
-        new_result_grad = result_tensor.grad_value.unsqueeze(dim)
+        new_result_grad = result_tensor._grad_value.unsqueeze(dim)
     else:
-        new_result_grad = result_tensor.grad_value
+        new_result_grad = result_tensor._grad_value
     
     x = result_tensor.fromvars[0]
     
@@ -2015,7 +2015,7 @@ def _cumsum_grad(result_tensor: TN):
     dim, dtype_param = result_tensor.parms[0]  # 直接使用转换后的dtype
     
     # 获取梯度值，使用Riemann的张量操作保持计算图
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
     
     # 反向累积和：从后向前累积
     # 例如：[g1, g2, g3, g4] -> [g1+g2+g3+g4, g2+g3+g4, g3+g4, g4]
@@ -2105,7 +2105,7 @@ def _sort_grad(result_tensor: TN):
     # 获取排序时使用的索引、排序维度
     sorted_indices, sort_dim = result_tensor.parms[0]
     # 获取梯度值
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
     
     # 创建与输入形状相同的零张量
     grad = zeros_like(input_tensor)
@@ -2223,7 +2223,7 @@ def _topk_grad(result_tensor: TN):
     # 获取topk选择时使用的索引和维度
     topk_indices, topk_dim = result_tensor.parms[0]
     # 获取梯度值
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
 
     # 创建与输入形状相同的零张量
     grad = zeros_like(input_tensor)
@@ -2439,9 +2439,9 @@ def _var_grad(result_tensor:TN):
     # 如果keepdim为False，需要扩展梯度维度以匹配diff的维度
     # unsqueeze支持int、tuple和None，dim=None时直接返回原张量
     if not keepdim:
-        grad_value = result_tensor.grad_value.unsqueeze(dim)
+        grad_value = result_tensor._grad_value.unsqueeze(dim)
     else:
-        grad_value = result_tensor.grad_value
+        grad_value = result_tensor._grad_value
     
     # 计算最终梯度
     grad = grad_value * diff * factor
@@ -3282,9 +3282,9 @@ def _setat_grad(result_tensor:TN):
     index = result_tensor.parms[0]
 
     # result_tensor就是赋值结果的副本
-    # 将grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
-    right_var_grad = result_tensor.grad_value[index]
-    left_var_grad = result_tensor.grad_value.setat(index,0.)
+    # 将 _grad_value 按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor._grad_value[index]
+    left_var_grad = result_tensor._grad_value.setat(index,0.)
     return (left_var_grad, right_var_grad)
 
 
@@ -3296,12 +3296,12 @@ def _setat_inplace_grad(result_tensor:TN):
     index = result_tensor._inplace_ops[0].stored_index
 
     # result_tensor就是原地赋值时的self
-    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
-    right_var_grad = result_tensor.grad_value[index]
+    # 将self._grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor._grad_value[index]
     # 由于self的在原地索引赋值时index位置已被右值覆盖，
-    # 所以要将self的grad_value中索引位置的梯度设为0
-    clone_self_grad = result_tensor.grad_value.setat(index,0.)
-    result_tensor.grad_value = clone_self_grad
+    # 所以要将self._grad_value中索引位置的梯度设为0
+    clone_self_grad = result_tensor._grad_value.setat(index,0.)
+    result_tensor._grad_value = clone_self_grad
 
     return right_var_grad
 
@@ -3317,9 +3317,9 @@ def _addat_grad(result_tensor:TN):
     index = result_tensor.parms[0]
 
     # result_tensor就是赋值结果的副本
-    # 将grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
-    right_var_grad = result_tensor.grad_value[index]
-    return (result_tensor.grad_value, right_var_grad)
+    # 将 _grad_value 按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor._grad_value[index]
+    return (result_tensor._grad_value, right_var_grad)
 
 
 def _addat_inplace_grad(result_tensor:TN):
@@ -3330,8 +3330,8 @@ def _addat_inplace_grad(result_tensor:TN):
     index = result_tensor._inplace_ops[0].stored_index
 
     # result_tensor就是原地赋值时的self
-    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
-    right_var_grad = result_tensor.grad_value[index]
+    # 将self._grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = result_tensor._grad_value[index]
     return right_var_grad
 
 
@@ -3346,9 +3346,9 @@ def _subat_grad(result_tensor:TN):
     index = result_tensor.parms[0]
 
     # result_tensor就是赋值结果的副本
-    # 将grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
-    right_var_grad = -result_tensor.grad_value[index]
-    return (result_tensor.grad_value, right_var_grad)
+    # 将 _grad_value 按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = -result_tensor._grad_value[index]
+    return (result_tensor._grad_value, right_var_grad)
 
 
 def _subat_inplace_grad(result_tensor:TN):
@@ -3359,8 +3359,8 @@ def _subat_inplace_grad(result_tensor:TN):
     index = result_tensor._inplace_ops[0].stored_index
 
     # result_tensor就是原地赋值时的self
-    # 将self的grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
-    right_var_grad = -result_tensor.grad_value[index]
+    # 将self._grad_value按索引取值就是要传递给所依赖的右值的梯度，索引取值结果是一个新张量
+    right_var_grad = -result_tensor._grad_value[index]
     return right_var_grad
 
 
@@ -3376,9 +3376,9 @@ def _mulat_grad(result_tensor:TN):
     right_var = result_tensor.fromvars[1]
     index = result_tensor.parms[0]
 
-    left_var_grad = result_tensor.grad_value[index] * right_var.conj()
-    right_var_grad = result_tensor.grad_value[index] * left_var[index].conj()
-    return (result_tensor.grad_value.setat(index,left_var_grad), right_var_grad)
+    left_var_grad = result_tensor._grad_value[index] * right_var.conj()
+    right_var_grad = result_tensor._grad_value[index] * left_var[index].conj()
+    return (result_tensor._grad_value.setat(index,left_var_grad), right_var_grad)
 
 
 def _mulat_inplace_grad(result_tensor: TN):
@@ -3391,14 +3391,14 @@ def _mulat_inplace_grad(result_tensor: TN):
     left_var = record.left_copy
     index = record.stored_index
 
-    result_grad = result_tensor.grad_value[index]
+    result_grad = result_tensor._grad_value[index]
     right_var_grad = result_grad * left_var.conj()
 
     # 由于self的在原地索引赋值时index位置已被乘积值覆盖，
-    # 所以要将self的grad_value中索引位置的梯度设为左值的梯度
+    # 所以要将self._grad_value中索引位置的梯度设为左值的梯度
     left_var_grad = result_grad * right_var.conj()
-    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)
-    result_tensor.grad_value = clone_self_grad
+    clone_self_grad = result_tensor._grad_value.setat(index,left_var_grad)
+    result_tensor._grad_value = clone_self_grad
 
     return right_var_grad
 
@@ -3438,8 +3438,8 @@ def _negat_inplace_grad(result_tensor: TN) -> TN:
     """
     index = result_tensor._inplace_ops[0].stored_index
 
-    result_grad = result_tensor.grad_value[index]
-    result_tensor.grad_value = result_tensor.grad_value.setat(index, -result_grad)
+    result_grad = result_tensor._grad_value[index]
+    result_tensor._grad_value = result_tensor._grad_value.setat(index, -result_grad)
 
     return _placeholder_zero_grad(result_tensor)
 
@@ -3453,9 +3453,9 @@ def _absat_inplace_grad(result_tensor: TN) -> TN:
     left_copy = record.left_copy
     index = record.stored_index
 
-    result_grad = result_tensor.grad_value[index]
+    result_grad = result_tensor._grad_value[index]
     left_grad = result_grad * left_copy._get_array_lib().sign(left_copy._array)
-    result_tensor.grad_value = result_tensor.grad_value.setat(index, left_grad)
+    result_tensor._grad_value = result_tensor._grad_value.setat(index, left_grad)
 
     return _placeholder_zero_grad(result_tensor)
 
@@ -3471,9 +3471,9 @@ def _divat_grad(result_tensor:TN):
     right_var = result_tensor.fromvars[1]
     index = result_tensor.parms[0]
 
-    left_var_grad = result_tensor.grad_value[index] / right_var.conj()
-    right_var_grad = result_tensor.grad_value[index] * (-result_tensor[index]/right_var).conj()
-    return (result_tensor.grad_value.setat(index,left_var_grad), right_var_grad)
+    left_var_grad = result_tensor._grad_value[index] / right_var.conj()
+    right_var_grad = result_tensor._grad_value[index] * (-result_tensor[index]/right_var).conj()
+    return (result_tensor._grad_value.setat(index,left_var_grad), right_var_grad)
 
 
 def _divat_inplace_grad(result_tensor: TN):
@@ -3484,14 +3484,14 @@ def _divat_inplace_grad(result_tensor: TN):
     right_var = result_tensor.fromvars[0]
     index = result_tensor._inplace_ops[0].stored_index
 
-    result_grad = result_tensor.grad_value[index]
+    result_grad = result_tensor._grad_value[index]
     right_var_grad = result_grad * (-result_tensor[index]/right_var).conj()
 
     # 由于self的在原地索引赋值时index位置已被覆盖，
-    # 所以要将self的grad_value中索引位置的梯度设为左值的梯度
+    # 所以要将self._grad_value中索引位置的梯度设为左值的梯度
     left_var_grad = result_grad / right_var.conj()
-    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)
-    result_tensor.grad_value = clone_self_grad
+    clone_self_grad = result_tensor._grad_value.setat(index,left_var_grad)
+    result_tensor._grad_value = clone_self_grad
 
     return right_var_grad
 
@@ -3509,9 +3509,9 @@ def _modat_grad(result_tensor:TN):
     index = result_tensor.parms[0]
 
     # d(left % right)/d(right) = -floor(left/right)
-    right_var_grad = -result_tensor.grad_value[index] * floor(left_var[index] / right_var)
+    right_var_grad = -result_tensor._grad_value[index] * floor(left_var[index] / right_var)
     # d(left % right)/d(left) = 1，结果梯度即为左值梯度
-    return (result_tensor.grad_value, right_var_grad)
+    return (result_tensor._grad_value, right_var_grad)
 
 
 def _modat_inplace_grad(result_tensor: TN):
@@ -3524,13 +3524,13 @@ def _modat_inplace_grad(result_tensor: TN):
     left_var = record.left_copy
     index = record.stored_index
 
-    result_grad = result_tensor.grad_value[index]
+    result_grad = result_tensor._grad_value[index]
     right_var_grad = -result_grad * floor(left_var / right_var)
 
     # 由于self在原地索引赋值时index位置已被取余结果覆盖，
-    # 所以要将self的grad_value中索引位置的梯度设为左值的梯度（导数恒为1）
-    clone_self_grad = result_tensor.grad_value.setat(index, result_grad)
-    result_tensor.grad_value = clone_self_grad
+    # 所以要将self._grad_value中索引位置的梯度设为左值的梯度（导数恒为1）
+    clone_self_grad = result_tensor._grad_value.setat(index, result_grad)
+    result_tensor._grad_value = clone_self_grad
 
     return right_var_grad
 
@@ -3547,10 +3547,10 @@ def _powat_grad(result_tensor:TN):
     right_var = result_tensor.fromvars[1]
     index = result_tensor.parms[0]
 
-    result_grad = result_tensor.grad_value[index]
+    result_grad = result_tensor._grad_value[index]
     left_var_grad = result_grad * (right_var * (left_var[index] ** (right_var - 1.))).conj()
     right_var_grad = result_grad * result_tensor[index].conj() * log(left_var[index].conj())
-    return (result_tensor.grad_value.setat(index,left_var_grad), right_var_grad)
+    return (result_tensor._grad_value.setat(index,left_var_grad), right_var_grad)
 
 
 def _powat_inplace_grad(result_tensor: TN):
@@ -3563,14 +3563,14 @@ def _powat_inplace_grad(result_tensor: TN):
     left_var = record.left_copy
     index = record.stored_index
 
-    result_grad = result_tensor.grad_value[index]
+    result_grad = result_tensor._grad_value[index]
     right_var_grad = result_grad * result_tensor[index].conj() * log(left_var.conj())
 
     # 由于self的在原地索引赋值时index位置已被乘积值覆盖，
-    # 所以要将self的grad_value中索引位置的梯度设为左值的梯度
+    # 所以要将self._grad_value中索引位置的梯度设为左值的梯度
     left_var_grad = result_grad * (right_var * (left_var ** (right_var - 1.))).conj()
-    clone_self_grad = result_tensor.grad_value.setat(index,left_var_grad)
-    result_tensor.grad_value = clone_self_grad
+    clone_self_grad = result_tensor._grad_value.setat(index,left_var_grad)
+    result_tensor._grad_value = clone_self_grad
 
     return right_var_grad
 
@@ -5051,7 +5051,7 @@ def _split_grad(result_tensor: TN):
     # 累加归一化后的梯度
     slice_obj = [slice(None)] * parent._array.ndim
     slice_obj[dim] = slice(int(start), int(end))
-    grad[tuple(slice_obj)] = result_tensor.grad_value
+    grad[tuple(slice_obj)] = result_tensor._grad_value
     
     return (grad,)
 
@@ -5252,7 +5252,7 @@ def tensor_split(input: TN, indices_or_sections, dim: int = 0) -> tuple[TN, ...]
 
 def _stack_grad(result_tensor: TN):
     dim = result_tensor.parms[0]
-    grad = result_tensor.grad_value
+    grad = result_tensor._grad_value
     slices = [slice(None)] * grad._array.ndim
     grads = []
     for i in range(len(result_tensor.fromvars)):
@@ -5283,7 +5283,7 @@ def stack(tensors: tuple[TN, ...]|list[TN], dim: int = 0) -> TN:
 
 def _concatenate_grad(result_tensor: TN):
     dim = result_tensor.parms[0]
-    grad_data = result_tensor.grad_value
+    grad_data = result_tensor._grad_value
     
     # 获取所有输入张量在拼接轴上的尺寸
     split_sizes = [t._array.shape[dim] for t in result_tensor.fromvars]
@@ -5594,7 +5594,7 @@ def repeat(input: TN, repeats: tuple[int, ...]) -> TN:
     if result.requires_grad:
         def _repeat_grad(result_tensor: TN):
             # 重复操作的梯度是将结果的梯度在重复的维度上求和
-            grad_value = result_tensor.grad_value
+            grad_value = result_tensor._grad_value
             
             # 对于每个维度，从最后一个维度开始求和
             for j in reversed(range(ndim)):
@@ -6398,7 +6398,7 @@ def _einsum_grad(result_tensor: TN):
 
     调用者: einsum 前向注册的 _grad_rule
     """
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
     input_eqs = result_tensor.parms[1]
     output_eq = result_tensor.parms[2]
     grad_infos = result_tensor.parms[3]
@@ -6801,7 +6801,7 @@ def _tril_grad(result_tensor: TN):
     """
     diagonal = result_tensor.parms[0]
     # 重要：使用tril函数获取梯度的下三角部分，而不是numpy.tril
-    return (tril(result_tensor.grad_value, diagonal),)
+    return (tril(result_tensor._grad_value, diagonal),)
 
 
 @api_registry.register
@@ -6843,7 +6843,7 @@ def _triu_grad(result_tensor: TN):
     """
     diagonal = result_tensor.parms[0]
     # 重要：使用triu函数获取梯度的上三角部分，而不是numpy.triu
-    return (triu(result_tensor.grad_value, diagonal),)
+    return (triu(result_tensor._grad_value, diagonal),)
 
 
 @api_registry.register
@@ -7479,7 +7479,7 @@ def attach_zero_grad_sources(input:TN, sources:tuple|list) -> TN:
     result.fromvars = (input,) + tuple(valid_sources)
 
     def _attach_zero_grad_sources_grad(result:TN):
-        return (result.grad_value,) + tuple(
+        return (result._grad_value,) + tuple(
             zeros_like(var) for var in result.fromvars[1:]
         )
 
@@ -7554,7 +7554,7 @@ def map_value_connect_grad(tensors:tuple|list):
 
     def _map_value_connect_grad_rule(result:TN):
         # fromvars 为 (原始输出, 其他输出1, ...)：第0位透传梯度，其余为零梯度
-        return (result.grad_value,) + tuple(
+        return (result._grad_value,) + tuple(
             zeros_like(var) for var in result.fromvars[1:]
         )
 

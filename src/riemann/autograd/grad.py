@@ -50,7 +50,7 @@ from typing import Callable, Any
 import numpy as np
 # 显式导入所需符号：星号导入会把 abs/round 等内置名遮蔽成张量版本，
 # 容易在误差比较等纯数值场景中误用（历史上 gradcheck 就踩过这个坑）
-from ..core import TN, api_registry, set_grad_enabled, tensor, zeros_like
+from ..core import TN, stack, set_grad_enabled, tensor, zeros_like, api_registry
 from ..core.tensordef import (_same_device,
                             _init_calc_graph,
                             _backward_with_hooks,
@@ -165,11 +165,11 @@ def _merge_seeds_and_ready_roots(roots, seeds):
     两个关键处理：
       1. 去重合并：同一张量在 roots 中多次出现时按 id 合并其 seed，
          与 torch 一致（重复根等价于 seed 相加，而非各自独立传播）；
-      2. 就绪判定：只有 rcv_grad_count == 0 的根才能立即入栈。
+      2. 就绪判定：只有 _rcv_grad_count == 0 的根才能立即入栈。
          被其它根依赖的根计数 > 0，必须等上游根的梯度传到后再入栈。
 
-    前置条件：_init_calc_graph 已重置所有可达节点的 grad_value 并重建
-    rcv_grad_count。本函数只做赋值与入栈，不重复初始化图。
+    前置条件：_init_calc_graph 已重置所有可达节点的 _grad_value 并重建
+    _rcv_grad_count。本函数只做赋值与入栈，不重复初始化图。
     """
     merged = {}
     for root, seed in zip(roots, seeds):
@@ -179,8 +179,8 @@ def _merge_seeds_and_ready_roots(roots, seeds):
 
     stack = []
     for root, seed in merged.values():
-        root.grad_value = seed
-        if root.rcv_grad_count == 0:
+        root._grad_value = seed
+        if root._rcv_grad_count == 0:
             stack.append(root)
     return stack
 
@@ -208,9 +208,9 @@ def backward(tensors,
         None: 梯度结果直接累积到相关张量的 .grad 属性中。
 
     关键点：
-        - grad_tensors 是各根的初始余切，直接赋给根的 grad_value，不做累加；
+        - grad_tensors 是各根的初始余切，直接赋给根的 _grad_value，不做累加；
           .grad 的累加发生在反向遍历的 _save_grad 阶段。
-        - 多根时若某根同时是另一个根的前驱，其 rcv_grad_count > 0，
+        - 多根时若某根同时是另一个根的前驱，其 _rcv_grad_count > 0，
           要等上游根传播到达后才入栈，由 _merge_seeds_and_ready_roots 处理。
         - 重复根等价于 seed 相加（由 _merge_seeds_and_ready_roots 去重合并）。
         - inputs=None 时：叶子总是累积 .grad，中间节点仅 retains_grad=True 时累积；
@@ -381,7 +381,7 @@ def grad(outputs:TN|list[TN]|tuple[TN],
 
             slots = input_slots.get(id(item))
             if slots is not None:
-                grad_val = item.grad_value if create_graph else item.grad_value.detach()
+                grad_val = item._grad_value if create_graph else item._grad_value.detach()
                 for i in slots:
                     grad_list[i] = grad_val
                 saved_count += len(slots)
@@ -392,7 +392,7 @@ def grad(outputs:TN|list[TN]|tuple[TN],
             # 只有收齐全部上游贡献（计数归零）的来源才会被加入待入栈集合
             vars_received_grad = set()
             _propagate_grad_to_sources(item, vars_received_grad)
-            item.grad_value = None
+            item._grad_value = None
             stack.extend(vars_received_grad)
 
     if not allow_unused:
@@ -424,8 +424,7 @@ def diff(tensor, *args, create_graph=False):
     异常:
         ValueError: tensor 非标量或无梯度；args 含非法项
     """
-    _rstack = api_registry.get("stack")
-
+    
     # ---- 1. 前置校验 ----
     if tensor.ndim > 0 or not tensor.requires_grad:
         raise ValueError("tensor must be a scalar tensor with requires_grad=True")
@@ -501,7 +500,7 @@ def diff(tensor, *args, create_graph=False):
                     else:
                         elem_grads.append(g_elem)
 
-                stacked = _rstack(elem_grads, dim=0)
+                stacked = stack(elem_grads, dim=0)
                 target_shape = current.shape + var.shape
                 current = stacked if stacked.shape == target_shape \
                     else stacked.reshape(*target_shape)
@@ -985,7 +984,7 @@ class Function:
             
             def _apply_grad(result_tensor: TN):
                 # 执行一次反向传播
-                grad_inputs = cls.backward(ctx, result_tensor.grad_value)
+                grad_inputs = cls.backward(ctx, result_tensor._grad_value)
                 
                 # 确保返回值是元组
                 if not isinstance(grad_inputs, tuple):

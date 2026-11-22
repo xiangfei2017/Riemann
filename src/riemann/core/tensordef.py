@@ -96,11 +96,6 @@ class APIRegistry:
 api_registry = APIRegistry()
 
 
-def _call_regapi(name: str, *args, **kwargs):
-    """统一入口，根据名字调用注册函数"""
-    return api_registry.get(name)(*args, **kwargs)
-
-
 # 原地操作的自包含记录：反向梯度规则和 __setitem__ 重放都只读这一条记录，
 # 不再依赖 _inplace_ops 与 fromvars/parms 的下标一一对应关系。
 #   method:       可用于重放的原地方法名；None 表示该操作不可重放
@@ -183,24 +178,8 @@ class TN:
                 - Python 数组like（list、tuple、range）: 按当前默认设备转换为 numpy 或 cupy 数组
                 - Python 数值标量（int、float、complex、bool）: 按当前默认设备转换为 numpy 或 cupy 的0维数组
             requires_grad: 是否需要计算梯度，默认为False
-        
-        属性：
-            _array (np.ndarray | cp.ndarray): 存储张量数据的NumPy或Cupy数组
-            fromvars (tuple): 按正向运算顺序记录来源，可同时含 TN 与非 TN 操作数
-                （如 add(x, 2.0)、where(cond, x, 1.0)）。仅当结果 requires_grad=True
-                时才记录，因此非空 fromvars 至少含一个 requires_grad=True 的 TN；
-                全为 False 时保持空元组，节点即叶子
-            parms (tuple): 算子附加参数（如 sum 的 dim、where 的 cond），不参与反向图遍历
-            _grad_rule (callable | None): 局部梯度规则，返回与 fromvars 等长且按位置
-                对齐的元组；非 TN 或无需梯度的来源用 None 占位
-            grad (TN): 与data的shape一致的张量，用于存放梯度，初始化为None以节省空间
-            requires_grad (bool): 是否需要计算梯度，默认为False
-            retains_grad (bool): 是否保留梯度，默认为False
-            rcv_grad_count (int): 在计算图中可接收梯度的计数，计算梯度时临时使用
-            grad_value (TN): 用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
-            _output_of (Module|None): 记录产生该输出张量的模块，用于反向传播钩子机制
-            _module_input_of (Module|None): 记录该张量作为哪个模块的输入，用于反向传播钩子机制
         """
+
         if data is None:
             # 无参构造：创建空张量，dtype 跟随 get_default_dtype()，
             # 设备跟随 get_default_device()（与 torch.empty(0) 的全局默认设备语义一致）
@@ -237,25 +216,26 @@ class TN:
             except:
                 raise TypeError("data need to be numpy or cupy array or scalar")
         
-        self._array:np.ndarray|cp.ndarray = arr
-        self.requires_grad = requires_grad
+        self._array:np.ndarray|cp.ndarray = arr     # 存储张量数据的NumPy或Cupy数组
+        self.requires_grad = requires_grad          # 是否需要计算梯度，默认为False
+        self.retains_grad = False       # 是否保留梯度，默认为False
+        self.grad:TN = None             #与_array的shape一致的张量对象，用于存放梯度，
+                                        #初始化为None是为了节省空间，计算梯度时才分配空间
         
-        self.fromvars = ()              #按正向运算顺序记录来源（可含非 TN）；仅
-                                        #requires_grad=True 的节点才记录，全 False 时为空
+        self.fromvars = ()              #正向运算顺序记录来源，可同时含 TN 与非 TN 操作数
+                                        #（如 add(x, 2.0)、where(cond, x, 1.0)）。仅当结果 requires_grad=True
+                                        #时才记录，因此非空 fromvars 至少含一个 requires_grad=True 的 TN；
+                                        #全为 False 时保持空元组，节点即叶子
         self.parms = ()                 #算子附加参数（如sum的dim、where的cond），不参与图遍历
         self._grad_rule = None          #梯度规则：接收本节点，返回与fromvars等长且按位置对齐
                                         #的梯度元组，非可微来源用None占位
         self._inplace_ops = ()          #原地操作记录，最新在前，元素为InplaceRecord；
                                         #同时供反向梯度规则和__setitem__重放使用
-        self.grad:TN = None             #与data的shape一致的张量对象，用于存放梯度，
-                                        #初始化为None是为了节省空间，计算梯度时才分配空间
-        self.retains_grad = False
+        self._rcv_grad_count = 0        #在具体计算图中，self可接收梯度的计数，计算梯度时临时使用
+        self._grad_value:TN = None      #用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
         
-        self.rcv_grad_count = 0         #在具体计算图中，self可接收梯度的计数，计算梯度时临时使用
-        self.grad_value:TN = None       #用于计算反向传播的梯度，最终计算结果保存在grad里，该变量用于临时计算
-        
-        self._output_of = None          #记录该张量是哪个模块的输出（单引用）
-        self._module_input_of = None    #记录该张量是哪个模块的输入（单引用）
+        self._output_of = None          #记录该张量是哪个模块的输出（单引用），用于反向传播钩子机制
+        self._module_input_of = None    #记录该张量是哪个模块的输入（单引用），用于反向传播钩子机制
         
         return
     
@@ -275,7 +255,7 @@ class TN:
         返回:
             str: 格式化后的张量字符串表示
         """
-        return _call_regapi('_disp', self, format_spec)
+        return api_registry._disp(self, format_spec)
 
     def __repr__(self):
         """调用__disp__()使用默认格式显示对象"""
@@ -547,8 +527,8 @@ class TN:
         if result.requires_grad:
             result.fromvars = (self,)
             result.parms = ()
-            # 实部梯度：result.grad_value 需转换为复数后返回
-            result._grad_rule = lambda result: (result.grad_value + 0.0j,)
+            # 实部梯度：result._grad_value 需转换为复数后返回
+            result._grad_rule = lambda result: (result._grad_value + 0.0j,)
         return result
     
     @property
@@ -573,8 +553,8 @@ class TN:
         if result.requires_grad:
             result.fromvars = (self,)
             result.parms = ()
-            # 虚部梯度：grad_value 需转换为与虚部对应的复数后返回
-            result._grad_rule = lambda result: (1.0j * result.grad_value,)
+            # 虚部梯度：result._grad_value 需转换为与虚部对应的复数后返回
+            result._grad_rule = lambda result: (1.0j * result._grad_value,)
         return result
 
     def conj(self):
@@ -601,7 +581,7 @@ class TN:
         if ret.requires_grad:
             ret.fromvars = (self,)
             # 共轭操作的梯度是元素级别的共轭
-            ret._grad_rule = lambda result: (result.grad_value.conj(),)
+            ret._grad_rule = lambda result: (result._grad_value.conj(),)
         
         return ret
 
@@ -928,7 +908,7 @@ class TN:
                 ret.parms = ((self.dtype,self.device),)                
                 # 梯度需转换回原始数据类型和设备
                 ret._grad_rule = lambda result: (
-                    result.grad_value.to(
+                    result._grad_value.to(
                         dtype=result.parms[0][0],
                         device=result.parms[0][1],
                     ),
@@ -1018,7 +998,7 @@ class TN:
         
         if ret.requires_grad:
             ret.fromvars = (self,)
-            ret._grad_rule = lambda result: (result.grad_value,)
+            ret._grad_rule = lambda result: (result._grad_value,)
         
         return ret
 
@@ -1026,74 +1006,74 @@ class TN:
         return _getitem(self, index)
 
     def __setitem__(self, index, val):
-        return _call_regapi('_setitem', self, index, val)
+        return api_registry._setitem(self, index, val)
 
     # 原地/非原地成对接口：xxxat_ 直接在 self 上执行并记录依赖、返回 self；
     # xxxat 在副本上执行、返回新张量，self 不变。
     # 具体实现（ufunc.at 通用路径与全量索引向量化路径）已迁至 tensorfuncs。
     def setat_(self, index, val):
         """原地执行 self[index] = val（覆盖写），返回 self。"""
-        return _call_regapi('setat_', self, index, val)
+        return api_registry.setat_(self, index, val)
 
     def setat(self, index, val):
         """非原地执行 self[index] = val，返回新张量。"""
-        return _call_regapi('setat', self, index, val)
+        return api_registry.setat(self, index, val)
 
     def addat_(self, index, val):
         """原地执行 self[index] += val（重复索引累加），返回 self。"""
-        return _call_regapi('addat_', self, index, val)
+        return api_registry.addat_(self, index, val)
 
     def addat(self, index, val):
         """非原地执行 self[index] += val，返回新张量。"""
-        return _call_regapi('addat', self, index, val)
+        return api_registry.addat(self, index, val)
 
     def subat_(self, index, val):
         """原地执行 self[index] -= val（重复索引累加），返回 self。"""
-        return _call_regapi('subat_', self, index, val)
+        return api_registry.subat_(self, index, val)
 
     def subat(self, index, val):
         """非原地执行 self[index] -= val，返回新张量。"""
-        return _call_regapi('subat', self, index, val)
+        return api_registry.subat(self, index, val)
     
     def mulat_(self, index, val):
         """原地执行 self[index] *= val（重复索引累加），返回 self。"""
-        return _call_regapi('mulat_', self, index, val)
+        return api_registry.mulat_(self, index, val)
 
     def mulat(self, index, val):
         """非原地执行 self[index] *= val，返回新张量。"""
-        return _call_regapi('mulat', self, index, val)
+        return api_registry.mulat(self, index, val)
 
     def divat_(self, index, val):
         """原地执行 self[index] /= val（重复索引累加），返回 self。"""
-        return _call_regapi('divat_', self, index, val)
+        return api_registry.divat_(self, index, val)
 
     def divat(self, index, val):
         """非原地执行 self[index] /= val，返回新张量。"""
-        return _call_regapi('divat', self, index, val)
+        return api_registry.divat(self, index, val)
 
     def powat_(self, index, val):
         """原地执行 self[index] **= val（重复索引累加），返回 self。"""
-        return _call_regapi('powat_', self, index, val)
+        return api_registry.powat_(self, index, val)
 
     def powat(self, index, val):
         """非原地执行 self[index] **= val，返回新张量。"""
-        return _call_regapi('powat', self, index, val)
+        return api_registry.powat(self, index, val)
 
     def floordivat_(self, index, val):
         """原地执行 self[index] //= val（重复索引累加），返回 self。"""
-        return _call_regapi('floordivat_', self, index, val)
+        return api_registry.floordivat_(self, index, val)
 
     def floordivat(self, index, val):
         """非原地执行 self[index] //= val，返回新张量。"""
-        return _call_regapi('floordivat', self, index, val)
+        return api_registry.floordivat(self, index, val)
 
     def modat_(self, index, val):
         """原地执行 self[index] %= val（重复索引累加），返回 self。"""
-        return _call_regapi('modat_', self, index, val)
+        return api_registry.modat_(self, index, val)
 
     def modat(self, index, val):
         """非原地执行 self[index] %= val，返回新张量。"""
-        return _call_regapi('modat', self, index, val)
+        return api_registry.modat(self, index, val)
 
     def gather(self, dim: int, index:TN):
         """
@@ -1104,19 +1084,19 @@ class TN:
         :param index: 索引张量（dtype=int64）
         :return: 新TN实例，形状与index相同
         """
-        return _call_regapi('gather', self, dim, index)
+        return api_registry.gather(self, dim, index)
 
     def index_select(self, dim: int, index: TN) -> 'TN':
         """沿指定维度按索引选择元素，等价于 riemann.index_select(self, dim, index)"""
-        return _call_regapi('index_select', self, dim, index)
+        return api_registry.index_select(self, dim, index)
 
     def masked_select(self, mask: TN) -> 'TN':
         """按布尔掩码选择元素，返回一维张量，等价于 riemann.masked_select(self, mask)"""
-        return _call_regapi('masked_select', self, mask)
+        return api_registry.masked_select(self, mask)
 
     def take(self, index: TN) -> 'TN':
         """按扁平化下标选择元素，返回与 index 同形状的张量，等价于 riemann.take(self, index)"""
-        return _call_regapi('take', self, index)
+        return api_registry.take(self, index)
 
     def index_put_(self, indices, values, accumulate: bool = False) -> 'TN':
         """
@@ -1131,7 +1111,7 @@ class TN:
         返回:
             原地修改后的张量（self）
         """
-        return _call_regapi('index_put_', self, indices, values, accumulate)
+        return api_registry.index_put_(self, indices, values, accumulate)
 
     def scatter(self, dim, index, src=None, *, value=None):
         """
@@ -1146,7 +1126,7 @@ class TN:
         返回:
             新的填充后的张量
         """
-        return _call_regapi('scatter', self, dim, index, src, value=value)
+        return api_registry.scatter(self, dim, index, src, value=value)
 
     def scatter_(self, dim, index, src=None, *, value=None):
         """
@@ -1161,7 +1141,7 @@ class TN:
         返回:
             原地修改后的张量（self）
         """
-        return _call_regapi('scatter_', self, dim, index, src, value=value)
+        return api_registry.scatter_(self, dim, index, src, value=value)
 
     def scatter_add(self, dim, index, src):
         """
@@ -1175,7 +1155,7 @@ class TN:
         返回:
             原地修改后的张量（self）
         """
-        return _call_regapi('scatter_add', self, dim, index, src)
+        return api_registry.scatter_add(self, dim, index, src)
 
     def scatter_add_(self, dim, index, src):
         """
@@ -1189,7 +1169,7 @@ class TN:
         返回:
             原地修改后的张量（self）
         """
-        return _call_regapi('scatter_add_', self, dim, index, src)
+        return api_registry.scatter_add_(self, dim, index, src)
 
     def numpy(self):
         """
@@ -1345,7 +1325,7 @@ class TN:
         '''
         计算张量的迹（对角线元素的和）
         '''
-        return _call_regapi("trace", self)
+        return api_registry.trace(self)
 
     @property
     def mT(self) -> TN:
@@ -1452,11 +1432,11 @@ class TN:
 
     def neg_(self):
         """就地取负，等价于 torch.Tensor.neg_（实现位于 tensorfuncs）。"""
-        return _call_regapi('neg_', self)
+        return api_registry.neg_(self)
 
     def abs_(self):
         """就地取绝对值，等价于 torch.Tensor.abs_（实现位于 tensorfuncs）。"""
-        return _call_regapi('abs_', self)
+        return api_registry.abs_(self)
 
     def add_(self,other):
         """
@@ -1818,8 +1798,8 @@ class TN:
         self._grad_rule = None
         self._inplace_ops = ()
         self.parms = ()
-        self.grad_value = None
-        self.rcv_grad_count = 0
+        self._grad_value = None
+        self._rcv_grad_count = 0
         return self
 
     def clone(self):
@@ -1836,7 +1816,7 @@ class TN:
         ret = TN(self._array.copy(), requires_grad = (is_grad_enabled() and self.requires_grad))
         if ret.requires_grad:
             ret.fromvars=(self,)
-            ret._grad_rule = lambda result: (result.grad_value,)
+            ret._grad_rule = lambda result: (result._grad_value,)
         return ret
     
     def copy(self):
@@ -1996,11 +1976,11 @@ class TN:
     
     def clamp_(self, min: float | TN | None=None, max: float | TN | None=None):
         """将张量的每个元素限制在 [min, max] 范围内（原地操作，实现位于 tensorfuncs）。"""
-        return _call_regapi('clamp_', self, min, max)
+        return api_registry.clamp_(self, min, max)
 
     def masked_fill_(self, mask: TN, value: any):  # type: ignore
         """原地将张量中掩码为 True 的元素填充为指定值（实现位于 tensorfuncs）。"""
-        return _call_regapi('masked_fill_', self, mask, value)
+        return api_registry.masked_fill_(self, mask, value)
     
     def masked_fill(self, mask: TN, value: Any) -> TN:
         """
@@ -2021,7 +2001,7 @@ class TN:
                 print(new_arr)  # 输出: [1, -1, 3, -1, 5]
                 print(arr)      # 输出: [1, 2, 3, 4, 5] (原张量不变)
         """
-        return _call_regapi('masked_fill', self, mask, value)
+        return api_registry.masked_fill(self, mask, value)
     
     def squeeze(self, dim: int|tuple|None = None):
         """
@@ -2339,10 +2319,10 @@ class TN:
         return ret
 
     def unfold(self, dimension: int, size: int, step: int = None) -> 'TN':
-        return _call_regapi("unfold", self, dimension, size, step)
+        return api_registry.unfold(self, dimension, size, step)
     
     def fold(self, dimension: int, size: int, step: int = None, output_size: int = None) -> 'TN':
-        return _call_regapi("fold", self, dimension, size, step, output_size)
+        return api_registry.fold(self, dimension, size, step, output_size)
     
     def flatten(self, start_dim=0, end_dim=-1) -> 'TN':
         """将张量从start_dim到end_dim的维度展平，自动支持梯度跟踪"""
@@ -2488,7 +2468,7 @@ class TN:
         """
         # 解析参数格式（支持 (2,3) 或 2,3 两种形式）
         new_shape = _validate_shape(size)
-        return _call_regapi('broadcast_to', self, new_shape)
+        return api_registry.broadcast_to(self, new_shape)
     
     def repeat(self, *repeats) -> TN:
         """
@@ -2504,13 +2484,13 @@ class TN:
             ValueError: 当repeats长度不等于张量维度时抛出
         """
         repeats = _validate_shape(repeats)
-        return _call_regapi('repeat', self, repeats)
+        return api_registry.repeat(self, repeats)
     
     def flip(self, dims:list[int]|tuple[int,...]) -> TN:
         return flip(self,dims)
 
     def clamp(self,min:float|None=None, max:float|None=None):  # type: ignore
-        return _call_regapi('clamp', self, min, max)
+        return api_registry.clamp(self, min, max)
     
     def where(self,cond,other):
         return where(cond,self,other)
@@ -2589,39 +2569,39 @@ class TN:
         return argsort(self,dim=dim,descending=descending)
 
     def sort(self,dim:int=-1,descending:bool=False):  # type: ignore
-        return _call_regapi('sort', self, dim=dim, descending=descending)
+        return api_registry.sort(self, dim=dim, descending=descending)
 
     def topk(self, k:int, dim:int=-1, largest:bool=True, sorted:bool=True):  # type: ignore
-        return _call_regapi('topk', self, k, dim=dim, largest=largest, sorted=sorted)
+        return api_registry.topk(self, k, dim=dim, largest=largest, sorted=sorted)
 
     def multinomial(self, num_samples:int, replacement:bool=False, *, generator=None):  # type: ignore
-        return _call_regapi('multinomial', self, num_samples, replacement, generator=generator)
+        return api_registry.multinomial(self, num_samples, replacement, generator=generator)
 
     def maximum(self, other):
-        return _call_regapi('maximum', self, other)
+        return api_registry.maximum(self, other)
     
     def minimum(self, other):
-        return _call_regapi('minimum', self, other)
+        return api_registry.minimum(self, other)
 
     def sum(self, dim:int|tuple|None=None, keepdim:bool=False):  # type: ignore
         ret = sum(self, dim, keepdim)
         return ret
     
     def cumsum(self, dim: int, *, dtype: str | np.dtype | None = None, out: TN | None = None):
-        return _call_regapi('cumsum',self,dim,dtype=dtype,out=out)
+        return api_registry.cumsum(self,dim,dtype=dtype,out=out)
     
     def prod(self, dim:int|tuple|None=None, keepdim:bool=False):  # type: ignore
-        return _call_regapi('prod', self, dim, keepdim)
+        return api_registry.prod(self, dim, keepdim)
     
     def mean(self, dim:int|tuple|None=None, keepdim:bool=False):  # type: ignore
         ret = mean(self,dim,keepdim)
         return ret
     
     def var(self, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False):  # type: ignore
-        return _call_regapi('var', self, dim, unbiased, keepdim)
+        return api_registry.var(self, dim, unbiased, keepdim)
     
     def std(self, dim:int|tuple|None=None, unbiased:bool=True, keepdim:bool=False):  # type: ignore
-        return _call_regapi('std', self, dim, unbiased, keepdim)
+        return api_registry.std(self, dim, unbiased, keepdim)
 
     def abs(self):
         return abs(self)
@@ -2630,112 +2610,112 @@ class TN:
         return pow(self,exponent)
     
     def sqrt(self):
-        return _call_regapi('sqrt', self)
+        return api_registry.sqrt(self)
 
     def exp(self):
-        return _call_regapi('exp', self)
+        return api_registry.exp(self)
     
     def log(self):
-        return _call_regapi('log', self)
+        return api_registry.log(self)
 
     def log10(self):
-        return _call_regapi('log10', self)
+        return api_registry.log10(self)
     
     def log2(self):
-        return _call_regapi('log2', self)
+        return api_registry.log2(self)
     
     def log1p(self):
-        return _call_regapi('log1p', self)
+        return api_registry.log1p(self)
 
     def sin(self):
-        return _call_regapi('sin', self)
+        return api_registry.sin(self)
 
     def cos(self):
-        return _call_regapi('cos', self)
+        return api_registry.cos(self)
 
     def tan(self):
-        return _call_regapi('tan', self)
+        return api_registry.tan(self)
 
     def cot(self):
-        return _call_regapi('cot', self)
+        return api_registry.cot(self)
 
     def sec(self):
-        return _call_regapi('sec', self)
+        return api_registry.sec(self)
 
     def csc(self):
-        return _call_regapi('csc', self)
+        return api_registry.csc(self)
 
     def arcsin(self):
-        return _call_regapi('arcsin', self)
+        return api_registry.arcsin(self)
 
     def arccos(self):
-        return _call_regapi('arccos', self)
+        return api_registry.arccos(self)
 
     def arctan(self):
-        return _call_regapi('arctan', self)
+        return api_registry.arctan(self)
 
     def sinh(self):
-        return _call_regapi('sinh', self)
+        return api_registry.sinh(self)
 
     def cosh(self):
-        return _call_regapi('cosh', self)
+        return api_registry.cosh(self)
 
     def tanh(self):
-        return _call_regapi('tanh', self)
+        return api_registry.tanh(self)
 
     def coth(self):
-        return _call_regapi('coth', self)
+        return api_registry.coth(self)
 
     def sech(self):
-        return _call_regapi('sech', self)
+        return api_registry.sech(self)
 
     def csch(self):
-        return _call_regapi('csch', self)
+        return api_registry.csch(self)
 
     def arcsinh(self):
-        return _call_regapi('arcsinh', self)
+        return api_registry.arcsinh(self)
 
     def arccosh(self):
-        return _call_regapi('arccosh', self)
+        return api_registry.arccosh(self)
 
     def arctanh(self):
-        return _call_regapi('arctanh', self)
+        return api_registry.arctanh(self)
 
     def sign(self):
-        return _call_regapi('sign', self)
+        return api_registry.sign(self)
 
     def diagonal(self,offset:int=0,dim1:int=0,dim2:int=1):
-        return _call_regapi('diagonal', self, offset, dim1, dim2)
+        return api_registry.diagonal(self, offset, dim1, dim2)
     
     def diag(self,offset: int = 0):
-        return _call_regapi('diag', self, offset)
+        return api_registry.diag(self, offset)
 
     def batch_diag(self):
-        return _call_regapi('batch_diag', self)
+        return api_registry.batch_diag(self)
 
     def fill_diagonal(self, value, offset: int = 0, dim1: int = -2, dim2: int = -1):
-        return _call_regapi('fill_diagonal', self, value, offset, dim1, dim2)
+        return api_registry.fill_diagonal(self, value, offset, dim1, dim2)
 
     def fill_diagonal_(self, value, offset: int = 0, dim1: int = -2, dim2: int = -1):
-        return _call_regapi('fill_diagonal', self, value, offset, dim1, dim2)
+        return api_registry.fill_diagonal(self, value, offset, dim1, dim2)
 
     def tril(self, diagonal: int = 0):
-        return _call_regapi('tril', self, diagonal)
+        return api_registry.tril(self, diagonal)
     
     def triu(self, diagonal: int = 0):
-        return _call_regapi('triu', self, diagonal)
+        return api_registry.triu(self, diagonal)
 
     def inverse(self):
-        return _call_regapi('inv', self)
+        return api_registry.inv(self)
 
     def pinverse(self):
-        return _call_regapi('pinv', self)
+        return api_registry.pinv(self)
 
     def det(self):
-        return _call_regapi('det', self)
+        return api_registry.det(self)
 
     def norm(self, ord:int|float|str|None = "fro", dim: int|tuple|None = None, keepdim: bool = False):  # type: ignore
-        return _call_regapi('norm', self, ord=ord, dim=dim, keepdim=keepdim)
+        return api_registry.norm(self, ord=ord, dim=dim, keepdim=keepdim)
 
     def backward(self, gradient: TN|None = None,
                  retain_graph: bool = False,
@@ -2796,13 +2776,13 @@ class TN:
 
             # _init_calc_graph 返回是否需要钩子处理
             need_hook_processing = _init_calc_graph(self)
-            self.grad_value = tensor(1.0, dtype=self.dtype, device=self.device,
+            self._grad_value = tensor(1.0, dtype=self.dtype, device=self.device,
                                     requires_grad=create_graph)
 
         elif isinstance(gradient, TN):
             if gradient._array.shape == self._array.shape:
                 need_hook_processing = _init_calc_graph(self)
-                self.grad_value = gradient.to(self.device).detach().requires_grad_(create_graph)
+                self._grad_value = gradient.to(self.device).detach().requires_grad_(create_graph)
             else:
                 raise RuntimeError('shape of gradient need to be same as the shape of outputs')
         else:
@@ -2867,7 +2847,7 @@ class TN:
             3. reshape 回 shape = ⊕ shape(vi) × ki
         """
         
-        return _call_regapi('diff', self, *args, create_graph=create_graph)
+        return api_registry.diff(self, *args, create_graph=create_graph)
 # end of class TN
 
 def _init_calc_graph(outputs):
@@ -2876,10 +2856,10 @@ def _init_calc_graph(outputs):
     供 TN.backward、autograd.backward、autograd.grad 共用的图初始化入口，
     完成两件事（均为原地修改，不返回计算结果）：
 
-    1. 状态重置：从 outputs 可达的所有节点的 grad_value 置 None；
-    2. 计数重建：把 rcv_grad_count 先清零，再按图中的边重新累加。
+    1. 状态重置：从 outputs 可达的所有节点的 _grad_value 置 None；
+    2. 计数重建：把 _rcv_grad_count 先清零，再按图中的边重新累加。
 
-    rcv_grad_count 的语义是“该节点还需要接收多少份上游梯度”，即它在
+    _rcv_grad_count 的语义是“该节点还需要接收多少份上游梯度”，即它在
     本次可达子图中被多少个可微后继节点当作 fromvars 引用。计数为 0 的
     节点（含叶子与未被其它根引用的根）才可以立即开始反向传播。
 
@@ -2911,17 +2891,17 @@ def _init_calc_graph(outputs):
 
     if isinstance(outputs, TN):
         # 单根也先标记为已访问并清零计数：根自身不会被当作别人的前驱
-        # 重复入栈，后面的 while 循环负责把它的 grad_value 置 None。
+        # 重复入栈，后面的 while 循环负责把它的 _grad_value 置 None。
         visited.add(id(outputs))
         stack = [outputs]
-        outputs.rcv_grad_count = 0
+        outputs._rcv_grad_count = 0
     else:
         # 多根：按 id 去重后再入栈，避免同一个根被重复初始化。
         stack = []
         for root in outputs:
             if id(root) not in visited:
                 visited.add(id(root))
-                root.rcv_grad_count = 0
+                root._rcv_grad_count = 0
                 stack.append(root)
 
     need_hook_processing = False
@@ -2929,8 +2909,8 @@ def _init_calc_graph(outputs):
         item = stack.pop()
 
         # 每个节点只会入栈一次（入栈前已登记 visited），所以这里只重置一次，
-        # 不会覆盖反向传播过程中新写入的 grad_value。
-        item.grad_value = None
+        # 不会覆盖反向传播过程中新写入的 _grad_value。
+        item._grad_value = None
 
         # 钩子探测：只看节点是否由某个带反向钩子的模块产生。
         # 短路逻辑：一旦置 True 就跳过后续所有检查。
@@ -2949,10 +2929,10 @@ def _init_calc_graph(outputs):
                 if id(var) not in visited:
                     # 首次访问该前驱：清零计数并入栈，等待后续处理。
                     visited.add(id(var))
-                    var.rcv_grad_count = 0
+                    var._rcv_grad_count = 0
                     stack.append(var)
                 # 每条来自不同后继的可微边，都要累加一次接收计数。
-                var.rcv_grad_count += 1
+                var._rcv_grad_count += 1
 
     return need_hook_processing
 
@@ -2960,9 +2940,9 @@ def _init_calc_graph(outputs):
 def _clear_calc_graph_cache(outputs) -> None:
     """清理从多个反向根可达节点中的临时梯度状态。
 
-    把所有可达节点的 grad_value 置 None、rcv_grad_count 置 0。
+    把所有可达节点的 _grad_value 置 None、_rcv_grad_count 置 0。
     与 _init_calc_graph 的区别：
-      - _init_calc_graph 会在清零后重新累加 rcv_grad_count（得到后续可用的
+      - _init_calc_graph 会在清零后重新累加 _rcv_grad_count（得到后续可用的
         真实计数），并检查计算图是否需要钩子处理；
       - _clear_calc_graph_cache 只做清零，不重新累加、不检查钩子，用于丢弃
         上一次反向传播留下的临时状态。
@@ -2982,14 +2962,14 @@ def _clear_calc_graph_cache(outputs) -> None:
     if isinstance(outputs, TN):
         visited.add(id(outputs))
         stack = [outputs]
-        outputs.rcv_grad_count = 0
+        outputs._rcv_grad_count = 0
     else:
         # 多根：按 id 去重后再入栈，避免同一个根被重复清理。
         stack = []
         for root in outputs:
             if id(root) not in visited:
                 visited.add(id(root))
-                root.rcv_grad_count = 0
+                root._rcv_grad_count = 0
                 stack.append(root)
 
     while stack:
@@ -2997,7 +2977,7 @@ def _clear_calc_graph_cache(outputs) -> None:
 
         # 出栈即清空临时梯度。每个节点只会入栈一次（入栈前已登记 visited），
         # 因此根节点与普通节点都能被清理到。
-        item.grad_value = None
+        item._grad_value = None
 
         # 叶子节点没有 fromvars，不必再向更上游遍历。
         if item.is_leaf:
@@ -3006,21 +2986,22 @@ def _clear_calc_graph_cache(outputs) -> None:
         for var in item.fromvars:
             if isinstance(var, TN) and var.requires_grad and id(var) not in visited:
                 visited.add(id(var))
-                var.rcv_grad_count = 0
+                var._rcv_grad_count = 0
                 stack.append(var)
 
 def _save_grad(item: TN, input_ids=None) -> bool:
-    """将 item 的 grad_value 保存到 item.grad 中，返回是否为叶子节点。
+    """将 item 的 _grad_value 保存到 item.grad 中，返回是否为叶子节点。
 
     item 是 _backward_with_hooks 或 _backward_without_hooks 的出栈节点，
-    已保证 requires_grad=True，且 grad_value 已收集完成。
+    已保证 requires_grad=True，且 _grad_value 已收集完成。
 
     input_ids 为 None 时：叶子节点总是保存，中间节点仅在
     retains_grad=True 时保存。
     input_ids 非 None 时：只向集合中的张量累积 .grad，中间节点
     不受 retains_grad 限制。
 
-    叶子节点保存后清空 grad_value，调用方可据此跳过后续传播。
+    返回是否为叶子节点：叶子没有来源，调用方据此清空 _grad_value 并跳过
+    后续传播。
 
     is_leaf 依据“fromvars 为空”判定，该判定是可靠的：fromvars 仅在
     requires_grad=True 时记录，且非空时至少含一个可微 TN 来源，因此不存在
@@ -3035,37 +3016,12 @@ def _save_grad(item: TN, input_ids=None) -> bool:
 
     if should_save:
         if item.grad is None:
-            item.grad = item.grad_value
+            item.grad = item._grad_value
         else:
             # 如已有梯度值，累计梯度，注意不要使用原地 +=
-            item.grad = item.grad + item.grad_value
-
-    # 叶子节点存完梯度后，梯度缓存置 None
-    if is_leaf:
-        item.grad_value = None
+            item.grad = item.grad + item._grad_value
 
     return is_leaf
-
-def _add_received_grad_value(item: TN, grad_value: TN) -> None:
-    """将 grad_value 添加到 item 的 grad_value 中。"""
-    # 如果收到的梯度为 None，直接返回
-    if grad_value is None:
-        return
-
-    # 确保 item 和 grad_value 的 dtype 一致。
-    # grad_value 是待累加的梯度，计算过程中精度可能提升（float32 -> float64）。
-    if grad_value.dtype != item.dtype:
-        warnings.warn(f'item.dtype={item.dtype}, received grad_value.dtype={grad_value.dtype}')
-        grad_value = grad_value.type(item.dtype)
-
-    if item.grad_value is None:
-        # 如还没有梯度值，直接赋值
-        item.grad_value = grad_value
-    else:
-        # 如 item 已有梯度值，累计梯度。
-        # 多个节点可能共享同一个 grad_value 张量，不能用原地 += 累加。
-        item.grad_value = item.grad_value + grad_value
-
 
 def _propagate_grad_to_sources(item: TN, vars_received_grad: set) -> None:
     """将当前节点的梯度传播到其所有来源节点。
@@ -3081,7 +3037,7 @@ def _propagate_grad_to_sources(item: TN, vars_received_grad: set) -> None:
           vars_received_grad（即反向栈只含 TN）；fromvars 中的非 TN 条目即使
           返回了梯度也不会入栈。
         - 这里的过滤条件与 _init_calc_graph 的计数条件一致，保证每节点只在其
-          rcv_grad_count 归零后入栈一次。
+          _rcv_grad_count 归零后入栈一次。
 
     参数：
         item: 当前完成梯度收集的节点
@@ -3093,11 +3049,21 @@ def _propagate_grad_to_sources(item: TN, vars_received_grad: set) -> None:
     rule = item._grad_rule
     if rule is None:
         return
+    
     for var, grad in zip(fromvars, rule(item)):
         if grad is not None and isinstance(var, TN) and var.requires_grad:
-            _add_received_grad_value(var, grad)
-            var.rcv_grad_count -= 1
-            if var.rcv_grad_count == 0:
+            # 确保 var 与 grad 的 dtype 一致：grad 计算过程中精度可能提升
+            # （float32 -> float64），累加前先转回 var 的 dtype。
+            if grad.dtype != var.dtype:
+                warnings.warn(f'dtype mismatch: node dtype={var.dtype}, incoming grad dtype={grad.dtype}')
+                grad = grad.type(var.dtype)
+            
+            # 首次直接赋值；已有梯度则累计。多个节点可能共享同一个 _grad_value，
+            # 不能用原地 += 累加。
+            var._grad_value = grad if var._grad_value is None else var._grad_value + grad
+            var._rcv_grad_count -= 1
+            if var._rcv_grad_count == 0:
+                # 所有梯度已收集，放入 vars_received_grad 集合，准备入栈
                 vars_received_grad.add(var)
 
 
@@ -3144,7 +3110,7 @@ class _BackwardHookManager:
         注意：节点出栈状态由调用方（process_module_hooks）记录，此函数不重复记录。
         
         参数:
-            tensor: 刚出栈的节点（grad_value已就绪，且已在_popped_tensors中）
+            tensor: 刚出栈的节点（_grad_value已就绪，且已在_popped_tensors中）
             
         返回:
             (items_for_propagate, pre_hook_modules)
@@ -3163,8 +3129,8 @@ class _BackwardHookManager:
             cache_entry = module._backward_hook_cache[output_id]
             
             # 缓存输出梯度
-            if tensor.grad_value is not None:
-                cache_entry['grad_clone'] = tensor.grad_value.clone()
+            if tensor._grad_value is not None:
+                cache_entry['grad_clone'] = tensor._grad_value.clone()
                 
                 # 多输出模块：缓存同组其他输出的梯度
                 multi_group = cache_entry.get('multi_group')
@@ -3172,10 +3138,10 @@ class _BackwardHookManager:
                     for other_output in multi_group:
                         if other_output is tensor:
                             continue
-                        if other_output.grad_value is not None:
+                        if other_output._grad_value is not None:
                             other_cache = module._backward_hook_cache.get(id(other_output))
                             if other_cache is not None and other_cache.get('grad_clone') is None:
-                                other_cache['grad_clone'] = other_output.grad_value.clone()
+                                other_cache['grad_clone'] = other_output._grad_value.clone()
             
             # 记录需要清理的output_id
             if module not in self._module_output_ids_to_cleanup:
@@ -3204,7 +3170,7 @@ class _BackwardHookManager:
         4. 其他情况 -> 返回 [tensor]
         
         注意：hook_modules 已由 wait_for_backward_pre_hook_ready 通过 _check_backward_pre_hooks_ready
-        检查过就绪状态（基于 rcv_grad_count），此处直接使用，无需重复检查。
+        检查过就绪状态（基于 _rcv_grad_count），此处直接使用，无需重复检查。
         但第3点中的等待检查基于 _popped_tensors，与就绪检查不同，用于确保所有输出都已出栈。
         """
         # 非注册钩子模块输入输出的节点（如参数）不传播
@@ -3235,9 +3201,9 @@ class _BackwardHookManager:
                         # 多输出模块：检查是否所有输出都已出栈或从未收到梯度
                         # 条件：需要梯度且 (已出栈 或 从未收到梯度)
                         # 已出栈的输出：id(out) in _popped_tensors
-                        # 未参与损失计算的输出：rcv_grad_count == 0（从未收到梯度或已收集完成）
+                        # 未参与损失计算的输出：_rcv_grad_count == 0（从未收到梯度或已收集完成）
                         for out in multi_outputs:
-                            if out.requires_grad and id(out) not in self._popped_tensors and out.rcv_grad_count > 0:
+                            if out.requires_grad and id(out) not in self._popped_tensors and out._rcv_grad_count > 0:
                                 return []  # 未就绪，等待
                         # 已就绪但未在hook_modules中（可能已通过其他输出添加）
                         return [out for out in multi_outputs if id(out) in self._popped_tensors]
@@ -3280,23 +3246,23 @@ class _BackwardHookManager:
         检查反向预处理钩子是否就绪（就绪条件）。
         
         就绪条件：
-        - 单输出模块：该输出节点的 rcv_grad_count == 0（所有上游梯度已收集完成）
-        - 多输出模块：该组内所有需要梯度的输出节点的 rcv_grad_count == 0
+        - 单输出模块：该输出节点的 _rcv_grad_count == 0（所有上游梯度已收集完成）
+        - 多输出模块：该组内所有需要梯度的输出节点的 _rcv_grad_count == 0
         
         关键设计点：
-        1. 使用 rcv_grad_count 而非 grad_value 检测就绪状态
-           - rcv_grad_count == 0 表示所有上游梯度已收集完成
-           - grad_value 可能在收集完成后被清空，不可靠
-           - 对于不参与损失计算的输出（grad_value=None），rcv_grad_count 仍为 0
+        1. 使用 _rcv_grad_count 而非 _grad_value 检测就绪状态
+           - _rcv_grad_count == 0 表示所有上游梯度已收集完成
+           - _grad_value 可能在收集完成后被清空，不可靠
+           - 对于不参与损失计算的输出（_grad_value=None），_rcv_grad_count 仍为 0
         
         2. 多输出模块的特殊处理
            - 多输出必须作为一个组一起处理（与 PyTorch 行为一致）
            - 必须等待组内所有需要梯度的输出都就绪才能调用钩子
         
         3. 部分输出不参与损失计算的场景
-           - 不参与损失计算的输出：rcv_grad_count == 0, grad_value == None
-           - 参与损失计算的输出：rcv_grad_count == 0, grad_value != None
-           - 只要组内所有需要梯度的输出 rcv_grad_count == 0，就认为组已就绪
+           - 不参与损失计算的输出：_rcv_grad_count == 0, _grad_value == None
+           - 参与损失计算的输出：_rcv_grad_count == 0, _grad_value != None
+           - 只要组内所有需要梯度的输出 _rcv_grad_count == 0，就认为组已就绪
         
         注意：这是"就绪条件"，不是"准入条件"。准入条件
         在 _should_call_backward_pre_hooks 中检查。
@@ -3329,8 +3295,8 @@ class _BackwardHookManager:
             
             if multi_group is None:
                 # 单输出：检查该输出是否就绪
-                # rcv_grad_count == 0 表示所有上游梯度已收集完成
-                if output_tensor.rcv_grad_count == 0:
+                # _rcv_grad_count == 0 表示所有上游梯度已收集完成
+                if output_tensor._rcv_grad_count == 0:
                     return True
             else:
                 # 多输出：按组检查
@@ -3340,9 +3306,9 @@ class _BackwardHookManager:
                 processed_groups.add(group_id)
                 
                 # 检查组内所有需要梯度的输出是否就绪
-                # 注意：不参与损失计算的输出 rcv_grad_count 也为 0
+                # 注意：不参与损失计算的输出 _rcv_grad_count 也为 0
                 group_ready = all(
-                    out.rcv_grad_count == 0 
+                    out._rcv_grad_count == 0 
                     for out in multi_group 
                     if out.requires_grad
                 )
@@ -3425,11 +3391,11 @@ class _BackwardHookManager:
                 
                 # 检查组内所有需要梯度且会参与反向传播的输出是否都已出栈
                 # 注意：不参与损失计算的输出不会入栈（没有收到梯度），不需要等待
-                # 通过 rcv_grad_count 判断：rcv_grad_count == 0 表示已就绪（或从未收到梯度）
+                # 通过 _rcv_grad_count 判断：_rcv_grad_count == 0 表示已就绪（或从未收到梯度）
                 # 通过 _popped_tensors 判断：已出栈的节点
                 # 条件：需要梯度且 (已出栈 或 从未收到梯度)
                 group_ready = all(
-                    id(out) in self._popped_tensors or out.rcv_grad_count == 0
+                    id(out) in self._popped_tensors or out._rcv_grad_count == 0
                     for out in multi_group
                     if out.requires_grad
                 )
@@ -3455,7 +3421,7 @@ class _BackwardHookManager:
                 out_cache = module._backward_hook_cache.get(id(out))
                 grad = out_cache.get('grad_clone') if out_cache else None
                 if grad is None:
-                    grad = out.grad_value
+                    grad = out._grad_value
                 grad_outputs.append(grad)
             
             grad_outputs = tuple(grad_outputs)
@@ -3468,15 +3434,15 @@ class _BackwardHookManager:
                 if isinstance(current_grad_output, (tuple, list)):
                     for i, out in enumerate(outputs_requires_grad):
                         if i < len(current_grad_output):
-                            out.grad_value = current_grad_output[i] if current_grad_output[i] is not None else zeros_like(out, requires_grad=False)
+                            out._grad_value = current_grad_output[i] if current_grad_output[i] is not None else zeros_like(out, requires_grad=False)
                 else:
-                    outputs_requires_grad[0].grad_value = current_grad_output
+                    outputs_requires_grad[0]._grad_value = current_grad_output
             
             # 更新grad_clone供反向钩子使用
             for out in outputs_requires_grad:
                 out_cache = module._backward_hook_cache.get(id(out))
                 if out_cache is not None:
-                    out_cache['grad_clone'] = out.grad_value.clone() if out.grad_value is not None else None
+                    out_cache['grad_clone'] = out._grad_value.clone() if out._grad_value is not None else None
             
             # 标记所有输出为已处理
             for out in outputs_to_process:
@@ -3541,7 +3507,7 @@ class _BackwardHookManager:
         检查模块是否准备好调用反向钩子（就绪条件）。
         
         就绪条件：
-        1. 所有需要梯度的输入节点的 rcv_grad_count == 0
+        1. 所有需要梯度的输入节点的 _rcv_grad_count == 0
         2. 所有需要梯度的输入节点都已出栈（_popped_tensors）
         3. 至少有一个输入需要梯度，或者模块有参数
         
@@ -3578,7 +3544,7 @@ class _BackwardHookManager:
         
         # 检查所有输入是否都已就绪（梯度收集完成且已出栈）
         for inp in inputs_to_check:
-            if inp.rcv_grad_count > 0:
+            if inp._rcv_grad_count > 0:
                 return False
             if id(inp) not in self._popped_tensors:
                 return False
@@ -3590,10 +3556,10 @@ class _BackwardHookManager:
         调用模块的反向钩子。
         
         处理流程：
-        1. 构建 grad_input（从输入节点的 grad_value 获取）
+        1. 构建 grad_input（从输入节点的 _grad_value 获取）
         2. 构建 grad_output（从缓存的 grad_clone 获取）
         3. 调用钩子链
-        4. 根据返回值更新输入节点的 grad_value
+        4. 根据返回值更新输入节点的 _grad_value
         
         钩子返回值处理：
         - 返回 None：不修改梯度
@@ -3654,7 +3620,7 @@ class _BackwardHookManager:
             # 构建grad_input
             all_inputs_no_grad = all(not inp.requires_grad for inp in forward_inputs)
             grad_input_tuple = tuple(
-                inp.grad_value if inp.grad_value is not None else zeros_like(inp, requires_grad=False)
+                inp._grad_value if inp._grad_value is not None else zeros_like(inp, requires_grad=False)
                 if inp.requires_grad else
                 (None if all_inputs_no_grad else zeros_like(inp, requires_grad=False))
                 for inp in forward_inputs
@@ -3685,12 +3651,12 @@ class _BackwardHookManager:
                     # 更新输入梯度
                     for i, inp in enumerate(forward_inputs):
                         if i < len(hook_result):
-                            inp.grad_value = hook_result[i] if hook_result[i] is not None else zeros_like(inp, requires_grad=False)
+                            inp._grad_value = hook_result[i] if hook_result[i] is not None else zeros_like(inp, requires_grad=False)
                 else:
                     # 钩子返回None，使用grad_input_tuple中的梯度
                     for i, inp in enumerate(forward_inputs):
                         if i < len(grad_input_tuple) and grad_input_tuple[i] is not None:
-                            inp.grad_value = grad_input_tuple[i]
+                            inp._grad_value = grad_input_tuple[i]
             
             # 标记输出为已处理
             for out in multi_outputs:
@@ -3716,7 +3682,7 @@ class _BackwardHookManager:
         注意：节点出栈状态由调用方（process_module_hooks）记录，此函数不重复记录。
         
         参数:
-            tensor: 刚出栈的节点（grad_value已就绪，且已在_popped_tensors中）
+            tensor: 刚出栈的节点（_grad_value已就绪，且已在_popped_tensors中）
             
         返回:
             (items_for_propagate, backward_hook_modules)
@@ -3840,8 +3806,9 @@ def _backward_with_hooks(stack, input_ids=None) -> None:
         items_for_propagate = hook_manager.process_module_hooks(item)
 
         # 在调用钩子之后保存梯度，确保钩子可以访问所有输入的梯度grad_value
-        # 叶子节点保存后无须继续传播，快速进入下一次循环
+        # 叶子节点保存后无须继续传播，清空梯度缓存并快速进入下一次循环
         if _save_grad(item, input_ids):
+            item._grad_value = None
             continue
 
         # 如果没有可传播节点（模块输入或输出梯度未收集齐），跳过本次循环
@@ -3853,7 +3820,7 @@ def _backward_with_hooks(stack, input_ids=None) -> None:
         for current_item in items_for_propagate:
             _propagate_grad_to_sources(current_item, vars_received_grad)
             # 传播完梯度的节点，使命完成，清空grad_value节省内存
-            current_item.grad_value = None
+            current_item._grad_value = None
         stack.extend(vars_received_grad)
 
     # 清理钩子缓存
@@ -3874,14 +3841,15 @@ def _backward_without_hooks(stack, input_ids=None) -> None:
         item = stack.pop(-1)
 
         # 保存叶子节点或retains_grad=True的中间节点的梯度，
-        # 如item是叶子节点，无须传播梯度，快速进入下一次循环
+        # 如item是叶子节点，清空梯度缓存并无须继续传播
         if _save_grad(item, input_ids):
+            item._grad_value = None
             continue
 
         # 传播梯度到来源节点
         vars_received_grad = set()
         _propagate_grad_to_sources(item, vars_received_grad)
-        item.grad_value = None
+        item._grad_value = None
 
         # 将收到梯度的节点入栈
         stack.extend(vars_received_grad)
@@ -4593,51 +4561,48 @@ DecoratorFunc = Callable[[Callable[..., Any]], Callable[..., TN]]  # 修饰器�
 
 def track_grad(grad_func:GradFunc)->DecoratorFunc:
     """
-    创建一个梯度跟踪修饰器，用于为函数添加自动微分支持。
+    把普通的前向函数包装成可自动微分的函数。
 
-    这个修饰器工厂接收一个梯度函数，返回一个修饰器，该修饰器可以将普通的张量运算函数
-    转换为支持自动微分的函数。它会自动创建反向传播函数，并管理梯度计算图的构建。
+    用法是工厂模式：先用梯度函数 grad_func 生成修饰器，再用它修饰前向函数。
+    被修饰后的函数会记录计算图，反向时调用 grad_func 求各输入的梯度。
 
     Args:
-        grad_func (GradFunc): 梯度计算函数，签名固定为 ``grad_func(result, *args, **kwargs)``：
-            第一个参数 result 是前向函数的返回张量，后续参数与前向函数保持相同的输入参数。
-            返回值是一个元组，包含每个 TN 类型输入参数对应的对最终标量的梯度。
-            元组内元素按 TN 参数出现顺序一一对应（仅包含 TN 参数，不包含非 TN 参数）；
-            对于不需要梯度的 TN 参数，对应位置可为 None。
+        grad_func (GradFunc): 梯度计算函数，签名与前向函数一致，只是首位多一个 result，
+            即 ``grad_func(result, *args, **kwargs)``，result 是前向函数的返回值。
+            它返回一个元组，按签名顺序给出“全部 TN 实参”各自的梯度；非 TN 参数不占位。
+            requires_grad=False 的 TN 位置不会被读取，填 None 即可。
 
     Returns:
-        DecoratorFunc: 一个修饰器函数，用于包装
-            前向计算函数，使其支持自动微分
+        DecoratorFunc: 用于修饰前向函数的修饰器。
 
     梯度计算方式：
-        grad_func 内部如何计算梯度完全由用户决定，result 及后续各参数都可能用到：
-        - ``result.grad_value`` 是上游梯度（损失对该输出的梯度），按链式法则计算各输入
-          梯度时必须使用它；
-        - ``result`` 本身也可参与计算，例如直接用前向结果替代重新计算中间量，有时能显著
-          减小计算量；
-        - 其余 TN / 非 TN 参数同样可自由使用。
-        因此梯度运算不受形式限制，矩阵乘 @、转置等任意运算均可直接使用。
+        grad_func 内部如何计算完全由用户决定：
+        - ``result._grad_value`` 是上游梯度（损失对该输出的梯度），按链式法则求各输入
+          梯度时必须使用；
+        - ``result`` 本身也可参与计算，例如复用前向结果、避免重算中间量；
+        - 其余 TN / 非 TN 参数同样可读。
+        因此梯度运算形式不受限制，矩阵乘 @、转置等可直接使用。
 
     图来源与编号约定：
-        - ``fromvars`` 只登记 requires_grad=True 的 TN 实参，按实参顺序排列；
-          它表示“可微来源”，不是算子的全部输入。非 TN 参数以及 requires_grad=False
-          的 TN 不会进入 fromvars，但它们仍被 _grad_rule 的闭包捕获，grad_func
-          照常可以读取（例如 y 不需要梯度时仍可作为乘法因子参与求导）。
-        - grad_func 返回的梯度元组按“全部 TN 参数”的实参顺序编号，非 TN 参数不占位。
-        - fromvars 是上述编号空间的子集，两套序号不可混用：内部用 grad_indices[k]
-          记录“fromvars 第 k 项对应完整编号中的第几个 TN 参数”，反向时据此从
-          grad_func 的返回值中取出该来源的梯度。
+        - ``fromvars`` 只登记 requires_grad=True 的 TN 实参，按签名中的参数顺序排列
+          （与调用时用位置传参还是关键字传参无关）。它不是算子的全部输入：非 TN 参数
+          和 requires_grad=False 的 TN 不进入 fromvars，但仍被 _grad_rule 的闭包捕获，
+          grad_func 照常可读（例如 y 不需要梯度时仍可作为乘法因子参与求导）。
+        - grad_func 返回的梯度元组按“全部 TN 实参”的签名顺序编号，非 TN 参数不占位。
+        - fromvars 是上述编号空间再筛 requires_grad=True 后的子集，两套编号不可混用：
+          grad_indices[k] 记录 fromvars[k] 在完整编号中的下标，反向时据此从 grad_func
+          的返回值中取出该来源的梯度。
 
     注意：
-        若前向函数内部使用了可微算子，其返回张量已有的计算图会被本修饰器建立的
-        计算图覆盖，因此 grad_func 必须给出完整梯度；若前向返回需要梯度的张量而所有
-        形参都不需要梯度，原有梯度路径会被丢弃并发出警告。
+        本修饰器会用 grad_func 的结果覆盖前向函数内部算子已建立的图，因此 grad_func
+        必须给出完整梯度；若前向返回 requires_grad=True 的张量而所有形参都不需要梯度，
+        原梯度路径会被丢弃并发出警告。
 
     Examples:
         >>> # ========== 示例 1：单输入函数 ==========
         >>> # 定义导数函数：d/dx log(x) = 1/x
         >>> def _log_derivative(result: TN, x: TN) -> tuple[TN]:
-        ...     return (result.grad_value * (1. / x.conj()),)
+        ...     return (result._grad_value * (1. / x.conj()),)
         >>>
         >>> @track_grad(_log_derivative)
         ... def mylog(x: TN) -> TN:
@@ -4652,7 +4617,7 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         >>> # track_grad 内部通过参数签名建立映射，因此无论关键字参数以何种顺序传入，
         >>> # 梯度都能正确匹配到对应的张量。
         >>> def _mul_derivative(result: TN, x: TN, y: TN) -> tuple[TN, TN]:
-        ...     return (result.grad_value * y.conj(), result.grad_value * x.conj())
+        ...     return (result._grad_value * y.conj(), result._grad_value * x.conj())
         >>>
         >>> @track_grad(_mul_derivative)
         ... def mymul(x: TN, y: TN) -> TN:
@@ -4669,7 +4634,7 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         >>> # ========== 示例 3：混合 TN 与非 TN 参数 ==========
         >>> # grad_func 的返回值只包含 TN 类型参数的梯度，非 TN 参数（如标量）被忽略。
         >>> def _pow_derivative(result: TN, x: TN, exponent: float) -> tuple[TN]:
-        ...     return (result.grad_value * exponent * (x ** (exponent - 1)).conj(),)
+        ...     return (result._grad_value * exponent * (x ** (exponent - 1)).conj(),)
         >>>
         >>> @track_grad(_pow_derivative)
         ... def mypow(x: TN, exponent: float) -> TN:
@@ -4683,7 +4648,7 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         >>> # ========== 示例 4：部分输入不需要梯度 ==========
         >>> # 不需要梯度的输入不会出现在 fromvars 中，对应的梯度位置可为 None。
         >>> def _add_derivative(result: TN, x: TN, y: TN) -> tuple[TN, TN]:
-        ...     return (result.grad_value, result.grad_value)
+        ...     return (result._grad_value, result._grad_value)
         >>>
         >>> @track_grad(_add_derivative)
         ... def myadd(x: TN, y: TN) -> TN:
@@ -4698,9 +4663,9 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
 
         >>> # ========== 示例 5：矩阵乘法（上游梯度需参与矩阵运算） ==========
         >>> # 矩阵乘反向：dL/dx = dL/dz @ y^T，dL/dy = x^T @ dL/dz。
-        >>> # grad_func 通过 result.grad_value 直接完成矩阵乘法，无需求助逐元素乘法。
+        >>> # grad_func 通过 result._grad_value 直接完成矩阵乘法，无需求助逐元素乘法。
         >>> def _matmul_derivative(result: TN, x: TN, y: TN):
-        ...     g = result.grad_value
+        ...     g = result._grad_value
         ...     return (g @ y.detach().T, x.detach().T @ g)
         >>>
         >>> @track_grad(_matmul_derivative)
@@ -4713,11 +4678,11 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
         >>> z.sum().backward()
 
     工作原理：
-        1. 包装后的函数先执行前向计算，并根据“梯度模式是否开启、任一输入是否需要梯度”
-           决定结果张量是否参与梯度跟踪
-        2. 若需要跟踪，则按 grad_func 的签名顺序展平本次实参，并仅为 requires_grad=True
-           的 TN 输入登记图来源 fromvars（仅记录可微来源，约定见上节）
-        3. 反向传播通过单一融合规则调用一次 grad_func，再按索引拆分各输入梯度
+        1. 先执行前向计算，再由“梯度模式是否开启、是否有形参 requires_grad”决定
+           结果张量是否参与梯度跟踪；
+        2. 需要跟踪时，把本次实参按签名顺序展平成实参序列，只为 requires_grad=True
+           的 TN 登记图来源 fromvars，并记录它们在梯度元组中的下标 grad_indices；
+        3. 反向时对该节点调用一次 grad_func，再按 grad_indices 取出各来源的梯度。
     """
     # grad_func 在装饰阶段固定，预先解析签名，避免每次前向调用重复解析
     grad_sig = inspect.signature(grad_func)
@@ -4727,14 +4692,38 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
     first_param = next(iter(grad_params.values()))
     if first_param.kind is inspect.Parameter.VAR_KEYWORD:
         raise TypeError("grad_func's first parameter cannot be **kwargs")
-    first_param_name = first_param.name
+
+    # 实参布局（arg_layout）：与 grad_func 的形参一一对应，记录每个形参的“种类”，
+    # 据此决定它的实参值要展开成几个实参。装饰阶段算好一次，前向调用时不再解析签名。
+    # 它与 wrapper 里 grad_sig.bind(...).arguments 得到的“形参名 → 实参值”
+    # 有序映射逐位对应（两者都按签名顺序），取值为：
+    #   None           —— 首参 result：它不产生梯度，展开为 0 个实参
+    #   (种类, 跳过数) —— 种类即 inspect.Parameter.kind：
+    #                       POSITIONAL_ONLY / POSITIONAL_OR_KEYWORD → 普通形参，1 个实参
+    #                       VAR_POSITIONAL                          → *args，全部实参
+    #                       VAR_KEYWORD                             → **kwargs，其全部值
+    #                     跳过数只在“种类是 VAR_POSITIONAL 且为首参”时为 1，
+    #                     用来丢掉 args[0]（即 result），其余情况为 0
+    # 展开后的实参序列按顺序编号，只有 TN 实参占用编号（这个编号就是 grad_func
+    # 返回的梯度元组下标）；fromvars 在此之上再筛出 requires_grad=True 的那些。
+    # 例：
+    #   def g(result, x, y)  → [None, (POSITIONAL_OR_KEYWORD, 0), (POSITIONAL_OR_KEYWORD, 0)]
+    #   def g(result, *args) → [None, (VAR_POSITIONAL, 0)]
+    #   def g(*args)         → [(VAR_POSITIONAL, 1)]
+    arg_layout = []
+    for index, param in enumerate(grad_params.values()):
+        if index == 0 and param.kind is not inspect.Parameter.VAR_POSITIONAL:
+            arg_layout.append(None)
+        else:
+            arg_layout.append((param.kind, 1 if index == 0 else 0))
 
     def decorator(forward_func:ForwardFunc)->ForwardFunc:
         def _build_grad_rule(xs, kwargs, grad_indices):
-            """调用一次用户梯度函数，并按 fromvars 顺序返回所需梯度。
+            """构造该节点的反向规则：反向时调用一次 grad_func，再按需拆出梯度。
 
-            grad_indices[k] 是 fromvars[k] 在“全部 TN 参数”编号空间中的下标，
-            因此返回的元组与 fromvars 一一对齐（见 track_grad 文档中的编号约定）。
+            grad_indices[k] 是 fromvars[k] 在“全部 TN 实参”编号空间中的下标，
+            据此从 grad_func 的返回值中挑出各来源的梯度，使返回元组与 fromvars
+            一一对齐（编号约定见 track_grad 文档）。
             """
             def grad_rule(result_tensor: TN):
                 grads = grad_func(result_tensor, *xs, **kwargs)
@@ -4758,25 +4747,67 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
                 return tuple(fused_grads)
             return grad_rule
 
+        def _scan_args(args, kwargs):
+            """扫描本次实参，返回 (首个 TN, 是否存在 requires_grad=True 的 TN)。
+
+            首个 TN 用于把非 TN 的前向结果转换到同一 device；后者决定是否建图。
+            """
+            first_tn = None
+            for param in itertools.chain(args, kwargs.values()):
+                if isinstance(param, TN):
+                    if first_tn is None:
+                        first_tn = param
+                    if param.requires_grad:
+                        return first_tn, True
+            return first_tn, False
+
+        def _collect_fromvars(bound_args):
+            """按签名顺序扫描本次实参，收集可微来源并给出它们的梯度下标。
+
+            bound_args 是 grad_sig.bind(...).arguments，即“形参名 → 实参值”的有序
+            映射（签名顺序，未传参数已补默认值），因此无需区分位置传参和关键字传参。
+
+            返回 (fromvars, grad_indices)：
+              - fromvars[k] 是第 k 个可微来源，即 requires_grad=True 的 TN 实参，
+                按签名顺序排列；它将成为 ret.fromvars 的第 k 项（反向图的一条边）。
+              - grad_func 的返回值按“全部 TN 实参”的签名顺序编号（非 TN 不占位），
+                grad_indices[k] 是 fromvars[k] 在该编号中的下标，反向时据此取出
+                属于它的梯度。两套编号不可混用。
+            """
+            fromvars = []
+            grad_indices = []
+            grad_index = 0
+            # arg_layout 与 bound_args 都按签名顺序，逐位配对即可
+            for entry, value in zip(arg_layout, bound_args.values()):
+                if entry is None:
+                    continue
+                kind, skip = entry
+                if kind is inspect.Parameter.VAR_POSITIONAL:
+                    values = value[skip:]                 # *args 展开为多个实参
+                elif kind is inspect.Parameter.VAR_KEYWORD:
+                    values = value.values()               # **kwargs 展开为多个实参
+                else:
+                    values = (value,)                     # 普通形参只有 1 个实参
+                for v in values:
+                    if isinstance(v, TN):
+                        if v.requires_grad:
+                            fromvars.append(v)
+                            grad_indices.append(grad_index)
+                        grad_index += 1
+            return tuple(fromvars), tuple(grad_indices)
+
         @functools.wraps(forward_func)
         def wrapper(*xs, **kwargs)->TN:
             ret_val = forward_func(*xs, **kwargs)
 
-            # 单次扫描实参：找到首个 TN（用于非 TN 结果转换设备），并判断是否需要追踪梯度
             grad_on = is_grad_enabled()
-            first_tn = None
-            track = False
-            for param in itertools.chain(xs, kwargs.values()):
-                if isinstance(param, TN):
-                    if first_tn is None:
-                        first_tn = param
-                    if grad_on and param.requires_grad:
-                        track = True
-                        break
+            first_tn, has_diff_arg = _scan_args(xs, kwargs)
+            track = grad_on and has_diff_arg
 
             if isinstance(ret_val, TN):
                 ret = ret_val
-                # 前向若使用了可微算子，其内部计算图会被下面的 fromvars/_grad_rule 覆盖
+                # 前向内部用了可微算子（结果 requires_grad=True），却没有任何形参
+                # 需要梯度：下面的重设会丢弃原梯度路径，故发出警告
                 if grad_on and ret.requires_grad and not track:
                     warnings.warn(
                         f"track_grad: forward result of "
@@ -4787,50 +4818,18 @@ def track_grad(grad_func:GradFunc)->DecoratorFunc:
                 # 前向返回值可能不是 TN（如 numpy 数组），用首个 TN 输入的 device 转换
                 ret = as_tensor(ret_val, device=first_tn.device if first_tn is not None else None)
 
-            # 自定义梯度会覆盖前向算子登记的原图，旧的来源与梯度规则须同时失效
+            # 自定义梯度会覆盖前向算子登记的图，旧的来源与规则一并失效
             ret._grad_rule = None
             ret.requires_grad = track
 
             if track:
-                # grad_func 返回的梯度元组按“签名参数顺序”排列（result 除外），而调用时
-                # 关键字参数顺序可能不同。用 sig.bind 建立“参数名 → 实参值”的映射，
-                # 再按签名顺序展平，使梯度元组与 TN 参数一一对应。
+                # 关键字实参的书写顺序可能与签名不同，先用 bind 归位成
+                # “形参名 → 实参值”的有序映射（同时校验参数、补默认值），
+                # 再按签名顺序展开，使 fromvars/grad_indices 与签名一一对应
                 bound = grad_sig.bind(ret, *xs, **kwargs)
                 bound.apply_defaults()
-                ordered_args = []
-                for name, value in bound.arguments.items():
-                    kind = grad_params[name].kind
-                    if name == first_param_name:
-                        # 首参 result 本身没有梯度；裸 *args 签名中 args[0] 即 result
-                        if kind is inspect.Parameter.VAR_POSITIONAL:
-                            ordered_args.extend(value[1:])
-                        continue
-                    if kind is inspect.Parameter.VAR_POSITIONAL:
-                        ordered_args.extend(value)            # *args 展平为多个输入
-                    elif kind is inspect.Parameter.VAR_KEYWORD:
-                        ordered_args.extend(value.values())   # **kwargs 展平为多个输入
-                    else:
-                        ordered_args.append(value)
-
-                # 两套编号空间，不可混用：
-                #   grad_index —— 对“全部 TN 参数”按实参顺序递增，与 grad_func
-                #                 返回的梯度元组下标一致（非 TN 参数不占位）；
-                #   fromvars 下标 —— 只含 requires_grad=True 的 TN，是完整编号的
-                #                 子集，同时也是反向传播中 fromvars 的位置。
-                # grad_indices[k] 记录 fromvars[k] 在完整编号空间中的下标，
-                # 反向时用它从 grad_func 返回值中取出该来源的梯度。
-                fromvars = []
-                grad_indices = []
-                grad_index = 0
-                for param in ordered_args:
-                    if isinstance(param, TN):
-                        if param.requires_grad:
-                            fromvars.append(param)
-                            grad_indices.append(grad_index)
-                        grad_index += 1
-
-                ret.fromvars = tuple(fromvars)
-                ret._grad_rule = _build_grad_rule(xs, kwargs, tuple(grad_indices))
+                ret.fromvars, grad_indices = _collect_fromvars(bound.arguments)
+                ret._grad_rule = _build_grad_rule(xs, kwargs, grad_indices)
             return ret
         return wrapper
     return decorator
@@ -4871,20 +4870,20 @@ def _convert_TNindex_to_numpy(index):
 
 def _squeeze_grad(result_tensor:TN):
     dim = result_tensor.parms[0]
-    return (result_tensor.grad_value.unsqueeze(dim),)
+    return (result_tensor._grad_value.unsqueeze(dim),)
 
 def _unsqueeze_grad(result_tensor:TN):
     dim = result_tensor.parms[0]
-    return (result_tensor.grad_value._squeeze(dim),)
+    return (result_tensor._grad_value._squeeze(dim),)
 
 def _reshape_grad(result_tensor:TN):
     original_shape, _ = result_tensor.parms[0]
-    return (result_tensor.grad_value._reshape(original_shape),)
+    return (result_tensor._grad_value._reshape(original_shape),)
 
 def _expand_grad(result_tensor:TN):
     """expand操作的融合梯度：把被扩展的维度求和回原始形状。"""
     original_shape, _ = result_tensor.parms[0]
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
 
     # 如果原始张量是标量，需要将梯度求和为标量
     if original_shape == ():
@@ -4924,7 +4923,7 @@ def _expand_grad(result_tensor:TN):
 
 def _flip_grad(result_tensor:TN):
     """flip操作的融合梯度：对上游梯度执行相同的flip操作。"""
-    return (flip(result_tensor.grad_value, result_tensor.parms[0]),)
+    return (flip(result_tensor._grad_value, result_tensor.parms[0]),)
 
 def flip(input: TN, dims:list[int]|tuple[int,...]) -> TN:
     """沿指定维度翻转张量的顺序。
@@ -5032,9 +5031,9 @@ def _sum_grad(result_tensor:TN):
     # 如果sum计算时结果张量做过维度精简，需要将缩减的维度恢复
     # 然后expand到输入形状，sum的梯度就是直接将输出梯度传播到每个输入元素
     if keepdims == False:
-        grad = result_tensor.grad_value.unsqueeze(dim)._expand(x_shape)
+        grad = result_tensor._grad_value.unsqueeze(dim)._expand(x_shape)
     else:
-        grad = result_tensor.grad_value._expand(x_shape)
+        grad = result_tensor._grad_value._expand(x_shape)
 
     return (grad,)
 
@@ -5138,10 +5137,10 @@ def _mean_grad(result_tensor:TN):
     # 最后要expand到输入的形状，才得到输入的梯度
     if keepdim:
         # keepdim=True时，直接expand到输入形状，无需unsqueeze
-        grad = (result_tensor.grad_value / n)._expand(x.shape)
+        grad = (result_tensor._grad_value / n)._expand(x.shape)
     else:
         # unsqueeze在dim=None时直接返回原张量，无需额外判断
-        grad = (result_tensor.grad_value / n).unsqueeze(dim)._expand(x.shape)
+        grad = (result_tensor._grad_value / n).unsqueeze(dim)._expand(x.shape)
 
     return (grad,)
 
@@ -5171,7 +5170,7 @@ def _abs_grad(result_tensor:TN):
     # 使用where操作避免除零，当result_tensor为0时使用1代替
     safe_divisor = where(is_zero, ones_like(result_tensor), result_tensor)
     # 当result_tensor为0时，(x / safe_divisor)将被替换为0
-    grad = result_tensor.grad_value * where(is_zero, zeros_like(x), x / safe_divisor)
+    grad = result_tensor._grad_value * where(is_zero, zeros_like(x), x / safe_divisor)
 
     return (grad,)
 
@@ -5289,9 +5288,9 @@ def _max_grad(result_tensor:TN):
 
     # 如果sum计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
     if keepdim == False:
-        new_result_grad = result_tensor.grad_value.unsqueeze(dim)
+        new_result_grad = result_tensor._grad_value.unsqueeze(dim)
     else:
-        new_result_grad = result_tensor.grad_value
+        new_result_grad = result_tensor._grad_value
 
     return (new_result_grad * max_pos_one_like_x,)
 
@@ -5305,9 +5304,9 @@ def _min_grad(result_tensor:TN):
 
     # 如果sum计算时结果张量做过维度精简，需要将缩减的维度暂时恢复
     if keepdim == False:
-        new_result_grad = result_tensor.grad_value.unsqueeze(dim)
+        new_result_grad = result_tensor._grad_value.unsqueeze(dim)
     else:
-        new_result_grad = result_tensor.grad_value
+        new_result_grad = result_tensor._grad_value
 
     return (new_result_grad * min_pos_one_like_x,)
 
@@ -5407,7 +5406,7 @@ def min(x:TN, dim:int|tuple|None=None, keepdim:bool=False, *, out=None):
 
 def _transpose_grad(result_tensor:TN):
     d1, d2 = result_tensor.parms[0]
-    return (result_tensor.grad_value.transpose(d1, d2),)
+    return (result_tensor._grad_value.transpose(d1, d2),)
 
 def _permute_grad(result_tensor:TN):
     """permute操作的融合梯度：按逆排列重排上游梯度。"""
@@ -5415,12 +5414,12 @@ def _permute_grad(result_tensor:TN):
     # 使用O(n)算法计算逆排列（np.argsort）
     inv_permutation = tuple(np.argsort(permutation))
     # permute方法会自动处理梯度计算图的记录
-    return (result_tensor.grad_value.permute(*inv_permutation),)
+    return (result_tensor._grad_value.permute(*inv_permutation),)
 
 def _getitem_grad(result_tensor:TN):
     x = result_tensor.fromvars[0]
     index = result_tensor.parms[0]
-    out_grad = result_tensor.grad_value
+    out_grad = result_tensor._grad_value
 
     # 初始化ret_grad与x的shape相同，初始值为0，再按index反向累加梯度
     return (zeros_like(x).addat(index, out_grad),)
@@ -5436,6 +5435,7 @@ def _matmul_grad(result_tensor:TN):
     分支3 - 多维 @ 1D：左梯度用 einsum 外积；右梯度用矩阵乘法 + 批次求和
     分支4 - 多维 @ 多维：标准矩阵乘法，存在广播时沿广播轴求和后 reshape
     """
+    
     left_tensor:TN = result_tensor.fromvars[0]
     right_tensor:TN = result_tensor.fromvars[1]
     left_requires = isinstance(left_tensor, TN) and left_tensor.requires_grad
@@ -5445,7 +5445,7 @@ def _matmul_grad(result_tensor:TN):
         return None, None
 
     # 确保grad_value是连续内存，避免后续@运算符性能下降
-    grad_value = result_tensor.grad_value.contiguous()
+    grad_value = result_tensor._grad_value.contiguous()
 
     left_ndim = left_tensor._array.ndim
     right_ndim = right_tensor._array.ndim
@@ -5463,7 +5463,7 @@ def _matmul_grad(result_tensor:TN):
             left_grad = sum(mat_grad, dim=sum_axes, keepdim=False)
         elif right_ndim == 1:
             # 分支3：einsum 直接计算外积
-            left_grad = _call_regapi('einsum', '...m,k->...mk', grad_value, right_tensor.conj())
+            left_grad = api_registry.einsum('...m,k->...mk', grad_value, right_tensor.conj())
         else:
             # 分支4：只比较批次部分（[:-2] 剥离矩阵维），找出 A 被广播的批次轴
             broadcast_axes = _get_broadcast_axis(
@@ -5483,7 +5483,7 @@ def _matmul_grad(result_tensor:TN):
             right_grad = left_tensor.conj() * grad_value
         elif left_ndim == 1 and right_ndim > 1:
             # 分支2：einsum 直接计算外积，C 的批次即 B 的批次
-            right_grad = _call_regapi('einsum', 'k,...n->...kn', left_tensor.conj(), grad_value)
+            right_grad = api_registry.einsum('k,...n->...kn', left_tensor.conj(), grad_value)
         elif right_ndim == 1:
             # 分支3：grad 插入列维后与 A^T 相乘，再对批次维与尾部列维求和
             new_grad = grad_value.unsqueeze(-1)  # (..., M) -> (..., M, 1)
@@ -5508,7 +5508,7 @@ def _add_grad(result_tensor:TN):
     left, right = result_tensor.fromvars
     left_requires = isinstance(left, TN) and left.requires_grad
     right_requires = isinstance(right, TN) and right.requires_grad
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
     result_shape = result_tensor.shape
     left_grad = None
     right_grad = None
@@ -5544,7 +5544,7 @@ def _mul_grad(result_tensor:TN):
     left, right = result_tensor.fromvars
     left_requires = isinstance(left, TN) and left.requires_grad
     right_requires = isinstance(right, TN) and right.requires_grad
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
     result_shape = result_tensor.shape
 
     # x*x的两个来源是同一对象，两侧原始梯度及广播归约完全一致
@@ -5577,7 +5577,7 @@ def _div_grad(result_tensor:TN):
     left, right = result_tensor.fromvars
     left_requires = isinstance(left, TN) and left.requires_grad
     right_requires = isinstance(right, TN) and right.requires_grad
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
     result_shape = result_tensor.shape
     right_conj = conj(right) if left_requires or right_requires else None
     left_grad = None
@@ -5621,11 +5621,11 @@ def _mod_grad(result_tensor:TN):
     if left_requires:
         # d(left % right)/d(left) = 1，结果梯度即为左值梯度
         if left_var.shape == result_shape:
-            left_grad = result_tensor.grad_value
+            left_grad = result_tensor._grad_value
         else:
             broadcast_axes = _get_broadcast_axis(result_shape, left_var.shape)
             left_grad = sum(
-                result_tensor.grad_value, dim=broadcast_axes, keepdim=False
+                result_tensor._grad_value, dim=broadcast_axes, keepdim=False
             )._reshape(left_var.shape)
 
     right_grad = None
@@ -5638,7 +5638,7 @@ def _mod_grad(result_tensor:TN):
                 device=result_tensor.device,
             )
         # d(left % right)/d(right) = -floor(left/right)
-        right_grad = -result_tensor.grad_value * floor(left_value / right_var)
+        right_grad = -result_tensor._grad_value * floor(left_value / right_var)
         if right_var.shape != result_shape:
             broadcast_axes = _get_broadcast_axis(result_shape, right_var.shape)
             right_grad = sum(
@@ -5652,7 +5652,7 @@ def _pow_grad(result_tensor:TN):
     left, right = result_tensor.fromvars
     left_requires = isinstance(left, TN) and left.requires_grad
     right_requires = isinstance(right, TN) and right.requires_grad
-    grad_value = result_tensor.grad_value
+    grad_value = result_tensor._grad_value
     result_shape = result_tensor.shape
     left_grad = None
     right_grad = None
@@ -6160,7 +6160,7 @@ def neg(x)->TN:
 
     if  ret.requires_grad:
         ret.fromvars=(x,)
-        ret._grad_rule = lambda result: (-result.grad_value,)
+        ret._grad_rule = lambda result: (-result._grad_value,)
     return ret
 
 def positive(x)->TN:
@@ -6339,7 +6339,7 @@ def _scalar_where_dtype(x, y):
 
 def _where_branch_grad(r, i, mask):
     """按 mask 缩放上游梯度，并在广播场景下归约回源张量形状（单分支）"""
-    grad = r.grad_value * mask
+    grad = r._grad_value * mask
     var = r.fromvars[i]
     var_shape = var.shape
     grad_shape = grad.shape

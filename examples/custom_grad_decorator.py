@@ -20,7 +20,7 @@ def sigmoid_derivative(result: rm.TN, x: rm.TN) -> tuple[rm.TN]:
     公式：d/dx (sigmoid(x)) = sigmoid(x) * (1 - sigmoid(x))
     
     Args:
-        result: 前向函数的输出张量，其 grad_value 为上游梯度
+        result: 前向函数的输出张量，其 _grad_value 为上游梯度
         x: 输入张量
         
     Returns:
@@ -30,10 +30,10 @@ def sigmoid_derivative(result: rm.TN, x: rm.TN) -> tuple[rm.TN]:
     exp_val = rm.exp(-x)
     sig = 1.0 / (1.0 + exp_val)
     
-    # 计算导数，并按链式法则乘以上游梯度 result.grad_value
+    # 计算导数，并按链式法则乘以上游梯度 result._grad_value
     derivative = sig * (1. - sig)
     
-    return (result.grad_value * derivative,)
+    return (result._grad_value * derivative,)
 
 @rm.track_grad(sigmoid_derivative)
 def custom_sigmoid(x: rm.TN) -> rm.TN:
