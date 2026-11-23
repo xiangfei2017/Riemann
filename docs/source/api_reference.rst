@@ -2967,11 +2967,11 @@ Gradient Computation
    :return: True if gradient check passes, False otherwise
    :rtype: bool
 
-.. function:: riemann.track_grad(grad_func)
+.. function:: riemann.register_grad_rule(grad_func)
 
    Create a gradient tracking decorator for adding automatic differentiation support to functions.
 
-   ``track_grad`` is a **Riemann-specific** interface; PyTorch has no decorator with this name.
+   ``register_grad_rule`` is a **Riemann-specific** interface; PyTorch has no decorator with this name.
 
    This decorator factory receives a gradient function and returns a decorator that can convert ordinary tensor operation functions
    into functions that support automatic differentiation. It automatically creates backpropagation functions and manages gradient computation graph construction.
@@ -2999,8 +2999,8 @@ Gradient Computation
       def _log_derivative(result, x):
           return (result.grad_value * (1. / x.conj()),)
       
-      # Use track_grad decorator to create automatic differentiation-supported log function
-      @track_grad(_log_derivative)
+      # Use register_grad_rule decorator to create automatic differentiation-supported log function
+      @register_grad_rule(_log_derivative)
       def mylog(x):
           return tensor(np.log(x.detach().array()))
       
@@ -3014,8 +3014,8 @@ Gradient Computation
       def _add_derivative(result, x, y):
           return (result.grad_value, result.grad_value)
       
-      # Use track_grad decorator to create automatic differentiation-supported addition function
-      @track_grad(_add_derivative)
+      # Use register_grad_rule decorator to create automatic differentiation-supported addition function
+      @register_grad_rule(_add_derivative)
       def myadd(x, y):
           return tensor(x.detach().array() + y.detach().array())
       
@@ -3027,13 +3027,49 @@ Gradient Computation
       print(f'x.grad = {x.grad}')  # Output: x.grad = 1.0
       print(f'y.grad = {y.grad}')  # Output: y.grad = 1.0
 
+.. function:: riemann.register_jvp_rule(jvp_func)
+
+   Create a forward-rule decorator that registers a direct forward (JVP) rule for a function.
+
+   ``register_jvp_rule`` is **Riemann-specific**; PyTorch has no decorator of this name
+   (forward-mode rules there are provided through ``autograd.Function.jvp``).
+
+   :param jvp_func: Forward rule function with signature ``jvp_func(result)``. ``result`` is
+                    the output tensor of the forward function. Inside the rule, obtain the
+                    current frame via ``current_jvp_frame()``, read incoming tangents with
+                    ``_input_tangent(frame, var)``, and write the result to
+                    ``frame.node_tangent[id(result)]`` with the same shape as ``result``.
+                    Omit the write if the output has no differentiable dependency
+   :type jvp_func: callable
+   :return: A decorator that registers the JVP rule for a forward function
+   :rtype: callable
+
+   The decorator is independent of ``register_grad_rule``: use either alone or decorate the
+   same function with both in any order. While the rule runs, ``result.fromvars`` is
+   temporarily replaced by the complete list of TN arguments and restored afterwards, so
+   inputs with ``requires_grad=False`` remain readable. Operators without a forward rule
+   fall back to transposed local VJPs in ``func.jvp``. See :doc:`autograd_basics` for a
+   complete example.
+
 .. class:: riemann.autograd.Function
 
    Base class for custom gradient implementations in the Riemann framework, designed with an interface similar to PyTorch's torch.autograd.Function.
 
-   To use this class, inherit from it and implement the forward and backward static methods:
+   To use this class, inherit from it and implement the ``forward`` and ``backward`` static
+   methods; implement the optional ``jvp`` static method for forward-mode autodiff:
+
    - forward: Perform forward computation, return output tensor(s)
    - backward: Receive output gradient(s), return input gradient(s)
+   - jvp (optional): Receive one tangent per input (``None`` for non-tensor positions) and
+     return the output tangent; inside ``jvp``, ``ctx.saved_tensors`` contains only tensors
+     saved with ``save_for_forward``
+   - setup_context (optional): new style — ``forward(*inputs)`` plus
+     ``setup_context(ctx, inputs, output)``
+   - ``ctx.needs_input_grad``: per-input boolean tuple; ``False`` for non-tensor positions
+     and entirely ``False`` under ``no_grad``
+
+   If ``jvp`` is not implemented, ``func.jvp`` falls back to transposed local VJPs. ``apply``
+   currently supports single-output functions only.
 
    Example:
    
@@ -3052,6 +3088,48 @@ Gradient Computation
               grad_input1 = grad_output * input2
               grad_input2 = grad_output * input1
               return grad_input1, grad_input2
+
+Functional Autodiff Functions (riemann.func)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False)
+
+   Compute the Jacobian-vector product (forward-mode automatic differentiation).
+
+   Driven by per-node direct forward rules: the PRIMAL phase builds the graph and registers
+   rules; the TANGENT phase traverses the topological order once and computes each node's
+   tangent. Operators without a rule fall back to transposed local VJPs. In-place operators
+   are applied to the tangent as ordered steps.
+
+   :param func: Differentiable function taking one or more tensors and returning a tensor or tuple of tensors
+   :param primals: Evaluation point, a single tensor or a tuple/list
+   :param tangents: One tangent per primal with matching shapes
+   :param create_graph: Keep the graph for higher-order differentiation, default ``False``
+   :param strict: Strict mode; raise when an output is independent of an input, default ``False``
+   :return: ``(output, jvp_result)`` with the same structure as the output
+   :rtype: tuple
+
+.. function:: riemann.func.jvp2(func, primals, tangents, create_graph=False, strict=False)
+
+   Legacy JVP implementation with the same interface as ``riemann.func.jvp``; internally
+   based on per-edge transposed local VJPs. Kept for comparison or fallback; new code should
+   use ``riemann.func.jvp``.
+
+.. function:: riemann.func.jacfwd(func, argnums=0, create_graph=False)
+
+   Return a function computing the Jacobian matrix in forward mode, implemented as
+   linearize + vmap(jvp) on top of the direct-rule ``riemann.func.jvp``: the primal graph is
+   recorded once and each input basis vector only re-propagates its one-hot tangent through
+   the operators' JVP rules. It takes the same parameters as ``riemann.func.jacrev`` but does
+   not support ``strict``.
+
+.. note::
+
+   ``riemann.func.jvp(func, primals, tangents)`` and
+   ``riemann.autograd.functional.jvp(func, inputs, v)`` are two parallel interfaces: the
+   former is a torch.func-style curried primitive (multi-input/multi-output, direct rules),
+   while the latter is an autograd.functional-style one-shot call. Both produce identical
+   results; pick according to your usage style.
 
 Functional Differentiation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

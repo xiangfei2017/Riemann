@@ -130,7 +130,7 @@ Riemann/
 - **hessian.py**: 海森矩阵计算示例
 - **jacobian.py**: 雅可比矩阵计算示例
 - **gradient_clipping_demo.py**: 梯度裁剪示例
-- **custom_grad_decorator.py**: 使用@track_grad装饰器自定义梯度跟踪函数示例
+- **custom_grad_decorator.py**: 使用@register_grad_rule装饰器自定义梯度跟踪函数示例
 - **custom_grad_FunctionClass.py**: 使用Function类自定义梯度跟踪函数示例
 - **scatter.py**: 张量散射操作示例
 - **optimizers_comparison.py**: 优化器性能比较

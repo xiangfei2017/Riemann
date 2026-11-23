@@ -2,6 +2,7 @@ import unittest
 import numpy as np
 import time
 import sys, os
+import warnings
 
 # 添加项目根目录到sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','src')))
@@ -11,8 +12,11 @@ try:
     import riemann as rm
     from riemann import TN
     from riemann.autograd import gradcheck
-    from riemann.core import track_grad
+    from riemann.core import register_grad_rule, register_jvp_rule
     from riemann.core import set_grad_enabled
+    from riemann.core.ad_context import current_jvp_frame
+    from riemann.core.tensordef import _input_tangent
+    from riemann.func import jvp
     from riemann.autograd.grad import Function  # 正确导入Function类
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
@@ -49,6 +53,12 @@ def _raises_runtime_error(call):
     except RuntimeError:
         return True
     return False
+
+
+def _jvp_tangent(result, index=0):
+    """读取 result 的第 index 个入边 tangent，返回 (frame, tangent)"""
+    frame = current_jvp_frame()
+    return frame, _input_tangent(frame, result.fromvars[index])
 
 # 定义颜色类用于美化输出
 class Colors:
@@ -202,7 +212,7 @@ IS_SCRIPT_MODE = __name__ == '__main__'
 
 # 测试自定义梯度功能类
 class TestDefineGradFunc(unittest.TestCase):
-    """测试自定义梯度功能，包括track_grad修饰器和Function类"""
+    """测试自定义梯度功能，包括 register_grad_rule / register_jvp_rule 修饰器和 Function 类"""
     
     def setUp(self):
         """测试前的准备工作"""
@@ -219,9 +229,27 @@ class TestDefineGradFunc(unittest.TestCase):
         stats.end_function()
         if IS_SCRIPT_MODE:
             print(f"\n{Colors.OKBLUE}测试完成: {self.current_test_name}{Colors.ENDC}")
+
+    def _run_cases(self, cases, device):
+        """执行 (用例名, 返回 bool 的函数) 组，统一统计与断言"""
+        for case_name, case_fn in cases:
+            full_name = f"{case_name} - {device}"
+            start_time = time.time()
+            error_msg = None
+            try:
+                passed = bool(case_fn())
+            except Exception as e:
+                passed = False
+                error_msg = str(e)
+            stats.add_result(full_name, passed)
+            if IS_SCRIPT_MODE:
+                color = Colors.OKGREEN if passed else Colors.FAIL
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {full_name} - {color}{status}{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+            self.assertTrue(passed, full_name + (f": {error_msg}" if error_msg else ""))
     
-    def test_track_grad_decorator(self):
-        """测试 track_grad 修饰器：参数组合、返回值类型、矩阵乘与重复反向"""
+    def test_register_grad_rule_decorator(self):
+        """测试 register_grad_rule 修饰器：参数组合、返回值类型、矩阵乘与重复反向"""
         devices = ["cpu"]
         if CUDA_AVAILABLE:
             devices.append("cuda")
@@ -231,7 +259,7 @@ class TestDefineGradFunc(unittest.TestCase):
         def _sin_derivative(result, x):
             return (result._grad_value * x.cos(),)
 
-        @track_grad(_sin_derivative)
+        @register_grad_rule(_sin_derivative)
         def mysin(x):
             return rm.tensor(np.sin(x.detach().array()), device=x.device)
 
@@ -239,7 +267,7 @@ class TestDefineGradFunc(unittest.TestCase):
         def _add_derivative(result, x, y):
             return (result._grad_value, result._grad_value)
 
-        @track_grad(_add_derivative)
+        @register_grad_rule(_add_derivative)
         def myadd(x, y):
             return rm.tensor(x.detach().array() + y.detach().array(), device=x.device)
 
@@ -247,7 +275,7 @@ class TestDefineGradFunc(unittest.TestCase):
         def _divide_derivative(result, x, y):
             return (result._grad_value / y, result._grad_value * (-x / (y * y)))
 
-        @track_grad(_divide_derivative)
+        @register_grad_rule(_divide_derivative)
         def mydivide(x, y):
             return x / y
 
@@ -255,7 +283,7 @@ class TestDefineGradFunc(unittest.TestCase):
         def _scale_derivative(result, scale, x):
             return (result._grad_value * scale,)
 
-        @track_grad(_scale_derivative)
+        @register_grad_rule(_scale_derivative)
         def myscale(scale, x):
             return rm.tensor(scale * x.detach().array(), device=x.device)
 
@@ -263,7 +291,7 @@ class TestDefineGradFunc(unittest.TestCase):
         def _weighted_sum_derivative(result, a, weight1, b, weight2):
             return (result._grad_value * weight1, result._grad_value * weight2)
 
-        @track_grad(_weighted_sum_derivative)
+        @register_grad_rule(_weighted_sum_derivative)
         def weighted_sum(a, weight1, b, weight2):
             return rm.tensor(weight1 * a.detach().array() + weight2 * b.detach().array(), device=a.device)
 
@@ -272,7 +300,7 @@ class TestDefineGradFunc(unittest.TestCase):
             local = exponent * (x.detach().array() ** (exponent - 1))
             return (result._grad_value * rm.tensor(local, device=x.device),)
 
-        @track_grad(_pow_derivative)
+        @register_grad_rule(_pow_derivative)
         def mypow(x, exponent=2.0):
             return rm.tensor(x.detach().array() ** exponent, device=x.device)
 
@@ -280,7 +308,7 @@ class TestDefineGradFunc(unittest.TestCase):
         def _sum_derivative(result, *args):
             return tuple(result._grad_value for _ in args)
 
-        @track_grad(_sum_derivative)
+        @register_grad_rule(_sum_derivative)
         def mysum(*xs):
             return rm.tensor(sum(x.detach().array() for x in xs), device=xs[0].device)
 
@@ -288,7 +316,7 @@ class TestDefineGradFunc(unittest.TestCase):
         def _sum_kwargs_derivative(result, **kwargs):
             return tuple(result._grad_value for _ in kwargs.values())
 
-        @track_grad(_sum_kwargs_derivative)
+        @register_grad_rule(_sum_kwargs_derivative)
         def mysum_kwargs(**kwargs):
             vals = list(kwargs.values())
             return rm.tensor(sum(v.detach().array() for v in vals), device=vals[0].device)
@@ -298,7 +326,7 @@ class TestDefineGradFunc(unittest.TestCase):
             g = result._grad_value
             return (g @ y.detach().T, x.detach().T @ g)
 
-        @track_grad(_matmul_derivative)
+        @register_grad_rule(_matmul_derivative)
         def mymatmul(x, y):
             return rm.matmul(x, y)
 
@@ -306,7 +334,7 @@ class TestDefineGradFunc(unittest.TestCase):
         def _double_derivative(result, x):
             return (result._grad_value * 2.0,)
 
-        @track_grad(_double_derivative)
+        @register_grad_rule(_double_derivative)
         def mydouble(x):
             return 2.0 * x.detach().array()
 
@@ -315,7 +343,7 @@ class TestDefineGradFunc(unittest.TestCase):
             result = args[0]
             return tuple(result._grad_value for _ in args[1:])
 
-        @track_grad(_sum_bare_args_derivative)
+        @register_grad_rule(_sum_bare_args_derivative)
         def mysum_bare(*xs):
             return rm.tensor(sum(x.detach().array() for x in xs), device=xs[0].device)
 
@@ -353,7 +381,7 @@ class TestDefineGradFunc(unittest.TestCase):
                 calls.append(None)
                 return (result._grad_value * y, result._grad_value * x)
 
-            @track_grad(_mul_derivative)
+            @register_grad_rule(_mul_derivative)
             def mymul(x, y):
                 return x * y
 
@@ -544,7 +572,7 @@ class TestDefineGradFunc(unittest.TestCase):
             def _none_derivative(result, x):
                 return (None,)
 
-            @track_grad(_none_derivative)
+            @register_grad_rule(_none_derivative)
             def f(x):
                 return rm.tensor(x.detach().array() * 2.0, device=x.device)
 
@@ -559,7 +587,7 @@ class TestDefineGradFunc(unittest.TestCase):
             def _short_derivative(result, x, y):
                 return (result._grad_value,)
 
-            @track_grad(_short_derivative)
+            @register_grad_rule(_short_derivative)
             def f(x, y):
                 return rm.tensor(x.detach().array() + y.detach().array(), device=x.device)
 
@@ -573,14 +601,14 @@ class TestDefineGradFunc(unittest.TestCase):
 
         def case_invalid_gradfunc(device):
             try:
-                track_grad(lambda: ())
+                register_grad_rule(lambda: ())
             except TypeError:
                 no_param_ok = True
             else:
                 no_param_ok = False
 
             try:
-                track_grad(lambda **kwargs: ())
+                register_grad_rule(lambda **kwargs: ())
             except TypeError:
                 kw_first_ok = True
             else:
@@ -634,6 +662,554 @@ class TestDefineGradFunc(unittest.TestCase):
                 # 断言传导：确保 unittest/pytest 将失败判为测试失败
                 self.assertTrue(passed, full_name + (f": {error_msg}" if error_msg else ""))
     
+    def test_register_jvp_rule_decorator(self):
+        """测试 register_jvp_rule 修饰器：单独使用、与 register_grad_rule 组合、variadic 与高阶"""
+        for device in _devices():
+            self._run_jvp_rule_cases(device)
+
+    def _run_jvp_rule_cases(self, device):
+        """register_jvp_rule 用例组"""
+        def to_np(t):
+            return _arr(t)
+
+        # ==================== 规则函数（签名与手写 _jvp_rule 相同） ====================
+        def _square_jvp(result):
+            frame, x_t = _jvp_tangent(result)
+            x = result.fromvars[0]
+            if x_t is not None:
+                frame.node_tangent[id(result)] = (2.0 * x) * x_t
+
+        def _square_grad(result, x):
+            return (2.0 * x * result._grad_value,)
+
+        def _mul_grad(result, x, y):
+            return (result._grad_value * y, result._grad_value * x)
+
+        def _mul_jvp(result):
+            frame = current_jvp_frame()
+            x, y = result.fromvars
+            x_t = _input_tangent(frame, x)
+            y_t = _input_tangent(frame, y)
+            total = None
+            if x_t is not None:
+                total = x_t * y
+            if y_t is not None:
+                term = x * y_t
+                total = term if total is None else total + term
+            if total is not None:
+                frame.node_tangent[id(result)] = total
+
+        def _sum_jvp(result):
+            frame = current_jvp_frame()
+            total = None
+            for var in result.fromvars:
+                tangent = _input_tangent(frame, var)
+                if tangent is not None:
+                    total = tangent if total is None else total + tangent
+            if total is not None:
+                frame.node_tangent[id(result)] = total
+
+        def _double_jvp(result):
+            frame, x_t = _jvp_tangent(result)
+            if x_t is not None:
+                frame.node_tangent[id(result)] = 2.0 * x_t
+
+        # ==================== 被测函数 ====================
+        # 1. 只登记 jvp 规则：反向由函数体内的可微算子提供
+        @register_jvp_rule(_square_jvp)
+        def sq_jvp_only(x):
+            return x * x
+
+        # 2/3. 两个装饰器同时使用（两种顺序）
+        @register_grad_rule(_square_grad)
+        @register_jvp_rule(_square_jvp)
+        def sq_both_grad_outer(x):
+            return rm.tensor(x.detach().array() ** 2, device=x.device)
+
+        @register_jvp_rule(_square_jvp)
+        @register_grad_rule(_square_grad)
+        def sq_both_jvp_outer(x):
+            return rm.tensor(x.detach().array() ** 2, device=x.device)
+
+        # 4. 多输入：反向过滤 fromvars，jvp 规则需看到完整实参
+        @register_grad_rule(_mul_grad)
+        @register_jvp_rule(_mul_jvp)
+        def myprod(x, y):
+            return rm.tensor(x.detach().array() * y.detach().array(), device=x.device)
+
+        # 5. *args / **kwargs
+        @register_jvp_rule(_sum_jvp)
+        def mysum_jvp(*xs):
+            return rm.tensor(sum(v.detach().array() for v in xs), device=xs[0].device)
+
+        @register_jvp_rule(_sum_jvp)
+        def mysum_kw_jvp(**xs):
+            vals = list(xs.values())
+            return rm.tensor(sum(v.detach().array() for v in vals), device=vals[0].device)
+
+        # 6. 前向返回非 TN，由修饰器转换
+        @register_jvp_rule(_double_jvp)
+        def mydouble_jvp(x):
+            return 2.0 * x.detach().array()
+
+        # ==================== 各场景用例 ====================
+        def _check_square(fn):
+            a = np.array([2.0, 3.0])
+            va = np.array([0.1, -0.4])
+            x = _mk(a, device)
+            v = _mk(va, device, requires_grad=False)
+            y, y_t = jvp(fn, x, v)
+            forward_ok = np.allclose(to_np(y), a * a)
+            tangent_ok = np.allclose(to_np(y_t), 2.0 * a * va)
+            y.sum().backward()
+            return forward_ok and tangent_ok and np.allclose(to_np(x.grad), 2.0 * a)
+
+        def case_jvp_only():
+            return _check_square(sq_jvp_only)
+
+        def case_combined_grad_outer():
+            return _check_square(sq_both_grad_outer)
+
+        def case_combined_jvp_outer():
+            return _check_square(sq_both_jvp_outer)
+
+        def case_multi_input():
+            a = np.array([1.0, 2.0])
+            b = np.array([3.0, 4.0])
+            va = np.array([0.5, -0.5])
+            vb = np.array([0.2, 0.3])
+            x, y = _mk(a, device), _mk(b, device)
+            o, t = jvp(myprod, [x, y],
+                       [_mk(va, device, requires_grad=False),
+                        _mk(vb, device, requires_grad=False)])
+            forward_ok = np.allclose(to_np(o), a * b)
+            tangent_ok = np.allclose(to_np(t), va * b + a * vb)
+            o.sum().backward()
+            return (forward_ok and tangent_ok
+                    and np.allclose(to_np(x.grad), b)
+                    and np.allclose(to_np(y.grad), a))
+
+        def case_filtered_fromvars():
+            # const 不参与反向，fromvars 被 register_grad_rule 过滤；
+            # jvp 规则执行期间应临时拿到完整实参，执行后恢复过滤后的 fromvars
+            a = np.array([1.0, 2.0])
+            b = np.array([3.0, 4.0])
+            va = np.array([0.5, -0.5])
+            x = _mk(a, device)
+            const = _mk(b, device, requires_grad=False)
+            v = _mk(va, device, requires_grad=False)
+            o, t = jvp(lambda p: myprod(p, const), x, v)
+            return (np.allclose(to_np(o), a * b)
+                    and np.allclose(to_np(t), va * b)
+                    and len(o.fromvars) == 1)
+
+        def case_varargs():
+            arrays = [np.array([1.0, 2.0]), np.array([3.0, 4.0]), np.array([5.0, 6.0])]
+            vecs = [np.array([0.1, 0.2]), np.array([0.3, 0.4]), np.array([-0.1, 0.1])]
+            xs = [_mk(a, device) for a in arrays]
+            vs = [_mk(v, device, requires_grad=False) for v in vecs]
+            o, t = jvp(mysum_jvp, xs, vs)
+            return (np.allclose(to_np(o), sum(arrays))
+                    and np.allclose(to_np(t), sum(vecs)))
+
+        def case_kwargs():
+            a = np.array([1.0, 2.0])
+            b = np.array([3.0, 4.0])
+            va = np.array([0.1, 0.2])
+            vb = np.array([0.3, 0.4])
+            x, y = _mk(a, device), _mk(b, device)
+            o, t = jvp(lambda p, q: mysum_kw_jvp(x=p, y=q), [x, y],
+                       [_mk(va, device, requires_grad=False),
+                        _mk(vb, device, requires_grad=False)])
+            return (np.allclose(to_np(o), a + b)
+                    and np.allclose(to_np(t), va + vb))
+
+        def case_non_tn_return():
+            a = np.array([2.0, 3.0])
+            va = np.array([0.1, -0.4])
+            x = _mk(a, device)
+            v = _mk(va, device, requires_grad=False)
+            y, y_t = jvp(mydouble_jvp, x, v)
+            # 前向返回值被修饰器转换为 TN；无 grad 规则，仅校验前向与 tangent
+            return (isinstance(y, TN)
+                    and np.allclose(to_np(y), 2.0 * a)
+                    and np.allclose(to_np(y_t), 2.0 * va))
+
+        def case_second_order():
+            a = np.array([2.0, 3.0])
+            va = np.array([0.1, -0.2])
+            x = _mk(a, device)
+            v = _mk(va, device, requires_grad=False)
+            _, t = jvp(sq_both_grad_outer, x, v, create_graph=True)
+            total = t.sum()
+            total.backward()
+            return (np.allclose(to_np(total), np.sum(2.0 * a * va))
+                    and np.allclose(to_np(x.grad), 2.0 * va))
+
+        def case_invalid_rule():
+            try:
+                register_jvp_rule(123)
+            except TypeError:
+                return True
+            return False
+
+        def case_pytorch_compare():
+            a = np.random.randn(3, 4)
+            va = np.random.randn(3, 4)
+            x = _mk(a, device)
+            v = _mk(va, device, requires_grad=False)
+            y, y_t = jvp(sq_both_grad_outer, x, v)
+            tx = torch.tensor(a, requires_grad=True)
+            with warnings.catch_warnings():
+                # Python 3.14 下 torch.func.jvp 内部会触发 jit.script 的 FutureWarning
+                warnings.filterwarnings(
+                    "ignore", message=".*torch\\.jit\\.script.*", category=FutureWarning)
+                ty, ty_t = torch.func.jvp(lambda t: t * t, (tx,), (torch.tensor(va),))
+            return (np.allclose(to_np(y), ty.detach().numpy(), atol=1e-5, rtol=1e-5)
+                    and np.allclose(to_np(y_t), ty_t.detach().numpy(), atol=1e-5, rtol=1e-5))
+
+        cases = [
+            ("单独登记 jvp 规则", case_jvp_only),
+            ("grad 外层组合", case_combined_grad_outer),
+            ("jvp 外层组合", case_combined_jvp_outer),
+            ("多输入 tangent", case_multi_input),
+            ("冻结实参 fromvars 过滤与恢复", case_filtered_fromvars),
+            ("*args 变长参数", case_varargs),
+            ("**kwargs 变长参数", case_kwargs),
+            ("前向返回非TN", case_non_tn_return),
+            ("create_graph 二阶", case_second_order),
+            ("非法 jvp_func 报错", case_invalid_rule),
+        ]
+        if TORCH_AVAILABLE and device == "cpu":
+            cases.append(("PyTorch 对比验证", case_pytorch_compare))
+
+        self._run_cases(cases, device)
+
+    def test_function_class_jvp(self):
+        """测试 Function 类通过静态 jvp 方法参与前向自动微分"""
+        for device in _devices():
+            self._run_function_jvp_cases(device)
+
+    def _run_function_jvp_cases(self, device):
+        """Function.jvp 用例组"""
+        def to_np(t):
+            return _arr(t)
+
+        class MulFn(Function):
+            """forward/backward/jvp 全实现，jvp 读取 save_for_forward 的张量"""
+
+            @staticmethod
+            def forward(ctx, x, y):
+                ctx.save_for_backward(x, y)
+                ctx.save_for_forward(x, y)
+                return x * y
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                x, y = ctx.saved_tensors
+                return grad_output * y, grad_output * x
+
+            @staticmethod
+            def jvp(ctx, gx, gy):
+                x, y = ctx.saved_tensors
+                total = None
+                if gx is not None:
+                    total = gx * y
+                if gy is not None:
+                    term = x * gy
+                    total = term if total is None else total + term
+                return total
+
+        class MulNoJvp(Function):
+            """未实现 jvp：应回退到基于 backward 的局部 VJP"""
+
+            @staticmethod
+            def forward(ctx, x, y):
+                ctx.save_for_backward(x, y)
+                return x * y
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                x, y = ctx.saved_tensors
+                return grad_output * y, grad_output * x
+
+        class SplitSaveFn(Function):
+            """backward 与 jvp 分别保存不同张量，并验证 ctx 自定义属性可见"""
+
+            @staticmethod
+            def forward(ctx, x, y):
+                ctx.save_for_backward(x)       # backward 只解包 x
+                ctx.save_for_forward(x, y)     # jvp 解包 x, y
+                ctx.z = 3.0
+                return x * y
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                (x,) = ctx.saved_tensors
+                assert x is not None
+                return grad_output * 2.0, grad_output * 5.0
+
+            @staticmethod
+            def jvp(ctx, gx, gy):
+                x, y = ctx.saved_tensors
+                total = None
+                if gx is not None:
+                    total = gx * y
+                if gy is not None:
+                    term = x * gy
+                    total = term if total is None else total + term
+                return None if total is None else ctx.z * total
+
+        class EmptyFwdSaveFn(Function):
+            """只调用 save_for_backward：jvp 中 saved_tensors 必须为空"""
+
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_backward(x)
+                return x * x
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                (x,) = ctx.saved_tensors
+                return (grad_output * 2.0 * x,)
+
+            @staticmethod
+            def jvp(ctx, gx):
+                assert ctx.saved_tensors == (), ctx.saved_tensors
+                return None if gx is None else gx * 0.0
+
+        class ScaleFn(Function):
+            """包含非张量参数；jvp 对应位置收到 None"""
+
+            @staticmethod
+            def forward(ctx, x, k):
+                return x * k
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                return grad_output * 3.0, None
+
+            @staticmethod
+            def jvp(ctx, gx, gk):
+                assert gk is None
+                return None if gx is None else gx * 3.0
+
+        class BadFwdSaveFn(Function):
+            """save_for_forward 传入非张量应报错"""
+
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_forward(x, 3)
+                return x
+
+            @staticmethod
+            def jvp(ctx, gx):
+                return gx
+
+        class NewStyleFn(Function):
+            """新式写法：forward 不接收 ctx，由 setup_context 建上下文"""
+
+            @staticmethod
+            def forward(x, y):
+                return x * y
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                x, y = inputs
+                assert isinstance(output, TN)
+                assert ctx.needs_input_grad == (True, True), ctx.needs_input_grad
+                ctx.save_for_backward(x, y)
+                ctx.save_for_forward(x, y)
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                x, y = ctx.saved_tensors
+                return grad_output * y, grad_output * x
+
+            @staticmethod
+            def jvp(ctx, gx, gy):
+                x, y = ctx.saved_tensors
+                total = None
+                if gx is not None:
+                    total = gx * y
+                if gy is not None:
+                    term = x * gy
+                    total = term if total is None else total + term
+                return total
+
+        class NewStyleScaleFn(Function):
+            """新式写法 + 非张量参数：needs_input_grad 逐位置对应"""
+
+            @staticmethod
+            def forward(x, k):
+                return x * k
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                x, k = inputs
+                assert ctx.needs_input_grad == (True, False), ctx.needs_input_grad
+                ctx.save_for_backward(x)
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                (x,) = ctx.saved_tensors
+                return grad_output * 3.0, None
+
+        class ProbeNeedsGradFn(Function):
+            """记录 needs_input_grad，验证无梯度输入时为 False"""
+
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_backward(x)
+                assert ctx.needs_input_grad == (False,), ctx.needs_input_grad
+                return x * 2.0
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                return (grad_output * 2.0,)
+
+        a = np.array([[1.0, -2.0], [3.0, 0.5]])
+        b = np.array([[0.5, 2.0], [-1.0, 4.0]])
+        va = np.array([[0.1, 0.2], [-0.3, 0.4]])
+        vb = np.array([[0.7, -0.1], [0.2, 0.5]])
+
+        def case_mul_jvp_and_backward():
+            x, y = _mk(a, device), _mk(b, device)
+            vx = _mk(va, device, requires_grad=False)
+            vy = _mk(vb, device, requires_grad=False)
+            o, t = jvp(MulFn.apply, [x, y], [vx, vy])
+            forward_ok = np.allclose(to_np(o), a * b)
+            tangent_ok = np.allclose(to_np(t), va * b + a * vb)
+            o.sum().backward()
+            return (forward_ok and tangent_ok
+                    and np.allclose(to_np(x.grad), b)
+                    and np.allclose(to_np(y.grad), a))
+
+        def case_fallback_without_jvp():
+            x, y = _mk(a, device), _mk(b, device)
+            vx = _mk(va, device, requires_grad=False)
+            vy = _mk(vb, device, requires_grad=False)
+            o1, t1 = jvp(MulFn.apply, [x, y], [vx, vy])
+            o2, t2 = jvp(MulNoJvp.apply, [x, y], [vx, vy])
+            return (np.allclose(to_np(o2), to_np(o1))
+                    and np.allclose(to_np(t2), to_np(t1)))
+
+        def case_split_saved_tensors():
+            x, y = _mk(a, device), _mk(b, device)
+            vx = _mk(va, device, requires_grad=False)
+            vy = _mk(vb, device, requires_grad=False)
+            o, t = jvp(SplitSaveFn.apply, [x, y], [vx, vy])
+            tangent_ok = np.allclose(to_np(t), 3.0 * (va * b + a * vb))
+            o.sum().backward()
+            return (tangent_ok
+                    and np.allclose(to_np(x.grad), np.full_like(a, 2.0))
+                    and np.allclose(to_np(y.grad), np.full_like(b, 5.0)))
+
+        def case_empty_forward_saved():
+            x = _mk(a, device)
+            vx = _mk(va, device, requires_grad=False)
+            o, t = jvp(EmptyFwdSaveFn.apply, x, vx)
+            return (np.allclose(to_np(o), a * a)
+                    and np.allclose(to_np(t), np.zeros_like(a)))
+
+        def case_non_tensor_arg():
+            x = _mk(a, device)
+            vx = _mk(va, device, requires_grad=False)
+            o, t = jvp(lambda p: ScaleFn.apply(p, 3.0), x, vx)
+            o.sum().backward()
+            return (np.allclose(to_np(o), a * 3.0)
+                    and np.allclose(to_np(t), va * 3.0)
+                    and np.allclose(to_np(x.grad), np.full_like(a, 3.0)))
+
+        def case_second_order():
+            x = _mk(a, device)
+            vx = _mk(va, device, requires_grad=False)
+            _, t = jvp(lambda p: MulFn.apply(p, p), x, vx, create_graph=True)
+            total = t.sum()
+            total.backward()
+            return (np.allclose(to_np(total), np.sum(2.0 * a * va))
+                    and np.allclose(to_np(x.grad), 2.0 * va))
+
+        def case_reject_non_tensor_forward_save():
+            x = _mk(a, device)
+            try:
+                BadFwdSaveFn.apply(x)
+            except AssertionError as e:
+                return "save_for_forward expects all arguments to be tensors" in str(e)
+            return False
+
+        def case_setup_context_forward_backward_jvp():
+            x, y = _mk(a, device), _mk(b, device)
+            vx = _mk(va, device, requires_grad=False)
+            vy = _mk(vb, device, requires_grad=False)
+            o, t = jvp(NewStyleFn.apply, [x, y], [vx, vy])
+            tangent_ok = np.allclose(to_np(t), va * b + a * vb)
+            o.sum().backward()
+            return (np.allclose(to_np(o), a * b)
+                    and tangent_ok
+                    and np.allclose(to_np(x.grad), b)
+                    and np.allclose(to_np(y.grad), a))
+
+        def case_setup_context_non_tensor_arg():
+            x = _mk(a, device)
+            o = NewStyleScaleFn.apply(x, 3.0)
+            o.sum().backward()
+            return (np.allclose(to_np(o), a * 3.0)
+                    and np.allclose(to_np(x.grad), np.full_like(a, 3.0)))
+
+        def case_needs_input_grad_false():
+            x = _mk(a, device, requires_grad=False)
+            o = ProbeNeedsGradFn.apply(x)
+            return np.allclose(to_np(o), a * 2.0)
+
+        def case_default_setup_context():
+            try:
+                Function.setup_context(None, (), None)
+            except NotImplementedError:
+                return True
+            return False
+
+        def case_no_grad_mode():
+            x, y = _mk(a, device), _mk(b, device)
+            with set_grad_enabled(False):
+                o = MulFn.apply(x, y)
+            return (not o.requires_grad) and np.allclose(to_np(o), a * b)
+
+        def case_pytorch_compare():
+            x, y = _mk(a, device), _mk(b, device)
+            vx = _mk(va, device, requires_grad=False)
+            vy = _mk(vb, device, requires_grad=False)
+            o, t = jvp(MulFn.apply, [x, y], [vx, vy])
+            tx = torch.tensor(a, requires_grad=True)
+            ty = torch.tensor(b, requires_grad=True)
+            with warnings.catch_warnings():
+                # Python 3.14 下 torch.func.jvp 内部会触发 jit.script 的 FutureWarning
+                warnings.filterwarnings(
+                    "ignore", message=".*torch\\.jit\\.script.*", category=FutureWarning)
+                to, tt = torch.func.jvp(lambda p, q: p * q,
+                                        (tx, ty), (torch.tensor(va), torch.tensor(vb)))
+            return (np.allclose(to_np(o), to.detach().numpy(), atol=1e-5, rtol=1e-5)
+                    and np.allclose(to_np(t), tt.detach().numpy(), atol=1e-5, rtol=1e-5))
+
+        cases = [
+            ("MulFn jvp 与反向", case_mul_jvp_and_backward),
+            ("未实现 jvp 时回退一致", case_fallback_without_jvp),
+            ("backward/jvp 保存集合隔离", case_split_saved_tensors),
+            ("未调用 save_for_forward 时为空", case_empty_forward_saved),
+            ("非张量参数传入 None", case_non_tensor_arg),
+            ("create_graph 二阶", case_second_order),
+            ("save_for_forward 拒绝非张量", case_reject_non_tensor_forward_save),
+            ("setup_context 前向/反向/jvp", case_setup_context_forward_backward_jvp),
+            ("setup_context 非张量参数", case_setup_context_non_tensor_arg),
+            ("needs_input_grad 无梯度输入", case_needs_input_grad_false),
+            ("setup_context 默认未实现", case_default_setup_context),
+            ("no_grad 下不建图", case_no_grad_mode),
+        ]
+        if TORCH_AVAILABLE and device == "cpu":
+            cases.append(("PyTorch 对比验证", case_pytorch_compare))
+
+        self._run_cases(cases, device)
+
     def test_gradcheck(self):
         """gradcheck 用例组：基础功能、错误检出、fast_mode、边界与参数校验"""
         for device in _devices():
@@ -938,7 +1514,7 @@ class TestDefineGradFunc(unittest.TestCase):
 
         return cases
 
-    def test_function_class(self):
+    def test_function_class_grad(self):
         """测试 Function 类的自定义梯度功能（CPU + CUDA）"""
 
         # 定义一个自定义的乘法函数
@@ -1030,7 +1606,7 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print(f"{Colors.BOLD}Riemann 自定义梯度功能测试{Colors.ENDC}")
     print("="*60)
-    print("测试目标: track_grad修饰器、Function类")
+    print("测试目标: register_grad_rule / register_jvp_rule 修饰器、Function类（含 jvp）")
     print("\n开始执行所有测试...\n")
     
     test_suite = unittest.TestLoader().loadTestsFromTestCase(TestDefineGradFunc)

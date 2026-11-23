@@ -131,7 +131,7 @@ The `examples/` directory contains various example codes that demonstrate how to
 - **hessian.py**: Hessian matrix calculation example
 - **jacobian.py**: Jacobian matrix calculation example
 - **gradient_clipping_demo.py**: Gradient clipping example
-- **custom_grad_decorator.py**: Example of using @track_grad decorator to customize gradient tracking functions
+- **custom_grad_decorator.py**: Example of using @register_grad_rule decorator to customize gradient tracking functions
 - **custom_grad_FunctionClass.py**: Example of using Function class to customize gradient tracking functions
 - **scatter.py**: Tensor scatter operation example
 - **optimizers_comparison.py**: Optimizer performance comparison

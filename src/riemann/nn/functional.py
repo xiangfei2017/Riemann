@@ -89,6 +89,7 @@ from __future__ import annotations
 import builtins
 from ..core import *
 from ..core.tensordef import _same_device
+from ..core.ad_context import current_jvp_frame
 
 def linear(input: TN, weight: TN, bias: TN | None = None) -> TN:
     """
@@ -202,10 +203,19 @@ def sigmoid(x: TN) -> TN:
         requires_grad = is_grad_enabled() and x.requires_grad
     )
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret._grad_rule = _sigmoid_grad
+        ret._jvp_rule = _sigmoid_jvp
     return ret
+
+def _sigmoid_jvp(result_tensor: TN):
+    """前向规则：y_t = y · (1 − y) · x_t，直接复用前向输出 y 避免重复计算。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        frame.node_tangent[id(result_tensor)] = x_t * result_tensor * (1.0 - result_tensor)
 
 def _sigmoid_grad(result_tensor: TN):
     """梯度计算：sigmoid(x) * (1. - sigmoid(x))"""
@@ -286,10 +296,11 @@ def softmax(x:TN, dim:int)->TN:
     requires_grad = is_grad_enabled() and x.requires_grad
     ret = TN(ret_data, requires_grad=requires_grad)
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret.parms = (dim,)
         ret._grad_rule = _softmax_grad
+        ret._jvp_rule = _softmax_jvp
 
     return ret
 
@@ -300,6 +311,16 @@ def _softmax_grad(result_tensor: TN):
     dim = y.parms[0]
     d = (y*g).sum(dim=dim, keepdim=True)
     return (y * (g - d),)
+
+def _softmax_jvp(result_tensor: TN):
+    """前向规则：y_t = y · (x_t − Σ(y·x_t))。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        dim = result_tensor.parms[0]
+        y = result_tensor
+        frame.node_tangent[id(result_tensor)] = y * (x_t - (y * x_t).sum(dim=dim, keepdim=True))
 
 def log_softmax(x: TN, dim: int = -1) -> TN:
     """
@@ -342,10 +363,11 @@ def log_softmax(x: TN, dim: int = -1) -> TN:
     requires_grad = is_grad_enabled() and x.requires_grad
     ret = TN(ret_data, requires_grad=requires_grad)
 
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret.parms = (dim,)
         ret._grad_rule = _log_softmax_grad
+        ret._jvp_rule = _log_softmax_jvp
 
     return ret
 
@@ -355,6 +377,16 @@ def _log_softmax_grad(result_tensor: TN):
     g = y._grad_value
     dim = y.parms[0]
     return (g - exp(y) * g.sum(dim=dim, keepdim=True),)
+
+def _log_softmax_jvp(result_tensor: TN):
+    """前向规则：y_t = x_t − Σ(exp(y)·x_t)。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        dim = result_tensor.parms[0]
+        y = result_tensor
+        frame.node_tangent[id(result_tensor)] = x_t - (exp(y) * x_t).sum(dim=dim, keepdim=True)
 
 def relu(x: TN) -> TN:
     """
@@ -387,9 +419,10 @@ def relu(x: TN) -> TN:
     )
     
     # 注册梯度函数
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret._grad_rule = _relu_grad
+        ret._jvp_rule = _relu_jvp
     return ret
 
 def _relu_grad(result_tensor: TN):
@@ -397,6 +430,14 @@ def _relu_grad(result_tensor: TN):
     x = result_tensor.fromvars[0]
     mask = (x > 0.0) 
     return (result_tensor._grad_value * mask,)
+
+def _relu_jvp(result_tensor: TN):
+    """前向规则：y_t = x_t · 1{x > 0}。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        frame.node_tangent[id(result_tensor)] = x_t * (x > 0.0)
 
 def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
     """
@@ -425,10 +466,11 @@ def leaky_relu(x: TN, alpha: float = 0.01) -> TN:
         requires_grad = is_grad_enabled() and x.requires_grad
     )
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret.parms = (alpha,)  # 保存alpha值供反向传播使用
         ret._grad_rule = _leaky_relu_grad
+        ret._jvp_rule = _leaky_relu_jvp
     return ret
 
 def _leaky_relu_grad(result_tensor: TN):
@@ -438,6 +480,16 @@ def _leaky_relu_grad(result_tensor: TN):
     mask = (x > 0.) 
     grad = result_tensor._grad_value * (mask + (1.0 - mask) * alpha).type(x.dtype)
     return (grad,)
+
+def _leaky_relu_jvp(result_tensor: TN):
+    """前向规则：y_t = x_t · (mask + (1 − mask)·alpha)。"""
+    frame = current_jvp_frame()
+    alpha = result_tensor.parms[0]
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        mask = (x > 0.0)
+        frame.node_tangent[id(result_tensor)] = x_t * (mask + (1.0 - mask) * alpha)
 
 def prelu(x: TN, alpha: TN) -> TN:
     if not isinstance(x, TN): 
@@ -451,10 +503,11 @@ def prelu(x: TN, alpha: TN) -> TN:
         requires_grad = is_grad_enabled() and x.requires_grad
     )
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x, alpha)
         # 融合梯度规则同时计算x和alpha的梯度
         ret._grad_rule = _prelu_grad
+        ret._jvp_rule = _prelu_jvp
     return ret
 
 def _prelu_grad(result_tensor: TN):
@@ -464,6 +517,25 @@ def _prelu_grad(result_tensor: TN):
     # 对alpha的梯度需要求和（假设alpha为标量或向量）
     grad_alpha = sum(result_tensor._grad_value * (~mask) * x)
     return (grad_x, grad_alpha)
+
+def _prelu_jvp(result_tensor: TN):
+    """前向规则：x_t·z + alpha_t·(~mask)·x，其中 z = mask + (~mask)·alpha。"""
+    frame = current_jvp_frame()
+    x, alpha = result_tensor.fromvars
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    alpha_t = frame.node_tangent.get(id(alpha)) if frame is not None else None
+    if x_t is None and alpha_t is None:
+        return
+    mask = (x > 0.0)
+    total = None
+    if x_t is not None:
+        z = mask + (~mask) * alpha
+        total = x_t * z
+    if alpha_t is not None:
+        # alpha 的形状可能是标量或向量，依靠 TN 广播对齐到输出形状
+        term = alpha_t * ((~mask) * x)
+        total = term if total is None else total + term
+    frame.node_tangent[id(result_tensor)] = total
 
 def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool = True) -> TN:
     if not isinstance(x, TN): 
@@ -485,10 +557,11 @@ def rrelu(x: TN, lower: float = 1.0/8.0, upper: float = 1.0/3.0, training: bool 
         requires_grad = is_grad_enabled() and x.requires_grad
     )
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret.parms = (training, lower, upper, alpha)
         ret._grad_rule = _rrelu_grad
+        ret._jvp_rule = _rrelu_jvp
     return ret
 
 def _rrelu_grad(result_tensor: TN):
@@ -497,6 +570,16 @@ def _rrelu_grad(result_tensor: TN):
     mask = (x > 0.) 
     grad = result_tensor._grad_value * (mask + (1.0 - mask) * alpha).type(x.dtype)
     return (grad,)
+
+def _rrelu_jvp(result_tensor: TN):
+    """前向规则：y_t = x_t · (mask + (1 − mask)·alpha)，alpha 取自 parms。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        alpha = result_tensor.parms[3]
+        mask = (x > 0.0)
+        frame.node_tangent[id(result_tensor)] = x_t * (mask + (1.0 - mask) * alpha)
 
 def elu(x: TN, alpha: float = 1.0) -> TN:
     """
@@ -538,10 +621,11 @@ def elu(x: TN, alpha: float = 1.0) -> TN:
         requires_grad=is_grad_enabled() and x.requires_grad
     )
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret.parms = (alpha,)
         ret._grad_rule = _elu_grad
+        ret._jvp_rule = _elu_jvp
     
     return ret
 
@@ -556,6 +640,15 @@ def _elu_grad(result_tensor: TN):
     grad = where(x > 0, positive_grad, negative_grad)
     
     return (result_tensor._grad_value * grad,)
+
+def _elu_jvp(result_tensor: TN):
+    """前向规则：y_t = where(x > 0, x_t, alpha·exp(x)·x_t)。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        alpha = result_tensor.parms[0]
+        frame.node_tangent[id(result_tensor)] = where(x > 0, x_t, alpha * exp(x) * x_t)
 
 def celu(x: TN, alpha: float = 1.0) -> TN:
     """
@@ -602,10 +695,11 @@ def celu(x: TN, alpha: float = 1.0) -> TN:
         requires_grad=is_grad_enabled() and x.requires_grad
     )
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret.parms = (alpha,)
         ret._grad_rule = _celu_grad
+        ret._jvp_rule = _celu_jvp
     
     return ret
 
@@ -620,6 +714,15 @@ def _celu_grad(result_tensor: TN):
     grad = where(x > 0, positive_grad, negative_grad)
     
     return (result_tensor._grad_value * grad,)
+
+def _celu_jvp(result_tensor: TN):
+    """前向规则：y_t = where(x > 0, x_t, exp(x/alpha)·x_t)。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        alpha = result_tensor.parms[0]
+        frame.node_tangent[id(result_tensor)] = where(x > 0, x_t, exp(x / alpha) * x_t)
 
 def tanh(input: TN) -> TN:
     """
@@ -656,9 +759,10 @@ def tanh(input: TN) -> TN:
         requires_grad=is_grad_enabled() and input.requires_grad
     )
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (input,)
         ret._grad_rule = _tanh_grad
+        ret._jvp_rule = _tanh_jvp
     
     return ret
 
@@ -672,6 +776,15 @@ def _tanh_grad(result_tensor: TN):
     grad = 1.0 - tanh_x * tanh_x
     
     return (result_tensor._grad_value * grad,)
+
+def _tanh_jvp(result_tensor: TN):
+    """Tanh 前向规则：y = tanh(x) → y_t = (1 − y²)·x_t。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    if isinstance(x, TN):
+        x_t = frame.node_tangent.get(id(x))
+        if x_t is not None:
+            frame.node_tangent[id(result_tensor)] = (1.0 - result_tensor * result_tensor) * x_t
 
 def selu(x: TN) -> TN:
     """
@@ -717,10 +830,11 @@ def selu(x: TN) -> TN:
         requires_grad=is_grad_enabled() and x.requires_grad
     )
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret.parms = (alpha, scale)
         ret._grad_rule = _selu_grad
+        ret._jvp_rule = _selu_jvp
     
     return ret
 
@@ -736,6 +850,17 @@ def _selu_grad(result_tensor: TN):
     grad = where(x > 0, positive_grad, negative_grad)
     
     return (result_tensor._grad_value * grad,)
+
+def _selu_jvp(result_tensor: TN):
+    """前向规则：x>0 时 y_t = scale·x_t，否则 y_t = scale·alpha·exp(x)·x_t。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        alpha = result_tensor.parms[0]
+        scale = result_tensor.parms[1]
+        frame.node_tangent[id(result_tensor)] = where(
+            x > 0, scale * x_t, scale * alpha * exp(x) * x_t)
 
 # 修改gelu函数实现，使用PyTorch兼容的精确版本
 def gelu(x: TN) -> TN:
@@ -770,9 +895,10 @@ def gelu(x: TN) -> TN:
         requires_grad = is_grad_enabled() and x.requires_grad
     )
     
-    if ret.requires_grad:
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
         ret._grad_rule = _gelu_grad
+        ret._jvp_rule = _gelu_jvp
     return ret
 
 def _gelu_grad(result_tensor: TN):
@@ -783,6 +909,17 @@ def _gelu_grad(result_tensor: TN):
     tanh_term = tanh(c * (x + 0.044715 * x**3.))
     grad = 0.5 * (1. + tanh_term) + 0.5 * x * (1. - tanh_term**2.) * c * (1. + 0.134145*(x**2.))
     return (result_tensor._grad_value * grad,)
+
+def _gelu_jvp(result_tensor: TN):
+    """前向规则：y_t = d·x_t，d 与 _gelu_grad 的导数因子严格一致。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        c = (2. / pi) ** 0.5
+        tanh_term = tanh(c * (x + 0.044715 * x**3.))
+        d = 0.5 * (1. + tanh_term) + 0.5 * x * (1. - tanh_term**2.) * c * (1. + 0.134145*(x**2.))
+        frame.node_tangent[id(result_tensor)] = d * x_t
 
 def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
     """
@@ -3266,7 +3403,7 @@ def embedding(
     output = TN(output_data, requires_grad =requires_grad )
     
     # 如果需要跟踪梯度
-    if requires_grad:
+    if requires_grad or forward_ad_trace_active():
         # 设置fromvars，记录参与计算的变量
         output.fromvars = (weight,)        
         # 设置parms，记录计算所需的参数
@@ -3312,130 +3449,22 @@ def embedding(
         
         # 设置梯度规则，记录反向传播函数
         output._grad_rule = _embedding_grad
-    
-    return output
 
-def embedding2(
-    input: TN,
-    weight: TN,
-    padding_idx: int | None = None,
-    max_norm: float | None = None,
-    norm_type: float = 2,
-    scale_grad_by_freq: bool = False,
-    sparse: bool = False,
-) -> TN:
-    """
-    从嵌入矩阵中查找输入索引的嵌入向量。
-    
-    参数:
-        input (TN): 包含索引的张量，形状为任意维度
-        weight (TN): 嵌入矩阵，形状为 (num_embeddings, embedding_dim)
-        padding_idx (int, optional): 如果指定，该索引的嵌入向量不参与梯度计算，
-                                     且在训练过程中保持不变。默认为None
-        max_norm (float, optional): 如果指定，所有嵌入向量的范数超过max_norm时，
-                                    将被重归一化到max_norm。默认为None
-        norm_type (float, optional): 计算范数时使用的p值，默认为2（L2范数）
-        scale_grad_by_freq (bool, optional): 如果为True，梯度将按mini-batch中每个词的频率进行缩放。
-                                             默认为False
-        sparse (bool, optional): 如果为True，权重的梯度将是稀疏张量。默认为False
-    
-    返回:
-        TN: 输出张量，形状为 (*, embedding_dim)，其中*是输入的形状
-    
-    形状:
-        - 输入: LongTensor类型的任意形状张量，包含要提取的索引
-        - 权重: 浮点数类型的嵌入矩阵，形状为 (V, embedding_dim)，
-               其中V = max_index + 1，embedding_dim = 嵌入大小
-        - 输出: (*, embedding_dim)，其中*是输入的形状
-    
-    示例:
-        >>> # 批量大小为2，每个样本有4个索引
-        >>> input = tensor([[1, 2, 4, 5]], dtype='long')
-        >>> # 包含10个3维嵌入向量的嵌入矩阵
-        >>> embedding_matrix = tensor(np.random.rand(10, 3), dtype='float32')
-        >>> output = embedding(input, embedding_matrix)
-        >>> # 结果形状: (1, 4, 3)
-        
-        >>> # 使用padding_idx的示例（与PyTorch行为一致）
-        >>> weights = tensor(np.random.rand(10, 3), dtype='float32')
-        >>> input = tensor([[0, 2, 0, 5]], dtype='long')
-        >>> # PyTorch不会自动将padding_idx的输出设为0，需要手动处理
-        >>> weights[0, :] = 0  # 手动将padding_idx对应的嵌入设为0
-        >>> output = embedding(input, weights, padding_idx=0)
-        >>> # 结果中索引0的嵌入将保持为全0（因为权重已手动设为0）
-    
-    注意:
-        - 支持任意维度的输入张量
-        - 输入张量的数据类型应为整数类型（通常是long）
-        - 如果设置了padding_idx，它必须在[0, num_embeddings-1]范围内
-        - max_norm参数会对权重矩阵进行重归一化
-        - 自动支持梯度计算
-        - 与PyTorch行为一致：不会自动将padding_idx的输出设为0，需要手动将权重中对应的值设为0
-        - 当前版本暂不支持scale_grad_by_freq和sparse参数
-    """
-    if not isinstance(weight, TN):
-        raise TypeError(f"Expected weight type to be TN tensor, but received type: {type(weight)}")
-    if not isinstance(input, TN):
-        raise TypeError(f"Expected input to be TN tensor, but received type: {type(input)}")
-    if not _same_device(input, weight):
-        raise ValueError("input and weight must have the same device")
-    
-    # 检查输入数据类型是否为整数类型
-    # 使用dtype.kind检查，'i'表示有符号整数，'u'表示无符号整数
-    if input.dtype.kind not in ['i', 'u']:
-        raise TypeError(f"Expected input tensor to have integer type, but received: {input.dtype}")
-    
-    # 检查权重矩阵的维度
-    if weight.ndim != 2:
-        raise ValueError(f"Expected weight to be 2-dimensional, but received: {weight.ndim} dimensions")
-    
-    num_embeddings, embedding_dim = weight.shape
-    
-    # 处理padding_idx
-    if padding_idx is not None:
-        if padding_idx is not None and padding_idx >= 0:  # type: ignore
-            if padding_idx >= num_embeddings:  # type: ignore
-                raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
-        elif padding_idx is not None and padding_idx < 0:  # type: ignore
-            padding_idx = num_embeddings + padding_idx
-            if padding_idx < 0:  # type: ignore
-                raise ValueError(f"padding_idx ({padding_idx}) must be within num_embeddings ({num_embeddings})")
-    
-    # 处理max_norm
-    if max_norm is not None:
-        # 使用张量操作计算每个嵌入向量的范数
-        # 计算Lp范数，axis=1表示按行计算，keepdims=True保持维度
-        norms = weight.norm(norm_type, dim=1, keepdim=True)
-        # 创建掩码，找出范数超过max_norm的嵌入向量
-        mask = norms > max_norm  # type: ignore
-        
-        # 如果有需要重归一化的嵌入向量
-        if mask.any():
-            # 计算重归一化后的嵌入向量
-            normalized = weight / norms * max_norm
-            # 使用where操作更新权重，保持梯度跟踪
-            weight = where(mask, normalized, weight)
-    
-    # 确保padding_idx的梯度为0（与PyTorch行为一致）
-    # 这里使用一个小技巧：将padding_idx对应的权重行分离出来，不参与梯度计算
-    if padding_idx is not None and weight.requires_grad:
-        # 创建一个与weight相同形状的临时张量
-        # 非padding_idx的行保持原样，padding_idx的行使用detach()版本
-        # 这样，反向传播时，padding_idx对应的行的梯度不会影响原weight
-        temp_weight = where(
-            arange(num_embeddings, requires_grad=False)[:, None] == padding_idx,
-            weight[padding_idx].detach().broadcast_to(weight.shape[1:]),
-            weight
-        )
-        
-        # 使用临时权重张量进行嵌入查找
-        output = temp_weight[input]
-    else:
-        # 正常进行嵌入查找
-        output = weight[input]
-    
-    # PyTorch不会自动将padding_idx的输出设为0，只是不计算其梯度
-    # 因此这里不做额外处理，保持与PyTorch行为一致
+        def _embedding_jvp(result_tensor: TN):
+            """前向规则：按 input 收集 weight tangent 的行（等价于 weight_t[input]）。
+
+            注意：PyTorch 的前向 AD 对 padding_idx 行并不清零（清零仅发生在反向），
+            因此这里保持纯 gather 语义，与 torch.func.jvp 一致。
+            """
+            frame = current_jvp_frame()
+            weight_var = result_tensor.fromvars[0]
+            weight_t = frame.node_tangent.get(id(weight_var)) if frame is not None else None
+            if weight_t is None:
+                return
+            frame.node_tangent[id(result_tensor)] = weight_t[input]
+
+        # 设置前向规则，记录前向传播函数
+        output._jvp_rule = _embedding_jvp
     
     return output
 

@@ -57,6 +57,7 @@ from ..core.tensordef import (_same_device,
                             _backward_without_hooks,
                             _propagate_grad_to_sources
 )
+from ..core.ad_context import current_jvp_frame, forward_ad_trace_active, is_grad_enabled
 
 
 def _normalize_roots(outputs, arg_name):
@@ -891,12 +892,15 @@ class Function:
     要使用该类，需要继承并实现forward和backward静态方法：
     - forward：执行前向计算，返回输出张量
     - backward：接收输出梯度，返回输入梯度
-    
+    - jvp（可选）：接收各输入的前向 tangent（无 tangent 的输入为 None），
+      返回输出的 tangent；实现后该函数即可参与前向自动微分(jvp)
+
     示例用法：
     class MyFunction(Function):
         @staticmethod
         def forward(ctx, input1, input2):
             ctx.save_for_backward(input1, input2)
+            ctx.save_for_forward(input1, input2)
             output = input1 * input2
             return output
         
@@ -906,32 +910,92 @@ class Function:
             grad_input1 = grad_output * input2
             grad_input2 = grad_output * input1
             return grad_input1, grad_input2
+
+        @staticmethod
+        def jvp(ctx, tangent1, tangent2):
+            input1, input2 = ctx.saved_tensors
+            total = None
+            if tangent1 is not None:
+                total = tangent1 * input2
+            if tangent2 is not None:
+                term = input1 * tangent2
+                total = term if total is None else total + term
+            return total
     """
     
     class _Context:
         """
-        上下文类，用于在forward和backward之间传递信息
+        上下文类，用于在forward、backward与jvp之间传递信息
+
+        saved_tensors 的语义与 torch.autograd.Function 完全对齐：
+        - backward 中读取 save_for_backward 保存的张量
+        - jvp 中只读取 save_for_forward 保存的张量（未调用时为空元组），
+          不会看到 save_for_backward 的内容
         """
         def __init__(self):
             self.saved_tensors = ()
+            self.saved_for_forward = None
+            self.needs_input_grad = ()
         
         def save_for_backward(self, *tensors):
             """保存张量，以便在backward中使用"""
             self.saved_tensors = tensors
+
+        def save_for_forward(self, *tensors):
+            """保存张量，以便在jvp中使用；非张量应直接保存为 ctx 属性"""
+            for tensor in tensors:
+                if not (isinstance(tensor, TN) or tensor is None):
+                    raise AssertionError(
+                        "save_for_forward expects all arguments to be tensors; "
+                        "you should save non-tensors as attributes on ctx.")
+            self.saved_for_forward = tensors
     
     @staticmethod
     def forward(ctx, *inputs):
         """
-        前向传播函数，需要被子类实现
-        
+        前向传播函数，需要被子类实现，支持与 torch 相同的两种写法：
+
+        用法一（forward 接收 ctx）::
+
+            @staticmethod
+            def forward(ctx, *args):
+                ctx.save_for_backward(...)
+                return ...
+
+        用法二（forward 不接收 ctx，另实现 setup_context）::
+
+            @staticmethod
+            def forward(*args):
+                return ...
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                ctx.save_for_backward(...)
+
         参数：
-            ctx: 上下文对象，用于保存信息供backward使用
+            ctx: 上下文对象，用于保存信息供backward使用（仅用法一）
             *inputs: 输入张量
-        
+
         返回：
             输出张量
         """
         raise NotImplementedError("forward() must be implemented in subclass")
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        """
+        新式 forward 的上下文构建函数，可选实现。
+
+        实现本方法后，forward 不再接收 ctx，由 apply() 在 forward 返回后调用本方法；
+        ctx 上的内容供 backward 与 jvp 使用。未实现时采用老式
+        forward(ctx, ...) 写法。
+
+        参数：
+            ctx: 上下文对象
+            inputs: forward 的输入元组（原样传入）
+            output: forward 的返回值（转换为 TN 之前）
+        """
+        raise NotImplementedError("setup_context is not implemented.")
     
     @staticmethod
     def backward(ctx, grad_output):
@@ -939,49 +1003,89 @@ class Function:
         反向传播函数，需要被子类实现
         
         参数：
-            ctx: 上下文对象，包含forward中保存的信息
+            ctx: 上下文对象，包含forward中保存的信息，以及
+                ctx.needs_input_grad（每个输入是否需要梯度的布尔元组）
             grad_output: 输出张量的梯度
         
         返回：
             输入张量的梯度
         """
         raise NotImplementedError("backward() must be implemented in subclass")
+
+    @staticmethod
+    def jvp(ctx, *grad_inputs):
+        """
+        前向传播的 JVP 规则，可选实现；实现后 apply() 会登记对应的 _jvp_rule。
+
+        参数：
+            ctx: 上下文对象；读取 ctx.saved_tensors 只能拿到 forward 中通过
+                ctx.save_for_forward(...) 保存的张量（与 torch 一致，未保存时
+                为空元组），save_for_backward 的内容在此不可见；
+                其余属性与 forward 中写入的一致
+            *grad_inputs: 与 forward 的 inputs 一一对应的输入 tangent，
+                没有 tangent 的输入为 None
+
+        返回：
+            输出张量的 tangent；若输出不可微可返回 None。
+            支持高阶求导时，应使用 TN 算子由输入 tangent 与原始输入构造结果。
+        """
+        raise NotImplementedError(
+            "jvp() is optional; implement it in subclass to support forward AD")
     
     @classmethod
     def apply(cls, *inputs):
         """
-        应用函数到输入张量，执行前向计算并设置梯度跟踪
+        应用函数到输入张量，执行前向计算并设置梯度/前向规则
         
         参数：
-            *inputs: 输入张量
+            *inputs: 输入张量，也可包含非张量参数
         
         返回：
             输出张量
         """
         ctx = cls._Context()
-        
-        # 执行前向计算
-        outputs = cls.forward(ctx, *inputs)
-        
+        # 与 torch 一致：每个输入是否需要梯度；梯度模式关闭时全为 False
+        grad_enabled = is_grad_enabled()
+        ctx.needs_input_grad = tuple(
+            grad_enabled and isinstance(item, TN) and item.requires_grad
+            for item in inputs)
+
+        # 与 torch 一致：实现 setup_context 时 forward 不收 ctx（新式），
+        # 否则由 forward 自己接收 ctx（老式）
+        if cls.setup_context is not Function.setup_context:
+            outputs = cls.forward(*inputs)
+            cls.setup_context(ctx, inputs, outputs)
+        else:
+            outputs = cls.forward(ctx, *inputs)
+
+        first_tn = next((item for item in inputs if isinstance(item, TN)), None)
         # 如果输出不是张量，将其转换为张量
         if not isinstance(outputs, TN):
-            outputs = tensor(outputs,device=inputs[0].device)
+            outputs = tensor(outputs,
+                             device=first_tn.device if first_tn is not None else None)
         
-        # 检查是否需要计算梯度
-        requires_grad = any(input.requires_grad for input in inputs)
-        
-        if requires_grad:
+        # 检查是否需要计算梯度（与 torch 一致：梯度模式关闭时不建图）
+        requires_grad = grad_enabled and any(
+            isinstance(item, TN) and item.requires_grad for item in inputs)
+        trace = forward_ad_trace_active()
+
+        if requires_grad or trace:
             # 自定义Function会覆盖forward内部算子的计算图，旧融合钩子不再有效
             outputs._grad_rule = None
-            # 设置输出张量的梯度跟踪信息
-            outputs.requires_grad = True
-            
-            # 收集所有需要跟踪的输入张量
-            fromvars = tuple(input for input in inputs if input.requires_grad)
-            
-            # 创建融合梯度规则（闭包直接捕获cls、ctx、inputs变量）
-            grad_required_indices = tuple(idx for idx, item in enumerate(inputs) if item.requires_grad)
-            
+            if requires_grad:
+                # 设置输出张量的梯度跟踪信息
+                outputs.requires_grad = True
+
+            # fromvars 同时服务反向与图边：前向跟踪时包含全部 TN 输入，
+            # 保证没有 requires_grad、但带 tangent 的输入也能沿边传播；
+            # 其余情况保持原有“只含 requires_grad 输入”的反向语义
+            if trace:
+                source_indices = tuple(idx for idx, item in enumerate(inputs)
+                                       if isinstance(item, TN))
+            else:
+                source_indices = tuple(idx for idx, item in enumerate(inputs)
+                                       if isinstance(item, TN) and item.requires_grad)
+
             def _apply_grad(result_tensor: TN):
                 # 执行一次反向传播
                 grad_inputs = cls.backward(ctx, result_tensor._grad_value)
@@ -991,12 +1095,43 @@ class Function:
                     grad_inputs = (grad_inputs,)
                 
                 # 按图来源顺序返回所需的输入梯度
-                return tuple(grad_inputs[idx] for idx in grad_required_indices)
+                return tuple(grad_inputs[idx] for idx in source_indices)
             
             # 设置fromvars和梯度规则
-            outputs.fromvars = fromvars
+            outputs.fromvars = tuple(inputs[idx] for idx in source_indices)
             outputs._grad_rule = _apply_grad
             outputs.parms = ()
-            
+
+            jvp_impl = cls.jvp
+            if trace and jvp_impl is not Function.jvp:
+                def _apply_jvp(result_tensor: TN):
+                    frame = current_jvp_frame()
+                    input_tangents = tuple(
+                        frame.node_tangent.get(id(item)) if isinstance(item, TN) else None
+                        for item in inputs
+                    )
+                    if all(tangent is None for tangent in input_tangents):
+                        return
+                    # 与 torch 完全对齐：jvp 执行期间 saved_tensors 只暴露
+                    # save_for_forward 保存的张量（未调用时为空元组）
+                    saved = ctx.saved_tensors
+                    ctx.saved_tensors = () if ctx.saved_for_forward is None else ctx.saved_for_forward
+                    try:
+                        output_tangent = jvp_impl(ctx, *input_tangents)
+                    finally:
+                        ctx.saved_tensors = saved
+                    if output_tangent is None:
+                        return
+                    if not isinstance(output_tangent, TN):
+                        output_tangent = tensor(output_tangent,
+                                                device=result_tensor.device)
+                    frame.node_tangent[id(result_tensor)] = output_tangent
+
+                outputs._jvp_rule = _apply_jvp
+            elif trace:
+                # 未实现 jvp：清掉 forward 内部算子留下的规则，
+                # 让 _propagate_jvp 用自定义 backward 走局部 VJP 回退
+                outputs._jvp_rule = None
+
         return outputs
 # end of Function class

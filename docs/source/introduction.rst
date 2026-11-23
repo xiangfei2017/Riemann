@@ -34,9 +34,10 @@ Automatic Differentiation
 
 - **backward method**: Triggers backpropagation to compute gradients
 - **grad function**: Computes gradients of functions with respect to inputs
-- **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``vjp``, ``jacrev``, ``jacfwd``, ``hessian``, ``vmap``, ``functional_call``, suitable for chained higher-order derivatives
-- **track_grad decorator**: Use ``@track_grad`` decorator to customize gradient tracking functions (Riemann-specific)
-- **Function class**: Customize forward and backward propagation by inheriting from Function class (Riemann-specific)
+- **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``jvp2``, ``vjp``, ``jacrev``, ``jacfwd``, ``hessian``, ``vmap``, ``functional_call``, suitable for chained higher-order derivatives; ``jvp`` is driven by direct forward rules while ``jvp2`` keeps the old transposed-local-VJP implementation
+- **register_grad_rule decorator**: Use ``@register_grad_rule`` decorator to customize gradient tracking functions (Riemann-specific)
+- **register_jvp_rule decorator**: Use ``@register_jvp_rule`` to register direct forward (JVP) rules; usable alone or together with ``register_grad_rule`` (Riemann-specific)
+- **Function class**: Customize forward and backward propagation, plus optional forward-mode (``jvp``) rules, with ``setup_context`` and ``save_for_forward`` support (Riemann-specific)
 - **Jacobian and Hessian Matrices**: Supports Jacobian matrix computation for multi-input multi-output functions, and Hessian matrix computation for multi-input functions
 
 Linear Algebra Module
@@ -208,7 +209,7 @@ Riemann-Specific Features
 Riemann provides some features that PyTorch does not have:
 
 - **KAN Network Support**: Kolmogorov-Arnold Networks (KAN) implementation, including KAN, KANLinear modules
-- **Custom Gradient Decorator** (``@track_grad``): Quickly add automatic differentiation support to functions using decorators, without defining a complete Function class
+- **Custom Gradient Decorator** (``@register_grad_rule``): Quickly add automatic differentiation support to functions using decorators, without defining a complete Function class
 - **New functions**: ``sumall`` (add multiple tensors or non-tensors and return the total sum), ``isum`` (intelligent sum function that automatically selects the appropriate summation method based on parameters), ``d()`` (tensor method for chaining variables to compute higher-order mixed partial derivatives), etc. These are all Riemann-specific interfaces.
 - **Concise Code Structure**: Less code volume, clearer structure, easier for learning and research
 

@@ -568,6 +568,10 @@ In-place operations can affect gradient computation. Here are important consider
 2. **Non-Leaf Variables with Gradient Tracking**: In-place operations are allowed on non-leaf tensors (intermediate results) that require gradient tracking.
 3. **Unary in-place operations**: the backward of ``neg_()`` negates the gradient flowing to the history; the backward of ``abs_()`` scales the gradient by the sign of the pre-operation element (the gradient is 0 where the element is 0).
 4. **Remainder and floor division**: ``%=`` (``remainder_``) supports gradients, where the gradient w.r.t. the right operand is ``-grad * floor(x / y)``; ``//=`` matches PyTorch and raises ``RuntimeError`` in backward (floor_divide has no derivative).
+5. **In-place operations under forward AD**: while ``func.jvp`` is tracing, in-place modification is also allowed on leaf tensors (including ``x[...] = y``). In-place operators do not create a new node; they are recorded as ordered steps applied to the tangent:
+   ``add_/sub_/mul_/div_/pow_/remainder_/copy_/fill_/abs_/neg_`` and index assignment/compound assignment are supported;
+   ``floor_divide_`` raises (no forward rule) and ``zero_`` does not participate. Steps are applied in order,
+   aliased views of the same tensor are not double-counted, and the original leaf check is restored after tracing.
 
 Examples:
 
@@ -1878,6 +1882,16 @@ the tangent forward through the computation graph without any backward pass,
 which is more efficient than explicitly constructing the full Jacobian and then
 multiplying.
 
+Implementation-wise, ``jvp`` is driven by per-operator direct forward rules
+(``_jvp_rule``): the PRIMAL phase builds the graph and registers rules, then the
+TANGENT phase traverses the topological order once and computes each node's
+tangent. Operators without a rule fall back to transposed local VJPs. The old
+local-VJP implementation is kept as ``func.jvp2`` (same interface, useful for
+comparison or fallback). In-place operators are applied as ordered steps on the
+tangent: ``add_/sub_/mul_/div_/pow_/remainder_/copy_/fill_/abs_/neg_`` and index
+assignments are supported, while ``//=`` (``floor_divide_``) raises because it has
+no derivative, consistent with the forward rules.
+
 **Function Signature**:
 
 .. code-block:: python
@@ -1978,11 +1992,12 @@ Two ways to compute the Jacobian matrix:
 - **``jacrev``**: Reverse-mode autodiff, implemented via vmap(vjp). Performs
   ``m`` backward passes for ``m``-dimensional output. Best when input dimension
   is small and output dimension is large
-- **``jacfwd``**: Forward-mode autodiff, implemented via per-column jvp
-  (equivalent to vmap(jvp), but shares a single forward evaluation and the
-  per-node local VJP graph cache). Performs
-  ``n`` forward propagations for ``n`` input dimensions. Best when input
-  dimension is large and output dimension is small
+- **``jacfwd``**: Forward-mode autodiff, implemented as linearize + vmap(jvp) on
+  top of the direct-rule ``func.jvp`` primitive. The primal graph is recorded
+  once; each input basis vector then only re-propagates its one-hot tangent
+  through the operators' ``_jvp_rule``. Cost is proportional to ``n`` tangent
+  propagations for ``n`` input dimensions (no repeated forward pass). Best when
+  input dimension is large and output dimension is small
 
 **Function Signature**:
 
@@ -2019,10 +2034,10 @@ Two ways to compute the Jacobian matrix:
 
 **Notes**:
 
-- ``jacfwd`` in Riemann is implemented via per-column ``jvp`` (sharing one
-  forward evaluation and the local VJP graph cache, equivalent to ``vmap(jvp)``);
-  time complexity is proportional to input dimension. Use ``jacrev`` when output dimension
-  is much larger than input dimension
+- ``jacfwd`` in Riemann records the primal graph once and reuses it for every
+  basis vector (linearize + per-column tangent propagation, equivalent to
+  ``vmap(jvp)``); time complexity is proportional to input dimension. Use
+  ``jacrev`` when output dimension is much larger than input dimension
 - Multi-input (``argnums=(0, 1)``) returns a tuple, one Jacobian per input
 
 ``hessian()`` — Hessian Matrix
@@ -2031,10 +2046,9 @@ Two ways to compute the Jacobian matrix:
 Computes the Hessian matrix (second-order partial derivatives) of a
 scalar-valued function. Implemented as ``jacrev(grad(func))``: reverse-mode
 ``grad`` first produces the gradient, then reverse-mode ``jacrev``
-differentiates that gradient. (This library emulates forward mode via transposed
-local VJPs, so ``jacrev(jacfwd(func))`` would create one column subgraph per
-basis vector and make each outer reverse pass O(n²); reverse-over-reverse avoids
-that.)
+differentiates that gradient. (Using ``jacrev(jacfwd(func))`` instead would
+re-propagate every basis vector inside each outer reverse pass, making the total
+O(n²); reverse-over-reverse avoids that.)
 
 **Function Signature**:
 
@@ -2321,14 +2335,14 @@ Riemann provides three ways to implement custom functions with gradient tracking
        y.backward()
        print(f"Gradient: {x.grad}")  # Will automatically compute correct gradient
 
-2. **Using track_grad Decorator**
-   ``track_grad`` is a **Riemann-specific** operator-gradient registration
+2. **Using register_grad_rule Decorator**
+   ``register_grad_rule`` is a **Riemann-specific** operator-gradient registration
    decorator with no PyTorch equivalent. Use it to wrap your function and
    provide explicit gradient computation.
 
    **Gradient Function Interface Requirements:**
 
-   The gradient function passed to ``track_grad`` has the fixed signature ``grad_func(result, *args, **kwargs)``:
+   The gradient function passed to ``register_grad_rule`` has the fixed signature ``grad_func(result, *args, **kwargs)``:
 
    - **Parameters**: The first parameter ``result`` is the output tensor of the forward function; the remaining parameters must match the forward function (same names and order)
    - **Return Value**: Must return a ``tuple`` containing the gradient for each input tensor, ordered by the TN parameters in the ``grad_func`` signature
@@ -2351,7 +2365,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
            # result is the sigmoid output; reuse it to avoid recomputation
            return (result.grad_value * result * (1. - result),)
        
-       @rm.track_grad(sigmoid_derivative)
+       @rm.register_grad_rule(sigmoid_derivative)
        def custom_sigmoid(x):
            """Custom sigmoid function with gradient support"""
            return rm.tensor(1. / (1. + np.exp(-x.array())))
@@ -2378,7 +2392,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
                result.grad_value * (-x / y**2.),
            )
        
-       @rm.track_grad(divide_derivative)
+       @rm.register_grad_rule(divide_derivative)
        def custom_divide(x, y):
            return x / y
        
@@ -2405,7 +2419,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
            local = exponent * x ** (exponent - 1.)
            return (result.grad_value * scale * local,)
        
-       @rm.track_grad(scaled_pow_derivative)
+       @rm.register_grad_rule(scaled_pow_derivative)
        def scaled_pow(x, scale=1.0, exponent=2.0):
            return scale * x ** exponent
        
@@ -2428,7 +2442,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
        def sum_derivative(result, *args):
            return tuple(result.grad_value for _ in args)
        
-       @rm.track_grad(sum_derivative)
+       @rm.register_grad_rule(sum_derivative)
        def custom_sum(*xs):
            return rm.tensor(sum(x.array() for x in xs))
        
@@ -2444,7 +2458,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
        def weighted_sum_derivative(result, **kwargs):
            return tuple(result.grad_value * WEIGHTS[name] for name in kwargs)
        
-       @rm.track_grad(weighted_sum_derivative)
+       @rm.register_grad_rule(weighted_sum_derivative)
        def custom_weighted_sum(**kwargs):
            return rm.tensor(sum(WEIGHTS[name] * v.array() for name, v in kwargs.items()))
        
@@ -2463,7 +2477,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
        def add_derivative(result, x, y):
            return (result.grad_value, result.grad_value)
        
-       @rm.track_grad(add_derivative)
+       @rm.register_grad_rule(add_derivative)
        def custom_add(x, y):
            return x + y
        
@@ -2476,7 +2490,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
 
    **Scenario 6: Matrix multiplication (custom chain rule)**
 
-   This is the key advantage of ``track_grad``: backward computation may directly use matrix
+   This is the key advantage of ``register_grad_rule``: backward computation may directly use matrix
    multiplication ``@``, transpose, and other operations instead of being limited to
    element-wise multiplication with the upstream gradient.
 
@@ -2489,7 +2503,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
            g = result.grad_value
            return (g @ y.T, x.T @ g)
        
-       @rm.track_grad(matmul_derivative)
+       @rm.register_grad_rule(matmul_derivative)
        def custom_matmul(x, y):
            return rm.matmul(x, y)
        
@@ -2509,15 +2523,72 @@ Riemann provides three ways to implement custom functions with gradient tracking
    - Each ``backward`` call recomputes ``grad_func`` with the current upstream gradient,
      so repeated backward calls with ``retain_graph=True`` are supported
    - If the forward function is composed entirely of Riemann tensor operators (already differentiable),
-     ``track_grad`` is usually unnecessary; it is intended for wrapping external operators
+     ``register_grad_rule`` is usually unnecessary; it is intended for wrapping external operators
      or manually defined forward/backward computations
 
-3. **Using Function Class**
-   For more complex cases, you can subclass ``Function`` and implement both ``forward`` and ``backward`` static methods.
+3. **Using register_jvp_rule Decorator (Forward Rules)**
+   When an operator cannot be expressed with existing TN operations, or an external
+   operator needs forward-mode support, register a direct forward rule with
+   ``@rm.register_jvp_rule(jvp_func)``. It is fully independent of
+   ``register_grad_rule``: either decorator can be used alone, and both can decorate
+   the same function in any order without overwriting each other.
+
+   **jvp_func Interface:**
+
+   - Signature: ``jvp_func(result)``, where ``result`` is the output tensor of the
+     forward function
+   - Obtain the current frame with ``current_jvp_frame()`` and read an incoming edge's
+     tangent with ``_input_tangent(frame, var)`` (``var`` is an input tensor in
+     ``result.fromvars``)
+   - Write the output tangent with ``frame.node_tangent[id(result)] = tangent``; its
+     shape must equal ``result``'s. If the output does not depend on any differentiable
+     input, omit it (treated as no tangent)
+   - While the rule runs, ``result.fromvars`` is temporarily replaced by the complete
+     list of TN arguments (even those with ``requires_grad=False``) and restored
+     afterwards, so the filtered ``fromvars`` from ``register_grad_rule`` never hides
+     inputs from the forward rule
+
+   Example:
+
+   .. code-block:: python
+
+       import riemann as rm
+       from riemann.core.ad_context import current_jvp_frame
+       from riemann.core.tensordef import _input_tangent
+
+       def _my_tanh_jvp(result):
+           frame = current_jvp_frame()
+           x = result.fromvars[0]
+           x_t = _input_tangent(frame, x)
+           # d(tanh(x))/dx = 1 - tanh(x)^2, reusing the forward output
+           frame.node_tangent[id(result)] = (1.0 - result * result) * x_t
+
+       @rm.register_jvp_rule(_my_tanh_jvp)
+       def my_tanh(x):
+           return rm.tanh(x)
+
+       x = rm.tensor([1., 2.], requires_grad=True)
+       out, tan = rm.func.jvp(my_tanh, x, rm.tensor([0.5, -0.5]))
+       print(tan)  # (1 - tanh(x)^2) * v
+
+   **Notes:**
+
+   - A rule only defines how this node's tangent follows from incoming tangents; the
+     framework performs the chain rule in topological order
+   - Forward and backward rules can be implemented independently; with only
+     ``register_jvp_rule``, gradients still come from TN operations inside the function
+   - As with ``register_grad_rule``, the decorated function should create a new node
+     rather than returning an input unchanged
+
+4. **Using Function Class**
+   For more complex cases, you can subclass ``Function`` and implement ``forward`` and
+   ``backward`` static methods; implement the optional ``jvp`` static method for custom
+   forward-mode behavior.
 
    **Function Class Interface:**
 
-   To create a custom function using the ``Function`` class, you must implement two static methods:
+   To create a custom function using the ``Function`` class, implement at least
+   ``forward`` and ``backward``:
 
    **forward(ctx, *inputs)**
 
@@ -2538,6 +2609,39 @@ Riemann provides three ways to implement custom functions with gradient tracking
      - ``grad_output``: Gradient of the output tensor (from subsequent layers in the computation graph)
    - **Returns**: Tuple of gradients, one for each input tensor. Each gradient should be the product of ``grad_output`` and the local gradient (partial derivative)
    - **Usage**: Compute gradients using the chain rule: ``grad_input = grad_output * local_gradient``
+
+   **jvp(ctx, *input_tangents) (optional, forward mode)**
+
+   - **Purpose**: Register a forward rule for the custom function; once implemented,
+     ``func.jvp`` calls it directly
+   - **Parameters**:
+
+     - ``ctx``: the same context object used by ``backward``
+     - ``input_tangents``: one entry per ``forward`` input; pass ``None`` for
+       non-tensor inputs
+   - **Returns**: the output tangent; a tensor or ``None`` (non-differentiable output)
+     for a single output — ``apply`` currently supports only single-output functions
+   - **Saved tensors**: inside ``jvp``, ``ctx.saved_tensors`` contains only tensors
+     saved with ``save_for_forward()``; tensors saved with ``save_for_backward()``
+     remain visible only in ``backward``
+   - **When not implemented**: the framework clears the node's forward rule and
+     ``func.jvp`` falls back to transposed local VJPs — correct but slower
+
+   **setup_context(ctx, inputs, output) (optional, new style)**
+
+   Besides ``forward(ctx, *inputs)``, the PyTorch 1.13+ style is supported:
+   ``forward(*inputs)`` performs only the computation and
+   ``setup_context(ctx, inputs, output)`` calls ``save_for_backward``/
+   ``save_for_forward``. ``apply`` detects and uses the corresponding style; do not
+   mix the two.
+
+   **Other context members:**
+
+   - ``ctx.needs_input_grad``: a per-input boolean tuple written by ``apply`` before
+     any callback; non-tensor positions are ``False``, and all entries are ``False``
+     under ``set_grad_enabled(False)``
+   - ``ctx.save_for_forward(*tensors)``: only TN or ``None`` are accepted; store
+     non-tensors as ordinary ``ctx`` attributes
 
    **Example:**
 

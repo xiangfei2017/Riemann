@@ -3058,11 +3058,11 @@ CUDA支持
    :return: 如果梯度检查通过则为True，否则为False
    :rtype: bool
 
-.. function:: riemann.track_grad(grad_func)
+.. function:: riemann.register_grad_rule(grad_func)
 
    创建一个梯度跟踪装饰器，用于为函数添加自动求导支持。
 
-   ``track_grad`` 是 **Riemann 特有** 接口，PyTorch 中没有同名装饰器。
+   ``register_grad_rule`` 是 **Riemann 特有** 接口，PyTorch 中没有同名装饰器。
 
    这个装饰器工厂接收一个梯度函数，返回一个修饰器，该修饰器可以将普通的张量运算函数
    转换为支持自动求导的函数。它会自动创建反向传播函数，并管理梯度计算图的构建。
@@ -3088,8 +3088,8 @@ CUDA支持
       def _log_derivative(result, x):
           return (result.grad_value * (1. / x.conj()),)
       
-      # 使用track_grad修饰器创建支持自动求导的对数函数
-      @track_grad(_log_derivative)
+      # 使用register_grad_rule修饰器创建支持自动求导的对数函数
+      @register_grad_rule(_log_derivative)
       def mylog(x):
           return tensor(np.log(x.detach().array()))
       
@@ -3103,8 +3103,8 @@ CUDA支持
       def _add_derivative(result, x, y):
           return (result.grad_value, result.grad_value)
       
-      # 使用track_grad修饰器创建支持自动求导的加法函数
-      @track_grad(_add_derivative)
+      # 使用register_grad_rule修饰器创建支持自动求导的加法函数
+      @register_grad_rule(_add_derivative)
       def myadd(x, y):
           return tensor(x.detach().array() + y.detach().array())
       
@@ -3116,13 +3116,62 @@ CUDA支持
       print(f'x.grad = {x.grad}')  # 输出: x.grad = 1.0
       print(f'y.grad = {y.grad}')  # 输出: y.grad = 1.0
 
+.. function:: riemann.register_jvp_rule(jvp_func)
+
+   创建一个前向规则装饰器，为函数登记直接前向（JVP）规则。
+
+   ``register_jvp_rule`` 是 **Riemann 特有** 接口，PyTorch 中没有同名装饰器
+   （PyTorch 的前向模式规则需通过 ``autograd.Function.jvp`` 实现）。
+
+   :param jvp_func: 前向规则函数，签名为 ``jvp_func(result)``。``result`` 为前向函数的输出张量；
+                    函数内部通过 ``current_jvp_frame()`` 获取当前 JVP 帧，用
+                    ``_input_tangent(frame, var)`` 读取入边 tangent，并把计算结果写入
+                    ``frame.node_tangent[id(result)]``，形状必须与 ``result`` 相同。
+                    若输出不依赖任何可微输入，可以不写（视为无 tangent）
+   :type jvp_func: callable
+   :return: 一个修饰器函数，用于为前向计算函数登记 JVP 规则
+   :rtype: callable
+
+   该装饰器与 ``register_grad_rule`` 完全独立：可单独使用，也可任意顺序同时装饰同一函数。
+   规则执行期间 ``result.fromvars`` 会被临时替换为完整的 TN 实参列表，执行后恢复，
+   因此部分实参不需要梯度也不影响前向规则读取输入。未登记前向规则的算子在
+   ``func.jvp`` 中回退到局部 VJP 转置。更多示例参见 :doc:`autograd_basics`。
+
+   示例：
+
+   .. code-block:: python
+
+      from riemann.core.ad_context import current_jvp_frame
+      from riemann.core.tensordef import _input_tangent
+
+      def _square_jvp(result):
+          frame = current_jvp_frame()
+          x = result.fromvars[0]
+          frame.node_tangent[id(result)] = 2.0 * x * _input_tangent(frame, x)
+
+      @register_jvp_rule(_square_jvp)
+      def mysquare(x):
+          return tensor(x.detach().array() ** 2)
+
+      x = tensor([1., 2.], requires_grad=True)
+      out, tan = func.jvp(mysquare, x, tensor([0.5, -0.5]))
+      print(tan)  # [1., -4.]
+
 .. class:: riemann.autograd.Function
 
    Riemann框架中用于自定义梯度实现的基类，设计了与PyTorch的torch.autograd.Function类似的接口。
 
-   要使用此类，继承它并实现forward和backward静态方法：
+   要使用此类，继承它并实现 ``forward`` 与 ``backward`` 静态方法；
+   如需前向模式自动微分，可选实现 ``jvp`` 静态方法：
+
    - forward: 执行前向计算，返回输出张量
    - backward: 接收输出梯度，返回输入梯度
+   - jvp（可选）: 接收逐输入 tangent（非张量位置为 None），返回输出 tangent；
+     ``jvp`` 中 ``ctx.saved_tensors`` 只包含 ``save_for_forward`` 保存的张量
+   - setup_context（可选）: 新式写法，``forward(*inputs)`` + ``setup_context(ctx, inputs, output)``
+   - ``ctx.needs_input_grad``: 逐输入布尔元组，非张量位置与 no_grad 下为 False
+
+   若未实现 ``jvp``，``func.jvp`` 会自动回退到局部 VJP 转置；当前 ``apply`` 仅支持单输出。
 
    示例：
    
@@ -3141,6 +3190,43 @@ CUDA支持
               grad_input1 = grad_output * input2
               grad_input2 = grad_output * input1
               return grad_input1, grad_input2
+
+函数式自动求导函数（riemann.func）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. function:: riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False)
+
+   计算雅可比矩阵与给定向量的乘积（前向模式自动微分）。
+
+   计算过程由算子节点的直接前向规则驱动：PRIMAL 阶段建立计算图并登记规则，
+   TANGENT 阶段按拓扑序遍历一次，用规则计算每个节点的 tangent；未登记规则的算子
+   回退到局部 VJP 转置。原地算子按时间顺序作为步骤施加到 tangent 上。
+
+   :param func: 可微函数，输入为一个或多个张量，输出可为单个张量或张量元组
+   :param primals: 求值点，单个张量或元组/list
+   :param tangents: 与 primals 逐项对应且形状相同的切向量
+   :param create_graph: 是否保留计算图以支持高阶微分，默认 False
+   :param strict: 严格模式，输出与输入无关时 True 抛错、False 按 0 处理，默认 False
+   :return: ``(output, jvp_result)``，形状与 output 一致
+   :rtype: tuple
+
+.. function:: riemann.func.jvp2(func, primals, tangents, create_graph=False, strict=False)
+
+   旧版 JVP 实现，接口与 ``riemann.func.jvp`` 完全一致，内部基于逐边局部 VJP 转置。
+   保留用于与直接规则路径对照或回退，新代码建议使用 ``riemann.func.jvp``。
+
+.. function:: riemann.func.jacfwd(func, argnums=0, create_graph=False)
+
+   返回计算 Jacobian 矩阵的函数（前向模式），由 linearize + vmap(jvp) 实现，基于直接规则的
+   ``riemann.func.jvp``：primal 图只记录一次，每个输入基向量仅需复用该图重新传播 one-hot tangent。
+   参数与 ``riemann.func.jacrev`` 相同，但不支持 ``strict``。
+
+.. note::
+
+   ``riemann.func.jvp(func, primals, tangents)`` 与
+   ``riemann.autograd.functional.jvp(func, inputs, v)`` 是两套并列接口：前者为
+   torch.func 风格的柯里化原语（支持多输入多输出、直接规则），后者为
+   autograd.functional 风格的单次调用接口。两者结果一致，按使用习惯选择即可。
 
 求导功能函数
 ~~~~~~~~~~~~

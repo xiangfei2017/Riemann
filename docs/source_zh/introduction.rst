@@ -34,9 +34,10 @@ Riemann 的核心价值在于其**简洁性**和**可学习性**——代码结�
 
 - **backward 方法**：触发反向传播计算梯度
 - **grad 函数**：计算函数相对于输入的梯度
-- **func 模块**：torch.func 风格的函数式自动求导 API，提供柯里化的 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``vmap``、``functional_call`` 等函数，适合链式高阶求导
-- **track_grad 装饰器**：使用 ``@track_grad`` 装饰器自定义梯度跟踪函数（Riemann 特有）
-- **Function 类**：通过继承 Function 类自定义前向和反向传播（Riemann 特有）
+- **func 模块**：torch.func 风格的函数式自动求导 API，提供柯里化的 ``grad``、``jvp``、``jvp2``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``vmap``、``functional_call`` 等函数，适合链式高阶求导；``jvp`` 由直接前向规则驱动，``jvp2`` 保留旧的局部 VJP 转置实现
+- **register_grad_rule 装饰器**：使用 ``@register_grad_rule`` 装饰器自定义梯度跟踪函数（Riemann 特有）
+- **register_jvp_rule 装饰器**：使用 ``@register_jvp_rule`` 为函数登记直接前向（JVP）规则，可与 ``register_grad_rule`` 单独或同时使用（Riemann 特有）
+- **Function 类**：通过继承 Function 类自定义前向、反向与可选的前向模式（``jvp``）规则，支持 ``setup_context``、``save_for_forward``（Riemann 特有）
 - **雅可比矩阵和海森矩阵**：支持多输入多输出函数的雅可比矩阵计算，支持多输入函数的海森矩阵计算
 
 线性代数模块
@@ -208,7 +209,7 @@ Riemann 特有功能
 Riemann 提供了一些 PyTorch 没有的功能：
 
 - **KAN 网络支持**：Kolmogorov-Arnold Networks (KAN) 网络实现，包括 KAN、KANLinear等模块
-- **自定义梯度装饰器** (``@track_grad``)：使用装饰器快速为函数添加自动求导支持，无需定义完整的 Function 类
+- **自定义梯度装饰器** (``@register_grad_rule``)：使用装饰器快速为函数添加自动求导支持，无需定义完整的 Function 类
 - **新函数**：``sumall`` （将多个张量或非张量相加，返回总和）、``isum`` （智能求和函数，根据参数自动选择合适的求和方式）、``d()`` （张量方法，按变量链式求高阶混合偏导数）等；这些均为 Riemann 特有接口
 - **简洁的代码结构**：代码量更少，结构更清晰，便于学习和研究
 

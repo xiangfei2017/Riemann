@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Riemann 自动微分自定义梯度示例
-使用 track_grad 装饰器自定义 Sigmoid 函数的梯度
+使用 register_grad_rule 装饰器自定义 Sigmoid 函数的梯度
 
-该示例演示了如何使用 Riemann 库的 track_grad 装饰器为自定义函数
+该示例演示了如何使用 Riemann 库的 register_grad_rule 装饰器为自定义函数
 添加自动微分支持。我们以 Sigmoid 函数为例，实现了其导数计算
 并通过装饰器绑定到自定义的 sigmoid 函数。
 
@@ -35,10 +35,10 @@ def sigmoid_derivative(result: rm.TN, x: rm.TN) -> tuple[rm.TN]:
     
     return (result._grad_value * derivative,)
 
-@rm.track_grad(sigmoid_derivative)
+@rm.register_grad_rule(sigmoid_derivative)
 def custom_sigmoid(x: rm.TN) -> rm.TN:
     """
-    使用track_grad修饰器自定义的sigmoid函数，支持自动微分。
+    使用register_grad_rule修饰器自定义的sigmoid函数，支持自动微分。
     
     Args:
         x: 输入张量

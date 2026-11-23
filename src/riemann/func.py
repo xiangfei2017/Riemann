@@ -46,17 +46,32 @@ func 模块 —— 函数式自动微分接口，参考 torch.func 设计。
 所有函数间相互复用：jvp / vjp 是前向 / 反向模式原语，共享参数归一化与前向求值
 辅助（_traceable_args / _prepare_forward / _call_and_split）。
 jacrev / jacfwd 共用 _make_jacobian 做 argnums 校验与结果整形，内核分别是 vmap(vjp)
-与逐列 jvp（共享一次前向求值与局部 VJP 图缓存，与 vmap(jvp) 语义相同）。
+与逐列 jvp（每列一次前向求值，等价于 vmap(jvp)）。
 hessian 复用 _jacobian_via_vjp 内核，对 grad 的结果再求一次 Jacobian（反向叠反向）。
 
-补充说明：本库算子只登记局部 VJP（反向模式），因此 jvp 并非基于对偶数，而是通过
-"对局部 VJP 再做一次转置"沿计算图正向传播 tangent；细节见 _local_jvp。
+补充说明：jvp 走新路径——算子登记直接前向规则 `_jvp_rule`，前向执行时记录
+primal 图，再沿拓扑序直接传播 tangent；未迁移的算子暂时回退到旧路径。
+jvp2 走旧路径——算子只登记局部 VJP（反向模式），jvp2 通过"对局部 VJP 再做
+一次转置"沿计算图正向传播 tangent（细节见 _local_jvp）。
 """
 
 import builtins
 from typing import Callable, Any, Optional, Union
 from .core import *
+from .core.ad_context import (
+    TANGENT,
+    JVPFrame,
+    PRIMAL,
+    pop_jvp_frame,
+    push_jvp_frame,
+    set_jvp_phase,
+    forward_ad_trace_active,
+)
 from .core.tensordef import _getitem_grad
+from .core.tensorfuncs import (
+    _apply_inplace_jvp_steps,
+    _frame_inplace_steps,
+)
 from .autograd.grad import grad as _grad
 
 
@@ -415,7 +430,7 @@ def _local_jvp_by_basis(node: TN, i: int, target: TN, tangent: TN) -> TN:
 
 
 def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
-               create_graph: bool, cache: Optional[dict] = None) -> TN:
+               create_graph: bool) -> TN:
     """计算单个节点的局部 JVP：J_i @ tangent。
 
     背景：每个算子只登记了梯度规则 node._grad_rule，它把 node 的余切 g_out
@@ -440,19 +455,10 @@ def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
         tangent: 沿该入边传入的切向量，形状与第 i 个输入一致。
         create_graph: 为 True 时保留内层反向的计算图以支持高阶导数，此时必须
             使用真实节点（影子节点会与原始输入断链）。
-        cache: 可选缓存，键为 (id(node), i)，值为 (g_in, g_out) 的局部 VJP 图；
-            jacfwd 的多列因此可复用同一图结构，只重复反传、不重复构图。
 
     返回:
         与第 i 个输入同形的张量，即该条边上的局部 JVP：J_i @ tangent。
     """
-    if cache is not None:
-        entry = cache.get((id(node), i))
-        if entry is not None:
-            g_in, g_out = entry
-            return _grad(g_in, [g_out], grad_outputs=tangent,
-                         create_graph=create_graph, allow_unused=True)[0]
-
     # create_graph=True 时必须真实节点上建图：若用影子节点，g_in 与原始输入
     # 断开连接，高阶导数会丢失。其余情况用影子节点，使局部反传只遍历当前算子，
     # 不回溯整张计算图。
@@ -472,8 +478,6 @@ def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
         raise RuntimeError("gradient rule must return a tensor")
     if g_in.requires_grad:
         # 常规路径：梯度规则建了图，再反传一次即得 J_i @ tangent
-        if cache is not None:
-            cache[(id(node), i)] = (g_in, g_out)
         return _grad(g_in, [g_out], grad_outputs=tangent,
                      create_graph=create_graph, allow_unused=True)[0]
     # 回退路径：梯度规则未建图（如梯度开关关闭），只能显式构造局部 Jacobian
@@ -591,19 +595,17 @@ def _prepare_forward(run, primals, create_graph: bool):
     }
 
 
-def _jvp_with_prepared(prepared, tangents, create_graph: bool, strict: bool,
-                       cache: Optional[dict] = None):
+def _jvp_with_prepared(prepared, tangents, create_graph: bool, strict: bool):
     """在已准备好的前向计算图上传播一组 tangent。
 
     tangents 与 prepared['primals'] 一一对应，元素为 None 表示该输入的
-    tangent 为零（跳过，不做任何传播）。cache 用于跨列复用局部 VJP 图。
+    tangent 为零（跳过，不做任何传播）。
 
     参数:
         prepared: _prepare_forward 的返回值（前向输出、拓扑序、影子节点等）。
         tangents: 切向量序列，与 prepared['primals'] 一一对应；None 表示零方向。
         create_graph: 是否为高阶导数保留内层反向的计算图。
         strict: 为 True 时，若某输出与某输入完全不连通则报错。
-        cache: 可选的局部 VJP 图缓存，jacfwd 多列共享。
 
     返回:
         单输出时返回 (输出张量, tangent 张量)；多输出时返回
@@ -654,7 +656,7 @@ def _jvp_with_prepared(prepared, tangents, create_graph: bool, strict: bool,
                 if tangent is None:
                     # 该入边 tangent 为零：跳过，不必构造 zeros_like 参与运算
                     continue
-                local = _local_jvp(node, shadow, i, tangent, create_graph, cache)
+                local = _local_jvp(node, shadow, i, tangent, create_graph)
                 acc = local if acc is None else acc + local
         node_tangent[node_id] = acc
         node_mask[node_id] = mask
@@ -679,12 +681,12 @@ def _jvp_with_prepared(prepared, tangents, create_graph: bool, strict: bool,
     return tuple(out_list), tuple(results)
 
 
-def jvp(func: Callable[..., Union[TN, tuple[TN, ...]]],
-        primals: Union[TN, list[TN], tuple[TN, ...]],
-        tangents: Union[TN, list[TN], tuple[TN, ...]],
-        create_graph: bool = False,
-        strict: bool = False) -> tuple[Union[TN, tuple[TN, ...]], Union[TN, tuple[TN, ...]]]:
-    """Jacobian-vector 积（前向模式）。
+def jvp2(func: Callable[..., Union[TN, tuple[TN, ...]]],
+         primals: Union[TN, list[TN], tuple[TN, ...]],
+         tangents: Union[TN, list[TN], tuple[TN, ...]],
+         create_graph: bool = False,
+         strict: bool = False) -> tuple[Union[TN, tuple[TN, ...]], Union[TN, tuple[TN, ...]]]:
+    """Jacobian-vector 积（前向模式，基于局部 VJP 转置的旧实现）。
 
     先执行 func 的前向计算，再沿计算图从输入到输出正向传播 tangent，
     得到 J(x)·v。返回 (输出值, JVP 结果)。
@@ -729,6 +731,297 @@ def jvp(func: Callable[..., Union[TN, tuple[TN, ...]]],
     traceable = _ensure_traceable(primals)
     prepared = _prepare_forward(lambda: func(*traceable), traceable, create_graph)
     return _jvp_with_prepared(prepared, tangents, create_graph, strict)
+
+
+def _seed_primals_for_jvp(primals):
+    """为 jvp 准备输入，使整个前向图都能被记录。
+
+    与 jvp2 的 `_ensure_traceable` 不同，这里不做无条件的 detach：
+      - 已处于外层前向上下文（forward_ad_trace_active()）时，算子会按前向请求
+        记录 fromvars，原样使用输入即可，从而不切断外层 JVP 图（§19）；
+      - 顶层调用时，只有“纯叶子”（无 fromvars、无梯度规则、requires_grad=False）
+        才转成 requires_grad=True 的可微叶子，让尚未迁移 jvp_rule 的算子也能
+        通过反向规则的局部 VJP 回退建图。
+
+    参数:
+        primals: 已校验的输入张量序列。
+
+    返回:
+        与输入等长的 list；可能包含替换后的可微叶子。
+    """
+    outer_trace = forward_ad_trace_active()
+    result = []
+    for tensor in primals:
+        if (not tensor.requires_grad and not outer_trace
+                and not tensor.fromvars and tensor._grad_rule is None):
+            tensor = tensor.detach().requires_grad_(True)
+        result.append(tensor)
+    return result
+
+
+def _propagate_jvp(frame: JVPFrame, order, primals, tangents,
+                   create_graph: bool, strict: bool, out_list):
+    """沿拓扑序把输入 tangent 传播到输出，结果写入 frame.node_tangent。
+
+    传播完全由本驱动函数按前向拓扑序发起：算子实现内部不会自行触发 JVP
+    （jvp_rule 里使用的普通算子只做数值计算），因此不会出现重入或指数级重复
+    传播（§13/C8）。
+
+    参数:
+        frame: 本次 JVP 调用的状态（node_tangent / dependency_mask 等）。
+        order: _graph_topological_order 给出的前向拓扑序（输入在前）。
+        primals: 播种输入张量序列。
+        tangents: 与 primals 一一对应的切向量；None 表示零方向。
+        create_graph: 为 True 时要求算子提供直接 jvp_rule（保留高阶图）。
+        strict: 为 True 时，某输出对某输入完全不依赖会报错。
+        out_list: 前向输出张量列表。
+
+    返回:
+        与 out_list 等长的 list，元素为各输出的 tangent（无贡献时为同形零张量）。
+    """
+    # 播种：同一张量占据多个输入位置时（如 f(x, x)）tangent 必须相加；
+    # dependency_mask 的第 k 位表示“该节点依赖第 k 个输入”，供 strict 判定。
+    for k, (inp, vec) in enumerate(zip(primals, tangents)):
+        if vec is None:
+            continue
+        inp_id = id(inp)
+        existing = frame.node_tangent.get(inp_id)
+        if existing is None:
+            frame.node_tangent[inp_id] = vec
+            frame.dependency_mask[inp_id] = 1 << k
+        else:
+            frame.node_tangent[inp_id] = existing + vec
+            frame.dependency_mask[inp_id] |= 1 << k
+
+    shadow_map = None
+    leaf_map = None
+    applied = set()
+    for node in order:
+        node_id = id(node)
+        if node_id in frame.node_tangent:
+            # 播种输入（或已处理节点）不再按规则重复计算；
+            # 但若该节点被原地修改过，仍须把属于本 frame 的步骤施加到已有 tangent 上
+            steps = _frame_inplace_steps(node, frame)
+            if steps and node_id not in applied:
+                for _name, record in steps:
+                    right = record.right
+                    if isinstance(right, TN):
+                        frame.dependency_mask[node_id] = (
+                            frame.dependency_mask.get(node_id, 0)
+                            | frame.dependency_mask.get(id(right), 0))
+                _apply_inplace_jvp_steps(node, frame)
+                applied.add(node_id)
+            continue
+
+        steps = _frame_inplace_steps(node, frame)
+        mask = 0
+        has_tangent = False
+        for var in node.fromvars:
+            if isinstance(var, TN):
+                mask |= frame.dependency_mask.get(id(var), 0)
+                if frame.node_tangent.get(id(var)) is not None:
+                    has_tangent = True
+        frame.dependency_mask[node_id] = mask
+
+        if not has_tangent and not steps:
+            # 所有入边方向为零：输出 tangent 为零，无需调用规则
+            frame.node_tangent[node_id] = None
+            continue
+
+        # 有原地步骤时先剥离前缀 (r_n, …, r_1)，让 base 规则按其记录时的位置读取来源；
+        # 同时把梯度规则换成首次原地修改前的版本，供迁移期回退路径使用
+        saved_fromvars = node.fromvars
+        saved_grad_rule = node._grad_rule
+        if steps:
+            node.fromvars = saved_fromvars[len(steps):]
+            node._grad_rule = getattr(node, '_grad_rule_base', None)
+        try:
+            if not has_tangent:
+                # base tangent 为零方向，但仍要继续执行原地步骤（右值 tangent 可能非零）
+                frame.node_tangent[node_id] = None
+            else:
+                rule = node._jvp_rule
+                if rule is not None:
+                    rule(node)
+                    if node_id not in frame.node_tangent:
+                        raise RuntimeError(
+                            f"jvp_rule of node (shape={node.shape}) did not record a tangent")
+                else:
+                    # 迁移期回退：该算子尚未登记前向规则，退化为“局部 VJP 的转置”
+                    # （与旧 jvp 数值等价，只求值、不保留高阶图）。
+                    if create_graph:
+                        raise RuntimeError(
+                            f"node (shape={node.shape}) has no forward (jvp) rule; "
+                            "create_graph=True requires a direct jvp_rule")
+                    if shadow_map is None:
+                        shadow_map = {}
+                        leaf_map = {}
+                    node_shadow = shadow_map.get(node_id)
+                    if node_shadow is None:
+                        node_shadow = _make_shadow(node, leaf_map)
+                        shadow_map[node_id] = node_shadow
+                    acc = None
+                    for i, var in enumerate(node.fromvars):
+                        if not isinstance(var, TN):
+                            continue
+                        tangent = frame.node_tangent.get(id(var))
+                        if tangent is None:
+                            continue
+                        local = _local_jvp(node, node_shadow, i, tangent, False)
+                        acc = local if acc is None else acc + local
+                    frame.node_tangent[node_id] = acc
+        finally:
+            if steps:
+                node.fromvars = saved_fromvars
+                node._grad_rule = saved_grad_rule
+
+        if steps:
+            _apply_inplace_jvp_steps(node, frame)
+            applied.add(node_id)
+
+    if strict:
+        for k in range(len(primals)):
+            for j, out in enumerate(out_list):
+                if not (frame.dependency_mask.get(id(out), 0) >> k) & 1:
+                    raise RuntimeError(
+                        f"Output {j} is independent of input {k}")
+
+    results = []
+    for out in out_list:
+        tangent = frame.node_tangent.get(id(out))
+        results.append(zeros_like(out) if tangent is None else tangent)
+    return results
+
+
+def _record_primal(func, primals, create_graph: bool, strict: bool):
+    """执行一次前向求值并记录可复用的 primal 图（线性化）。
+
+    jvp 的单次调用与 jacfwd 的多列共享都走这里：图只建一次，之后每个方向
+    只需重新播种并传播 tangent（见 _jvp_with_primal_graph）。
+
+    参数:
+        func: 待求值函数，按位置接收 primals 序列。
+        primals: 参与前向的输入张量序列。
+        create_graph: 是否为高阶导数保留 tangent 图。
+        strict: 输出与输入不连通时是否报错。
+
+    返回:
+        dict，键为 inputs（播种后的输入）、out_list / is_single_output（前向输出）、
+        order（前向拓扑序）、frame（记录这张图的 JVPFrame）。
+    """
+    # 播种必须在压入新 frame 之前完成：嵌套调用时据此保留外层前向图
+    inputs = _seed_primals_for_jvp(primals)
+
+    frame = JVPFrame(create_graph=create_graph, strict=strict, phase=PRIMAL)
+    token = push_jvp_frame(frame)
+    try:
+        # PRIMAL 阶段：原函数前向求值，同时按前向请求记录 fromvars 与 jvp_rule
+        out_list, is_single_output = _call_and_split(func, inputs)
+        order = _graph_topological_order(out_list)
+    finally:
+        pop_jvp_frame(token)
+    return {
+        'inputs': inputs,
+        'out_list': out_list,
+        'is_single_output': is_single_output,
+        'order': order,
+        'frame': frame,
+    }
+
+
+def _jvp_with_primal_graph(state, tangents, create_graph: bool, strict: bool):
+    """在已记录的 primal 图上传播一组 tangent，多个方向可反复调用。
+
+    frame 状态（node_tangent / dependency_mask）不写入 TN 的持久字段，
+    每列开始前清空即可；原地步骤按 frame 身份登记在节点上，仍能被
+    _propagate_jvp 找到并重放。
+
+    参数:
+        state: _record_primal 的返回值。
+        tangents: 切向量序列，与 state['inputs'] 一一对应；None 表示零方向，
+            该输入对应的整棵子树会被跳过，不调用任何规则。
+        create_graph: 是否为高阶导数保留 tangent 图（须与记录图时一致）。
+        strict: 输出与输入不连通时是否报错。
+
+    返回:
+        与 state['out_list'] 等长的 list，元素为各输出的 tangent。
+    """
+    frame = state['frame']
+    frame.node_tangent.clear()
+    frame.dependency_mask.clear()
+    set_jvp_phase(frame, TANGENT)
+    token = push_jvp_frame(frame)
+    try:
+        return _propagate_jvp(frame, state['order'], state['inputs'],
+                              tangents, create_graph, strict, state['out_list'])
+    finally:
+        pop_jvp_frame(token)
+
+
+def jvp(func: Callable[..., Union[TN, tuple[TN, ...]]],
+        primals: Union[TN, list[TN], tuple[TN, ...]],
+        tangents: Union[TN, list[TN], tuple[TN, ...]],
+        create_graph: bool = False,
+        strict: bool = False) -> tuple[Union[TN, tuple[TN, ...]],
+                                       Union[TN, tuple[TN, ...]]]:
+    """Jacobian-vector 积（前向模式，基于算子直接前向规则）。
+
+    前向执行原函数时记录 primal 图（由 JVPFrame 触发，不依赖 requires_grad），
+    随后沿拓扑序调用各算子的 `_jvp_rule` 直接传播 tangent，不再为每条边构造
+    并转置局部 VJP。
+
+    与 jvp2 的对外语义一致（参数、返回值、strict 行为相同），但实现路径不同：
+      - jvp2：只依赖反向梯度规则，通过“对局部 VJP 再转置”得到 J·v；
+      - jvp：直接使用算子登记的前向规则 `_jvp_rule`。
+
+    迁移策略：已登记 `_jvp_rule` 的算子（+, -, *, /, pow, clone, abs, log, neg）
+    走直接规则；其余算子暂时回退到局部 VJP 转置，保证数值正确（§18 迁移期回退）。
+
+    参数:
+        func: 待求方向导数的函数，输入为 TN，输出为单个 TN 或 TN 序列。
+        primals: 求值点输入，单个 TN 或 TN 序列，顺序与 func 的入参一致。
+        tangents: 切向量，结构须与 primals 一致；仅当 primals 为单个输入时可传
+            None，等价于以全 1 向量作为方向（0 维输入即标量 1.0）。
+        create_graph: 为 True 时保留计算图，JVP 结果可继续求导（高阶导数）；
+            此时要求路径上的算子都提供直接 jvp_rule。
+        strict: 为 True 时，若某输出与某输入完全不连通则抛 RuntimeError。
+
+    返回:
+        (输出值, JVP 结果)。输出值结构与 func 的返回一致（单输出为 TN，
+        多输出为 tuple）；JVP 结果即 J(x)·v，结构与输出值一致。
+    """
+    is_single_input = not isinstance(primals, (list, tuple))
+    if is_single_input:
+        primals = [primals]
+        if tangents is None:
+            tangents = [ones_like(primals[0], requires_grad=create_graph)]
+        else:
+            tangents = [tangents]
+    else:
+        primals = list(primals)
+        if tangents is None:
+            raise RuntimeError("v must be provided when func has multiple inputs")
+        tangents = list(tangents)
+
+    if len(primals) != len(tangents):
+        raise RuntimeError(f"Expected {len(primals)} tangents, got {len(tangents)}")
+    for i, (inp, vec) in enumerate(zip(primals, tangents)):
+        if not isinstance(inp, TN):
+            raise RuntimeError(f"Input {i} must be a tensor")
+        if not isinstance(vec, TN):
+            raise RuntimeError(f"v[{i}] must be a tensor")
+        if inp.shape != vec.shape:
+            raise RuntimeError(
+                f"Shapes of input {i} ({inp.shape}) and v[{i}] ({vec.shape}) do not match")
+
+    state = _record_primal(func, primals, create_graph, strict)
+    results = _jvp_with_primal_graph(state, tangents, create_graph, strict)
+
+    out_list = state['out_list']
+    is_single_output = state['is_single_output']
+    out_values = out_list[0] if is_single_output else tuple(out_list)
+    tangent_values = results[0] if is_single_output else tuple(results)
+    return out_values, tangent_values
 
 
 def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
@@ -889,33 +1182,32 @@ def _jacobian_via_vjp(func, args, positions, create_graph: bool, strict: bool):
     return blocks, is_single_output
 
 
-def _basis_row(basis: TN, k: int) -> TN:
-    """取出基向量张量的第 k 行，构造共享底层数据、无计算图的叶子张量。
+def _basis_column(inp: TN, k: int) -> TN:
+    """构造与 inp 同形的第 k 个单位基向量，作为无计算图的 tangent 叶子。
 
-    tangent 只作为余切参与局部 JVP，从不被原地修改，因此无需视图元数据。
+    逐列按需分配（峰值内存 O(numel)），避免 _identity_basis 一次性分配
+    numel×numel 的平面；tangent 只读，因此可直接写入底层数组。
 
     参数:
-        basis: _identity_basis 返回的基向量张量，形状 (numel,) + shape。
-        k: 行下标，取值 [0, numel)。
+        inp: 决定形状的输入张量。
+        k: 展平后的下标，取值 [0, inp.numel())。
 
     返回:
-        与 basis[0] 同形、共享底层数据且 requires_grad=False 的叶子张量。
+        与 inp 同形、requires_grad=False 的叶子张量。
     """
-    data = basis._array[k]
-    # 输出为 0 维时基向量只有 1 维，整数索引会返回 numpy/cupy 标量而非
-    # 0 维数组；统一转成数组，避免后续算子里 _get_array_lib/ndim 失效
-    arrlib = basis._get_array_lib()
-    if not isinstance(data, arrlib.ndarray):
-        data = arrlib.asarray(data)
-    return TN(data, requires_grad=False)
+    basis = zeros_like(inp, requires_grad=False)
+    basis._array.reshape(-1)[k] = 1
+    return basis
 
 
 def _jacobian_via_jvp(func, args, positions, create_graph: bool):
-    """用 jvp 原语计算 Jacobian：对每个输入基向量做一次 JVP。
+    """用直接前向规则的 jvp 原语计算 Jacobian：对每个输入基向量做一次 JVP。
 
-    等价于 vmap(jvp)，但不经 vmap：前向计算图只建立一次，所有基向量共享
-    同一张图、同一批影子节点以及同一份局部 VJP 图缓存（local_cache），
-    避免每个基向量都重复执行 func 或重复构建局部梯度图。
+    等价于 vmap(jvp)，并按 linearize 方式复用 primal 图：``func`` 只前向
+    求值一次并记录图，随后每个输入元素播种一个 one-hot tangent，复用同一张
+    图与同一份拓扑序传播得到 Jacobian 的一列，最后堆叠成完整 Jacobian。
+    未选中的输入以 ``None`` 播种，其对应的子树会被整棵剪掉。func 需为纯函数
+    （无随机性或副作用），与 torch.func 的约定一致。
 
     参数:
         func: 待求 Jacobian 的函数。
@@ -929,16 +1221,28 @@ def _jacobian_via_jvp(func, args, positions, create_graph: bool):
     """
     call_args, primals, slot_of = _traceable_args(args)
 
-    prepared = _prepare_forward(lambda: func(*call_args), primals, create_graph)
-    out_list = prepared['out_list']
-    # 局部 VJP 图按 (节点, 边) 缓存一次，所有基向量（列）共享
-    local_cache = {}
-
-    blocks = []
+    slots = []
     for pos in positions:
         slot = slot_of.get(pos)
         if slot is None:
             raise RuntimeError(f"Input {pos} must be a tensor")
+        slots.append(slot)
+
+    def _func_from_primals(*ps):
+        # 把播种后的 primals 放回完整实参位置，非张量参数原样透传
+        full = list(call_args)
+        for arg_i, slot in slot_of.items():
+            if slot is not None:
+                full[arg_i] = ps[slot]
+        return func(*full)
+
+    # primal 图只建一次，所有列（含多个 argnums 位置）共享
+    state = _record_primal(_func_from_primals, primals, create_graph, False)
+    out_list = state['out_list']
+    n_primals = len(primals)
+
+    blocks = []
+    for slot in slots:
         inp = primals[slot]
         numel = inp.numel()
         if numel == 0:
@@ -946,21 +1250,12 @@ def _jacobian_via_jvp(func, args, positions, create_graph: bool):
                                  device=out.device) for out in out_list])
             continue
 
-        basis = _identity_basis(numel, inp.shape, inp.dtype, inp.device)
-
-        # 逐列传播 tangent：直接遍历基向量的行（_basis_row 生成与基向量
-        # 共享数据的无图叶子），省去 vmap 每列的切片、in_dims/out_dims
-        # 归一化与参数容器重建开销。
-        cols = None
+        cols = [[] for _ in out_list]
         for k in range(numel):
-            tangents = [None] * len(primals)
-            tangents[slot] = _basis_row(basis, k)
-            _, jvp_res = _jvp_with_prepared(prepared, tangents, create_graph, False,
-                                            local_cache)
-            res_list = _as_list(jvp_res)
-            if cols is None:
-                cols = [[] for _ in res_list]
-            for j, res in enumerate(res_list):
+            tangents = [None] * n_primals
+            tangents[slot] = _basis_column(inp, k)
+            results = _jvp_with_primal_graph(state, tangents, create_graph, False)
+            for j, res in enumerate(results):
                 cols[j].append(res)
 
         # 每列结果的形状与 out 相同；沿最后一维堆叠得到 (*out.shape, numel)，
@@ -968,7 +1263,7 @@ def _jacobian_via_jvp(func, args, positions, create_graph: bool):
         blocks.append([stack(col, dim=-1).reshape(out.shape + inp.shape)
                        for col, out in zip(cols, out_list)])
 
-    return blocks, prepared['is_single_output']
+    return blocks, state['is_single_output']
 
 
 def _format_jacobian(blocks, is_single_output: bool):
@@ -1061,10 +1356,10 @@ def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
            create_graph: bool = False) -> Callable[..., Union[TN, tuple[TN, ...]]]:
     """通过正向模式 (forward-mode autodiff) 计算 Jacobian 矩阵。
 
-    实现等价于 vmap(jvp)：对每个输入元素构造 one-hot tangent，沿计算图正向传播
-    得到 Jacobian 的一列，最后堆叠成完整 Jacobian。实际用逐列循环而非 vmap，
-    且只做一次前向求值，所有列共享同一张计算图与同一批局部 VJP 图（见
-    _jacobian_via_jvp）。
+    基于真正的前向 AD 原语 ``func.jvp``：primal 图只前向求值并记录一次，
+    随后对每个输入元素构造 one-hot tangent，复用该图沿各算子的 ``_jvp_rule``
+    传播，得到 Jacobian 的一列，最后堆叠成完整 Jacobian。实现等价于
+    vmap(jvp)（linearize + 逐列传播），当前用逐列循环而非 vmap。
 
     参数:
         func: 待求 Jacobian 的函数，输入为 TN，输出为单个 TN 或 TN 序列。

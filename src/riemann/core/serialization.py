@@ -92,15 +92,6 @@ MAGIC_NUMBER = 0x1950A86A20F9469CFC6C
 # - Verified during load operations to ensure format compatibility
 PROTOCOL_VERSION = 1001
 
-# Default pickle protocol version to use for serialization
-# Pickle protocol 2 is chosen as the default for its good balance of:
-# 1. Cross-platform compatibility
-# 2. Support for modern Python features
-# 3. Reasonable serialization efficiency
-# 
-# Protocol 2 is supported in Python 2.3+ and all Python 3 versions,
-# making it a safe choice for cross-environment compatibility.
-DEFAULT_PROTOCOL = 2
 
 def _is_zipfile(f) -> bool:
     """检查文件是否是ZIP文件"""
@@ -152,9 +143,6 @@ class _ZipFileReader:
         else:
             self.zipfile = zipfile_obj.zipfile
         self._should_close = should_close
-        self._records = {}
-        for name in self.zipfile.namelist():
-            self._records[name] = self.zipfile.getinfo(name)
     
     def __enter__(self):
         return self
@@ -167,18 +155,6 @@ class _ZipFileReader:
         """获取记录内容"""
         return self.zipfile.read(name)
     
-    def get_record_offset(self, name):
-        """获取记录偏移量（简化版本）"""
-        return 0
-    
-    def has_record(self, name):
-        """检查记录是否存在"""
-        return name in self._records
-    
-    def get_all_records(self):
-        """获取所有记录名称"""
-        return list(self._records.keys())
-    
     def write_record(self, name, data, length):
         """写入记录（仅用于兼容接口）"""
         raise NotImplementedError("write_record not supported on reader")
@@ -186,11 +162,6 @@ class _ZipFileReader:
     def write_record_metadata(self, name, size):
         """写入记录元数据（仅用于兼容接口）"""
         raise NotImplementedError("write_record_metadata not supported on reader")
-    
-    def get_storage_from_record(self, name, numel, storage_type):
-        """从记录获取存储（简化版本）"""
-        data = self.get_record(name)
-        return storage_type(data)
 
 
 class _ZipFileWriter:

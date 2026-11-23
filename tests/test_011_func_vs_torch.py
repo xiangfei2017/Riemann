@@ -15,8 +15,10 @@ riemann.func 与 torch.func 的数值对照测试（含高阶导数）。
 已知语义差异（在 test_api_differences 中显式核对，而不是当作失败）:
     1. riemann 的 grad 默认 create_graph=False，嵌套求导必须显式传
        create_graph=True；torch.func 的变换天然可再求导。
-    2. riemann 的 jacrev/jacfwd 默认 strict=True，输入与输出不连通时抛
-       RuntimeError；torch.func 返回零块。传 strict=False 后数值一致。
+    2. riemann 的 jacrev 默认 strict=True，输入与输出不连通时抛 RuntimeError；
+       torch.func 返回零块。传 strict=False 后数值一致。jacfwd 内部逐列调用
+       func.jvp（未选中的输入以零 tangent 播种），没有 strict 参数，对应位置
+       始终按零块返回。
     3. torch.func.hessian(argnums=(0,1)) 返回完整的分块矩阵（含交叉块）；
        riemann.func.hessian 只返回各 argnums 位置的对角块。
     4. torch.func.vjp 对单输入也返回长度为 1 的 tuple；riemann.func.vjp
@@ -523,6 +525,8 @@ class TestFuncVsTorch(unittest.TestCase):
                   lambda: self._cmp_jacfwd_noncontiguous())
         _run_case("jacfwd - scalar_input", lambda: self._cmp_jacfwd_scalar_input())
         _run_case("jacfwd - equals_jacrev", lambda: self._cmp_jacfwd_equals_jacrev())
+        _run_case("jacfwd - 与逐列 jvp 一致", lambda: self._cmp_jacfwd_matches_jvp())
+        _run_case("jacfwd - 原地算子链", lambda: self._cmp_jacfwd_inplace())
 
     def _cmp_jacfwd_vector(self):
         f = lambda x: rm.stack([x[0] ** 2 * x[1], x[1] ** 3])
@@ -571,6 +575,38 @@ class TestFuncVsTorch(unittest.TestCase):
         rm_x, tt_x = _rm([1.0, 2.0]), _tt([1.0, 2.0])
         return (_tree_close(func.jacfwd(f)(rm_x), func.jacrev(f)(rm_x))
                 and _tree_close(func.jacfwd(f)(rm_x), torch.func.jacfwd(tf)(tt_x)))
+
+    def _cmp_jacfwd_matches_jvp(self):
+        # jacfwd 现在由直接前向规则的 jvp 逐列堆叠而成，验证两者一致
+        f = lambda x: rm.stack([x[0] ** 2 * x[1], x[1] ** 3])
+        tf = lambda x: torch.stack([x[0] ** 2 * x[1], x[1] ** 3])
+        rm_x, tt_x = _rm([1.0, 2.0]), _tt([1.0, 2.0])
+
+        cols = []
+        for k in range(2):
+            e_k = np.zeros(2)
+            e_k[k] = 1.0
+            _, col = func.jvp(f, rm_x, _rm(e_k))
+            cols.append(col)
+        manual = rm.stack(cols, dim=-1)
+
+        jac = func.jacfwd(f)(rm_x)
+        return (_tree_close(jac, manual)
+                and _tree_close(manual, torch.func.jacfwd(tf)(tt_x)))
+
+    def _cmp_jacfwd_inplace(self):
+        # 前向规则支持原地算子：jacfwd 可以穿过 clone/add_/mul_ 链
+        def f(x):
+            z = x.clone()
+            z.add_(x)     # 2x
+            z.mul_(1.5)   # 3x
+            return z ** 2  # 9x^2
+
+        x = np.array([1.0, 2.0])
+        jac = func.jacfwd(f)(_rm(x))
+        expected = np.diag(18.0 * x)
+        return (_tree_close(jac, expected)
+                and _tree_close(jac, func.jacrev(f)(_rm(x))))
 
     # ---------------------------------------------------------------
     # hessian

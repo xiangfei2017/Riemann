@@ -568,6 +568,10 @@ copy() 方法创建一个新的张量对象，拥有自己的数据内存，并�
 2. **带梯度跟踪的非叶子节点张量**: 允许对需要梯度跟踪的非叶子节点张量（中间结果）执行原地操作
 3. **一元原地操作**: ``neg_()`` 的反向将流向历史的梯度取负；``abs_()`` 的反向按操作前元素的符号缩放梯度（元素为 0 处梯度为 0）
 4. **取余与取整除法**: ``%=``（``remainder_``）支持梯度，右值梯度为 ``-grad * floor(x / y)``；``//=`` 与 PyTorch 一致，反向会抛 ``RuntimeError``：floor_divide 未实现梯度
+5. **前向自动微分下的原地操作**: 在 ``func.jvp`` 跟踪期间，叶子张量也允许原地修改（包括 ``x[...] = y``）。原地操作不产生新节点，而是按时间顺序记录为 tangent 的施加步骤：
+   支持 ``add_/sub_/mul_/div_/pow_/remainder_/copy_/fill_/abs_/neg_`` 与索引赋值/复合赋值；
+   ``floor_divide_`` 无前向规则会报错，``zero_`` 不参与前向传播。连续原地按顺序作用，
+   同一张量的多个视图别名不会重复累加；前向跟踪结束后恢复原有叶子检查
 
 示例：
 
@@ -1799,6 +1803,13 @@ func 模块求导函数
 再沿计算图从输入到输出正向传播 tangent，无需反向传播，
 比显式构造完整 Jacobian 再乘向量更高效（尤其当 Jacobian 矩阵很大时）。
 
+实现上，``jvp`` 由算子的直接前向规则（``_jvp_rule``）驱动：PRIMAL 阶段建立计算图并登记
+各节点规则，TANGENT 阶段按拓扑序只遍历一次，用规则直接计算每个节点的 tangent；
+未登记规则的算子回退到局部 VJP 转置。旧版基于局部 VJP 转置的实现保留为
+``func.jvp2``（接口相同，便于对照与回退）。原地算子按时间顺序作为步骤施加到 tangent 上，
+支持 ``add_/sub_/mul_/div_/pow_/remainder_/copy_/fill_/abs_/neg_`` 及索引赋值，
+``//=``（``floor_divide_``）与前向规则一致地因无导数而报错。
+
 **函数签名**: 
 
 .. code-block:: python
@@ -1915,7 +1926,9 @@ func 模块求导函数
 两种方式计算 Jacobian 矩阵：
 
 - jacrev：反向模式自动求导，由 vmap(vjp) 实现。对 m 维输出做 m 次反向传播，适合输入维度小、输出维度大的场景
-- jacfwd：正向模式自动求导，由逐列 jvp 实现（等价于 vmap(jvp)，但共享一次前向求值与局部 VJP 图缓存）。对 n 维输入做 n 次前向传播，适合输入维度大、输出维度小的场景
+- jacfwd：正向模式自动求导，由 linearize + vmap(jvp) 实现，基于直接规则的 ``func.jvp`` 原语：primal 图只记录一次，
+  每个输入基向量只需播种 one-hot tangent 并沿各算子的 ``_jvp_rule`` 传播，不再重跑前向。对 n 维输入做 n 次 tangent 传播，
+  适合输入维度大、输出维度小的场景
 
 **函数签名**: 
 
@@ -1929,7 +1942,7 @@ func 模块求导函数
 - func：可微函数，输入为一个或多个张量，输出可为单个张量或张量元组
 - argnums：需要计算 Jacobian 的输入位置，整数或整数元组，默认 ``0``；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``，错误信息与 ``torch.func`` 一致（``torch.func.jacrev`` 对 ``()`` 和 ``None`` 均抛 ``RuntimeError``；``torch.func.jacfwd`` 对 ``()`` 抛 ``RuntimeError``，对 ``None`` 则按全部参数求导）
 - create_graph（bool，默认 ``False``）：为 ``True`` 时 Jacobian 的每个元素都保留计算图，可再对其求导（例如 ``func.jacrev(func.jacrev(f, create_graph=True))`` 得到二阶导数）
-- strict（bool，默认 ``True``，仅 ``jacrev`` 支持）：严格模式。当某个输出与某个输入完全无关（该输入对应的梯度为 ``None``）时，``True`` 抛出 ``RuntimeError``；``False`` 时该部分按数学语义填 0。``jacfwd`` 内部通过 ``vmap+jvp`` 实现，没有此参数
+- strict（bool，默认 ``True``，仅 ``jacrev`` 支持）：严格模式。当某个输出与某个输入完全无关（该输入对应的梯度为 ``None``）时，``True`` 抛出 ``RuntimeError``；``False`` 时该部分按数学语义填 0。``jacfwd`` 内部逐列调用 ``func.jvp``，未选中的输入以零 tangent 播种，没有此参数
 
 **返回**: 一个包裹函数，接受与 ``func`` 相同的参数；调用后返回 Jacobian 矩阵（形状见下）。只含 1 个参数位置时返回单个张量，含多个位置时返回元组（顺序与 ``argnums`` 一致）；``jacfwd`` 在 ``argnums=None`` 时按全部参数求导，此时即使只有 1 个参数也返回元组
 
@@ -1956,7 +1969,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 **注意事项**: 
 
-- jacfwd 在 Riemann 中通过逐列 ``jvp`` 实现（共享一次前向求值与局部 VJP 图缓存，等价于 ``vmap(jvp)``），时间复杂度正比于输入维度；若输出维度远大于输入维度，建议使用 ``jacrev``
+- jacfwd 在 Riemann 中先记录一次 primal 图，再让每个基向量复用该图传播 tangent（linearize + ``vmap(jvp)`` 语义，不重复前向），时间复杂度正比于输入维度；若输出维度远大于输入维度，建议使用 ``jacrev``
 - 多输入场景（``argnums=(0, 1)``）下，返回值为元组，每个元素对应一个输入的 Jacobian
 
 ``hessian()`` — Hessian 矩阵
@@ -1964,8 +1977,8 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 计算标量值函数的 Hessian 矩阵（二阶偏导数）。实现方式为 ``jacrev(grad(func))``：
 先由反向模式 ``grad`` 得到梯度，再由反向模式 ``jacrev`` 对梯度求 Jacobian。
-（本库的前向模式由局部 VJP 转置模拟，``jacrev(jacfwd(func))`` 会为每个基向量生成
-独立列子图并使外层反向遍历成本按 O(n²) 放大，因此改用反向叠反向。）
+（若改为 ``jacrev(jacfwd(func))``，外层每次反向遍历都要重新传播 n 个基向量，
+总成本按 O(n²) 放大，因此改用反向叠反向。）
 
 **函数签名**: 
 
@@ -2245,13 +2258,13 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        y.backward()
        print(f"梯度: {x.grad}")  # 将自动计算正确的梯度
 
-2. **使用 track_grad 装饰器**
-   ``track_grad`` 是 **Riemann 特有** 的算子梯度注册装饰器，PyTorch 中没有同名接口。
+2. **使用 register_grad_rule 装饰器**
+   ``register_grad_rule`` 是 **Riemann 特有** 的算子梯度注册装饰器，PyTorch 中没有同名接口。
    使用它来包装你的函数，并提供显式的梯度计算。
 
    **梯度函数接口要求：**
 
-   传递给 ``track_grad`` 的梯度函数签名固定为 ``grad_func(result, *args, **kwargs)``：
+   传递给 ``register_grad_rule`` 的梯度函数签名固定为 ``grad_func(result, *args, **kwargs)``：
 
    - **参数**: 第一个参数 ``result`` 是前向函数的输出张量；其后参数必须与前向函数的输入参数同名同序
    - **返回值**: 返回一个 tuple，按 ``grad_func`` 签名中的 TN 参数顺序给出每个输入张量的梯度
@@ -2274,7 +2287,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
            # result 即 sigmoid 输出，直接复用可省去重复计算
            return (result.grad_value * result * (1. - result),)
        
-       @rm.track_grad(sigmoid_derivative)
+       @rm.register_grad_rule(sigmoid_derivative)
        def custom_sigmoid(x):
            """带梯度支持的自定义 sigmoid 函数"""
            return rm.tensor(1. / (1. + np.exp(-x.array())))
@@ -2301,7 +2314,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
                result.grad_value * (-x / y**2.),
            )
        
-       @rm.track_grad(divide_derivative)
+       @rm.register_grad_rule(divide_derivative)
        def custom_divide(x, y):
            return x / y
        
@@ -2327,7 +2340,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
            local = exponent * x ** (exponent - 1.)
            return (result.grad_value * scale * local,)
        
-       @rm.track_grad(scaled_pow_derivative)
+       @rm.register_grad_rule(scaled_pow_derivative)
        def scaled_pow(x, scale=1.0, exponent=2.0):
            return scale * x ** exponent
        
@@ -2349,7 +2362,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        def sum_derivative(result, *args):
            return tuple(result.grad_value for _ in args)
        
-       @rm.track_grad(sum_derivative)
+       @rm.register_grad_rule(sum_derivative)
        def custom_sum(*xs):
            return rm.tensor(sum(x.array() for x in xs))
        
@@ -2365,7 +2378,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        def weighted_sum_derivative(result, **kwargs):
            return tuple(result.grad_value * WEIGHTS[name] for name in kwargs)
        
-       @rm.track_grad(weighted_sum_derivative)
+       @rm.register_grad_rule(weighted_sum_derivative)
        def custom_weighted_sum(**kwargs):
            return rm.tensor(sum(WEIGHTS[name] * v.array() for name, v in kwargs.items()))
        
@@ -2384,7 +2397,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        def add_derivative(result, x, y):
            return (result.grad_value, result.grad_value)
        
-       @rm.track_grad(add_derivative)
+       @rm.register_grad_rule(add_derivative)
        def custom_add(x, y):
            return x + y
        
@@ -2397,7 +2410,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
 
    **场景 6：矩阵乘法（自定义链式法则）**
 
-   这是 ``track_grad`` 的核心优势：反向传播中可以直接使用矩阵乘 ``@``、转置等运算，
+   这是 ``register_grad_rule`` 的核心优势：反向传播中可以直接使用矩阵乘 ``@``、转置等运算，
    而不是被限制为“上游梯度逐元素相乘”。
 
    .. code-block:: python
@@ -2409,7 +2422,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
            g = result.grad_value
            return (g @ y.T, x.T @ g)
        
-       @rm.track_grad(matmul_derivative)
+       @rm.register_grad_rule(matmul_derivative)
        def custom_matmul(x, y):
            return rm.matmul(x, y)
        
@@ -2426,15 +2439,63 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
    - 元组顺序只由 ``grad_func`` 签名决定，与调用时的传参顺序无关；非 TN 参数不占位
    - ``backward`` 每次调用都会按当前上游梯度重新计算 ``grad_func``，
      因此支持 ``retain_graph=True`` 下的重复反向传播
-   - 若前向函数完全由 Riemann 张量算子构成（已自动求导），通常无需使用 ``track_grad``；
+   - 若前向函数完全由 Riemann 张量算子构成（已自动求导），通常无需使用 ``register_grad_rule``；
      它主要用于包装外部算子或手动定义前向/反向的计算
 
-3. **使用 Function 类**
-   对于更复杂的情况，你可以继承 ``Function`` 类并实现 ``forward`` 和 ``backward`` 静态方法。
+3. **使用 register_jvp_rule 装饰器（前向规则）**
+   当算子无法用库内已有的 TN 运算表达，或需要为外部算子补充前向模式支持时，可用
+   ``@rm.register_jvp_rule(jvp_func)`` 登记直接前向规则。它与 ``register_grad_rule``
+   完全独立：可以单独使用，也可以同时装饰同一个函数（顺序任意），
+   前向与反向互不覆盖。
+
+   **jvp_func 接口：**
+
+   - 签名为 ``jvp_func(result)``，``result`` 是前向函数的输出张量
+   - 用 ``current_jvp_frame()`` 取当前 JVP 帧，用 ``_input_tangent(frame, var)``
+     读取某个入边对应的 tangent（``var`` 为 ``result.fromvars`` 中的输入张量）
+   - 用 ``frame.node_tangent[id(result)] = tangent`` 写回输出 tangent；形状必须与
+     ``result`` 相同。若该输出不依赖任何可微输入，可以不写（视为无 tangent）
+   - 规则执行期间，``result.fromvars`` 会被临时替换为完整的 TN 实参列表
+     （即使部分实参 ``requires_grad=False``），执行结束后自动恢复，
+     因此 ``register_grad_rule`` 过滤后的 ``fromvars`` 不会影响前向规则读取输入
+
+   示例：
+
+   .. code-block:: python
+
+       import riemann as rm
+       from riemann.core.ad_context import current_jvp_frame
+       from riemann.core.tensordef import _input_tangent
+
+       def _my_tanh_jvp(result):
+           frame = current_jvp_frame()
+           x = result.fromvars[0]
+           x_t = _input_tangent(frame, x)
+           # d(tanh(x))/dx = 1 - tanh(x)^2，直接复用前向输出
+           frame.node_tangent[id(result)] = (1.0 - result * result) * x_t
+
+       @rm.register_jvp_rule(_my_tanh_jvp)
+       def my_tanh(x):
+           return rm.tanh(x)
+
+       x = rm.tensor([1., 2.], requires_grad=True)
+       out, tan = rm.func.jvp(my_tanh, x, rm.tensor([0.5, -0.5]))
+       print(tan)  # (1 - tanh(x)^2) * v
+
+   **注意事项：**
+
+   - 规则只负责“本节点 tangent 如何由入边 tangent 得到”，链式法则由框架按拓扑序完成
+   - 前向规则与反向规则可分别实现；只实现 ``register_jvp_rule`` 时反向梯度仍由函数体内
+     的 TN 算子决定
+   - 与 ``register_grad_rule`` 一样，被装饰函数应产生新节点，不要直接返回入参本身
+
+4. **使用 Function 类**
+   对于更复杂的情况，你可以继承 ``Function`` 类并实现 ``forward`` 和 ``backward`` 静态方法；
+   如需自定义前向模式，可选实现 ``jvp`` 静态方法。
 
    **Function 类接口：**
 
-   要使用 ``Function`` 类创建自定义函数，必须实现两个静态方法：
+   要使用 ``Function`` 类创建自定义函数，至少需要实现 ``forward`` 与 ``backward``：
 
    **forward(ctx, \*inputs)**
 
@@ -2455,6 +2516,34 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
      - ``grad_output``：输出张量的梯度（来自计算图中后续层）
    - **返回**: 梯度元组，每个输入张量对应一个梯度。每个梯度应为 ``grad_output`` 与局部梯度（偏导数）的乘积
    - **用法**: 使用链式法则计算梯度：``grad_input = grad_output * local_gradient``
+
+   **jvp(ctx, \*input_tangents)（可选，前向模式）**
+
+   - **用途**: 为自定义函数提供前向规则；实现后 ``func.jvp`` 会直接调用它
+   - **参数**:
+
+     - ``ctx``：与 ``backward`` 相同的上下文对象
+     - ``input_tangents``：与 ``forward`` 的输入逐项对应；非张量输入的位置传 ``None``
+   - **返回**: 输出 tangent；单输出时返回张量或 ``None``（不可微输出），
+     当前 ``apply`` 仅支持单输出
+   - **保存张量**: ``jvp`` 中 ``ctx.saved_tensors`` 只包含 ``save_for_forward()`` 保存的张量；
+     ``save_for_backward()`` 保存的内容仍只在 ``backward`` 中可见
+   - **未实现时**: 框架会清除该节点的前向规则，``func.jvp`` 自动回退到局部 VJP 转置，
+     结果正确但开销更高
+
+   **setup_context(ctx, inputs, output)（可选，新式写法）**
+
+   除 ``forward(ctx, *inputs)`` 外，也支持 PyTorch 1.13+ 的新式写法：
+   ``forward(*inputs)`` 只做计算，另实现 ``setup_context(ctx, inputs, output)`` 在其中调用
+   ``save_for_backward``/``save_for_forward``。``apply`` 会自动识别并采用对应写法，
+   两种风格不要混用。
+
+   **其他上下文成员：**
+
+   - ``ctx.needs_input_grad``：逐输入的布尔元组，在任何回调之前由 ``apply`` 写入；
+     非张量位置为 ``False``，``set_grad_enabled(False)`` 下全为 ``False``
+   - ``ctx.save_for_forward(*tensors)``：参数只允许 TN 或 ``None``；非张量请保存为 ``ctx``
+     的普通属性
 
    **示例：**
 
