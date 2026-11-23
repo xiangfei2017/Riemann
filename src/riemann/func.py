@@ -480,39 +480,72 @@ def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
     return _local_jvp_by_basis(node, i, target, tangent)
 
 
-def _graph_topological_order(outputs):
-    """按拓扑序（叶子在前、输出在后）返回从 outputs 可达的计算图节点。
+def _graph_topological_order(
+        outputs: Union[TN, list, tuple]) -> list:
+    """返回前向 AD（JVP）所需的前向计算图拓扑序：输入在前、输出在后。
 
-    用迭代式 DFS 的后序输出实现，避免递归深度限制。每个节点入栈两次：
-    先以 expanded=False 入栈（用于展开子节点），再以 expanded=True 入栈
-    （子节点全部处理完后才追加到 order），从而保证输出一定排在其输入之后。
+    以 `fromvars` 为边，从 outputs 出发做一次迭代式 DFS（显式栈，不递归）。
+    不读写 `_rcv_grad_count` 等反向传播状态，纯图遍历、无副作用。
+    outputs 可以是单个 TN 或 TN 的 list/tuple，重复节点按 id 去重；
+    `fromvars` 中的非 TN 原始操作数不是图节点，直接跳过。
+
+    算法：每个节点入栈两次
+      1. `(node, False)`：展开节点，把它的 `fromvars` 压到栈上；
+      2. `(node, True)` ：收尾标记。由于栈是后进先出，且标记先压、输入后压，
+         标记一定在它的全部输入处理完之后才弹出；此时才把 node 追加到结果。
+    因此结果是“完成序”：任何节点的全部输入都先于它入列，即天然合法的
+    前向拓扑序（输入在前、输出在后）。规则调用依赖这一顺序——节点必须在
+    它的全部输入之后才调用 `jvp_rule`；但拓扑序不唯一，同层兄弟之间、
+    多个根之间的先后不影响正确性，规则本身按位置从 fromvars/parms 取值，
+    不依赖具体遍历出的序列。
 
     参数:
-        outputs: 前向输出节点序列。
+        outputs: 前向输出节点，单个 TN 或 TN 序列。
 
     返回:
-        list[TN]：从 outputs 可达的全部节点，按拓扑序排列（叶子在前、输出在后）。
+        list[TN]：从 outputs 可达的全部图节点，按“输入在前、输出在后”排列。
     """
+    if isinstance(outputs, TN):
+        stack = [(outputs, False)]
+    else:
+        # 多个根：先按 id 去重，避免同一输出被重复展开。
+        # 此时 emitted 还是空的，所以这里单独用 seen。
+        stack = []
+        seen = set()
+        for out in outputs:
+            if id(out) not in seen:
+                seen.add(id(out))
+                stack.append((out, False))
+
+    # emitted 的语义是“已写入 order”，不是“已访问过”：
+    # 节点被多个后继或多个输出共享时会多次入栈，只有在收尾标记弹出、
+    # 真正 append 之后才标记，保证它只出现一次，且位置在其全部输入之后。
+    # 若在首次发现时就标记，后续共享路径会跳过它，导致缺失或顺序错误。
     order = []
-    visited = set()
-    for out in outputs:
-        stack = [(out, False)]
-        while stack:
-            node, expanded = stack.pop()
-            node_id = id(node)
-            if expanded:
-                if node_id not in visited:
-                    visited.add(node_id)
-                    order.append(node)
-                continue
-            if node_id in visited:
-                continue
-            stack.append((node, True))
-            # reversed 让 fromvars 中靠前的输入先被展开，保持与正向求值一致的顺序；
-            # 非 TN 原始操作数不是计算图节点，不参与拓扑遍历
-            for var in reversed(node.fromvars):
-                if isinstance(var, TN) and id(var) not in visited:
-                    stack.append((var, False))
+    emitted = set()
+    while stack:
+        node, expanded = stack.pop()
+        node_id = id(node)
+
+        if expanded:
+            # 收尾标记：该节点的输入都已处理完，可以入列
+            if node_id not in emitted:
+                emitted.add(node_id)
+                order.append(node)
+            continue
+
+        # 已入列（可能由另一条共享路径先完成），无需再展开
+        if node_id in emitted:
+            continue
+
+        # 先压收尾标记，再压输入，保证输入先于标记弹出
+        stack.append((node, True))
+        for var in node.fromvars:
+            # 非 TN 操作数（如 pow 的指数）不是图节点；
+            # 已入列的输入不必再压栈（这仅是减少入栈，正确性由弹出时的检查保证）
+            if isinstance(var, TN) and id(var) not in emitted:
+                stack.append((var, False))
+
     return order
 
 
