@@ -1177,6 +1177,19 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :return: 元素的总和
    :rtype: riemann.TN
 
+.. function:: riemann.logsumexp(x, dim=None, keepdim=False)
+
+   计算 ``log(sum(exp(x)))``，使用最大值平移保证数值稳定，支持实数与复数输入。
+
+   :param x: 输入张量
+   :type x: riemann.TN
+   :param dim: 需要归约的维度；``None`` 表示对所有元素归约
+   :type dim: int 或整数元组，可选
+   :param keepdim: 是否保留被归约的维度
+   :type keepdim: bool，可选
+   :return: 每个归约位置的 log-sum-exp
+   :rtype: riemann.TN
+
 .. function:: riemann.prod(x, dim=None, keepdim=False)
 
    计算跨维度元素的乘积。
@@ -1522,6 +1535,49 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
    :type x: riemann.TN
    :return: 每个元素的反正切
    :rtype: riemann.TN
+
+.. function:: riemann.asinh(x)
+
+   计算每个元素的反双曲正弦（``arcsinh`` 的别名）。
+
+   :param x: 输入张量
+   :type x: riemann.TN
+   :return: 每个元素的反双曲正弦
+   :rtype: riemann.TN
+
+.. function:: riemann.acosh(x)
+
+   计算每个元素的反双曲余弦（``arccosh`` 的别名）。
+
+   :param x: 输入张量
+   :type x: riemann.TN
+   :return: 每个元素的反双曲余弦
+   :rtype: riemann.TN
+
+.. function:: riemann.atanh(x)
+
+   计算每个元素的反双曲正切（``arctanh`` 的别名）。
+
+   :param x: 输入张量
+   :type x: riemann.TN
+   :return: 每个元素的反双曲正切
+   :rtype: riemann.TN
+
+.. function:: riemann.atan2(input, other)
+
+   计算 ``input / other`` 的逐元素反正切，利用两个参数的符号确定正确象限。
+   不支持复数输入。
+
+   :param input: y 坐标张量
+   :type input: riemann.TN
+   :param other: x 坐标张量或标量
+   :type other: riemann.TN 或 float
+   :return: 弧度制角度，取值范围 (-π, π]
+   :rtype: riemann.TN
+
+.. function:: riemann.arctan2(input, other)
+
+   ``atan2`` 的别名。
 
 .. function:: riemann.sinh(x)
 

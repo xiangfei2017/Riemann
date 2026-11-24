@@ -1896,7 +1896,8 @@ no derivative, consistent with the forward rules.
 
 .. code-block:: python
 
-    riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False) -> (output, jvp_result)
+    riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False,
+                     has_aux=False) -> (output, jvp_result[, aux])
 
 **Parameters**:
 
@@ -1905,9 +1906,12 @@ no derivative, consistent with the forward rules.
 - **tangents**: Tangent vectors with the same shape as ``primals``
 - **create_graph** (bool): Track JVP result for higher-order differentiation
 - **strict** (bool): Raise error on non-zero cross-JVP
+- **has_aux** (bool): When ``True``, ``func`` must return ``(output, aux)``; only
+  ``output`` is differentiated and ``aux`` is appended to the return value
 
-**Returns**: ``(output, jvp_result)`` — output value and JVP result (single
-tensor for single input, tuple for multiple inputs)
+**Returns**: ``(output, jvp_result)``, or ``(output, jvp_result, aux)`` when
+``has_aux=True`` — output value and JVP result (single tensor for single input,
+tuple for multiple inputs)
 
 **Example**:
 
@@ -1948,14 +1952,18 @@ to ``grad(f)(x)`` (with default all-ones cotangent).
 
 .. code-block:: python
 
-    riemann.func.vjp(func, primals, cotangents=None, create_graph=False, strict=False) -> (output, vjp_result)
+    riemann.func.vjp(func, primals, cotangents=None, create_graph=False,
+                     strict=False, has_aux=False) -> (output, vjp_result[, aux])
 
 **Parameters**:
 
 - **cotangents** (optional): Vector in output space. When ``None``, all-ones
   cotangent is automatically filled (matching ``torch.func.vjp`` behavior)
+- **has_aux** (bool): When ``True``, ``func`` must return ``(output, aux)``; only
+  ``output`` is differentiated and ``aux`` is appended to the return value
 
-**Returns**: ``(output, vjp_result)``
+**Returns**: ``(output, vjp_result)``, or ``(output, vjp_result, aux)`` when
+``has_aux=True``
 
 **Example**:
 
@@ -1984,6 +1992,44 @@ to ``grad(f)(x)`` (with default all-ones cotangent).
     out3, vjp_val3 = func.vjp(g, x)     # cotangent=None auto-fills ones
     print(vjp_val3)  # J^T @ ones = [2., 4., 6.]
 
+``linearize()`` — Linearization from a Single Forward Pass
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Linearizes a function at ``primals`` and returns ``(primal_out, linear_fn)``.
+The forward pass runs once and records the primal graph; ``linear_fn`` can then
+be called repeatedly with different tangents along the same graph to obtain
+``J(x)·v`` (equivalent to ``torch.func.linearize``). This is also the semantics
+used internally by ``jacfwd``: a constant term plus a linear term, i.e.
+``func(x + v) ≈ primal_out + linear_fn(v)``.
+
+**Function Signature**:
+
+.. code-block:: python
+
+    riemann.func.linearize(func, *primals) -> tuple[output, Callable]
+
+**Parameters**:
+
+- **func**: Function to linearize; takes tensors and returns one tensor or a tuple of tensors
+- **primals**: Evaluation-point inputs, in the same positional order as ``func``; all must be tensors
+
+**Returns**: ``(primal_out, linear_fn)``. ``primal_out`` has the same structure as
+``func``'s output; ``linear_fn(*tangents)`` returns ``J(x)·v``, and the number and
+shapes of the tangents must match ``primals``.
+
+**Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    out, lin = func.linearize(lambda t: t * t, x)
+    print(out)                            # [1., 4., 9.]
+    print(lin(rm.tensor([1., 0., 1.])))   # [2., 0., 6.] — J(x)·v = 2x⊙v
+    print(lin(rm.tensor([1., 1., 1.])))   # [2., 4., 6.] — same graph reused
+
 ``jacrev()`` / ``jacfwd()`` — Jacobian Matrix
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -2003,13 +2049,17 @@ Two ways to compute the Jacobian matrix:
 
 .. code-block:: python
 
-    riemann.func.jacrev(func, argnums=0, create_graph=False, strict=True) -> Callable
-    riemann.func.jacfwd(func, argnums=0, create_graph=False) -> Callable
+    riemann.func.jacrev(func, argnums=0, create_graph=False, strict=True,
+                        has_aux=False, chunk_size=None) -> Callable
+    riemann.func.jacfwd(func, argnums=0, create_graph=False,
+                        has_aux=False, chunk_size=None) -> Callable
 
 **Parameters**:
 
 - **func**: Differentiable function
 - **argnums**: Input position(s) whose Jacobian is computed; int or tuple of ints, default ``0``. Invalid values (``()``, ``None``, tuples containing non-int elements, lists, etc.) raise ``RuntimeError`` when the derivative function is called, with messages identical to ``torch.func`` (``torch.func.jacrev`` raises for both ``()`` and ``None``; ``torch.func.jacfwd`` raises for ``()`` but treats ``None`` as all arguments)
+- **has_aux**: When ``True``, ``func`` must return ``(output, aux)``; only ``output`` is differentiated and the result becomes ``(Jacobian, aux)``
+- **chunk_size**: Number of basis vectors processed per chunk, to bound peak memory; ``None`` means process all at once. The result is identical to the unchunked computation; non-positive or non-int values raise ``ValueError``
 
 **Return Shape**: For output shape ``(y1, y2, ...)`` and input shape
 ``(x1, x2, ...)``, the Jacobian shape is ``(y1, y2, ..., x1, x2, ...)``.
@@ -2054,12 +2104,14 @@ O(n²); reverse-over-reverse avoids that.)
 
 .. code-block:: python
 
-    riemann.func.hessian(func, argnums=0, create_graph=False, strict=True) -> Callable
+    riemann.func.hessian(func, argnums=0, create_graph=False, strict=True,
+                         has_aux=False) -> Callable
 
 **Parameters**:
 
 - **func**: Differentiable function that returns a scalar tensor
 - **argnums**: Input position(s) whose Hessian is computed; int or tuple of ints, default ``0``. Invalid values (``()``, ``None``, tuples containing non-int elements, lists, etc.) raise ``RuntimeError`` when the derivative function is called, with messages identical to ``torch.func.hessian``
+- **has_aux**: When ``True``, ``func`` must return ``(output, aux)``; only ``output`` is differentiated and the result becomes ``(Hessian, aux)`` (a riemann extension; ``torch.func.hessian`` has no such parameter)
 
 **Return Shape**: For input shape ``(n,)``, Hessian shape is ``(n, n)``.
 
@@ -2093,7 +2145,7 @@ primitives like ``jacrev``.
 
 .. code-block:: python
 
-    riemann.func.vmap(func, in_dims=0, out_dims=0) -> Callable
+    riemann.func.vmap(func, in_dims=0, out_dims=0, chunk_size=None) -> Callable
 
 **Parameters**:
 
@@ -2103,6 +2155,9 @@ primitives like ``jacrev``.
   is not batched (passed through directly, useful for shared quantities like model
   parameters).
 - **out_dims**: Batch dimension for each output; same semantics as ``in_dims``
+- **chunk_size**: Number of batch samples processed per chunk, controlling loop and
+  stacking granularity; ``None`` means the whole batch at once. The result is
+  identical to the unchunked computation; non-positive or non-int values raise ``ValueError``
 
 **Example**:
 
@@ -2153,26 +2208,36 @@ primitives like ``jacrev``.
 ``functional_call()`` — Stateless Module Invocation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Calls a Module's ``forward`` with **custom parameter values** without
-modifying the Module's own parameter attributes. This is essential when
-you need to differentiate through the Module's parameters themselves
-(e.g., hypernetworks, meta-learning) — a regular ``module(x)`` call
-captures ``self.weight`` etc. in the forward graph, while
-``functional_call`` lets you substitute parameter values arbitrarily.
+Calls a Module's ``forward`` with **custom parameters and buffers** without
+modifying the Module's own state. This is essential when you need to
+differentiate through the Module's parameters themselves (e.g., hypernetworks,
+meta-learning) — a regular ``module(x)`` call captures ``self.weight`` etc. in
+the forward graph, while ``functional_call`` lets you substitute values by name.
+The API matches ``torch.func.functional_call``.
 
 **Function Signature**:
 
 .. code-block:: python
 
-    riemann.func.functional_call(module, parameter_values, args, kwargs=None) -> Any
+    riemann.func.functional_call(module, parameter_and_buffer_dicts,
+                                 args=None, kwargs=None,
+                                 *, tie_weights=True, strict=False) -> Any
 
 **Parameters**:
 
 - **module**: Object with ``forward`` and ``named_parameters`` methods
   (typically a ``riemann.nn.Module``)
-- **parameter_values**: Parameter values in the same order as
-  ``module.named_parameters()`` (list/tuple/TN)
+- **parameter_and_buffer_dicts**: ``{name: tensor}`` following state_dict naming
+  (e.g. ``"weight"``, ``"l1.bias"``). Parameters and buffers may live in the same
+  dict, or be split across multiple disjoint dicts. ``None`` falls back to the
+  Module's own state. A positional tensor sequence in ``named_parameters()`` order
+  is still accepted for backward compatibility
 - **args** / **kwargs**: Positional and keyword arguments for ``forward``
+- **tie_weights**: When ``True`` (default), tied weights are respected: providing
+  one name of a tied group updates the whole group, and conflicting objects raise
+  ``ValueError``. When ``False``, only explicitly given names are replaced
+- **strict**: When ``True``, the provided names must exactly match the Module's
+  parameter/buffer names; missing or extra keys raise ``RuntimeError``
 
 **Example**:
 
@@ -2203,11 +2268,60 @@ captures ``self.weight`` etc. in the forward graph, while
 
 **Notes**:
 
-- ``parameter_values`` length must match the number of parameters returned
-  by ``module.named_parameters()``
-- Module parameters are **automatically restored** after the call (using try-finally)
-- For parameterless modules, ``parameter_values=None`` falls back to a regular
-  ``forward`` call
+- Names follow state_dict conventions with dotted paths for nested modules
+  (e.g. ``"l1.weight"``); buffers such as BatchNorm ``running_mean`` are supported
+- Parameters and buffers are **automatically restored** after the call (try-finally)
+- For parameterless modules, a regular ``forward`` call is performed
+- The implementation temporarily swaps and restores state, so it is not
+  thread-safe and does not truly parallelize under ``vmap``; use
+  ``stack_module_state`` for cross-model batching
+
+``stack_module_state()`` — Stack Multiple Module States
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Stacks the parameters and buffers of several homogeneous Modules along a new
+dimension 0, returning ``(params, buffers)`` for use with
+``functional_call`` + ``vmap`` (model ensembles).
+
+**Function Signature**:
+
+.. code-block:: python
+
+    riemann.func.stack_module_state(models) -> tuple[dict, dict]
+
+**Parameters**:
+
+- **models**: A sequence or ModuleList of Modules, at least one; all must be the
+  same class, in the same training/eval mode, with identical parameter/buffer
+  names (otherwise ``RuntimeError`` is raised)
+
+**Returns**: ``(params, buffers)``, two ``{name: stacked tensor}`` dicts;
+``requires_grad`` semantics of the original parameters are preserved
+
+**Example**:
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    # Substitute parameters and buffers by name
+    layer = rm.nn.Linear(3, 2)
+    x = rm.tensor([[1., 2., 3.]])
+    y = func.functional_call(
+        layer, {"weight": rm.zeros(2, 3), "bias": rm.zeros(2)}, (x,))
+    print(y)  # all zeros
+
+    # Ensemble: stack states, then batch the forward pass with vmap
+    models = [rm.nn.Linear(3, 2) for _ in range(4)]
+    params, buffers = func.stack_module_state(models)
+    print(params["weight"].shape)  # (4, 2, 3)
+
+    batch_out = func.vmap(
+        lambda w, b, inp: func.functional_call(
+            models[0], {"weight": w, "bias": b}, (inp,)),
+        in_dims=(0, 0, None))(params["weight"], params["bias"], x)
+    print(batch_out.shape)  # (4, 1, 2)
 
 Composition and Higher-Order Patterns
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

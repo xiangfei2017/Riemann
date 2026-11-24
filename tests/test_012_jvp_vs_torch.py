@@ -375,6 +375,18 @@ class TestJVPvsTorch(unittest.TestCase):
         _run_case("minimum - 逐元素最小", lambda: _cmp_jvp(
             rm.minimum, [A, B], [VA, VB],
             f_tt=lambda a, b: torch.minimum(a, b)))
+        _run_case("atan2 - 同形", lambda: _cmp_jvp(
+            rm.atan2, [A, POS], [VA, POS_T],
+            f_tt=lambda a, b: torch.atan2(a, b)))
+        _run_case("atan2 - 广播", lambda: _cmp_jvp(
+            rm.atan2, [A, POS[0:1, :]], [VA, POS_T[0:1, :]],
+            f_tt=lambda a, b: torch.atan2(a, b)))
+        _run_case("atan2 - TN 方法", lambda: _cmp_jvp(
+            lambda a, b: a.atan2(b), [A, POS], [VA, POS_T],
+            f_tt=lambda a, b: a.atan2(b)))
+        _run_case("arctan2 - 别名", lambda: _cmp_jvp(
+            rm.arctan2, [A, POS], [VA, POS_T],
+            f_tt=lambda a, b: torch.arctan2(a, b)))
 
     def _where_case(self):
         cond = np.array([[True, False, True], [False, True, False]])
@@ -394,15 +406,22 @@ class TestJVPvsTorch(unittest.TestCase):
             ("tan", rm.tan, torch.tan, np.array([[0.1, 0.3], [-0.4, 0.6]]),
              np.array([[0.2, -0.1], [0.3, 0.5]]), 1e-9),
             ("arcsin", rm.arcsin, torch.arcsin, SMALL, SMALL_T, 1e-9),
+            ("asin - 别名", rm.asin, torch.asin, SMALL, SMALL_T, 1e-9),
             ("arccos", rm.arccos, torch.arccos, SMALL, SMALL_T, 1e-9),
+            ("acos - 别名", rm.acos, torch.acos, SMALL, SMALL_T, 1e-9),
             ("arctan", rm.arctan, torch.arctan, A, VA, 1e-9),
+            ("atan - 别名", rm.atan, torch.atan, A, VA, 1e-9),
             ("sinh", rm.sinh, torch.sinh, SMALL, SMALL_T, 1e-9),
             ("cosh", rm.cosh, torch.cosh, SMALL, SMALL_T, 1e-9),
             ("tanh", rm.tanh, torch.tanh, A, VA, 1e-9),
             ("arcsinh", rm.arcsinh, torch.arcsinh, A, VA, 1e-9),
+            ("asinh - 别名", rm.asinh, torch.asinh, A, VA, 1e-9),
             ("arccosh", rm.arccosh, torch.arccosh,
              np.array([[1.5, 2.5, 3.5], [4.5, 5.5, 6.5]]), POS_T, 1e-9),
+            ("acosh - 别名", rm.acosh, torch.acosh,
+             np.array([[1.5, 2.5, 3.5], [4.5, 5.5, 6.5]]), POS_T, 1e-9),
             ("arctanh", rm.arctanh, torch.arctanh, SMALL, SMALL_T, 1e-9),
+            ("atanh - 别名", rm.atanh, torch.atanh, SMALL, SMALL_T, 1e-9),
             ("log", rm.log, torch.log, POS, POS_T, 1e-9),
             ("exp", rm.exp, torch.exp, SMALL, SMALL_T, 1e-9),
             ("sign", rm.sign, torch.sign, A, VA, 1e-9),
@@ -445,6 +464,18 @@ class TestJVPvsTorch(unittest.TestCase):
         _run_case("topk - values", lambda: _cmp_jvp(
             lambda a: rm.topk(a, 2, dim=1)[0], [A], [VA],
             f_tt=lambda a: torch.topk(a, 2, dim=1).values))
+        _run_case("logsumexp - 全量", lambda: _cmp_jvp(
+            lambda a: rm.logsumexp(a), [A], [VA],
+            f_tt=lambda a: torch.logsumexp(a, (0, 1))))
+        _run_case("logsumexp - dim/keepdim", lambda: _cmp_jvp(
+            lambda a: rm.logsumexp(a, dim=1, keepdim=True), [A], [VA],
+            f_tt=lambda a: torch.logsumexp(a, 1, keepdim=True)))
+        _run_case("logsumexp - 元组 dim", lambda: _cmp_jvp(
+            lambda a: rm.logsumexp(a, dim=(0, 1)), [A], [VA],
+            f_tt=lambda a: torch.logsumexp(a, (0, 1))))
+        _run_case("logsumexp - TN 方法", lambda: _cmp_jvp(
+            lambda a: a.logsumexp(dim=-1), [A], [VA],
+            f_tt=lambda a: torch.logsumexp(a, -1)))
 
     # ---------------------------------------------------------------
     # 4. 形状与索引
@@ -520,14 +551,33 @@ class TestJVPvsTorch(unittest.TestCase):
             lambda a: rm.linalg.svd(a, full_matrices=False)[1],
             [SQUARE], [SQUARE_T],
             f_tt=lambda a: torch.linalg.svd(a, full_matrices=False).S))
+        _run_case("svd - 重建 A_t", lambda: self._svd_reconstruct())
+        _run_case("qr - 重建 A_t", lambda: self._qr_reconstruct())
         _run_case("eigh - 特征值", lambda: _cmp_jvp(
             lambda a: rm.linalg.eigh(a)[0], [SPD], [SPD_T],
             f_tt=lambda a: torch.linalg.eigh(a).eigenvalues))
         _run_case("eig - 特征值实部和", lambda: _cmp_jvp(
             lambda a: rm.linalg.eig(a)[0].real.sum(), [SQUARE], [SQUARE_T],
             f_tt=lambda a: torch.linalg.eig(a).eigenvalues.real.sum()))
-        _run_case("svd - 重建 A_t", lambda: self._svd_reconstruct())
-        _run_case("qr - 重建 A_t", lambda: self._qr_reconstruct())
+        _run_case("lu - L (方阵)", lambda: _cmp_jvp(
+            lambda a: rm.linalg.lu(a)[1], [SQUARE], [SQUARE_T],
+            f_tt=lambda a: torch.linalg.lu(a)[1]))
+        _run_case("lu - U (方阵)", lambda: _cmp_jvp(
+            lambda a: rm.linalg.lu(a)[2], [SQUARE], [SQUARE_T],
+            f_tt=lambda a: torch.linalg.lu(a)[2]))
+        _run_case("lu - L (宽矩阵)", lambda: _cmp_jvp(
+            lambda a: rm.linalg.lu(a)[1], [A], [VA],
+            f_tt=lambda a: torch.linalg.lu(a)[1]))
+        _run_case("lu - U (宽矩阵)", lambda: _cmp_jvp(
+            lambda a: rm.linalg.lu(a)[2], [A], [VA],
+            f_tt=lambda a: torch.linalg.lu(a)[2]))
+        _run_case("lu - L (高矩阵)", lambda: _cmp_jvp(
+            lambda a: rm.linalg.lu(a)[1], [A.T], [VA.T],
+            f_tt=lambda a: torch.linalg.lu(a)[1]))
+        _run_case("lu - U (高矩阵)", lambda: _cmp_jvp(
+            lambda a: rm.linalg.lu(a)[2], [A.T], [VA.T],
+            f_tt=lambda a: torch.linalg.lu(a)[2]))
+        _run_case("lu - 重建 dA (pivot=False)", lambda: self._lu_reconstruct())
 
     def _svd_reconstruct(self):
         f = lambda a: rm.linalg.svd(a, full_matrices=False)
@@ -543,6 +593,15 @@ class TestJVPvsTorch(unittest.TestCase):
         (q, r), (qt, rt) = func.jvp(
             f, _rm(SQUARE), _rm(SQUARE_T, requires_grad=False))
         rec = qt.array() @ r.array() + q.array() @ rt.array()
+        return np.allclose(rec, SQUARE_T, atol=1e-8)
+
+    def _lu_reconstruct(self):
+        # pivot=False 时 A = L·U，切线满足 dA = dL·U + L·dU
+        f = lambda a: rm.linalg.lu(a, pivot=False)
+        _, (_, lt, ut) = func.jvp(
+            f, _rm(SQUARE), _rm(SQUARE_T, requires_grad=False))
+        _, l, u = f(_rm(SQUARE))
+        rec = lt.array() @ u.array() + l.array() @ ut.array()
         return np.allclose(rec, SQUARE_T, atol=1e-8)
 
     # ---------------------------------------------------------------
@@ -587,6 +646,12 @@ class TestJVPvsTorch(unittest.TestCase):
         _run_case("tanh - nn", lambda: _cmp_jvp(
             rm.nn.functional.tanh, [A], [VA],
             f_tt=torch.tanh))
+        _run_case("silu", lambda: _cmp_jvp(
+            rm.nn.functional.silu, [A], [VA],
+            f_tt=tF.silu))
+        _run_case("softplus", lambda: _cmp_jvp(
+            rm.nn.functional.softplus, [A], [VA],
+            f_tt=tF.softplus))
         _run_case("embedding", lambda: self._embedding_case())
 
     def _embedding_case(self):
@@ -629,6 +694,12 @@ class TestJVPvsTorch(unittest.TestCase):
         _run_case("conj", lambda: _cmp_jvp(
             rm.conj, [z], [vz],
             f_tt=torch.conj))
+        _run_case("logsumexp - 复数", lambda: _cmp_jvp(
+            lambda a: rm.logsumexp(a, dim=1), [z], [vz],
+            f_tt=lambda a: torch.logsumexp(a, 1)))
+        _run_case("asin - 复数", lambda: _cmp_jvp(
+            rm.asin, [z / 3.0], [vz / 3.0],
+            f_tt=torch.asin))
 
     # ---------------------------------------------------------------
     # 8. 原地操作

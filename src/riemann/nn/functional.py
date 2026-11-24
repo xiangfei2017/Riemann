@@ -194,10 +194,14 @@ def sigmoid(x: TN) -> TN:
 
     x_data = x._array
     arrlib = x._get_array_lib()
-    # 数值稳定性处理：对极端值使用硬截断
-    data = arrlib.where(x_data > 20, 1.0, 
-                   arrlib.where(x_data < -20, 0.0, 
-                           1. / (1. + arrlib.exp(-x_data))))
+    if x.dtype.kind == 'c':
+        # 复数没有实数的饱和截断语义，直接用解析式（与 torch 一致）
+        data = 1. / (1. + arrlib.exp(-x_data))
+    else:
+        # 数值稳定性处理：对极端值使用硬截断
+        data = arrlib.where(x_data > 20, 1.0, 
+                       arrlib.where(x_data < -20, 0.0, 
+                               1. / (1. + arrlib.exp(-x_data))))
     
     ret = TN(data, 
         requires_grad = is_grad_enabled() and x.requires_grad
@@ -218,8 +222,9 @@ def _sigmoid_jvp(result_tensor: TN):
         frame.node_tangent[id(result_tensor)] = x_t * result_tensor * (1.0 - result_tensor)
 
 def _sigmoid_grad(result_tensor: TN):
-    """梯度计算：sigmoid(x) * (1. - sigmoid(x))"""
-    return (result_tensor._grad_value * result_tensor * (1.0 - result_tensor),)
+    """梯度：按 Wirtinger 约定对导数因子取共轭（实数时为恒等操作）。"""
+    derivative = (result_tensor * (1.0 - result_tensor)).conj()
+    return (result_tensor._grad_value * derivative,)
 
 def silu(input: TN) -> TN:
     """
@@ -247,16 +252,46 @@ def silu(input: TN) -> TN:
     注意:
         - SiLU是平滑的非单调激活函数
         - 相比ReLU，在某些任务上表现更好
-        - 利用已有的sigmoid函数，自动支持梯度计算
+        - 前向复用 sigmoid 输出，供直接梯度 / 前向规则使用
         - 与PyTorch的F.silu行为完全一致
     """
     if not isinstance(input, TN):
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(input)}")
-    
-    # SiLU公式: x * sigmoid(x)
-    # 利用已有的sigmoid函数，自动支持梯度计算
-    sigmoid_output = sigmoid(input)
-    return input * sigmoid_output
+
+    # SiLU = x · sigmoid(x)；sigmoid 结果保存在 parms 中供规则复用
+    s = sigmoid(input)
+    data = input._array * s._array
+
+    ret = TN(
+        data,
+        requires_grad=is_grad_enabled() and input.requires_grad
+    )
+
+    if ret.requires_grad or forward_ad_trace_active():
+        ret.fromvars = (input,)
+        ret.parms = (s,)
+        ret._grad_rule = _silu_grad
+        ret._jvp_rule = _silu_jvp
+
+    return ret
+
+
+def _silu_grad(result_tensor: TN):
+    """SiLU 梯度：dy/dx = s + y·(1 − s)，其中 s = sigmoid(x)，y 为前向输出。"""
+    s = result_tensor.parms[0]
+    derivative = (s + result_tensor * (1.0 - s)).conj()
+    return (result_tensor._grad_value * derivative,)
+
+
+def _silu_jvp(result_tensor: TN):
+    """前向规则：y_t = (s + y·(1 − s))·x_t，复用 sigmoid 输出与前向结果。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        s = result_tensor.parms[0]
+        frame.node_tangent[id(result_tensor)] = (
+            s + result_tensor * (1.0 - s)) * x_t
 
 # softmax函数定义
 def softmax(x:TN, dim:int)->TN:
@@ -305,12 +340,13 @@ def softmax(x:TN, dim:int)->TN:
     return ret
 
 def _softmax_grad(result_tensor: TN):
-    """梯度计算：y * (g - sum(y*g))"""
+    """梯度：grad = conj(y)·(g − Σ conj(y)·g)，实数时退化为 y·(g − Σ y·g)。"""
     y = result_tensor
     g = y._grad_value
     dim = y.parms[0]
-    d = (y*g).sum(dim=dim, keepdim=True)
-    return (y * (g - d),)
+    yc = y.conj()
+    d = (yc*g).sum(dim=dim, keepdim=True)
+    return (yc * (g - d),)
 
 def _softmax_jvp(result_tensor: TN):
     """前向规则：y_t = y · (x_t − Σ(y·x_t))。"""
@@ -372,11 +408,11 @@ def log_softmax(x: TN, dim: int = -1) -> TN:
     return ret
 
 def _log_softmax_grad(result_tensor: TN):
-    """梯度：g - softmax(y) * sum(g)，其中 exp(y) 即 softmax 概率"""
+    """梯度：g − conj(softmax(y))·Σg，其中 exp(y) 即 softmax 概率"""
     y = result_tensor
     g = y._grad_value
     dim = y.parms[0]
-    return (g - exp(y) * g.sum(dim=dim, keepdim=True),)
+    return (g - exp(y).conj() * g.sum(dim=dim, keepdim=True),)
 
 def _log_softmax_jvp(result_tensor: TN):
     """前向规则：y_t = x_t − Σ(exp(y)·x_t)。"""
@@ -630,25 +666,25 @@ def elu(x: TN, alpha: float = 1.0) -> TN:
     return ret
 
 def _elu_grad(result_tensor: TN):
-    """ELU 梯度计算函数"""
+    """ELU 梯度计算函数：x>0 时 1，否则 alpha·exp(x) = y + alpha。"""
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[0]
-    
-    # 梯度: 1 (if x > 0) else alpha * exp(x)
-    positive_grad = 1.0
-    negative_grad = alpha * exp(x)
-    grad = where(x > 0, positive_grad, negative_grad)
-    
+    grad = where(x > 0, 1.0, result_tensor + alpha).conj()
     return (result_tensor._grad_value * grad,)
 
 def _elu_jvp(result_tensor: TN):
-    """前向规则：y_t = where(x > 0, x_t, alpha·exp(x)·x_t)。"""
+    """前向规则：y_t = where(x > 0, x_t, (y + alpha)·x_t)。
+
+    负区间有 y = alpha·(exp(x) − 1)，故 alpha·exp(x) = y + alpha，
+    直接复用前向输出，省去一次 exp。
+    """
     frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
     x_t = frame.node_tangent.get(id(x)) if frame is not None else None
     if x_t is not None:
         alpha = result_tensor.parms[0]
-        frame.node_tangent[id(result_tensor)] = where(x > 0, x_t, alpha * exp(x) * x_t)
+        frame.node_tangent[id(result_tensor)] = where(
+            x > 0, x_t, (result_tensor + alpha) * x_t)
 
 def celu(x: TN, alpha: float = 1.0) -> TN:
     """
@@ -704,25 +740,24 @@ def celu(x: TN, alpha: float = 1.0) -> TN:
     return ret
 
 def _celu_grad(result_tensor: TN):
-    """CELU 梯度计算函数"""
+    """CELU 梯度：x>0 时 1，否则 exp(x/alpha) = (y + alpha)/alpha。"""
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[0]
-    
-    # 梯度: 1 (if x > 0) else exp(x / alpha)
-    positive_grad = 1.0
-    negative_grad = exp(x / alpha)
-    grad = where(x > 0, positive_grad, negative_grad)
-    
+    inv_alpha = 1.0 / alpha
+    grad = where(x > 0, 1.0, (result_tensor + alpha) * inv_alpha).conj()
     return (result_tensor._grad_value * grad,)
 
 def _celu_jvp(result_tensor: TN):
-    """前向规则：y_t = where(x > 0, x_t, exp(x/alpha)·x_t)。"""
+    """前向规则：y_t = where(x > 0, x_t, ((y + alpha)/alpha)·x_t)。"""
     frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
     x_t = frame.node_tangent.get(id(x)) if frame is not None else None
     if x_t is not None:
         alpha = result_tensor.parms[0]
-        frame.node_tangent[id(result_tensor)] = where(x > 0, x_t, exp(x / alpha) * x_t)
+        # 负区间 y = alpha·(exp(x/alpha) − 1) → exp(x/alpha) = (y + alpha)/alpha
+        inv_alpha = 1.0 / alpha
+        frame.node_tangent[id(result_tensor)] = where(
+            x > 0, x_t, ((result_tensor + alpha) * inv_alpha) * x_t)
 
 def tanh(input: TN) -> TN:
     """
@@ -771,9 +806,9 @@ def _tanh_grad(result_tensor: TN):
     
     导数公式: tanh'(x) = 1 - tanh(x)^2
     """
-    # tanh'(x) = 1 - tanh(x)^2
+    # tanh'(x) = 1 - tanh(x)^2；按 Wirtinger 约定取共轭（实数时为恒等操作）
     tanh_x = result_tensor
-    grad = 1.0 - tanh_x * tanh_x
+    grad = (1.0 - tanh_x * tanh_x).conj()
     
     return (result_tensor._grad_value * grad,)
 
@@ -839,28 +874,26 @@ def selu(x: TN) -> TN:
     return ret
 
 def _selu_grad(result_tensor: TN):
-    """SELU 梯度计算函数"""
+    """SELU 梯度：x>0 时 scale，否则 scale·alpha·exp(x) = y + scale·alpha。"""
     x = result_tensor.fromvars[0]
     alpha = result_tensor.parms[0]
     scale = result_tensor.parms[1]
-    
-    # 梯度: scale (if x > 0) else scale * alpha * exp(x)
-    positive_grad = scale
-    negative_grad = scale * alpha * exp(x)
-    grad = where(x > 0, positive_grad, negative_grad)
-    
+
+    grad = where(x > 0, scale, result_tensor + scale * alpha).conj()
+
     return (result_tensor._grad_value * grad,)
 
 def _selu_jvp(result_tensor: TN):
-    """前向规则：x>0 时 y_t = scale·x_t，否则 y_t = scale·alpha·exp(x)·x_t。"""
+    """前向规则：x>0 时 y_t = scale·x_t，否则 y_t = (y + scale·alpha)·x_t。"""
     frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
     x_t = frame.node_tangent.get(id(x)) if frame is not None else None
     if x_t is not None:
         alpha = result_tensor.parms[0]
         scale = result_tensor.parms[1]
+        # 负区间 y = scale·alpha·(exp(x) − 1) → scale·alpha·exp(x) = y + scale·alpha
         frame.node_tangent[id(result_tensor)] = where(
-            x > 0, scale * x_t, scale * alpha * exp(x) * x_t)
+            x > 0, scale * x_t, (result_tensor + scale * alpha) * x_t)
 
 # 修改gelu函数实现，使用PyTorch兼容的精确版本
 def gelu(x: TN) -> TN:
@@ -886,10 +919,10 @@ def gelu(x: TN) -> TN:
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
-    arrlib = x._get_array_lib()
-    c = arrlib.sqrt(2.0 / arrlib.pi, dtype=x.dtype)
-    x_data = x._array
-    data = 0.5 * x_data * (1.0 + arrlib.tanh(c * (x_data + 0.044715 * x_data**3.0)))
+    c = (2.0 / pi) ** 0.5
+    # 前向保留 tanh 项，供梯度 / 前向规则复用，避免规则里重算 tanh 与 x³
+    tanh_term = tanh(c * (x + 0.044715 * x ** 3.0))
+    data = 0.5 * x._array * (1.0 + tanh_term._array)
     ret = TN(
         data, 
         requires_grad = is_grad_enabled() and x.requires_grad
@@ -897,17 +930,17 @@ def gelu(x: TN) -> TN:
     
     if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (x,)
+        ret.parms = (c, tanh_term)
         ret._grad_rule = _gelu_grad
         ret._jvp_rule = _gelu_jvp
     return ret
 
 def _gelu_grad(result_tensor: TN):
-    """GELU导数计算，使用与PyTorch兼容的实现"""
+    """GELU导数：复用前向的 tanh 项，d = 0.5(1+t) + 0.5x(1−t²)c(1+3·0.044715x²)。"""
     x = result_tensor.fromvars[0]
-    
-    c = (2. / pi) ** 0.5  # 标量运算，避免走 riemann.sqrt（其入参会经 as_tensor 转为张量）
-    tanh_term = tanh(c * (x + 0.044715 * x**3.))
-    grad = 0.5 * (1. + tanh_term) + 0.5 * x * (1. - tanh_term**2.) * c * (1. + 0.134145*(x**2.))
+    c, tanh_term = result_tensor.parms
+    grad = (0.5 * (1.0 + tanh_term) + 0.5 * x * (1.0 - tanh_term * tanh_term)
+            * c * (1.0 + 0.134145 * (x * x))).conj()
     return (result_tensor._grad_value * grad,)
 
 def _gelu_jvp(result_tensor: TN):
@@ -916,9 +949,9 @@ def _gelu_jvp(result_tensor: TN):
     x = result_tensor.fromvars[0]
     x_t = frame.node_tangent.get(id(x)) if frame is not None else None
     if x_t is not None:
-        c = (2. / pi) ** 0.5
-        tanh_term = tanh(c * (x + 0.044715 * x**3.))
-        d = 0.5 * (1. + tanh_term) + 0.5 * x * (1. - tanh_term**2.) * c * (1. + 0.134145*(x**2.))
+        c, tanh_term = result_tensor.parms
+        d = (0.5 * (1.0 + tanh_term) + 0.5 * x * (1.0 - tanh_term * tanh_term)
+             * c * (1.0 + 0.134145 * (x * x)))
         frame.node_tangent[id(result_tensor)] = d * x_t
 
 def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
@@ -932,16 +965,47 @@ def softplus(x: TN, beta: float = 1.0, threshold: float = 20.0) -> TN:
     if not isinstance(x, TN): 
         raise TypeError(f"Expected input type to be TN tensor, but received type: {type(x)}")
 
-    scaled_x = x * beta
-    
-    # 分段计算避免大值溢出
-    # 修复softplus函数中的where()调用
-    
-    return where(
-        scaled_x > threshold,  # 条件（位置参数）
-        x,  # 满足条件时的值（位置参数）
-        log(1. + exp(scaled_x)) / beta  # 不满足条件时的值（位置参数）
+    arrlib = x._get_array_lib()
+    z = x * beta
+    ez = exp(z)                     # 前向中间量，供规则复用 σ(βx) = e^z/(1+e^z)
+    mask_data = z._array > threshold
+    data = arrlib.where(
+        mask_data,
+        x._array,
+        arrlib.log(1.0 + ez._array) / beta,
     )
+
+    ret = TN(
+        data,
+        requires_grad=is_grad_enabled() and x.requires_grad
+    )
+
+    if ret.requires_grad or forward_ad_trace_active():
+        ret.fromvars = (x,)
+        # mask 与 exp(βx) 前向已算出，直接复用，规则里无需再 exp / 比较
+        ret.parms = (ez, TN(mask_data))
+        ret._grad_rule = _softplus_grad
+        ret._jvp_rule = _softplus_jvp
+
+    return ret
+
+
+def _softplus_grad(result_tensor: TN):
+    """Softplus 梯度：x 超过阈值时为 1，否则为 σ(βx) = e^z/(1+e^z)。"""
+    ez, mask = result_tensor.parms
+    derivative = where(mask, 1.0, ez / (1.0 + ez)).conj()
+    return (result_tensor._grad_value * derivative,)
+
+
+def _softplus_jvp(result_tensor: TN):
+    """前向规则：y_t = where(βx > threshold, x_t, σ(βx)·x_t)。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    if x_t is not None:
+        ez, mask = result_tensor.parms
+        frame.node_tangent[id(result_tensor)] = where(
+            mask, x_t, (ez / (1.0 + ez)) * x_t)
 
 # 在non-reduction模式下保留所有样本位置，只是将被忽略样本的损失值设为0
 def nll_loss(input: TN, target: TN, weight: TN | None = None,

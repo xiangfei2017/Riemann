@@ -1315,6 +1315,11 @@ Riemann 提供了广泛的数学函数，以下是常用的数学函数列表：
     - 计算两个张量的反正切值
     - ``rm.arctan2(y, x)``
 
+.. note::
+
+   ``asin`` / ``acos`` / ``atan`` 是 ``arcsin`` / ``arccos`` / ``arctan`` 的
+   torch 兼容别名；``atan2`` 是 ``arctan2`` 的别名。
+
 **双曲函数**
 
 .. list-table:: 双曲函数
@@ -1342,6 +1347,11 @@ Riemann 提供了广泛的数学函数，以下是常用的数学函数列表：
   * - ``arctanh``
     - 计算反双曲正切值
     - ``rm.arctanh(x)``
+
+.. note::
+
+   ``asinh`` / ``acosh`` / ``atanh`` 是 ``arcsinh`` / ``arccosh`` / ``arctanh``
+   的 torch 兼容别名。
 
 **数学函数示例**
 
@@ -1399,6 +1409,9 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
   * - ``sum``
     - 计算张量元素的和
     - ``rm.sum(x)``
+  * - ``logsumexp``
+    - 计算张量元素的 log-sum-exp（数值稳定，支持复数）
+    - ``rm.logsumexp(x, dim=-1)``
   * - ``sumall``
     - 计算多个张量的和（Riemann 特有）
     - ``rm.sumall(x, y, z)``

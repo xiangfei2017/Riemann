@@ -40,7 +40,7 @@ Riemann库设计时注重与PyTorch接口的兼容性，同名的函数和类接
 - **神经网络组件**：`nn`模块中的层、激活函数和损失函数与PyTorch保持接口兼容
 - **优化器**：`optim`模块中的优化器（如SGD、Adam等）接口与PyTorch保持一致
 - **自动求导机制**：`requires_grad`、反向传播机制与PyTorch相似
-- **torch.func兼容**：顶层 ``func`` 模块对齐 `torch.func` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``hessian``、``vmap``、``functional_call``
+- **torch.func兼容**：顶层 ``func`` 模块对齐 `torch.func` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``linearize``、``hessian``、``vmap``、``functional_call``、``stack_module_state``
 - **计算机视觉**：`vision`模块中的数据集和变换与torchvision保持接口兼容
 - **跨框架互操作**：Riemann 张量可与 NumPy 数组、CuPy 数组以及 PyTorch 等其它张量框架互相转换或共享数据，入口包括 `r.tensor()`、`r.as_tensor()`、`r.from_dlpack()`、`TN.array()`、`TN.numpy()`，底层依托 `__array__`、`__cuda_array_interface__`、`__dlpack__`、`__buffer__` 协议；设备与 dtype 一致时为零拷贝
 
@@ -101,7 +101,7 @@ Riemann/
 - **optim/**: 优化器模块，如SGD、Adam等优化器，以及学习率调度器
 - **utils/**: 工具函数，包括数据集Dataset类和数据加载器Dataloader类等
 - **vision/**: 计算机视觉相关功能，包括数据集和图像变换
-- **`func`**: 函数式自动求导接口，参考 torch.func 设计。提供柯里化的纯函数式 API，如 ``grad``、``jvp``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``hvp``、``vmap``、``functional_call``，适合链式高阶求导
+- **`func`**: 函数式自动求导接口，参考 torch.func 设计。提供柯里化的纯函数式 API，如 ``grad``、``jvp``、``vjp``、``linearize``、``jacrev``、``jacfwd``、``hessian``、``vmap``、``functional_call``、``stack_module_state``，适合链式高阶求导
 - **核心文件**: 如 `linalg.py`（线性代数）、`cuda.py`（GPU 支持）等
 
 ### tests目录
@@ -308,7 +308,7 @@ from riemann.autograd.functional import jacobian, hessian
 
 # 导入函数式自动求导 API（torch.func 风格，柯里化，支持高阶求导）
 from riemann import func
-from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
+from riemann.func import grad as fgrad, jvp, vjp, linearize, jacrev, jacfwd, hessian, vmap, functional_call, stack_module_state
 
 # 导入线性代数功能
 from riemann import linalg

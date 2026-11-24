@@ -34,7 +34,7 @@ Automatic Differentiation
 
 - **backward method**: Triggers backpropagation to compute gradients
 - **grad function**: Computes gradients of functions with respect to inputs
-- **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``jvp2``, ``vjp``, ``jacrev``, ``jacfwd``, ``hessian``, ``vmap``, ``functional_call``, suitable for chained higher-order derivatives; ``jvp`` is driven by direct forward rules while ``jvp2`` keeps the old transposed-local-VJP implementation
+- **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``jvp2``, ``vjp``, ``linearize``, ``jacrev``, ``jacfwd``, ``hessian``, ``vmap``, ``functional_call``, ``stack_module_state``, suitable for chained higher-order derivatives; ``jvp`` is driven by direct forward rules while ``jvp2`` keeps the old transposed-local-VJP implementation
 - **register_grad_rule decorator**: Use ``@register_grad_rule`` decorator to customize gradient tracking functions (Riemann-specific)
 - **register_jvp_rule decorator**: Use ``@register_jvp_rule`` to register direct forward (JVP) rules; usable alone or together with ``register_grad_rule`` (Riemann-specific)
 - **Function class**: Customize forward and backward propagation, plus optional forward-mode (``jvp``) rules, with ``setup_context`` and ``save_for_forward`` support (Riemann-specific)
@@ -186,7 +186,7 @@ Compatible Features
 - **Neural Network Components**: Layers, activation functions, and loss functions in the ``nn`` module maintain interface compatibility with PyTorch
 - **Optimizers**: Optimizers in the ``optim`` module (such as SGD, Adam, etc.) maintain consistent interfaces with PyTorch
 - **Automatic Differentiation Mechanism**: ``requires_grad`` and backpropagation mechanisms are similar to PyTorch
-- **torch.func Compatibility**: Top-level ``func`` module mirrors ``torch.func`` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``hessian``, ``vmap``, ``functional_call``
+- **torch.func Compatibility**: Top-level ``func`` module mirrors ``torch.func`` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``linearize``, ``hessian``, ``vmap``, ``functional_call``, ``stack_module_state``
 - **Computer Vision**: Datasets and transforms in the ``vision`` module maintain interface compatibility with torchvision
 - **Cross-framework interoperability**: Riemann tensors can be converted to and from NumPy arrays, CuPy arrays and other tensor frameworks such as PyTorch, or share data with them, through ``r.tensor()``, ``r.as_tensor()``, ``r.from_dlpack()``, ``TN.array()`` and ``TN.numpy()``, built on the ``__array__``, ``__cuda_array_interface__``, ``__dlpack__`` and ``__buffer__`` protocols (``__buffer__`` requires Python 3.12+). Conversion is zero-copy when device and dtype match
 
@@ -209,9 +209,8 @@ Riemann-Specific Features
 Riemann provides some features that PyTorch does not have:
 
 - **KAN Network Support**: Kolmogorov-Arnold Networks (KAN) implementation, including KAN, KANLinear modules
-- **Custom Gradient Decorator** (``@register_grad_rule``): Quickly add automatic differentiation support to functions using decorators, without defining a complete Function class
+- **Custom Gradient and JVP Rule Decorators** (``@register_grad_rule`` / ``@register_jvp_rule``): Quickly add automatic differentiation support to functions using decorators, without defining a complete Function class
 - **New functions**: ``sumall`` (add multiple tensors or non-tensors and return the total sum), ``isum`` (intelligent sum function that automatically selects the appropriate summation method based on parameters), ``d()`` (tensor method for chaining variables to compute higher-order mixed partial derivatives), etc. These are all Riemann-specific interfaces.
-- **Concise Code Structure**: Less code volume, clearer structure, easier for learning and research
 
 Installation Guide
 ------------------

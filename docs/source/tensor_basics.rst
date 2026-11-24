@@ -1318,6 +1318,11 @@ Riemann provides a wide range of mathematical functions. Here are the commonly u
     - Compute arctangent of two tensors
     - ``rm.arctan2(y, x)``
 
+.. note::
+
+   ``asin`` / ``acos`` / ``atan`` are torch-compatible aliases of
+   ``arcsin`` / ``arccos`` / ``arctan``; ``atan2`` is the alias of ``arctan2``.
+
 **Hyperbolic Functions**
 
 .. list-table:: Hyperbolic Functions
@@ -1345,6 +1350,11 @@ Riemann provides a wide range of mathematical functions. Here are the commonly u
   * - ``arctanh``
     - Compute inverse hyperbolic tangent
     - ``rm.arctanh(x)``
+
+.. note::
+
+   ``asinh`` / ``acosh`` / ``atanh`` are torch-compatible aliases of
+   ``arcsinh`` / ``arccosh`` / ``arctanh``.
 
 **Mathematical Functions Example**
 
@@ -1402,6 +1412,9 @@ Riemann provides various statistical functions for tensor analysis. Here are the
   * - ``sum``
     - Compute sum of tensor elements
     - ``rm.sum(x)``
+  * - ``logsumexp``
+    - Compute log-sum-exp of tensor elements (numerically stable, supports complex)
+    - ``rm.logsumexp(x, dim=-1)``
   * - ``sumall``
     - Compute sum of multiple tensors (Riemann-specific)
     - ``rm.sumall(x, y, z)``

@@ -41,7 +41,7 @@ Riemann library is designed with a focus on compatibility with PyTorch interface
 - **Neural network components**: Layers, activation functions and loss functions in the `nn` module are interface-compatible with PyTorch
 - **Optimizers**: Optimizers (such as SGD, Adam, etc.) in the `optim` module have consistent interfaces with PyTorch
 - **Automatic differentiation mechanism**: `requires_grad` and backpropagation mechanism are similar to PyTorch
-- **torch.func compatibility**: The top-level ``func`` module mirrors `torch.func` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``hessian``, ``vmap``, ``functional_call``
+- **torch.func compatibility**: The top-level ``func`` module mirrors `torch.func` API — curried ``grad``, ``jacrev``/``jacfwd``, ``jvp``/``vjp``, ``linearize``, ``hessian``, ``vmap``, ``functional_call``, ``stack_module_state``
 - **Computer vision**: Datasets and transforms in the `vision` module are interface-compatible with torchvision
 - **Cross-framework interoperability**: Riemann tensors can be converted to and from NumPy arrays, CuPy arrays and other tensor frameworks such as PyTorch, or share data with them, through `r.tensor()`, `r.as_tensor()`, `r.from_dlpack()`, `TN.array()` and `TN.numpy()`, built on the `__array__`, `__cuda_array_interface__`, `__dlpack__` and `__buffer__` protocols. Conversion is zero-copy when device and dtype match
 
@@ -102,7 +102,7 @@ The code directory `src/riemann/` is the location of Riemann library's core sour
 - **optim/**: Optimizers, such as SGD, Adam, etc., and learning rate schedulers
 - **utils/**: Utility functions, including Dataset class and Dataloader class for data loading, etc.
 - **vision/**: Computer vision-related functionality, including datasets and image transforms
-- **`func`**: Functional-style autodiff interface, reference `torch.func`. Provides curried, pure-function APIs such as ``grad``, ``jvp``, ``vjp``, ``jacrev``, ``jacfwd``, ``hessian``, ``hvp``, ``vmap``, ``functional_call`` — suitable for chained higher-order derivatives
+- **`func`**: Functional-style autodiff interface, reference `torch.func`. Provides curried, pure-function APIs such as ``grad``, ``jvp``, ``vjp``, ``linearize``, ``jacrev``, ``jacfwd``, ``hessian``, ``vmap``, ``functional_call``, ``stack_module_state`` — suitable for chained higher-order derivatives
 - **Core files**: Such as `linalg.py` (linear algebra), `cuda.py` (GPU support), etc.
 
 ### tests Directory
@@ -311,7 +311,7 @@ from riemann.autograd.functional import jacobian, hessian
 
 # Import functional autodiff API (torch.func-style, curried, supports higher-order)
 from riemann import func
-from riemann.func import grad as fgrad, jvp, vjp, jacrev, jacfwd, hessian, hvp, vmap, functional_call
+from riemann.func import grad as fgrad, jvp, vjp, linearize, jacrev, jacfwd, hessian, vmap, functional_call, stack_module_state
 
 # Import linear algebra functionality
 from riemann import linalg

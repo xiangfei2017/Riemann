@@ -802,6 +802,176 @@ class TestFuncVsTorch(unittest.TestCase):
         return _tree_close(rm_y, tt_y)
 
     # ---------------------------------------------------------------
+    # linearize
+    # ---------------------------------------------------------------
+    def test_linearize(self):
+        _run_case("linearize - value_and_linear_fn", lambda: self._cmp_linearize())
+        _run_case("linearize - multi_output", lambda: self._cmp_linearize_multi())
+
+    @staticmethod
+    def _torch_linearize(f, x):
+        """调用 torch.func.linearize，并屏蔽其内部常量折叠的已知误报。
+
+        torch 的 linearize 用 make_fx 追踪 JVP，再用 const_fold 折叠常量；
+        const_fold 重建 GraphModule 时会把 make_fx 捕获的普通张量常量作为
+        get_attr 插入，触发 torch.fx.Graph.get_attr 的
+        "Attempted to insert a get_attr Node with no underlying reference" 告警。
+        这是 torch 内部路径的误报（其官方 linearize 文档示例也屏蔽了该告警），
+        不影响数值。这里只对本次调用生效，不修改全局 warning 过滤器。
+        """
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=".*Attempted to insert a get_attr Node with no underlying reference.*",
+                category=UserWarning,
+            )
+            return torch.func.linearize(f, x)
+
+    def _cmp_linearize(self):
+        f = lambda x: (x ** 3).sum()
+        rm_out, rm_lin = func.linearize(f, _rm([1.0, 2.0, 3.0]))
+        tt_out, tt_lin = self._torch_linearize(f, _tt([1.0, 2.0, 3.0]))
+        v_np = np.array([0.5, -1.0, 2.0])
+        return (_tree_close(rm_out, tt_out)
+                and _tree_close(rm_lin(_rm(v_np)), tt_lin(_tt(v_np))))
+
+    def _cmp_linearize_multi(self):
+        f = lambda x: ((x ** 2).sum(), x * 2.0)
+        rm_out, rm_lin = func.linearize(f, _rm([1.0, 2.0, 3.0]))
+        tt_out, tt_lin = self._torch_linearize(f, _tt([1.0, 2.0, 3.0]))
+        v_np = np.array([1.0, 0.0, -1.0])
+        return _tree_close(rm_out, tt_out) and _tree_close(
+            rm_lin(_rm(v_np)), tt_lin(_tt(v_np)))
+
+    # ---------------------------------------------------------------
+    # has_aux
+    # ---------------------------------------------------------------
+    def test_has_aux(self):
+        _run_case("has_aux - jvp", lambda: self._cmp_aux_jvp())
+        _run_case("has_aux - vjp", lambda: self._cmp_aux_vjp())
+        _run_case("has_aux - jacrev", lambda: self._cmp_aux_jacrev())
+        _run_case("has_aux - jacfwd", lambda: self._cmp_aux_jacfwd())
+
+    @staticmethod
+    def _aux_fn(x):
+        return (x ** 2).sum(), x.sum() * 10.0
+
+    def _cmp_aux_jvp(self):
+        x_np, v_np = np.array([1.0, 2.0, 3.0]), np.array([0.5, -1.0, 2.0])
+        rm_res = func.jvp(self._aux_fn, _rm(x_np), _rm(v_np), has_aux=True)
+        tt_res = torch.func.jvp(self._aux_fn, (_tt(x_np),), (_tt(v_np),),
+                                has_aux=True)
+        return _tree_close(rm_res, tt_res)
+
+    def _cmp_aux_vjp(self):
+        x_np = np.array([1.0, 2.0, 3.0])
+        rm_out, rm_g, rm_aux = func.vjp(self._aux_fn, _rm(x_np), _rm(1.0),
+                                        has_aux=True)
+        tt_out, tt_fn, tt_aux = torch.func.vjp(self._aux_fn, _tt(x_np),
+                                              has_aux=True)
+        return _tree_close((rm_out, rm_g, rm_aux),
+                           (tt_out, _unwrap_single(tt_fn(_tt(1.0))), tt_aux))
+
+    def _cmp_aux_jacrev(self):
+        x_np = np.array([1.0, 2.0, 3.0])
+        return _tree_close(func.jacrev(self._aux_fn, has_aux=True)(_rm(x_np)),
+                           torch.func.jacrev(self._aux_fn, has_aux=True)(_tt(x_np)))
+
+    def _cmp_aux_jacfwd(self):
+        x_np = np.array([1.0, 2.0, 3.0])
+        return _tree_close(func.jacfwd(self._aux_fn, has_aux=True)(_rm(x_np)),
+                           torch.func.jacfwd(self._aux_fn, has_aux=True)(_tt(x_np)))
+
+    # ---------------------------------------------------------------
+    # chunk_size
+    # ---------------------------------------------------------------
+    def test_chunk_size(self):
+        _run_case("chunk_size - vmap", lambda: self._cmp_chunk_vmap())
+        _run_case("chunk_size - jacrev", lambda: self._cmp_chunk_jacrev())
+        _run_case("chunk_size - jacfwd", lambda: self._cmp_chunk_jacfwd())
+
+    def _cmp_chunk_vmap(self):
+        f = lambda row: (row ** 2).sum()
+        batch = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
+        return _tree_close(
+            func.vmap(f, chunk_size=2)(_rm(batch)),
+            torch.func.vmap(f, chunk_size=2)(_tt(batch)),
+        )
+
+    def _cmp_chunk_jacrev(self):
+        f = lambda x: x ** 2
+        x = [[1.0, 2.0], [3.0, 4.0]]
+        return _tree_close(
+            func.jacrev(f, chunk_size=2)(_rm(x)),
+            torch.func.jacrev(f, chunk_size=2)(_tt(x)),
+        )
+
+    def _cmp_chunk_jacfwd(self):
+        # torch.func.jacfwd 无 chunk_size；用 riemann 分块结果对照 torch 不分块结果
+        f = lambda x: x ** 2
+        x = [[1.0, 2.0], [3.0, 4.0]]
+        return _tree_close(
+            func.jacfwd(f, chunk_size=1)(_rm(x)),
+            torch.func.jacfwd(f)(_tt(x)),
+        )
+
+    # ---------------------------------------------------------------
+    # stack_module_state
+    # ---------------------------------------------------------------
+    def test_stack_module_state(self):
+        _run_case("stack_module_state - params_and_buffers",
+                  lambda: self._cmp_stack_state())
+        _run_case("stack_module_state - vmap ensemble",
+                  lambda: self._cmp_stack_ensemble())
+
+    @staticmethod
+    def _build_scalar_stack(values):
+        class RmM(rm.nn.Module):
+            def __init__(self, v):
+                super().__init__()
+                self.w = rm.nn.Parameter(_rm([v]))
+                self.register_buffer("b", _rm([v * 2.0]))
+
+            def forward(self, x):
+                return x * self.w + self.b
+
+        class TtM(tnn.Module):
+            def __init__(self, v):
+                super().__init__()
+                self.w = tnn.Parameter(_tt([v]))
+                self.register_buffer("b", _tt([v * 2.0]))
+
+            def forward(self, x):
+                return x * self.w + self.b
+
+        return [RmM(v) for v in values], [TtM(v) for v in values]
+
+    def _cmp_stack_state(self):
+        rm_models, tt_models = self._build_scalar_stack((1.0, 2.0, 3.0))
+        rm_params, rm_buffers = func.stack_module_state(rm_models)
+        tt_params, tt_buffers = torch.func.stack_module_state(tt_models)
+        return (_tree_close(rm_params["w"], tt_params["w"])
+                and _tree_close(rm_buffers["b"], tt_buffers["b"]))
+
+    def _cmp_stack_ensemble(self):
+        rm_models, tt_models = self._build_scalar_stack((1.0, 2.0, 3.0))
+        rm_params, rm_buffers = func.stack_module_state(rm_models)
+        tt_params, tt_buffers = torch.func.stack_module_state(tt_models)
+        x_np = np.array([2.0])
+
+        def rm_f(w, b, x):
+            return func.functional_call(rm_models[0], {"w": w, "b": b}, (x,))
+
+        def tt_f(w, b, x):
+            return torch.func.functional_call(tt_models[0], {"w": w, "b": b}, (x,))
+
+        rm_out = func.vmap(rm_f, in_dims=(0, 0, None))(
+            rm_params["w"], rm_buffers["b"], _rm(x_np, requires_grad=False))
+        tt_out = torch.func.vmap(tt_f, in_dims=(0, 0, None))(
+            tt_params["w"], tt_buffers["b"], _tt(x_np, requires_grad=False))
+        return _tree_close(rm_out, tt_out)
+
+    # ---------------------------------------------------------------
     # 高阶导数（嵌套变换）
     # ---------------------------------------------------------------
     def test_high_order(self):

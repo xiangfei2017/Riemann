@@ -1181,6 +1181,20 @@ Mathematical Operations
    :return: Sum of elements
    :rtype: riemann.TN
 
+.. function:: riemann.logsumexp(x, dim=None, keepdim=False)
+
+   Calculate ``log(sum(exp(x)))`` with a numerically stable max-shift. Both real
+   and complex inputs are supported.
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :param dim: Dimensions to reduce; ``None`` reduces all elements
+   :type dim: int or tuple of integers, optional
+   :param keepdim: Whether to keep the reduced dimensions
+   :type keepdim: bool, optional
+   :return: Log-sum-exp of elements
+   :rtype: riemann.TN
+
 .. function:: riemann.prod(x, dim=None, keepdim=False)
 
    Calculate the product of elements across dimensions.
@@ -1529,6 +1543,49 @@ Mathematical Operations
    :type x: riemann.TN
    :return: Arctangent of each element
    :rtype: riemann.TN
+
+.. function:: riemann.asinh(x)
+
+   Calculate the inverse hyperbolic sine of each element (alias of ``arcsinh``).
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Inverse hyperbolic sine of each element
+   :rtype: riemann.TN
+
+.. function:: riemann.acosh(x)
+
+   Calculate the inverse hyperbolic cosine of each element (alias of ``arccosh``).
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Inverse hyperbolic cosine of each element
+   :rtype: riemann.TN
+
+.. function:: riemann.atanh(x)
+
+   Calculate the inverse hyperbolic tangent of each element (alias of ``arctanh``).
+
+   :param x: Input tensor
+   :type x: riemann.TN
+   :return: Inverse hyperbolic tangent of each element
+   :rtype: riemann.TN
+
+.. function:: riemann.atan2(input, other)
+
+   Calculate the element-wise arctangent of ``input / other``, using the signs of
+   both arguments to determine the correct quadrant. Complex inputs are not supported.
+
+   :param input: y-coordinate tensor
+   :type input: riemann.TN
+   :param other: x-coordinate tensor or scalar
+   :type other: riemann.TN or float
+   :return: Angle in radians, in the range (-π, π]
+   :rtype: riemann.TN
+
+.. function:: riemann.arctan2(input, other)
+
+   Alias of ``atan2``.
 
 .. function:: riemann.sinh(x)
 

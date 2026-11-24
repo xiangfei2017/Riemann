@@ -1814,7 +1814,8 @@ func 模块求导函数
 
 .. code-block:: python
 
-    riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False) -> (output, jvp_result)
+    riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False,
+                     has_aux=False) -> (output, jvp_result[, aux])
 
 **参数**: 
 
@@ -1827,8 +1828,9 @@ func 模块求导函数
   即“雅可比矩阵 × 切向量”，结果是输出空间中曲线 f(x₀ + t·v) 在 t = 0 处的切向量——这也正是（前向模式）自动微分的传播方式
 - create_graph（bool，默认 ``False``）：为 ``True`` 时 JVP 结果保留计算图且可继续求导（支持高阶微分）；``False`` 时结果不带梯度追踪
 - strict（bool，默认 ``False``）：严格模式。当某个输出与某个输入完全无关（该输入对应梯度为 ``None``）时，``False`` 按数学语义贡献 0；``True`` 则抛出 ``RuntimeError``
+- has_aux（bool，默认 ``False``）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 JVP，``aux`` 原样附在返回值末尾
 
-**返回**: 二元组 ``(output, jvp_result)``
+**返回**: 二元组 ``(output, jvp_result)``（``has_aux=True`` 时为三元组 ``(output, jvp_result, aux)``）
 
 - ``output``：**前向计算的输出值**，即 ``func(*primals)`` 的结果（单输出为一个张量，多输出为张量元组）。它只是求值点处的函数值，与导数无关，随返回值一并给出是为了避免重复执行前向计算
 - ``jvp_result``：JVP 结果 ``J(x₀)·v``，**形状与 output 相同**；单输出时为单个张量，多输出时为与 output 逐项对应的元组
@@ -1871,7 +1873,8 @@ func 模块求导函数
 
 .. code-block:: python
 
-    riemann.func.vjp(func, primals, cotangents=None, create_graph=False, strict=False) -> (output, vjp_result)
+    riemann.func.vjp(func, primals, cotangents=None, create_graph=False,
+                     strict=False, has_aux=False) -> (output, vjp_result[, aux])
 
 **参数**: 
 
@@ -1886,8 +1889,9 @@ func 模块求导函数
   它等价于标量函数 L(x) = wᵀ·f(x) 在 x₀ 处的梯度 ``∇L(x₀)``。反向模式自动微分每一步传播的正是这种余切向量（即通常所说的“上游梯度”），因此 VJP 是反向模式的核心原语
 - create_graph（bool，默认 ``False``）：为 ``True`` 时 ``output`` 与 ``vjp_result`` 均以可微方式计算（保留计算图），可继续求高阶导数；``False`` 时结果不带梯度追踪
 - strict（bool，默认 ``False``）：严格模式。当某个输入与所有输出都无关（梯度为 ``None``）时，``False`` 返回同形状零张量（数学上 VJP 即为 0）；``True`` 则抛出 ``RuntimeError``
+- has_aux（bool，默认 ``False``）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 VJP，``aux`` 原样附在返回值末尾
 
-**返回**: 二元组 ``(output, vjp_result)``
+**返回**: 二元组 ``(output, vjp_result)``（``has_aux=True`` 时为三元组 ``(output, vjp_result, aux)``）
 
 - ``output``：**前向计算的输出值**，即 ``func(*primals)`` 的结果（单输出为一个张量，多输出为张量元组）。它只是求值点处的函数值，与导数无关，随返回值一并给出是为了避免重复执行前向计算
 - ``vjp_result``：VJP 结果 ``wᵀ·J(x₀)``，形状与对应输入相同；单输入时为单个张量，多输入时为与 ``primals`` 逐项对应的元组。当 ``func`` 输出为标量且 ``cotangents=None`` 时（即 w = 1），它就退化为普通梯度
@@ -1920,6 +1924,41 @@ func 模块求导函数
     out3, vjp_val3 = func.vjp(g, x)     # cotangent=None 自动填全1
     print(vjp_val3)  # J^T @ ones = [2., 4., 6.]
 
+``linearize()`` — 一次前向的线性化
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+在给定点 ``primals`` 处把函数线性化，返回 ``(primal_out, linear_fn)``。
+前向只求值一次并记录 primal 图；``linear_fn`` 对不同的切向量可反复调用，
+每次沿同一张图传播 tangent，得到 ``J(x)·v``（等价于 ``torch.func.linearize``）。
+这也是 ``jacfwd`` 的内部语义：常量项 + 线性项，``func(x + v) ≈ primal_out + linear_fn(v)``。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.linearize(func, *primals) -> tuple[output, Callable]
+
+**参数**: 
+
+- func：待线性化的函数，输入为张量，输出为单个张量或张量元组
+- primals：求值点输入，按 ``func`` 的位置参数顺序给出，必须都是张量
+
+**返回**: ``(primal_out, linear_fn)``。``primal_out`` 与 ``func`` 的返回结构一致；
+``linear_fn(*tangents)`` 返回 ``J(x)·v``，tangent 的个数与形状必须和 ``primals`` 一一对应
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    out, lin = func.linearize(lambda t: t * t, x)
+    print(out)                  # [1., 4., 9.]
+    print(lin(rm.tensor([1., 0., 1.])))   # [2., 0., 6.] —— J(x)·v = 2x⊙v
+    print(lin(rm.tensor([1., 1., 1.])))   # [2., 4., 6.] —— 可复用同一张图
+
 ``jacrev()`` / ``jacfwd()`` — Jacobian 矩阵
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1934,8 +1973,10 @@ func 模块求导函数
 
 .. code-block:: python
 
-    riemann.func.jacrev(func, argnums=0, create_graph=False, strict=True) -> Callable
-    riemann.func.jacfwd(func, argnums=0, create_graph=False) -> Callable
+    riemann.func.jacrev(func, argnums=0, create_graph=False, strict=True,
+                        has_aux=False, chunk_size=None) -> Callable
+    riemann.func.jacfwd(func, argnums=0, create_graph=False,
+                        has_aux=False, chunk_size=None) -> Callable
 
 **参数**: 
 
@@ -1943,6 +1984,8 @@ func 模块求导函数
 - argnums：需要计算 Jacobian 的输入位置，整数或整数元组，默认 ``0``；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``，错误信息与 ``torch.func`` 一致（``torch.func.jacrev`` 对 ``()`` 和 ``None`` 均抛 ``RuntimeError``；``torch.func.jacfwd`` 对 ``()`` 抛 ``RuntimeError``，对 ``None`` 则按全部参数求导）
 - create_graph（bool，默认 ``False``）：为 ``True`` 时 Jacobian 的每个元素都保留计算图，可再对其求导（例如 ``func.jacrev(func.jacrev(f, create_graph=True))`` 得到二阶导数）
 - strict（bool，默认 ``True``，仅 ``jacrev`` 支持）：严格模式。当某个输出与某个输入完全无关（该输入对应的梯度为 ``None``）时，``True`` 抛出 ``RuntimeError``；``False`` 时该部分按数学语义填 0。``jacfwd`` 内部逐列调用 ``func.jvp``，未选中的输入以零 tangent 播种，没有此参数
+- has_aux（bool，默认 ``False``）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 Jacobian，返回 ``(Jacobian, aux)``
+- chunk_size（int 或 ``None``，默认 ``None``）：每次处理的基向量个数，用于限制峰值内存；``None`` 表示一次处理全部。结果与不分块一致，非法值（``<= 0`` 或非整数）抛 ``ValueError``
 
 **返回**: 一个包裹函数，接受与 ``func`` 相同的参数；调用后返回 Jacobian 矩阵（形状见下）。只含 1 个参数位置时返回单个张量，含多个位置时返回元组（顺序与 ``argnums`` 一致）；``jacfwd`` 在 ``argnums=None`` 时按全部参数求导，此时即使只有 1 个参数也返回元组
 
@@ -1984,7 +2027,8 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 .. code-block:: python
 
-    riemann.func.hessian(func, argnums=0, create_graph=False, strict=True) -> Callable
+    riemann.func.hessian(func, argnums=0, create_graph=False, strict=True,
+                         has_aux=False) -> Callable
 
 **参数**: 
 
@@ -1992,6 +2036,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 - argnums：需要计算 Hessian 的输入位置，整数或整数元组，默认 ``0``；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``，错误信息与 ``torch.func.hessian`` 一致
 - create_graph（bool，默认 ``False``）：为 ``True`` 时 Hessian 的每个元素都保留计算图，可继续求高阶导数；``False`` 时结果不带梯度追踪
 - strict（bool，默认 ``True``）：严格模式。当函数对某个输入的梯度为 ``None``（即输出与该输入无关）时报错；当 ``argnums`` 未覆盖全部参数时，内部会自动放宽为 ``False``
+- has_aux（bool，默认 ``False``）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 Hessian，返回 ``(Hessian, aux)``（``torch.func.hessian`` 无此参数，这是 riemann 的扩展）
 
 **返回**: 一个包裹函数，接受与 ``func`` 相同的参数；调用后返回 Hessian 矩阵。只含 1 个参数位置时返回单个张量，含多个位置时返回元组（顺序与 ``argnums`` 一致）
 
@@ -2024,7 +2069,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 .. code-block:: python
 
-    riemann.func.vmap(func, in_dims=0, out_dims=0) -> Callable
+    riemann.func.vmap(func, in_dims=0, out_dims=0, chunk_size=None) -> Callable
 
 **参数**: 
 
@@ -2033,6 +2078,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
   - ``int``：所有输入共用该维度位置
   - ``tuple[int|None, ...]``：每个输入各自的维度位置；``None`` 表示该输入不批处理（直接透传，适合模型参数等共享量）
 - out_dims：每个输出的批次维度，默认 ``0``，语义同 ``in_dims``；返回的每个输出都会沿该维度堆叠
+- chunk_size（int 或 ``None``，默认 ``None``）：每次处理的批次样本数，用于控制循环与堆叠粒度；``None`` 表示一次处理整个批次。结果与不分块一致，非法值（``<= 0`` 或非整数）抛 ``ValueError``
 
 **返回**: 一个包裹函数，接受带批次维的输入，返回带批次维的输出。单输出时返回单个张量，多输出（tuple）时返回与之结构相同的元组
 
@@ -2082,23 +2128,27 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 ``functional_call()`` — 无状态 Module 调用
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-以**自定义参数值**调用 Module 的 ``forward`` 方法，不修改 Module 自身的参数属性。
+以**自定义参数与缓冲区**调用 Module 的 ``forward`` 方法，不修改 Module 自身的状态。
 这在需要对 Module 参数本身求导（如 hypernetworks、meta-learning）时至关重要——
 常规 ``module(x)`` 调用会在 forward 内部引用 ``self.weight`` 等属性，
-而 ``functional_call`` 允许你传入一组替代参数值。
+而 ``functional_call`` 允许你按名称传入一组替代值。接口与 ``torch.func.functional_call`` 对齐。
 
 **函数签名**: 
 
 .. code-block:: python
 
-    riemann.func.functional_call(module, parameter_values, args, kwargs=None) -> Any
+    riemann.func.functional_call(module, parameter_and_buffer_dicts,
+                                 args=None, kwargs=None,
+                                 *, tie_weights=True, strict=False) -> Any
 
 **参数**: 
 
 - module：带有 ``forward`` 和 ``named_parameters`` 方法的对象（通常是 ``riemann.nn.Module``）
-- parameter_values：与 ``module.named_parameters()`` 顺序一致的参数值（list/tuple/TN）；为 ``None`` 时直接使用 Module 自身参数（退化为普通 ``forward`` 调用）；长度与参数数量不一致时抛 ``ValueError``
-- args：传给 ``forward`` 的位置参数；传入单个张量时会自动包装成单元素元组，传入 list 会转成 tuple
+- parameter_and_buffer_dicts：``{名称: 张量}``，名称遵循 state_dict 约定（如 ``"weight"``、``"l1.bias"``），参数与缓冲区可放在同一个字典里，也可传入多个互不重叠的字典。为 ``None`` 时直接使用 Module 自身状态（退化为普通 ``forward`` 调用）。为兼容旧用法，也接受按 ``named_parameters()`` 顺序排列的张量序列
+- args：传给 ``forward`` 的位置参数；传入单个张量时会自动包装成单元素元组，传入 list 会转成 tuple，``None`` 表示无参数
 - kwargs（dict，可选，默认 ``None``）：传给 ``forward`` 的关键字参数字典
+- tie_weights（bool，默认 ``True``）：尊重模块原有的权重绑定。只提供绑定组中的一个名字时，同组的其他名字同步更新；同一组给出不同对象则抛 ``ValueError``。设为 ``False`` 时只替换显式给出的名字
+- strict（bool，默认 ``False``）：为 ``True`` 时提供的名称必须与模块的参数/缓冲区名称完全一致，缺失或多出都抛 ``RuntimeError``
 
 **返回**: ``module.forward(*args, **kwargs)`` 的返回值（单输出为张量，多输出为元组，具体由 Module 自身的 ``forward`` 决定）
 
@@ -2132,9 +2182,53 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 **注意事项**: 
 
-- parameter_values 的长度必须与 ``module.named_parameters()`` 返回的参数数量一致
-- 调用结束后 Module 参数会**自动恢复原值**（内部使用 try-finally）
-- 对于没有参数的 Module，``parameter_values=None`` 时退化为普通 ``forward`` 调用
+- 名称遵循 state_dict 约定，嵌套模块用点号连接（如 ``"l1.weight"``）；支持替换缓冲区（如 BatchNorm 的 running_mean）
+- 调用结束后 Module 的参数与缓冲区会**自动恢复原值**（内部使用 try-finally）
+- 对于没有参数的 Module，直接执行普通 ``forward`` 调用
+- 内部实现是“临时替换 + 恢复”，因此不是线程安全的，也不具备 ``vmap`` 的真正并行能力；跨模型批处理请配合 ``stack_module_state``
+
+``stack_module_state()`` — 堆叠多个 Module 的状态
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+把多个同构 Module 的参数与缓冲区沿新的维度 0 堆叠，返回 ``(params, buffers)``，
+可直接配合 ``functional_call`` + ``vmap`` 做模型集成（ensemble）。
+
+**函数签名**: 
+
+.. code-block:: python
+
+    riemann.func.stack_module_state(models) -> tuple[dict, dict]
+
+**参数**: 
+
+- models：Module 序列或 ModuleList，至少一个；所有模型必须同类、同 training/eval 模式，且参数/缓冲区名称一致（否则抛 ``RuntimeError``）
+
+**返回**: ``(params, buffers)``，两个 ``{名称: 堆叠张量}`` 字典；参数张量保持原有的 ``requires_grad`` 语义
+
+**示例**: 
+
+.. code-block:: python
+
+    import riemann as rm
+    from riemann import func
+
+    # 以字典形式按名称替换参数与缓冲区
+    layer = rm.nn.Linear(3, 2)
+    x = rm.tensor([[1., 2., 3.]])
+    y = func.functional_call(
+        layer, {"weight": rm.zeros(2, 3), "bias": rm.zeros(2)}, (x,))
+    print(y)  # 全 0
+
+    # 模型集成：堆叠参数后 vmap 批量前向
+    models = [rm.nn.Linear(3, 2) for _ in range(4)]
+    params, buffers = func.stack_module_state(models)
+    print(params["weight"].shape)  # (4, 2, 3)
+
+    batch_out = func.vmap(
+        lambda w, b, inp: func.functional_call(
+            models[0], {"weight": w, "bias": b}, (inp,)),
+        in_dims=(0, 0, None))(params["weight"], params["bias"], x)
+    print(batch_out.shape)  # (4, 1, 2)
 
 组合使用与高阶模式
 ~~~~~~~~~~~~~~~~~~

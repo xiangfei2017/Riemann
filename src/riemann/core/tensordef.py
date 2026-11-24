@@ -966,6 +966,8 @@ class TN:
 
     @property
     def is_leaf(self):
+        # 依赖不变量：fromvars 仅在需要建图时登记，且非空时至少含一个可微 TN 来源；
+        # requires_grad=False 的节点即使有 fromvars 也视为叶子（不会被反向访问）。
         return self.requires_grad == False or not self.fromvars
 
     def is_contiguous(self):
@@ -2599,9 +2601,18 @@ class TN:
     def minimum(self, other):
         return api_registry.minimum(self, other)
 
+    def atan2(self, other):
+        return api_registry.atan2(self, other)
+
+    def arctan2(self, other):
+        return api_registry.arctan2(self, other)
+
     def sum(self, dim:int|tuple|None=None, keepdim:bool=False):  # type: ignore
         ret = sum(self, dim, keepdim)
         return ret
+
+    def logsumexp(self, dim:int|tuple|None=None, keepdim:bool=False):
+        return api_registry.logsumexp(self, dim=dim, keepdim=keepdim)
     
     def cumsum(self, dim: int, *, dtype: str | np.dtype | None = None, out: TN | None = None):
         return api_registry.cumsum(self,dim,dtype=dtype,out=out)
@@ -2664,11 +2675,20 @@ class TN:
     def arcsin(self):
         return api_registry.arcsin(self)
 
+    def asin(self):
+        return api_registry.asin(self)
+
     def arccos(self):
         return api_registry.arccos(self)
 
+    def acos(self):
+        return api_registry.acos(self)
+
     def arctan(self):
         return api_registry.arctan(self)
+
+    def atan(self):
+        return api_registry.atan(self)
 
     def sinh(self):
         return api_registry.sinh(self)
@@ -2691,11 +2711,20 @@ class TN:
     def arcsinh(self):
         return api_registry.arcsinh(self)
 
+    def asinh(self):
+        return api_registry.asinh(self)
+
     def arccosh(self):
         return api_registry.arccosh(self)
 
+    def acosh(self):
+        return api_registry.acosh(self)
+
     def arctanh(self):
         return api_registry.arctanh(self)
+
+    def atanh(self):
+        return api_registry.atanh(self)
 
     def sign(self):
         return api_registry.sign(self)
@@ -4592,28 +4621,15 @@ def register_grad_rule(grad_func:GradFunc)->DecoratorFunc:
     Returns:
         DecoratorFunc: 用于修饰前向函数的修饰器。
 
-    梯度计算方式：
-        grad_func 内部如何计算完全由用户决定：
-        - ``result._grad_value`` 是上游梯度（损失对该输出的梯度），按链式法则求各输入
-          梯度时必须使用；
-        - ``result`` 本身也可参与计算，例如复用前向结果、避免重算中间量；
-        - 其余 TN / 非 TN 参数同样可读。
-        因此梯度运算形式不受限制，矩阵乘 @、转置等可直接使用。
-
-    图来源与编号约定：
-        - ``fromvars`` 只登记 requires_grad=True 的 TN 实参，按签名中的参数顺序排列
-          （与调用时用位置传参还是关键字传参无关）。它不是算子的全部输入：非 TN 参数
-          和 requires_grad=False 的 TN 不进入 fromvars，但仍被 _grad_rule 的闭包捕获，
-          grad_func 照常可读（例如 y 不需要梯度时仍可作为乘法因子参与求导）。
-        - grad_func 返回的梯度元组按“全部 TN 实参”的签名顺序编号，非 TN 参数不占位。
-        - fromvars 是上述编号空间再筛 requires_grad=True 后的子集，两套编号不可混用：
-          grad_indices[k] 记录 fromvars[k] 在完整编号中的下标，反向时据此从 grad_func
-          的返回值中取出该来源的梯度。
-
-    注意：
-        本修饰器会用 grad_func 的结果覆盖前向函数内部算子已建立的图，因此 grad_func
-        必须给出完整梯度；若前向返回 requires_grad=True 的张量而所有形参都不需要梯度，
-        原梯度路径会被丢弃并发出警告。
+    规则约定：
+        - grad_func 返回元组，按签名顺序给出每个 TN 实参的梯度，非 TN 参数不占位；
+          不需要梯度的 TN 位置填 None。
+        - ``result._grad_value`` 是上游梯度，求各输入梯度时必须使用；``result`` 及其余
+          实参也可直接参与计算（如复用前向结果、避免重算中间量）。
+        - 非 TN 参数与不需要梯度的 TN 不进入计算图，但仍可在 grad_func 中正常读取。
+        - 本装饰器会用 grad_func 覆盖前向内部已建立的图，因此 grad_func 必须给出完整
+          梯度；若前向结果 requires_grad=True 而所有形参都不需要梯度，会丢弃原图并告警。
+        - 可与 register_jvp_rule 同时修饰同一函数，装饰顺序任意。
 
     Examples:
         >>> # ========== 示例 1：单输入函数 ==========
@@ -4858,6 +4874,8 @@ def _tangent_sources(forward_sig, xs, kwargs):
     前向 AD 是线性映射，所有 TN 实参都可作为 tangent 的来源，因此这里不像
     register_grad_rule 那样按 requires_grad 过滤，保证 jvp 规则看到的输入列表与
     “有手写 _jvp_rule 时”的 fromvars 约定一致。
+
+    注意只收 TN：非 TN 参数无法承载 tangent，需要它们的规则应改从 result.parms 读取。
     """
     bound = forward_sig.bind(*xs, **kwargs)
     bound.apply_defaults()
@@ -4875,11 +4893,11 @@ def _tangent_sources(forward_sig, xs, kwargs):
 
 
 def _make_tangent_rule(jvp_func, sources):
-    """把 jvp_func 包装成 _jvp_rule：调用期间临时用 sources 作为 fromvars。
+    """把 jvp_func 包装成 _jvp_rule：执行期间用 sources 作为 fromvars，结束后恢复。
 
-    register_grad_rule 与 register_jvp_rule 同时使用时，fromvars 由 register_grad_rule 按反向需要
-    过滤（只含 requires_grad=True 的 TN），与 jvp_func 期望的完整输入列表不同。
-    这里在规则执行期间替换、执行后恢复，使两种装饰器互不干扰。
+    这样 jvp_func 总能拿到“本次全部 TN 实参”，不受 register_grad_rule 的
+    requires_grad 过滤影响；未播种的冻结 TN 由 _input_tangent 返回 None，
+    规则按零切线处理。
     """
     def jvp_rule(result_tensor: TN):
         saved = result_tensor.fromvars
@@ -4895,17 +4913,20 @@ def register_jvp_rule(jvp_func):
     """
     装饰器：为算子函数登记前向自动微分（JVP）规则。
 
-    jvp_func 的写法与手写的 _jvp_rule 完全一致：只接收结果节点 result_tensor，
-    通过 result_tensor.fromvars 读取输入；用 current_jvp_frame() 取当前帧，
-    再用 _input_tangent(frame, x) 读取入边 tangent（没有则返回 None），
-    最后把输出 tangent 写入 frame.node_tangent[id(result_tensor)]。
-
-    与 register_grad_rule 可单独使用，也可同时装饰同一个算子函数（装饰顺序任意）：
-    - 单独使用：前向跟踪开启（或结果 requires_grad）时登记 fromvars 与
-      _jvp_rule；反向梯度仍由函数体内部的可微算子构成，行为不变。
-    - 同时使用：fromvars 由 register_grad_rule 按反向需要设置；register_jvp_rule 在执行
-      jvp_func 期间把 result_tensor.fromvars 临时替换为“本次调用全部 TN 实参
-      （按签名顺序）”，执行后恢复，因此两者互不覆盖、互不干扰。
+    规则约定：
+        - jvp_func 的写法与手写 _jvp_rule 一致，只接收结果节点：通过
+          ``result_tensor.fromvars`` 读取输入，用 current_jvp_frame() 取当前帧、
+          _input_tangent(frame, x) 取切线（无切线返回 None），最后写入
+          ``frame.node_tangent[id(result_tensor)]``。
+        - 只负责输出切线，不要读写 ``_grad_value``；规则内使用的普通 TN 算子会被继续
+          追踪，因此支持二阶导数。
+        - 规则执行期间 fromvars 保证是“本次调用的全部 TN 实参（签名顺序）”，与
+          register_grad_rule 的 requires_grad 过滤无关；规则内不要改写它。
+        - 非 TN 参数（beta、dim 等）需由前向在 ``requires_grad or
+          forward_ad_trace_active()`` 时存入 ``result_tensor.parms``，规则再从 parms
+          读取；只有定义期常量可在闭包中捕获。
+        - 可与 register_grad_rule 同时修饰同一函数，装饰顺序任意。单独使用时反向仍由
+          函数体内部的可微算子负责，行为不变。
 
     Args:
         jvp_func: 前向规则函数，签名固定为 jvp_func(result_tensor)。
@@ -5322,7 +5343,7 @@ def _abs_grad(result_tensor:TN):
     return (grad,)
 
 def _abs_jvp(result_tensor: TN):
-    """绝对值 JVP：y = |x| → y_t = sign(x) · x_t（零点处分段常量，取 0）。"""
+    """绝对值 JVP：y_t = Re(conj(x)·x_t)/|x|（实数时退化为 sign(x)·x_t）。"""
     frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
     x_t = _input_tangent(frame, x)
@@ -5331,8 +5352,9 @@ def _abs_jvp(result_tensor: TN):
     # 与 _abs_grad 相同的零点保护：|x| 为零时导数为 0
     is_zero = (result_tensor == 0)
     safe_divisor = where(is_zero, ones_like(result_tensor), result_tensor)
-    sign_value = where(is_zero, zeros_like(x), x / safe_divisor)
-    frame.node_tangent[id(result_tensor)] = x_t * sign_value
+    tangent = (x.conj() * x_t).real / safe_divisor
+    frame.node_tangent[id(result_tensor)] = where(
+        is_zero, zeros_like(result_tensor), tangent)
 
 
 def abs(x:TN)->TN:
@@ -5749,7 +5771,8 @@ def _div_jvp(result_tensor: TN):
     if left_t is not None:
         total = left_t / right
     if right_t is not None:
-        term = (left / (right * right)) * right_t
+        # 复用前向输出 y = a/b：∂y/∂b = −y/b，省掉 a/b² 的一次乘法与临时量
+        term = (result_tensor * right_t) / right
         total = -term if total is None else total - term
     if total is not None:
         frame.node_tangent[id(result_tensor)] = total

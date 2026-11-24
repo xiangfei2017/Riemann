@@ -62,6 +62,13 @@ from .tensordef import (
 )
 
 
+def _reject_complex(op: str, *values) -> None:
+    """拒绝复数输入：复数无全序，与 torch 的 clamp/maximum/minimum 行为一致。"""
+    for value in values:
+        if isinstance(value, complex) or (isinstance(value, TN) and value.dtype.kind == 'c'):
+            raise RuntimeError(f"{op}() does not support complex input")
+
+
 # ---------------------------------------------------------------------------
 # 分区目录（分区内按“常量/辅助函数 -> 被依赖的底层实现 -> 对外接口”排列，
 # 即被调用者在前、调用者在后）
@@ -695,17 +702,36 @@ def multinomial(input: TN, num_samples: int, replacement: bool = False, *, gener
 
 def _sign_grad(result_tensor:TN)->tuple[TN]:
     x = result_tensor.fromvars[0]
-    # sign函数在x=0处不可导，在其他点处梯度为0
-    # 梯度为零，与上游梯度相乘后仍为零
-    return (result_tensor._grad_value * zeros_like(x),)
+    g = result_tensor._grad_value
+    if x.dtype.kind != 'c':
+        # 实数 sign 在 x=0 处不可导，其他点梯度为 0
+        return (g * zeros_like(x),)
+    # 复数 sgn(z)=z/|z| 是实线性映射，梯度为 (g − u·Re(conj(u)·g))/|z|
+    u = result_tensor
+    abs_x = abs(x)
+    is_zero = (abs_x == 0)
+    safe_divisor = where(is_zero, ones_like(abs_x), abs_x)
+    return (where(is_zero, zeros_like(u),
+                  (g - u * (u.conj() * g).real) / safe_divisor),)
 
 
 def _sign_jvp(result_tensor:TN):
-    """sign JVP：不连续，导数几乎处处为 0（与 PyTorch 前向 AD 一致）。"""
+    """sign JVP：实数几乎处处为 0；复数 y_t = (x_t − u·Re(conj(u)·x_t))/|x|。"""
     frame = current_jvp_frame()
-    x_t = _input_tangent(frame, result_tensor.fromvars[0])
-    if x_t is not None:
+    x = result_tensor.fromvars[0]
+    x_t = _input_tangent(frame, x)
+    if x_t is None:
+        return
+    if x.dtype.kind != 'c':
         frame.node_tangent[id(result_tensor)] = zeros_like(result_tensor)
+        return
+    u = result_tensor
+    abs_x = abs(x)
+    is_zero = (abs_x == 0)
+    safe_divisor = where(is_zero, ones_like(abs_x), abs_x)
+    frame.node_tangent[id(result_tensor)] = where(
+        is_zero, zeros_like(u),
+        (x_t - u * (u.conj() * x_t).real) / safe_divisor)
 
 
 @api_registry.register
@@ -1122,7 +1148,7 @@ def cosh(x:TN)->TN:
 
 
 def _tanh_grad(result_tensor:TN)->tuple[TN]:
-    return (result_tensor._grad_value * (1.0 - result_tensor**2.0).conj(),)
+    return (result_tensor._grad_value * (1.0 - result_tensor * result_tensor).conj(),)
 
 
 def _tanh_jvp(result_tensor:TN):
@@ -1131,7 +1157,7 @@ def _tanh_jvp(result_tensor:TN):
     x = result_tensor.fromvars[0]
     x_t = _input_tangent(frame, x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = (1.0 - result_tensor**2.0) * x_t
+        frame.node_tangent[id(result_tensor)] = (1.0 - result_tensor * result_tensor) * x_t
 
 
 @api_registry.register
@@ -1281,18 +1307,27 @@ def arcsinh(x:TN)->TN:
     return ret
 
 
+def _arccosh_denominator(x:TN)->TN:
+    """arccosh 导数分母：复数用乘积形式保证与前向分支一致；实数用 x²−1 更稳定。"""
+    if x.dtype.kind == 'c':
+        # numpy/torch 的复数 arccosh 走 log(z+sqrt(z-1)·sqrt(z+1))，导数须用同一分支
+        return sqrt(x - 1.) * sqrt(x + 1.)
+    # 实数：x>1 时两式等价；x<-1 时 x²−1 不会像 sqrt(x-1) 那样直接产生 NaN
+    return sqrt(x * x - 1.)
+
+
 def _arccosh_grad(result_tensor:TN)->tuple[TN]:
     x = result_tensor.fromvars[0]
-    return (result_tensor._grad_value * (1. / sqrt(x**2. - 1.).conj()),)
+    return (result_tensor._grad_value * (1. / _arccosh_denominator(x).conj()),)
 
 
 def _arccosh_jvp(result_tensor:TN):
-    """arccosh JVP：y = arccosh(x) → y_t = x_t / sqrt(x² − 1)（复数不取共轭）。"""
+    """arccosh JVP：y = arccosh(x) → y_t = x_t / (arccosh 导数分母)。"""
     frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
     x_t = _input_tangent(frame, x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = x_t / sqrt(x**2. - 1.)
+        frame.node_tangent[id(result_tensor)] = x_t / _arccosh_denominator(x)
 
 
 @api_registry.register
@@ -1371,6 +1406,43 @@ def arctanh(x:TN)->TN:
         ret._jvp_rule = _arctanh_jvp
 
     return ret
+
+
+# torch 兼容短名别名（与对应的 arc* 长名指向同一实现）
+@api_registry.register
+def asin(x:TN)->TN:
+    """arcsin 的别名，行为与 torch.asin 一致。"""
+    return arcsin(x)
+
+
+@api_registry.register
+def acos(x:TN)->TN:
+    """arccos 的别名，行为与 torch.acos 一致。"""
+    return arccos(x)
+
+
+@api_registry.register
+def atan(x:TN)->TN:
+    """arctan 的别名，行为与 torch.atan 一致。"""
+    return arctan(x)
+
+
+@api_registry.register
+def asinh(x:TN)->TN:
+    """arcsinh 的别名，行为与 torch.asinh 一致。"""
+    return arcsinh(x)
+
+
+@api_registry.register
+def acosh(x:TN)->TN:
+    """arccosh 的别名，行为与 torch.acosh 一致。"""
+    return arccosh(x)
+
+
+@api_registry.register
+def atanh(x:TN)->TN:
+    """arctanh 的别名，行为与 torch.atanh 一致。"""
+    return arctanh(x)
 
 
 @api_registry.register
@@ -1773,6 +1845,8 @@ def maximum(input: TN, other: TN) -> TN:
 
     if not isinstance(other, TN):
         other = as_tensor(other,device=dev)
+
+    _reject_complex("maximum", input, other)
     
     if not _same_device(input, other):
         raise RuntimeError('Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
@@ -1884,6 +1958,8 @@ def minimum(input: TN, other: TN) -> TN:
 
     if not isinstance(other, TN):
         other = as_tensor(other,device=dev)
+
+    _reject_complex("minimum", input, other)
     
     if not _same_device(input, other):
         raise RuntimeError('Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
@@ -1963,6 +2039,151 @@ def _minimum_grad(result_tensor: TN):
     other_grad = grad
 
     return input_grad, other_grad
+
+
+@api_registry.register
+def atan2(input: TN, other: TN) -> TN:
+    """
+    逐元素计算 atan2(input, other)（input 为 y 坐标，other 为 x 坐标）。
+
+    返回值的符号由两个参数共同决定，取值范围为 (-π, π]。复数没有全序角度语义，
+    与 torch 一致直接拒绝复数输入。
+    """
+    if not isinstance(input, TN):
+        raise TypeError(f"Expected input to be TN tensor, got {type(input)}")
+
+    arrlib = input._get_array_lib()
+    dev = input.device
+
+    if not isinstance(other, TN):
+        other = as_tensor(other, device=dev)
+
+    _reject_complex("atan2", input, other)
+
+    if not _same_device(input, other):
+        raise RuntimeError('Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!')
+
+    value = arrlib.arctan2(input._array, other._array)
+    ret = TN(value, requires_grad=(is_grad_enabled() and (input.requires_grad or other.requires_grad)))
+
+    if ret.requires_grad or forward_ad_trace_active():
+        ret.fromvars = (input, other)
+        ret._grad_rule = _atan2_grad
+        ret._jvp_rule = _atan2_jvp
+
+    return ret
+
+
+@api_registry.register
+def arctan2(input: TN, other: TN) -> TN:
+    """atan2 的别名，行为与 torch.arctan2 一致。"""
+    return atan2(input, other)
+
+
+def _atan2_grad(result_tensor: TN):
+    """atan2 梯度：dy = g·x/(x²+y²)，dx = −g·y/(x²+y²)。"""
+    y, x = result_tensor.fromvars
+    g = result_tensor._grad_value
+    result_shape = result_tensor.shape
+
+    denom = x * x + y * y
+    y_grad = g * (x / denom)
+    x_grad = g * (-y / denom)
+
+    if y.shape != result_shape:
+        broadcast_axes = _get_broadcast_axis(result_shape, y.shape)
+        y_grad = sum(y_grad, dim=broadcast_axes, keepdim=False)._reshape(y.shape)
+
+    if x.shape != result_shape:
+        broadcast_axes = _get_broadcast_axis(result_shape, x.shape)
+        x_grad = sum(x_grad, dim=broadcast_axes, keepdim=False)._reshape(x.shape)
+
+    return y_grad, x_grad
+
+
+def _atan2_jvp(result_tensor: TN):
+    """atan2 JVP：(x·y_t − y·x_t)/(x²+y²)，缺失的切向按 0 处理。"""
+    frame = current_jvp_frame()
+    y, x = result_tensor.fromvars
+    y_t = _input_tangent(frame, y)
+    x_t = _input_tangent(frame, x)
+    if y_t is None and x_t is None:
+        return
+
+    denom = x * x + y * y
+    if y_t is None:
+        tangent = (-y * x_t) / denom
+    elif x_t is None:
+        tangent = (x * y_t) / denom
+    else:
+        tangent = (x * y_t - y * x_t) / denom
+
+    frame.node_tangent[id(result_tensor)] = tangent
+
+
+@api_registry.register
+def logsumexp(x: TN, dim: int | tuple | None = None, keepdim: bool = False) -> TN:
+    """
+    计算 log(sum(exp(x), dim))，数值稳定实现。
+
+    使用实部最大值平移，实数和复数输入均不会因 exp 溢出而失真。
+    dim 为 None 时对所有元素归约；支持 int 或维度元组。
+    """
+    if not isinstance(x, TN):
+        raise SyntaxError('x must be a tensor')
+
+    if dim == ():
+        dim = None
+
+    arrlib = x._get_array_lib()
+
+    # 用实部最大值做平移：对复数同样成立（exp 沿实部方向增长）
+    mx = x._array.real.max(axis=dim, keepdims=True)
+    mx_safe = arrlib.where(mx == float('-inf'), 0.0, mx)
+    lse = arrlib.log(arrlib.exp(x._array - mx_safe).sum(axis=dim, keepdims=keepdim))
+    shift = mx if keepdim else mx.squeeze(axis=dim)
+    data = lse + shift
+
+    ret = TN(data, requires_grad=(is_grad_enabled() and x.requires_grad))
+
+    if ret.requires_grad or forward_ad_trace_active():
+        ret.fromvars = (x,)
+        ret.parms = ((dim, keepdim),)
+        ret._grad_rule = _logsumexp_grad
+        ret._jvp_rule = _logsumexp_jvp
+
+    return ret
+
+
+def _logsumexp_grad(result_tensor: TN):
+    """logsumexp 梯度：g·softmax(x)（复数按 Wirtinger 约定取共轭）。"""
+    x = result_tensor.fromvars[0]
+    dim, keepdim = result_tensor.parms[0]
+    g = result_tensor._grad_value
+
+    if keepdim or dim is None:
+        y = result_tensor
+        g_expanded = g
+    else:
+        y = result_tensor.unsqueeze(dim)
+        g_expanded = g.unsqueeze(dim)
+
+    p = exp(x - y)
+    return (g_expanded * p.conj(),)
+
+
+def _logsumexp_jvp(result_tensor: TN):
+    """logsumexp JVP：sum(softmax(x)·x_t, dim)。"""
+    frame = current_jvp_frame()
+    x = result_tensor.fromvars[0]
+    dim, keepdim = result_tensor.parms[0]
+    x_t = _input_tangent(frame, x)
+    if x_t is None:
+        return
+
+    y = result_tensor if (keepdim or dim is None) else result_tensor.unsqueeze(dim)
+    p = exp(x - y)
+    frame.node_tangent[id(result_tensor)] = sum(p * x_t, dim=dim, keepdim=keepdim)
 
 
 # ===========================================================================
@@ -8020,6 +8241,8 @@ def clamp_(input: TN, min: float | TN | None = None, max: float | TN | None = No
         - 若本张量是需要梯度的叶子节点，会抛出运行时错误
         - min 与 max 必须同为标量或同为张量
     """
+    _reject_complex("clamp_", input, min, max)
+
     # 若本张量是需要梯度的叶子节点，原地改写会破坏计算图，直接报错（与 PyTorch 一致）
     if is_grad_enabled() and input.requires_grad and input.is_leaf:
         raise RuntimeError("a leaf Variable that requires grad has been used in an in-place operation")
@@ -8105,6 +8328,8 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
         - min>max（均为标量时）：不报错，所有元素的结果值都等于 max（即先被抬到 min、再统一压到上界 max）
         - min 与 max 必须同为标量或同为张量；两者均为 None 时报 ValueError
     """
+    _reject_complex("clamp", x, min, max)
+
     # 参数缺省检查：min 与 max 不能同时为 None
     if min is None and max is None:
         raise ValueError("clamp(): min or max must be specified")

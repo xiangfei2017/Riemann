@@ -1848,7 +1848,12 @@ def _eig_w_grad(result_tensor: TN):
     
     # 计算梯度：dL/dA = V^(-H) @ G_diag @ V^H - 使用Riemann张量计算
     grad_A = U @ G_diag @ V.mH
-    
+
+    # 实矩阵的梯度应为实数：上游 G 为复数时取实部，与 torch.linalg.eig 一致，
+    # 避免反向累加阶段把 complex 梯度写回实数节点。
+    if A.dtype.kind != 'c':
+        grad_A = grad_A.real
+
     return (grad_A,)
 
 def _eig_v_grad(result_tensor: TN):
@@ -2465,17 +2470,49 @@ def _squared_mat_lu(A, *, pivot=True):
     L = as_tensor(L_data, device=dev, requires_grad=requires_grad)
     U = as_tensor(U_data, device=dev, requires_grad=requires_grad)
     
-    # 如果需要梯度，设置fromvars和梯度规则，并保存中间计算结果到parms中
-    if requires_grad:
+    # 如果需要梯度或正在做前向追踪，设置fromvars、梯度/前向规则，并保存中间结果到parms中。
+    # 纯 jvp 场景下所有输入可能都 requires_grad=False，必须靠 forward_ad_trace_active()
+    # 才会登记 _jvp_rule，否则前向规则会被静默跳过。
+    if requires_grad or forward_ad_trace_active():
         L.fromvars = (A,)
         L._grad_rule = _lu_l_grad
+        L._jvp_rule = _lu_l_jvp
         L.parms = ((P, L, U),)  # 保存P, L, U和pivot参数供梯度计算使用
         
         U.fromvars = (A,)
         U._grad_rule = _lu_u_grad
+        U._jvp_rule = _lu_u_jvp
         U.parms = ((P, L, U),)  # 保存P, L, U和pivot参数供梯度计算使用
     
     return P, L, U
+
+def _lu_jvp_middle(result_tensor: TN):
+    """计算 M = L⁻¹ (Pᵀ dA) U⁻¹（A = P·L·U），pivot=False 时 M = L⁻¹ dA U⁻¹。"""
+    frame = current_jvp_frame()
+    P, L, U = result_tensor.parms[0]
+    A = result_tensor.fromvars[0]
+    tangent = _input_tangent(frame, A)
+    if tangent is None:
+        return None, None, None, None
+    dA = P.mH @ tangent if P.shape != (0,) else tangent
+    return frame, L, U, pinv(L) @ dA @ pinv(U)
+
+
+def _lu_l_jvp(result_tensor: TN):
+    """L 的直接前向规则：dL = L · tril(M, -1)，M = L⁻¹(PᵀdA)U⁻¹。"""
+    frame, L, _, M = _lu_jvp_middle(result_tensor)
+    if M is None:
+        return
+    frame.node_tangent[id(result_tensor)] = L @ tril(M, diagonal=-1)
+
+
+def _lu_u_jvp(result_tensor: TN):
+    """U 的直接前向规则：dU = triu(M) · U，M = L⁻¹(PᵀdA)U⁻¹。"""
+    frame, _, U, M = _lu_jvp_middle(result_tensor)
+    if M is None:
+        return
+    frame.node_tangent[id(result_tensor)] = triu(M) @ U
+
 
 def _lu_l_grad(result_tensor: TN):
     """L的反向传播梯度计算

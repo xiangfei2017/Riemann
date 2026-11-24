@@ -1259,6 +1259,233 @@ class _TestFuncsCases:
                 and _close(v, (y ** 2).sum()))
 
     # ---------------------------------------------------------------
+    # linearize
+    # ---------------------------------------------------------------
+    def test_linearize(self):
+        _run_case("linearize - value_and_linear_fn", lambda: self._check_linearize())
+        _run_case("linearize - reusable_and_matches_jvp",
+                  lambda: self._check_linearize_matches_jvp())
+        _run_case("linearize - multi_output", lambda: self._check_linearize_multi())
+        _run_case("linearize - tangent_shape_check",
+                  lambda: self._check_linearize_shape_error())
+
+    def _check_linearize(self):
+        f = lambda x: x * x
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        out, lin = func.linearize(f, x)
+        v = _rm_tensor(np.array([0.5, -1.0, 2.0]))
+        return (_close(out, np.array([1.0, 4.0, 9.0]))
+                and _close(lin(v), np.array([1.0, -4.0, 12.0])))
+
+    def _check_linearize_matches_jvp(self):
+        f = lambda x: (x * x).sum()
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        v = _rm_tensor(np.array([0.5, 1.0, -2.0]))
+        out, lin = func.linearize(f, x)
+        # 同一 linear_fn 可复用多次
+        a = lin(v)
+        b = lin(v)
+        _, jvp_val = func.jvp(f, x, v)
+        return _close(a, jvp_val) and _close(a, b) and _close(out, 14.0)
+
+    def _check_linearize_multi(self):
+        f = lambda x: (x * x, x.sum())
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        out, lin = func.linearize(f, x)
+        v = _rm_tensor(np.array([1.0, 0.0, -1.0]))
+        t = lin(v)
+        return (isinstance(out, tuple) and len(out) == 2
+                and _close(out[0], np.array([1.0, 4.0, 9.0]))
+                and _close(out[1], 6.0)
+                and _close(t[0], np.array([2.0, 0.0, -6.0]))
+                and _close(t[1], 0.0))
+
+    def _check_linearize_shape_error(self):
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        _, lin = func.linearize(lambda a: a * a, x)
+        try:
+            lin(_rm_tensor(np.array([1.0, 2.0])))
+            return False
+        except RuntimeError:
+            return True
+
+    # ---------------------------------------------------------------
+    # chunk_size（vmap / jacrev / jacfwd）
+    # ---------------------------------------------------------------
+    def test_chunk_size(self):
+        _run_case("chunk_size - vmap_matches_unchunked",
+                  lambda: self._check_vmap_chunk())
+        _run_case("chunk_size - vmap_multi_output",
+                  lambda: self._check_vmap_chunk_multi())
+        _run_case("chunk_size - jacrev_matches_unchunked",
+                  lambda: self._check_jacrev_chunk())
+        _run_case("chunk_size - jacfwd_matches_unchunked",
+                  lambda: self._check_jacfwd_chunk())
+        _run_case("chunk_size - invalid_raises",
+                  lambda: self._check_chunk_invalid())
+
+    def _check_vmap_chunk(self):
+        batch = _rm_tensor(np.arange(7.0).reshape(7, 1))
+        f = lambda a: a * a
+        full = func.vmap(f)(batch)
+        chunked = func.vmap(f, chunk_size=3)(batch)
+        return _close(full, chunked)
+
+    def _check_vmap_chunk_multi(self):
+        batch = _rm_tensor(np.arange(10.0).reshape(5, 2))
+        f = lambda a: (a.sum(), a * 2.0)
+        full = func.vmap(f, out_dims=(0, 0))(batch)
+        chunked = func.vmap(f, out_dims=(0, 0), chunk_size=2)(batch)
+        return _close(full[0], chunked[0]) and _close(full[1], chunked[1])
+
+    def _check_jacrev_chunk(self):
+        f = lambda x: (x * x).sum()
+        x = _rm_tensor(np.arange(6.0).reshape(2, 3))
+        return _close(func.jacrev(f)(x), func.jacrev(f, chunk_size=2)(x))
+
+    def _check_jacfwd_chunk(self):
+        f = lambda x: x * x
+        x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
+        return _close(func.jacfwd(f)(x), func.jacfwd(f, chunk_size=1)(x))
+
+    def _check_chunk_invalid(self):
+        for bad in (0, -1):
+            try:
+                func.vmap(lambda a: a, chunk_size=bad)
+                return False
+            except ValueError:
+                pass
+        return True
+
+    # ---------------------------------------------------------------
+    # functional_call 扩展（dict / buffer / strict / tie_weights）
+    # ---------------------------------------------------------------
+    def test_functional_call_extended(self):
+        _run_case("functional_call - dict by nested names",
+                  lambda: self._check_fc_dict())
+        _run_case("functional_call - buffer override",
+                  lambda: self._check_fc_buffer())
+        _run_case("functional_call - strict missing key",
+                  lambda: self._check_fc_strict())
+        _run_case("functional_call - tie_weights propagates",
+                  lambda: self._check_fc_tied())
+
+    def _make_nested_module(self):
+        class Net(rm.nn.Module):
+            def __init__(self, device=None):
+                super().__init__()
+                self.l1 = rm.nn.Linear(2, 3, device=device)
+                self.register_buffer("scale", _rm_tensor([2.0, 2.0, 2.0]))
+
+            def forward(self, x):
+                return (self.l1(x) + self.scale) * 2.0
+        return Net
+
+    def _check_fc_dict(self):
+        Net = self._make_nested_module()
+        net = Net(device=_CURRENT_DEVICE)
+        x = _rm_tensor(np.random.randn(4, 2), requires_grad=False)
+        names = dict(net.named_parameters())
+        values = {"l1.weight": names["l1.weight"], "l1.bias": names["l1.bias"]}
+        y = func.functional_call(net, values, (x,))
+        return _close(y, net.forward(x))
+
+    def _check_fc_buffer(self):
+        Net = self._make_nested_module()
+        net = Net(device=_CURRENT_DEVICE)
+        x = _rm_tensor(np.random.randn(4, 2), requires_grad=False)
+        orig_scale = net.scale.clone()
+        y = func.functional_call(net, {"scale": _rm_tensor(np.zeros(3))}, (x,))
+        return (_close(y, net.l1(x) * 2.0)          # scale 被替换为 0
+                and _close(net.scale, orig_scale))  # 调用后恢复
+
+    def _check_fc_strict(self):
+        Net = self._make_nested_module()
+        net = Net(device=_CURRENT_DEVICE)
+        x = _rm_tensor(np.random.randn(4, 2), requires_grad=False)
+        try:
+            func.functional_call(net, {"l1.weight": net.l1.weight}, (x,), strict=True)
+            return False
+        except RuntimeError:
+            return True
+
+    def _check_fc_tied(self):
+        class Tied(rm.nn.Module):
+            def __init__(self, device=None):
+                super().__init__()
+                self.a = rm.nn.Linear(2, 2, bias=False, device=device)
+                self.b = self.a
+
+            def forward(self, x):
+                return self.a(x) + self.b(x)
+
+        net = Tied(device=_CURRENT_DEVICE)
+        x = _rm_tensor(np.random.randn(3, 2), requires_grad=False)
+        zero = _rm_tensor(np.zeros((2, 2)))
+        # 只提供 a.weight，tie_weights=True 应同步 b.weight
+        y = func.functional_call(net, {"a.weight": zero}, (x,))
+        return _close(y, np.zeros((3, 2)))
+
+    # ---------------------------------------------------------------
+    # stack_module_state
+    # ---------------------------------------------------------------
+    def test_stack_module_state(self):
+        _run_case("stack_module_state - stack_params",
+                  lambda: self._check_stack_params())
+        _run_case("stack_module_state - stack_buffers",
+                  lambda: self._check_stack_buffers())
+        _run_case("stack_module_state - empty_raises",
+                  lambda: self._check_stack_empty())
+        _run_case("stack_module_state + vmap functional_call",
+                  lambda: self._check_stack_ensemble())
+
+    def _make_scalar_models(self, values):
+        """同一类构造的一组标量模型（stack_module_state 要求同类）。"""
+        class M(rm.nn.Module):
+            def __init__(self, v):
+                super().__init__()
+                self.w = rm.nn.Parameter(_rm_tensor([float(v)]))
+
+            def forward(self, x):
+                return x * self.w
+        return [M(v) for v in values]
+
+    def _check_stack_params(self):
+        models = self._make_scalar_models((1.0, 2.0, 3.0))
+        params, buffers = func.stack_module_state(models)
+        return (params["w"].shape == (3, 1) and buffers == {}
+                and _close(params["w"], np.array([[1.0], [2.0], [3.0]])))
+
+    def _check_stack_buffers(self):
+        class WithBuf(rm.nn.Module):
+            def __init__(self, v):
+                super().__init__()
+                self.w = rm.nn.Parameter(_rm_tensor([1.0]))
+                self.register_buffer("b", _rm_tensor([float(v)]))
+
+            def forward(self, x):
+                return x * self.w + self.b
+        params, buffers = func.stack_module_state([WithBuf(1.0), WithBuf(2.0)])
+        return (_close(buffers["b"], np.array([[1.0], [2.0]]))
+                and params["w"].shape == (2, 1))
+
+    def _check_stack_empty(self):
+        try:
+            func.stack_module_state([])
+            return False
+        except RuntimeError:
+            return True
+
+    def _check_stack_ensemble(self):
+        models = self._make_scalar_models((1.0, 2.0, 3.0))
+        params, _ = func.stack_module_state(models)
+        x = _rm_tensor(np.array([2.0]), requires_grad=False)
+        out = func.vmap(
+            lambda w, a: func.functional_call(models[0], {"w": w}, (a,)),
+            in_dims=(0, None))(params["w"], x)
+        return _close(out.reshape(-1), np.array([2.0, 4.0, 6.0]))
+
+    # ---------------------------------------------------------------
     # 函数组合（跨原语组合能力）
     # ---------------------------------------------------------------
     def test_compositions(self):

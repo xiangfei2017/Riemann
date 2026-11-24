@@ -38,15 +38,18 @@ func 模块 —— 函数式自动微分接口，参考 torch.func 设计。
 核心函数：
     - grad / grad_and_value: 标量值函数的梯度
     - jvp / vjp: Jacobian-vector / vector-Jacobian 积
+    - linearize: 一次前向记录 primal 图，返回可复用的 J(x)·v 线性函数
     - jacrev / jacfwd: Jacobian 矩阵的反向/正向计算方式
     - hessian: Hessian 矩阵
     - vmap: 向量化映射（沿指定批次维度循环调用并堆叠）
-    - functional_call: 以自定义参数调用 Module 实例
+    - functional_call: 以自定义参数/缓冲区调用 Module 实例
+    - stack_module_state: 堆叠多个 Module 的状态，供 functional_call + vmap 使用
 
 所有函数间相互复用：jvp / vjp 是前向 / 反向模式原语，共享参数归一化与前向求值
 辅助（_traceable_args / _prepare_forward / _call_and_split）。
 jacrev / jacfwd 共用 _make_jacobian 做 argnums 校验与结果整形，内核分别是 vmap(vjp)
-与逐列 jvp（每列一次前向求值，等价于 vmap(jvp)）。
+与逐列 jvp（每列一次前向求值，等价于 vmap(jvp)）。两者均支持 has_aux 与 chunk_size；
+linearize 复用 _record_primal + _jvp_with_primal_graph，与 jacfwd 共享同一条前向图。
 hessian 复用 _jacobian_via_vjp 内核，对 grad 的结果再求一次 Jacobian（反向叠反向）。
 
 补充说明：jvp 走新路径——算子登记直接前向规则 `_jvp_rule`，前向执行时记录
@@ -67,7 +70,7 @@ from .core.ad_context import (
     set_jvp_phase,
     forward_ad_trace_active,
 )
-from .core.tensordef import _getitem_grad
+from .core.tensordef import _getitem_grad, _getitem_jvp
 from .core.tensorfuncs import (
     _apply_inplace_jvp_steps,
     _frame_inplace_steps,
@@ -303,6 +306,33 @@ def _call_and_split(func, args):
         if not isinstance(out, TN):
             raise RuntimeError(f"Output {i} must be a tensor")
     return out_list, is_single_output
+
+
+def _split_aux(func, has_aux: bool):
+    """按 has_aux 包装 func：剥离 (output, aux) 中的 aux 并缓存。
+
+    只有 output 参与微分，aux 在最后一次前向求值时被记录，供调用方原样返回。
+    未启用 has_aux 时原样返回 func 与 None。
+
+    参数:
+        func: 待包装的函数；has_aux=True 时必须返回 (output, aux)。
+        has_aux: 是否剥离辅助输出。
+
+    返回:
+        (wrapped, aux_cell)：wrapped 只返回 output；aux_cell 为长度至多 1 的
+        列表（首次前向时写入 aux），未启用时为 None。
+    """
+    if not has_aux:
+        return func, None
+    aux_cell = []
+
+    def _wrapped(*args, **kwargs):
+        output, aux = func(*args, **kwargs)
+        if not aux_cell:
+            aux_cell.append(aux)
+        return output
+
+    return _wrapped, aux_cell
 
 
 def _vjp_with_output(out: TN, inputs, cotangent: TN,
@@ -962,8 +992,10 @@ def jvp(func: Callable[..., Union[TN, tuple[TN, ...]]],
         primals: Union[TN, list[TN], tuple[TN, ...]],
         tangents: Union[TN, list[TN], tuple[TN, ...]],
         create_graph: bool = False,
-        strict: bool = False) -> tuple[Union[TN, tuple[TN, ...]],
-                                       Union[TN, tuple[TN, ...]]]:
+        strict: bool = False,
+        has_aux: bool = False) -> tuple[Union[TN, tuple[TN, ...]],
+                                       Union[TN, tuple[TN, ...]],
+                                       Any]:
     """Jacobian-vector 积（前向模式，基于算子直接前向规则）。
 
     前向执行原函数时记录 primal 图（由 JVPFrame 触发，不依赖 requires_grad），
@@ -985,9 +1017,12 @@ def jvp(func: Callable[..., Union[TN, tuple[TN, ...]]],
         create_graph: 为 True 时保留计算图，JVP 结果可继续求导（高阶导数）；
             此时要求路径上的算子都提供直接 jvp_rule。
         strict: 为 True 时，若某输出与某输入完全不连通则抛 RuntimeError。
+        has_aux: 为 True 时 func 必须返回 (output, aux) 二元组，只对 output
+            求 JVP，aux 原样附在返回值末尾。
 
     返回:
-        (输出值, JVP 结果)。输出值结构与 func 的返回一致（单输出为 TN，
+        has_aux=False 时返回 (输出值, JVP 结果)；has_aux=True 时返回
+        (输出值, JVP 结果, aux)。输出值结构与 func 的返回一致（单输出为 TN，
         多输出为 tuple）；JVP 结果即 J(x)·v，结构与输出值一致。
     """
     is_single_input = not isinstance(primals, (list, tuple))
@@ -1014,13 +1049,16 @@ def jvp(func: Callable[..., Union[TN, tuple[TN, ...]]],
             raise RuntimeError(
                 f"Shapes of input {i} ({inp.shape}) and v[{i}] ({vec.shape}) do not match")
 
-    state = _record_primal(func, primals, create_graph, strict)
+    wrapped, aux_cell = _split_aux(func, has_aux)
+    state = _record_primal(wrapped, primals, create_graph, strict)
     results = _jvp_with_primal_graph(state, tangents, create_graph, strict)
 
     out_list = state['out_list']
     is_single_output = state['is_single_output']
     out_values = out_list[0] if is_single_output else tuple(out_list)
     tangent_values = results[0] if is_single_output else tuple(results)
+    if has_aux:
+        return out_values, tangent_values, aux_cell[0]
     return out_values, tangent_values
 
 
@@ -1028,7 +1066,10 @@ def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
         primals: Union[TN, list[TN], tuple[TN, ...]],
         cotangents: Optional[Union[TN, list[TN], tuple[TN, ...]]] = None,
         create_graph: bool = False,
-        strict: bool = False) -> tuple[Union[TN, tuple[TN, ...]], Union[TN, tuple[TN, ...]]]:
+        strict: bool = False,
+        has_aux: bool = False) -> tuple[Union[TN, tuple[TN, ...]],
+                                        Union[TN, tuple[TN, ...]],
+                                        Any]:
     """vector-Jacobian 积（反向模式）。
 
     先执行 func 的前向计算，再从输出到输入反向传播 cotangent，
@@ -1041,9 +1082,12 @@ def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
             对输出求和后求梯度。多输出时各输出的贡献会累加到同一输入梯度上。
         create_graph: 为 True 时保留计算图，VJP 结果可继续求导。
         strict: 为 True 时，若某个输出与某个输入完全不连通则抛 RuntimeError。
+        has_aux: 为 True 时 func 必须返回 (output, aux) 二元组，只对 output
+            求 VJP，aux 原样附在返回值末尾。
 
     返回:
-        (输出值, VJP 结果)。输出值结构与 func 的返回一致；VJP 结果为各输入的
+        has_aux=False 时返回 (输出值, VJP 结果)，has_aux=True 时返回
+        (输出值, VJP 结果, aux)。输出值结构与 func 的返回一致；VJP 结果为各输入的
         余切传播结果——单输入时为单个 TN，多输入时为 tuple，每个元素形状与
         对应输入相同。
     """
@@ -1054,7 +1098,8 @@ def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
             raise RuntimeError(f"Input {i} must be a tensor")
     inputs = _ensure_traceable(inputs)
 
-    out_list, is_single_output = _call_and_split(func, inputs)
+    wrapped, aux_cell = _split_aux(func, has_aux)
+    out_list, is_single_output = _call_and_split(wrapped, inputs)
 
     if cotangents is None:
         cot_list = [ones_like(out, requires_grad=create_graph) for out in out_list]
@@ -1097,7 +1142,62 @@ def vjp(func: Callable[..., Union[TN, tuple[TN, ...]]],
     out_values = out_list[0] if is_single_output else tuple(out_list)
     # 单个输入（含只含 1 个元素的序列）直接返回梯度张量，多输入返回元组
     vjp_values = results[0] if len(results) == 1 else tuple(results)
+    if has_aux:
+        return out_values, vjp_values, aux_cell[0]
     return out_values, vjp_values
+
+
+# ---------------------------------------------------------------------------
+# linearize
+# ---------------------------------------------------------------------------
+
+def linearize(func: Callable[..., Union[TN, tuple[TN, ...]]],
+              *primals: TN):
+    """在 primals 处线性化 func，返回 (primal_out, linear_fn)。
+
+    前向只求值一次并记录 primal 图；随后可用不同的切向量多次调用 linear_fn，
+    每次沿同一张图传播 tangent，得到 J(x)·v。等价于对 func 做一次前向 AD 的
+    “常量项 + 线性项”分解：``func(x + v) ≈ primal_out + linear_fn(v)``
+    （忽略高阶项）。与 torch.func.linearize 对齐。
+
+    参数:
+        func: 待线性化的函数，输入为 TN，输出为单个 TN 或 TN 序列。
+        *primals: 求值点输入，按 func 的位置参数顺序给出，必须都是 TN。
+
+    返回:
+        (primal_out, linear_fn)：
+            - primal_out 与 func 的返回结构一致（单输出为 TN，多输出为 tuple）；
+            - linear_fn(*tangents) 返回 J(x)·v，结构同 primal_out；
+              tangents 的个数与形状必须和 primals 一一对应。
+
+    注意:
+        linear_fn 只做前向传播，不保留高阶计算图；需要可再求导时请使用
+        ``jvp(..., create_graph=True)``。
+    """
+    if not primals:
+        raise RuntimeError("linearize requires at least one input")
+    for i, inp in enumerate(primals):
+        if not isinstance(inp, TN):
+            raise RuntimeError(f"Input {i} must be a tensor")
+
+    state = _record_primal(func, list(primals), False, False)
+
+    def linear_fn(*tangents):
+        if len(tangents) != len(primals):
+            raise RuntimeError(
+                f"Expected {len(primals)} tangents, got {len(tangents)}")
+        for i, (inp, vec) in enumerate(zip(primals, tangents)):
+            if not isinstance(vec, TN):
+                raise RuntimeError(f"v[{i}] must be a tensor")
+            if inp.shape != vec.shape:
+                raise RuntimeError(
+                    f"Shapes of input {i} ({inp.shape}) and v[{i}] ({vec.shape}) do not match")
+        results = _jvp_with_primal_graph(state, list(tangents), False, False)
+        return results[0] if state['is_single_output'] else tuple(results)
+
+    out_list = state['out_list']
+    primal_out = out_list[0] if state['is_single_output'] else tuple(out_list)
+    return primal_out, linear_fn
 
 
 # ---------------------------------------------------------------------------
@@ -1124,7 +1224,33 @@ def _identity_basis(numel: int, shape, dtype, device) -> TN:
     return basis
 
 
-def _jacobian_via_vjp(func, args, positions, create_graph: bool, strict: bool):
+def _identity_basis_chunk(start: int, count: int, flat_numel: int,
+                          shape, dtype, device) -> TN:
+    """构造 identity 矩阵的第 [start, start+count) 行，形状为 (count,) + shape。
+
+    与 _identity_basis 不同，只分配当前分块所需的内存（count × numel），
+    供 chunk_size 分块计算 Jacobian 时限制峰值内存。
+
+    参数:
+        start: 首个基向量在展平空间中的下标。
+        count: 本块的基向量个数。
+        flat_numel: 展平后的元素总数。
+        shape: 单个基向量的形状。
+        dtype: 数据类型。
+        device: 计算设备。
+
+    返回:
+        形状为 (count,) + shape 的张量，第 i 个切片为第 start+i 个单位基向量。
+    """
+    basis = zeros(count, *shape, dtype=dtype, device=device)
+    flat = basis._array.reshape(count, flat_numel)
+    for i in range(count):
+        flat[i, start + i] = 1
+    return basis
+
+
+def _jacobian_via_vjp(func, args, positions, create_graph: bool, strict: bool,
+                      chunk_size: Optional[int] = None):
     """用 vjp 原语计算 Jacobian：对输出的每个基向量做一次 VJP。
 
     func 只执行一次，所有列共享同一张前向计算图；每列仅做一次独立反向遍历
@@ -1137,6 +1263,7 @@ def _jacobian_via_vjp(func, args, positions, create_graph: bool, strict: bool):
         positions: 需要求导的参数位置序列。
         create_graph: 是否为高阶导数保留计算图。
         strict: 输出与输入不连通时是否报错。
+        chunk_size: 每次处理多少个输出基向量；None 表示一次性处理全部。
 
     返回:
         (blocks, is_single_output)。blocks[k][j] 是第 k 个被选中输入对第 j 个
@@ -1163,17 +1290,29 @@ def _jacobian_via_vjp(func, args, positions, create_graph: bool, strict: bool):
                                      device=out.device)
             continue
 
-        cot_batch = _identity_basis(numel, out.shape, out.dtype, out.device)
-
         def _single_vjp(cot, _out=out):
             # 复用已建立的前向计算图：VJP 关于 cotangent 线性，
             # 无需为每个输出基向量重跑 func。
             return _vjp_with_output(_out, tuple(inputs), cot, create_graph, strict)
 
-        stacked = _as_list(vmap(_single_vjp)(cot_batch))
-        for k, (blk, inp) in enumerate(zip(stacked, inputs)):
+        # 按 chunk_size 分批构造输出基向量，每批一次 vmap(vjp)，最后沿列拼接。
+        parts = [[] for _ in inputs]
+        step = numel if chunk_size is None else chunk_size
+        for start in range(0, numel, step):
+            count = builtins.min(step, numel - start)
+            if count == numel:
+                cot_batch = _identity_basis(numel, out.shape, out.dtype, out.device)
+            else:
+                cot_batch = _identity_basis_chunk(
+                    start, count, numel, out.shape, out.dtype, out.device)
+            stacked = _as_list(vmap(_single_vjp)(cot_batch))
+            for k, blk in enumerate(stacked):
+                parts[k].append(blk)
+
+        for k, (chunks, inp) in enumerate(zip(parts, inputs)):
             # 每个输入的分量形状为 (numel,)，还原成 Jacobian 块
             # out.shape + inp.shape；dtype 统一向输出对齐
+            blk = chunks[0] if len(chunks) == 1 else cat(chunks, dim=0)
             blk = blk.reshape(out.shape + inp.shape)
             if blk.dtype != out.dtype:
                 blk = blk.to(dtype=out.dtype)
@@ -1200,7 +1339,8 @@ def _basis_column(inp: TN, k: int) -> TN:
     return basis
 
 
-def _jacobian_via_jvp(func, args, positions, create_graph: bool):
+def _jacobian_via_jvp(func, args, positions, create_graph: bool,
+                      chunk_size: Optional[int] = None):
     """用直接前向规则的 jvp 原语计算 Jacobian：对每个输入基向量做一次 JVP。
 
     等价于 vmap(jvp)，并按 linearize 方式复用 primal 图：``func`` 只前向
@@ -1214,6 +1354,8 @@ def _jacobian_via_jvp(func, args, positions, create_graph: bool):
         args: 完整实参序列（含非张量参数，非张量原样透传）。
         positions: 需要求导的参数位置序列。
         create_graph: 是否为高阶导数保留计算图。
+        chunk_size: 每次处理多少个输入基向量；None 表示一次性处理全部。
+            分块只影响列的堆叠方式，结果与不分块一致。
 
     返回:
         (blocks, is_single_output)。blocks[k][j] 是第 k 个被选中输入对第 j 个
@@ -1251,16 +1393,24 @@ def _jacobian_via_jvp(func, args, positions, create_graph: bool):
             continue
 
         cols = [[] for _ in out_list]
-        for k in range(numel):
-            tangents = [None] * n_primals
-            tangents[slot] = _basis_column(inp, k)
-            results = _jvp_with_primal_graph(state, tangents, create_graph, False)
-            for j, res in enumerate(results):
-                cols[j].append(res)
+        step = numel if chunk_size is None else chunk_size
+        for start in range(0, numel, step):
+            stop = builtins.min(start + step, numel)
+            local = [[] for _ in out_list]
+            for k in range(start, stop):
+                tangents = [None] * n_primals
+                tangents[slot] = _basis_column(inp, k)
+                results = _jvp_with_primal_graph(state, tangents, create_graph, False)
+                for j, res in enumerate(results):
+                    local[j].append(res)
+            # 每块内沿最后一维堆叠为 (*out.shape, count)，块间再沿最后一维拼接
+            for j, chunk in enumerate(local):
+                cols[j].append(stack(chunk, dim=-1))
 
         # 每列结果的形状与 out 相同；沿最后一维堆叠得到 (*out.shape, numel)，
         # 再 reshape 成 (*out.shape, *inp.shape)，即第 k 个输入维度在末尾。
-        blocks.append([stack(col, dim=-1).reshape(out.shape + inp.shape)
+        blocks.append([(col[0] if len(col) == 1 else cat(col, dim=-1)
+                        ).reshape(out.shape + inp.shape)
                        for col, out in zip(cols, out_list)])
 
     return blocks, state['is_single_output']
@@ -1291,7 +1441,8 @@ def _format_jacobian(blocks, is_single_output: bool):
     return tuple(inner[0] if len(inner) == 1 else inner for inner in per_output)
 
 
-def _make_jacobian(compute_blocks, func, argnums, allow_none: bool, **opts):
+def _make_jacobian(compute_blocks, func, argnums, allow_none: bool,
+                   has_aux: bool = False, **opts):
     """构造 jacrev / jacfwd 共用的导函数：校验 argnums、算 blocks、统一格式化。
 
     参数:
@@ -1300,20 +1451,29 @@ def _make_jacobian(compute_blocks, func, argnums, allow_none: bool, **opts):
         func: 待求 Jacobian 的函数。
         argnums: 需要求导的参数位置，int、tuple[int, ...]；allow_none 时可为 None。
         allow_none: 是否允许 None 表示全部参数（jacfwd 支持，与 torch.func 一致）。
-        **opts: 透传给 compute_blocks 的选项（create_graph / strict）。
+        has_aux: 为 True 时 func 返回 (output, aux)，结果返回 (jacobian, aux)。
+        **opts: 透传给 compute_blocks 的选项（create_graph / strict / chunk_size）。
 
     返回:
         Callable：接受与 func 相同的参数，返回 _format_jacobian 整理后的结果。
     """
+    chunk_size = opts.get('chunk_size')
+    if chunk_size is not None and (not isinstance(chunk_size, int) or chunk_size <= 0):
+        raise ValueError(
+            f"chunk_size must be None or a positive integer, got {chunk_size}")
+
     def _wrapper(*args, **kwargs):
         an = _check_argnums(argnums, allow_none=allow_none)
         positions = tuple(range(len(args))) if an is None else an
+        wrapped, aux_cell = _split_aux(lambda *a: func(*a, **kwargs), has_aux)
         blocks, is_single_output = compute_blocks(
-            lambda *a: func(*a, **kwargs), args, positions, **opts)
+            wrapped, args, positions, **opts)
         result = _format_jacobian(blocks, is_single_output)
         # argnums=None 表示“对全部参数求导”，此时即使只有 1 个参数也返回元组
         if an is None and not isinstance(result, tuple):
-            return (result,)
+            result = (result,)
+        if has_aux:
+            return result, aux_cell[0]
         return result
 
     return _wrapper
@@ -1322,7 +1482,9 @@ def _make_jacobian(compute_blocks, func, argnums, allow_none: bool, **opts):
 def jacrev(func: Callable[..., Union[TN, tuple[TN, ...]]],
            argnums: Union[int, tuple[int, ...]] = 0,
            create_graph: bool = False,
-           strict: bool = True) -> Callable[..., Union[TN, tuple[TN, ...]]]:
+           strict: bool = True,
+           has_aux: bool = False,
+           chunk_size: Optional[int] = None) -> Callable[..., Union[TN, tuple[TN, ...]]]:
     """通过反向模式 (reverse-mode autodiff) 计算 Jacobian 矩阵。
 
     实现方式为 vmap(vjp)：对输出的标准基逐一做 VJP，堆叠成完整 Jacobian。
@@ -1339,21 +1501,30 @@ def jacrev(func: Callable[..., Union[TN, tuple[TN, ...]]],
                  错误信息与 torch.func.jacrev 一致
         create_graph: 为 True 时 Jacobian 张量保留计算图，可继续求导。
         strict: 为 True 时，若某输出与某输入完全不连通则抛 RuntimeError（默认 True）。
+        has_aux: 为 True 时 func 必须返回 (output, aux)，只对 output 求 Jacobian，
+            返回 (jacobian, aux)。
+        chunk_size: 每次处理的输出基向量个数，用于限制峰值内存；None 表示一次
+            处理全部。结果与不分块一致。
 
     返回:
-        Callable：func 的导函数，接受与 func 相同的参数并返回 Jacobian。
+        Callable：func 的导函数，接受与 func 相同的参数并返回 Jacobian
+        （has_aux=True 时返回 (Jacobian, aux)）。
         结果结构与输出结构对应：单输出单输入时返回单个矩阵，形状为
         output_shape + input_shape；单输出多输入时返回 tuple，顺序与 argnums
         一致；多输出单输入时返回 tuple，顺序与输出顺序一致；多输出多输入时
         返回 tuple-of-tuples（输出在外层、输入在内层），内层顺序与 argnums 一致。
     """
     return _make_jacobian(_jacobian_via_vjp, func, argnums,
-                          allow_none=False, create_graph=create_graph, strict=strict)
+                          allow_none=False, has_aux=has_aux,
+                          create_graph=create_graph, strict=strict,
+                          chunk_size=chunk_size)
 
 
 def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
            argnums: Union[int, tuple[int, ...]] = 0,
-           create_graph: bool = False) -> Callable[..., Union[TN, tuple[TN, ...]]]:
+           create_graph: bool = False,
+           has_aux: bool = False,
+           chunk_size: Optional[int] = None) -> Callable[..., Union[TN, tuple[TN, ...]]]:
     """通过正向模式 (forward-mode autodiff) 计算 Jacobian 矩阵。
 
     基于真正的前向 AD 原语 ``func.jvp``：primal 图只前向求值并记录一次，
@@ -1369,9 +1540,14 @@ def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
                  list 等非法取值在调用导函数时抛 RuntimeError，错误信息与
                  torch.func 一致
         create_graph: 为 True 时 Jacobian 张量保留计算图，可继续求导。
+        has_aux: 为 True 时 func 必须返回 (output, aux)，只对 output 求 Jacobian，
+            返回 (jacobian, aux)。
+        chunk_size: 每次处理的输入基向量个数，用于限制峰值内存；None 表示一次
+            处理全部。结果与不分块一致。
 
     返回:
-        Callable：func 的导函数，接受与 func 相同的参数并返回 Jacobian。
+        Callable：func 的导函数，接受与 func 相同的参数并返回 Jacobian
+        （has_aux=True 时返回 (Jacobian, aux)）。
         结果结构与输出结构对应：单输出单输入时返回单个矩阵，形状为
         output_shape + input_shape（argnums=None 时即使只有 1 个参数也返回
         元组）；单输出多输入时返回 tuple，顺序与 argnums 一致；多输出单输入时
@@ -1379,7 +1555,8 @@ def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
         （输出在外层、输入在内层），内层顺序与 argnums 一致。
     """
     return _make_jacobian(_jacobian_via_jvp, func, argnums,
-                          allow_none=True, create_graph=create_graph)
+                          allow_none=True, has_aux=has_aux,
+                          create_graph=create_graph, chunk_size=chunk_size)
 
 
 # ---------------------------------------------------------------------------
@@ -1389,7 +1566,8 @@ def jacfwd(func: Callable[..., Union[TN, tuple[TN, ...]]],
 def hessian(func: Callable[..., TN],
             argnums: Union[int, tuple[int, ...]] = 0,
             create_graph: bool = False,
-            strict: bool = True) -> Callable[..., Union[TN, tuple[TN, ...]]]:
+            strict: bool = True,
+            has_aux: bool = False) -> Callable[..., Union[TN, tuple[TN, ...]]]:
     """计算标量值函数的 Hessian 矩阵，返回包裹函数。
 
     实现方式为 jacrev(grad(func))：先由反向模式 grad 得到梯度张量，
@@ -1403,15 +1581,18 @@ def hessian(func: Callable[..., TN],
         create_graph: 为 True 时 Hessian 张量保留计算图，可继续求导。
         strict: 为 True 时，若梯度与 argnums 选中的输入完全不连通则抛
                  RuntimeError（未被选中的参数不参与检查）。
+        has_aux: 为 True 时 func 必须返回 (output, aux)，只对 output 求 Hessian，
+            返回 (hessian, aux)。
 
     返回:
-        Callable：func 的导函数，接受与 func 相同的参数并返回 Hessian。
+        Callable：func 的导函数，接受与 func 相同的参数并返回 Hessian
+        （has_aux=True 时返回 (Hessian, aux)）。
         单个 argnums 位置时返回形状 input_shape + input_shape 的矩阵；多个位置时
         返回 tuple，第 j 项是第 argnums[j] 个输入的梯度对该输入的 Hessian 块。
     """
     def _wrapper(*args, **kwargs):
         an = _check_argnums(argnums)
-        f = lambda *a: func(*a, **kwargs)
+        f, aux_cell = _split_aux(lambda *a: func(*a, **kwargs), has_aux)
 
         output = f(*args)
         if not isinstance(output, TN) or output.ndim != 0:
@@ -1447,8 +1628,12 @@ def hessian(func: Callable[..., TN],
                                       strict=effective_strict)
 
         if len(an) == 1:
-            return blocks[0][0]
-        return tuple(blocks[j][j] for j in range(len(an)))
+            result = blocks[0][0]
+        else:
+            result = tuple(blocks[j][j] for j in range(len(an)))
+        if has_aux:
+            return result, aux_cell[0]
+        return result
 
     return _wrapper
 
@@ -1460,8 +1645,9 @@ def _batch_slice(tensor: TN, index: tuple) -> TN:
     """vmap 专用快速切片，等价于 tensor[index] 但跳过通用索引分派。
 
     仅用于基础索引（slice / 整数）且索引已由调用方归一化为非负的情形：
-    直接取底层数组的视图，并在需要梯度时保留到原张量的梯度边
-    （fromvars / parms / _grad_rule 与 __getitem__ 完全一致）。
+    直接取底层数组的视图，并在需要梯度（反向或前向追踪）时保留到原张量的
+    依赖边（fromvars / parms / _grad_rule / _jvp_rule 与 __getitem__ 一致）。
+    建边逻辑须与 _getitem 保持同步，否则 vmap 在前向/反向路径上的行为会分叉。
     """
     data = tensor._array[index]
     # 标量索引可能返回 numpy/cupy 标量而非 0 维数组，
@@ -1474,15 +1660,21 @@ def _batch_slice(tensor: TN, index: tuple) -> TN:
     ret._is_view = True
     ret._base = tensor
     ret._view_index = index
-    if ret.requires_grad:
+    # 反向需要 requires_grad；前向追踪下输入可能是 requires_grad=False 的
+    # detach 张量，此时也必须建边，否则 tangent 会被静默丢弃
+    if ret.requires_grad or forward_ad_trace_active():
         ret.fromvars = (tensor,)
         ret.parms = (index,)
         ret._grad_rule = _getitem_grad
+        # 有直接规则才能对 tangent 施加同一索引；缺失时会退化为局部 VJP 转置
+        # （数值等价但慢，且 create_graph=True 会直接报错）
+        ret._jvp_rule = _getitem_jvp
     return ret
 
 def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
          in_dims: Union[int, tuple[int, ...], list[Optional[int]]] = 0,
-         out_dims: Union[int, tuple[int, ...], list[Optional[int]]] = 0) -> Callable[..., Union[TN, tuple[TN, ...]]]:
+         out_dims: Union[int, tuple[int, ...], list[Optional[int]]] = 0,
+         chunk_size: Optional[int] = None) -> Callable[..., Union[TN, tuple[TN, ...]]]:
     """向量化映射 (vectorized map)。
 
     将原本作用于单个样本的函数扩展到批次维度上并行（通过 loop + 堆叠实现，
@@ -1492,6 +1684,8 @@ def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
         in_dims: 每个输入的批次维度。int 表示所有输入共用该维度；
                  tuple[int,...] 表示每个输入各自的维度位置；None 表示该输入不批处理。
         out_dims: 每个输出的批次维度，语义同 in_dims。
+        chunk_size: 每次处理的批次样本数；None 表示一次处理整个批次。分块只改变
+             循环与堆叠的粒度，结果与不分块一致。
 
     返回:
         包裹函数，接受批次输入，返回批次输出。
@@ -1502,6 +1696,10 @@ def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
         - 非批处理输入 (in_dims=None) 直接透传给底层 func
         - 输出需要梯度时用 stack 保留拼接的梯度边；纯前向时预分配缓冲写入
     """
+    if chunk_size is not None and (not isinstance(chunk_size, int) or chunk_size <= 0):
+        raise ValueError(
+            f"chunk_size must be None or a positive integer, got {chunk_size}")
+
     def _normalize_dims(dims, n_expected):
         if isinstance(dims, int):
             return [dims] * n_expected
@@ -1554,8 +1752,12 @@ def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
                     sliced_args[k] = _batch_slice(args[k], pre + (b,) + post)
             outputs_list.append(func(*sliced_args, **kwargs))
 
+        # 按 chunk_size 切分批次结果；None 表示整批一个 chunk
+        step = batch_size if chunk_size is None else chunk_size
+        chunks = [outputs_list[s:s + step] for s in range(0, batch_size, step)]
+
         # 堆叠结果
-        first_out = outputs_list[0]
+        first_out = chunks[0][0]
         is_single = isinstance(first_out, TN)
         out_dims_list = _normalize_dims(out_dims, 1 if is_single else len(first_out))
 
@@ -1581,40 +1783,185 @@ def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
                 buf._array[prefix + (b,)] = it._array
             return buf
 
+        def _stack_chunks(per_chunk, out_dim, sample_ndim):
+            """先逐 chunk 堆叠，再把多个 chunk 沿同一批次维拼接。"""
+            stacked = [_stack_result(items, out_dim) for items in per_chunk]
+            if len(stacked) == 1:
+                return stacked[0]
+            ndim = sample_ndim + 1
+            ax = (out_dim if out_dim is not None else 0)
+            if ax < 0:
+                ax += ndim
+            return cat(stacked, dim=ax)
+
         if is_single:
-            return _stack_result(outputs_list, out_dims_list[0])
+            return _stack_chunks(chunks, out_dims_list[0], len(first_out.shape))
         else:
             n_out = len(first_out)
             result = []
             for oi in range(n_out):
-                stacked = _stack_result([out[oi] for out in outputs_list],
-                                         out_dims_list[oi] if oi < len(out_dims_list) else 0)
-                result.append(stacked)
+                per_chunk = [[out[oi] for out in items] for items in chunks]
+                result.append(_stack_chunks(
+                    per_chunk,
+                    out_dims_list[oi] if oi < len(out_dims_list) else 0,
+                    len(first_out[oi].shape)))
             return tuple(result)
 
     return _wrapper
 
 
 # ---------------------------------------------------------------------------
-# functional_call
+# functional_call / stack_module_state
 # ---------------------------------------------------------------------------
 
-def functional_call(module: Any,
-                    parameter_values: Any,
-                    args: Union[TN, tuple[TN, ...]],
-                    kwargs: Optional[dict] = None) -> Any:
-    """以自定义参数调用 module.forward，不修改 module 自身的参数。
+def _named_state(module: Any):
+    """收集 module 的具名参数与具名缓冲区。
 
-    内部临时将 module 的具名参数属性替换为 parameter_values[i]，调用 forward 后恢复。
-    用于无状态（stateless）地调用 Module，便于与 jacrev/vmap 等函数式原语组合。
+    参数:
+        module: riemann.nn.Module 或提供 named_parameters / _named_parameters
+            的任意对象。
+
+    返回:
+        (params, buffers)：两个 (name, tensor) 列表，保持模块注册顺序。
+    """
+    if hasattr(module, "named_parameters"):
+        params = list(module.named_parameters())
+    elif hasattr(module, "_named_parameters"):
+        params = list(module._named_parameters())
+    else:
+        params = []
+    if hasattr(module, "named_buffers"):
+        buffers = list(module.named_buffers())
+    else:
+        buffers = []
+    return params, buffers
+
+
+def _resolve_state_slot(module: Any, name: str):
+    """把点分名称定位到可读写的落点。
+
+    对 riemann.nn.Module，点号路径沿 ``_modules`` 向下遍历，叶子名在
+    ``_parameters`` / ``_buffers`` 字典中查找（直接改字典可绕开 __setattr__
+    把普通 TN 误注册为 buffer）；其余对象回退到 getattr / setattr。
+
+    参数:
+        module: 目标模块。
+        name: 参数或缓冲区的具名路径，如 "l1.weight"。
+
+    返回:
+        ("dict", store, key) 或 ("attr", owner, key)；定位失败返回 None。
+    """
+    parts = name.split('.')
+    owner = module
+    for part in parts[:-1]:
+        modules = getattr(owner, "_modules", None)
+        if isinstance(modules, dict) and part in modules:
+            owner = modules[part]
+        else:
+            owner = getattr(owner, part, None)
+            if owner is None:
+                return None
+    leaf = parts[-1]
+    for store_name in ("_parameters", "_buffers"):
+        store = getattr(owner, store_name, None)
+        if isinstance(store, dict) and leaf in store:
+            return ("dict", store, leaf)
+    # Module 类对象存在注册表：未注册的名字不能被当成普通属性改写
+    if (isinstance(getattr(owner, "_parameters", None), dict)
+            or isinstance(getattr(owner, "_buffers", None), dict)):
+        return None
+    if hasattr(owner, leaf):
+        return ("attr", owner, leaf)
+    return None
+
+
+def _read_slot(slot) -> Any:
+    """读取 _resolve_state_slot 返回的落点当前值。"""
+    kind, owner, key = slot
+    return owner[key] if kind == "dict" else getattr(owner, key)
+
+
+def _write_slot(slot, value) -> None:
+    """把落点当前值替换为 value。"""
+    kind, owner, key = slot
+    if kind == "dict":
+        owner[key] = value
+    else:
+        setattr(owner, key, value)
+
+
+def _normalize_state_dicts(values, params):
+    """把 parameter_and_buffer_dicts 归一化为 {name: tensor}。
+
+    支持三种形式（与 torch.func 对齐并保留旧式位置序列）：
+        - dict：直接使用；
+        - dict 序列：合并，键重复时报 ValueError；
+        - TN / TN 序列：按 named_parameters() 的顺序映射到参数名（旧式用法）。
+
+    参数:
+        values: 用户传入的参数/缓冲区集合。
+        params: (name, tensor) 列表，用于旧式位置序列的命名。
+
+    返回:
+        {name: tensor} 字典。
+
+    异常:
+        TypeError: values 既不是 dict 也不是 TN/序列。
+        ValueError: 旧式位置序列长度与模块参数个数不符，或 dict 序列键重复。
+    """
+    if isinstance(values, dict):
+        return dict(values)
+    if isinstance(values, TN):
+        values = [values]
+    if isinstance(values, (list, tuple)):
+        items = list(values)
+        if items and builtins.all(isinstance(d, dict) for d in items):
+            merged = {}
+            for d in items:
+                for k, v in d.items():
+                    if k in merged:
+                        raise ValueError(
+                            f"{k} appeared in multiple dictionaries; "
+                            "behavior of functional call is ambiguous")
+                    merged[k] = v
+            return merged
+        names = [n for n, _ in params]
+        if len(items) != len(names):
+            raise ValueError(
+                f"module has {len(names)} parameters but got "
+                f"{len(items)} values in parameter_values")
+        return dict(zip(names, items))
+    raise TypeError(
+        "parameter_and_buffer_dicts must be a dict, a sequence of dicts, "
+        f"or a TN / sequence of TN, got {type(values)}")
+
+
+def functional_call(module: Any,
+                    parameter_and_buffer_dicts: Any,
+                    args: Any = None,
+                    kwargs: Optional[dict] = None,
+                    *,
+                    tie_weights: bool = True,
+                    strict: bool = False) -> Any:
+    """以自定义参数与缓冲区调用 module.forward，不修改 module 自身的状态。
+
+    内部按名字临时替换 module 的参数/缓冲区，调用 forward 后无条件恢复，
+    用于无状态（stateless）地调用 Module，便于与 grad / jacrev / vmap 等
+    函数式原语组合。接口与 torch.func.functional_call 对齐。
 
     参数:
         module: 带有 forward 方法的对象（通常是 riemann.nn.Module 或子类）
-        parameter_values: 与 module.named_parameters() 顺序一致的参数值。
-                          可以是 list/tuple/TN 中的任一种。若 module 有参数而 parameter_values 为 None，
-                          将使用 module 自身参数（退化为普通 forward 调用）。
-        args: forward 的位置参数
+        parameter_and_buffer_dicts: {名称: 张量}。名称遵循 state_dict 约定，
+             如 "weight"、"l1.bias"；参数与缓冲区可放在同一个字典里，也可以
+             传入多个互不重叠的字典。传 None 表示使用 module 自身状态。
+             为兼容旧用法，也接受按 named_parameters() 顺序排列的 TN / TN 序列。
+        args: forward 的位置参数；None 表示无参数，单个 TN 不会被解包
         kwargs: forward 的关键字参数
+        tie_weights: 为 True 时尊重模块中原有的权重绑定：只提供绑定组中的一个
+             名字也会同步更新同组的其他名字；若同一组给出不同对象则报错。
+             为 False 时只替换显式给出的名字。
+        strict: 为 True 时，提供的名称必须与模块的参数/缓冲区名称完全一致，
+             缺失或多出都报错；为 False 时允许多出（忽略）或缺失（保留原值）。
 
     返回:
         module.forward(*args, **kwargs) 的返回值
@@ -1622,64 +1969,128 @@ def functional_call(module: Any,
     if kwargs is None:
         kwargs = {}
 
-    # 归一化 args 为 tuple，避免单个 TN 被解包
-    if isinstance(args, TN):
+    # 归一化 args：None -> ()；单个 TN 不被解包；list 视为位置参数序列
+    if args is None:
+        args = ()
+    elif isinstance(args, TN):
         args = (args,)
     elif isinstance(args, list):
         args = tuple(args)
-    # args 已经是 tuple 时保持不变
 
-    # 解析 module 的参数
-    if hasattr(module, "named_parameters"):
-        module_params = list(module.named_parameters())
-    elif hasattr(module, "_named_parameters"):
-        module_params = list(module._named_parameters())
-    else:
-        # 没有参数的 module —— 直接调用 forward（或 __call__）
-        forward = getattr(module, "forward", None) or module
+    forward = getattr(module, "forward", None) or module
+
+    params, buffers = _named_state(module)
+    if parameter_and_buffer_dicts is None:
+        return forward(*args, **kwargs)
+    if not params and not buffers:
         return forward(*args, **kwargs)
 
-    if parameter_values is None:
-        forward = getattr(module, "forward", None) or module
-        return forward(*args, **kwargs)
+    state = _normalize_state_dicts(parameter_and_buffer_dicts, params)
 
-    # 归一化 parameter_values 为 list
-    if isinstance(parameter_values, TN):
-        parameter_values = [parameter_values]
-    elif not isinstance(parameter_values, (list, tuple)):
-        raise TypeError(
-            f"parameter_values must be a TN or tuple/list of TN, got {type(parameter_values)}"
-        )
+    all_names = [n for n, _ in params] + [n for n, _ in buffers]
+    if strict:
+        missing = sorted(set(all_names) - set(state))
+        unexpected = sorted(set(state) - set(all_names))
+        if missing or unexpected:
+            msgs = []
+            if unexpected:
+                msgs.append(f"Unexpected key(s): {', '.join(map(repr, unexpected))}.")
+            if missing:
+                msgs.append(f"Missing key(s): {', '.join(map(repr, missing))}.")
+            raise RuntimeError(
+                "Error(s) in reparametrizing for {}:\n\t{}".format(
+                    type(module).__name__, "\n\t".join(msgs)))
 
-    if len(parameter_values) != len(module_params):
-        raise ValueError(
-            f"module has {len(module_params)} parameters but got "
-            f"{len(parameter_values)} values in parameter_values"
-        )
+    # 权重绑定：同一底层张量对应多个名字时补齐未提供的名字，并检查冲突值
+    if tie_weights:
+        groups = {}
+        for name, tensor in list(params) + list(buffers):
+            groups.setdefault(id(tensor), []).append(name)
+        for names in groups.values():
+            if len(names) < 2:
+                continue
+            given = [(n, state[n]) for n in names if n in state]
+            if not given:
+                continue
+            first_value = given[0][1]
+            for _, value in given[1:]:
+                if value is not first_value:
+                    raise ValueError(
+                        f"functional_call got multiple values for keys {sorted(names)}, "
+                        "which are tied. Consider using tie_weights=False")
+            for n in names:
+                state[n] = first_value
 
-    # 临时替换 module 的参数值，调用 forward，然后恢复。
-    # 注意：不能用 setattr 替换普通 TN，因为 Module.__setattr__ 会把
-    # 普通 TN 注册到 _buffers，而 Module.__getattr__ 查找顺序是
-    # _parameters → _buffers → _modules，最终仍取到旧的 Parameter。
-    # 直接操作 _parameters 字典才能让 self.weight 读到新值。
+    # 临时替换并记录原值；finally 中恢复，保证前向抛异常也不污染模块
+    slots = []
     orig_values = []
-    _params = getattr(module, "_parameters", None)
     try:
-        if _params is not None:
-            for (name, orig), new_val in zip(module_params, parameter_values):
-                orig_values.append(_params.get(name))
-                _params[name] = new_val
-        # 回退：没有 _parameters 字典的 module，退回到 setattr
-        if _params is None:
-            for (name, orig), new_val in zip(module_params, parameter_values):
-                orig_values.append(orig)
-                setattr(module, name, new_val)
-        forward = getattr(module, "forward", None) or module
+        for name, value in state.items():
+            slot = _resolve_state_slot(module, name)
+            if slot is None:
+                # strict=False 时忽略模块中不存在的名字
+                continue
+            slots.append(slot)
+            orig_values.append(_read_slot(slot))
+            _write_slot(slot, value)
         return forward(*args, **kwargs)
     finally:
-        if _params is not None:
-            for (name, _), orig in zip(module_params, orig_values):
-                _params[name] = orig
-        else:
-            for (name, _), orig in zip(module_params, orig_values):
-                setattr(module, name, orig)
+        for slot, value in zip(slots, orig_values):
+            _write_slot(slot, value)
+
+
+def stack_module_state(models: Any):
+    """把多个同构 Module 的参数与缓冲区沿新维度 0 堆叠，用于 vmap 集成。
+
+    与 torch.func.stack_module_state 对齐：返回 (params, buffers) 两个
+    {名称: 堆叠张量} 字典，可直接配合 functional_call 在 vmap 下做模型集成。
+
+    参数:
+        models: Module 序列或 ModuleList，至少一个；所有模型必须同类、同
+            training/eval 模式，且参数/缓冲区名称一致。
+
+    返回:
+        (params, buffers)。
+
+    异常:
+        RuntimeError: 模型为空、类型/模式/名称不一致，或同名张量的
+            requires_grad 不一致。
+    """
+    models = list(models)
+    if len(models) == 0:
+        raise RuntimeError("stack_module_state: Expected at least one model, got 0.")
+    if not (all(getattr(m, "training", True) for m in models)
+            or all(not getattr(m, "training", True) for m in models)):
+        raise RuntimeError(
+            "stack_module_state: Expected all models to have the same training/eval mode.")
+    first_type = type(models[0])
+    if not builtins.all(type(m) is first_type for m in models):
+        raise RuntimeError(
+            "stack_module_state: Expected all models to be of the same class.")
+
+    def _stack_named(dicts, kind):
+        names = list(dicts[0])
+        expected = set(names)
+        for d in dicts[1:]:
+            if set(d) != expected:
+                raise RuntimeError(
+                    f"stack_module_state: Expected all models to have the same "
+                    f"{kind} names")
+        stacked = {}
+        for name in names:
+            tensors = [d[name] for d in dicts]
+            all_requires_grad = builtins.all(t.requires_grad for t in tensors)
+            none_requires_grad = builtins.all(not t.requires_grad for t in tensors)
+            if not all_requires_grad and not none_requires_grad:
+                raise RuntimeError(
+                    f"Expected {name} from each model to have the same .requires_grad")
+            value = stack(tensors, dim=0)
+            if all_requires_grad:
+                value = value.detach().requires_grad_(True)
+            stacked[name] = value
+        return stacked
+
+    all_params = [dict(m.named_parameters()) for m in models]
+    all_buffers = [dict(m.named_buffers()) if hasattr(m, "named_buffers") else {}
+                   for m in models]
+    return _stack_named(all_params, "parameter"), _stack_named(all_buffers, "buffer")

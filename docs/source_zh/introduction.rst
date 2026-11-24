@@ -34,7 +34,7 @@ Riemann 的核心价值在于其**简洁性**和**可学习性**——代码结�
 
 - **backward 方法**：触发反向传播计算梯度
 - **grad 函数**：计算函数相对于输入的梯度
-- **func 模块**：torch.func 风格的函数式自动求导 API，提供柯里化的 ``grad``、``jvp``、``jvp2``、``vjp``、``jacrev``、``jacfwd``、``hessian``、``vmap``、``functional_call`` 等函数，适合链式高阶求导；``jvp`` 由直接前向规则驱动，``jvp2`` 保留旧的局部 VJP 转置实现
+- **func 模块**：torch.func 风格的函数式自动求导 API，提供柯里化的 ``grad``、``jvp``、``jvp2``、``vjp``、``linearize``、``jacrev``、``jacfwd``、``hessian``、``vmap``、``functional_call``、``stack_module_state`` 等函数，适合链式高阶求导；``jvp`` 由直接前向规则驱动，``jvp2`` 保留旧的局部 VJP 转置实现
 - **register_grad_rule 装饰器**：使用 ``@register_grad_rule`` 装饰器自定义梯度跟踪函数（Riemann 特有）
 - **register_jvp_rule 装饰器**：使用 ``@register_jvp_rule`` 为函数登记直接前向（JVP）规则，可与 ``register_grad_rule`` 单独或同时使用（Riemann 特有）
 - **Function 类**：通过继承 Function 类自定义前向、反向与可选的前向模式（``jvp``）规则，支持 ``setup_context``、``save_for_forward``（Riemann 特有）
@@ -186,7 +186,7 @@ Riemann 设计时注重与 PyTorch 接口的兼容性，同名的函数和类保
 - **神经网络组件**：``nn`` 模块中的层、激活函数和损失函数与 PyTorch 保持接口兼容
 - **优化器**：``optim`` 模块中的优化器（如 SGD、Adam 等）接口与 PyTorch 保持一致
 - **自动求导机制**：``requires_grad``、反向传播机制与 PyTorch 相似
-- **torch.func 兼容**：顶层 ``func`` 模块对齐 ``torch.func`` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``hessian``、``vmap``、``functional_call``
+- **torch.func 兼容**：顶层 ``func`` 模块对齐 ``torch.func`` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``linearize``、``hessian``、``vmap``、``functional_call``、``stack_module_state``
 - **计算机视觉**：``vision`` 模块中的数据集和变换与 torchvision 保持接口兼容
 - **跨框架互操作**：Riemann 张量可与 NumPy 数组、CuPy 数组以及 PyTorch 等其它张量框架互相转换或共享数据，入口包括 ``r.tensor()``、``r.as_tensor()``、``r.from_dlpack()``、``TN.array()``、``TN.numpy()``，底层依托 ``__array__``、``__cuda_array_interface__``、``__dlpack__``、``__buffer__`` 协议（``__buffer__`` 需 Python 3.12+）；设备与 dtype 一致时为零拷贝
 
@@ -209,9 +209,8 @@ Riemann 特有功能
 Riemann 提供了一些 PyTorch 没有的功能：
 
 - **KAN 网络支持**：Kolmogorov-Arnold Networks (KAN) 网络实现，包括 KAN、KANLinear等模块
-- **自定义梯度装饰器** (``@register_grad_rule``)：使用装饰器快速为函数添加自动求导支持，无需定义完整的 Function 类
+- **自定义梯度和jvp规则装饰器** (``@register_grad_rule`` / ``@register_jvp_rule``)：使用装饰器快速为函数添加自动求导支持，无需定义完整的 Function 类
 - **新函数**：``sumall`` （将多个张量或非张量相加，返回总和）、``isum`` （智能求和函数，根据参数自动选择合适的求和方式）、``d()`` （张量方法，按变量链式求高阶混合偏导数）等；这些均为 Riemann 特有接口
-- **简洁的代码结构**：代码量更少，结构更清晰，便于学习和研究
 
 安装指南
 --------
