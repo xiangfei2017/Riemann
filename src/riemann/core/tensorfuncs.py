@@ -57,8 +57,7 @@ from .tensordef import *
 from .tensordef import (
     _validate_shape, _require_tn, _get_device,
     _get_broadcast_axis, _apply_out, _apply_out_tuple,
-    _convert_TNindex_to_numpy, _same_device,
-    _input_tangent
+    _convert_TNindex_to_numpy, _same_device, TangentPair
 )
 
 
@@ -715,21 +714,19 @@ def _sign_grad(result_tensor:TN)->tuple[TN]:
                   (g - u * (u.conj() * g).real) / safe_divisor),)
 
 
-def _sign_jvp(result_tensor:TN):
+def _sign_jvp(frame, result_tensor:TN):
     """sign JVP：实数几乎处处为 0；复数 y_t = (x_t − u·Re(conj(u)·x_t))/|x|。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is None:
-        return
+        return None
     if x.dtype.kind != 'c':
-        frame.node_tangent[id(result_tensor)] = zeros_like(result_tensor)
-        return
+        return zeros_like(result_tensor)
     u = result_tensor
     abs_x = abs(x)
     is_zero = (abs_x == 0)
     safe_divisor = where(is_zero, ones_like(abs_x), abs_x)
-    frame.node_tangent[id(result_tensor)] = where(
+    return where(
         is_zero, zeros_like(u),
         (x_t - u * (u.conj() * x_t).real) / safe_divisor)
 
@@ -976,13 +973,13 @@ def _arcsin_grad(result_tensor:TN)->tuple[TN]:
     return (result_tensor._grad_value * (1./sqrt(1. - x**2.).conj()),)
 
 
-def _arcsin_jvp(result_tensor:TN):
+def _arcsin_jvp(frame, result_tensor:TN):
     """arcsin JVP：y = arcsin(x) → y_t = x_t / sqrt(1 − x²)（复数不取共轭）。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = x_t / sqrt(1. - x**2.)
+        return x_t / sqrt(1. - x**2.)
+    return None
 
 
 @api_registry.register
@@ -1004,13 +1001,13 @@ def _arccos_grad(result_tensor:TN)->tuple[TN]:
     return (result_tensor._grad_value * (-1.0/sqrt(1. - x**2.).conj()),)
 
 
-def _arccos_jvp(result_tensor:TN):
+def _arccos_jvp(frame, result_tensor:TN):
     """arccos JVP：y = arccos(x) → y_t = −x_t / sqrt(1 − x²)（复数不取共轭）。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = -x_t / sqrt(1. - x**2.)
+        return -x_t / sqrt(1. - x**2.)
+    return None
 
 
 @api_registry.register
@@ -1032,13 +1029,13 @@ def _arctan_grad(result_tensor:TN)->tuple[TN]:
     return (result_tensor._grad_value * (1./(1. + x**2.).conj()),)
 
 
-def _arctan_jvp(result_tensor:TN):
+def _arctan_jvp(frame, result_tensor:TN):
     """arctan JVP：y = arctan(x) → y_t = x_t / (1 + x²)（复数不取共轭）。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = x_t / (1. + x**2.)
+        return x_t / (1. + x**2.)
+    return None
 
 
 @api_registry.register
@@ -1060,13 +1057,13 @@ def _sinh_grad(result_tensor:TN)->tuple[TN]:
     return (result_tensor._grad_value * cosh(x).conj(),)
 
 
-def _sinh_jvp(result_tensor:TN):
+def _sinh_jvp(frame, result_tensor:TN):
     """sinh JVP：y = sinh(x) → y_t = cosh(x) · x_t。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = cosh(x) * x_t
+        return cosh(x) * x_t
+    return None
 
 
 @api_registry.register
@@ -1106,13 +1103,13 @@ def _cosh_grad(result_tensor:TN)->tuple[TN]:
     return (result_tensor._grad_value * sinh(x).conj(),)
 
 
-def _cosh_jvp(result_tensor:TN):
+def _cosh_jvp(frame, result_tensor:TN):
     """cosh JVP：y = cosh(x) → y_t = sinh(x) · x_t。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = sinh(x) * x_t
+        return sinh(x) * x_t
+    return None
 
 
 @api_registry.register
@@ -1151,13 +1148,13 @@ def _tanh_grad(result_tensor:TN)->tuple[TN]:
     return (result_tensor._grad_value * (1.0 - result_tensor * result_tensor).conj(),)
 
 
-def _tanh_jvp(result_tensor:TN):
+def _tanh_jvp(frame, result_tensor:TN):
     """tanh JVP：y = tanh(x) → y_t = (1 − y²)·x_t。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = (1.0 - result_tensor * result_tensor) * x_t
+        return (1.0 - result_tensor * result_tensor) * x_t
+    return None
 
 
 @api_registry.register
@@ -1266,13 +1263,13 @@ def _arcsinh_grad(result_tensor:TN)->tuple[TN]:
     return (result_tensor._grad_value * (1. / sqrt(x**2. + 1.).conj()),)
 
 
-def _arcsinh_jvp(result_tensor:TN):
+def _arcsinh_jvp(frame, result_tensor:TN):
     """arcsinh JVP：y = arcsinh(x) → y_t = x_t / sqrt(x² + 1)（复数不取共轭）。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = x_t / sqrt(x**2. + 1.)
+        return x_t / sqrt(x**2. + 1.)
+    return None
 
 
 @api_registry.register
@@ -1321,13 +1318,13 @@ def _arccosh_grad(result_tensor:TN)->tuple[TN]:
     return (result_tensor._grad_value * (1. / _arccosh_denominator(x).conj()),)
 
 
-def _arccosh_jvp(result_tensor:TN):
+def _arccosh_jvp(frame, result_tensor:TN):
     """arccosh JVP：y = arccosh(x) → y_t = x_t / (arccosh 导数分母)。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = x_t / _arccosh_denominator(x)
+        return x_t / _arccosh_denominator(x)
+    return None
 
 
 @api_registry.register
@@ -1367,13 +1364,13 @@ def _arctanh_grad(result_tensor:TN)->tuple[TN]:
     return (result_tensor._grad_value * (1. / (1. - x**2.0).conj()),)
 
 
-def _arctanh_jvp(result_tensor:TN):
+def _arctanh_jvp(frame, result_tensor:TN):
     """arctanh JVP：y = arctanh(x) → y_t = x_t / (1 − x²)（复数不取共轭）。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = x_t / (1. - x**2.0)
+        return x_t / (1. - x**2.0)
+    return None
 
 
 @api_registry.register
@@ -1474,13 +1471,13 @@ def _log_grad(result_tensor:TN):
     return (result_tensor._grad_value * (1. / x.conj()),)
 
 
-def _log_jvp(result_tensor:TN):
+def _log_jvp(frame, result_tensor:TN):
     """自然对数 JVP：y = log(x) → y_t = x_t / x（复数不作共轭，直接按前向导数）。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = frame.node_tangent.get(id(x)) if frame is not None else None
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = x_t / x
+        return x_t / x
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1490,48 +1487,47 @@ def _log_jvp(result_tensor:TN):
 # 就复用（如 exp、tan、sqrt），避免重复计算与额外分配。
 # ---------------------------------------------------------------------------
 
-def _sin_jvp(result_tensor: TN):
+def _sin_jvp(frame, result_tensor: TN):
     """正弦 JVP：y = sin(x) → y_t = cos(x) · x_t。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = cos(x) * x_t
+        return cos(x) * x_t
+    return None
 
 
-def _cos_jvp(result_tensor: TN):
+def _cos_jvp(frame, result_tensor: TN):
     """余弦 JVP：y = cos(x) → y_t = −sin(x) · x_t。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = -sin(x) * x_t
+        return -sin(x) * x_t
+    return None
 
 
-def _tan_jvp(result_tensor: TN):
+def _tan_jvp(frame, result_tensor: TN):
     """正切 JVP：y = tan(x) → y_t = (1 + y²) · x_t。"""
-    frame = current_jvp_frame()
-    x_t = _input_tangent(frame, result_tensor.fromvars[0])
+    x_t = frame.tangent(result_tensor.fromvars[0])
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = (1.0 + result_tensor * result_tensor) * x_t
+        return (1.0 + result_tensor * result_tensor) * x_t
+    return None
 
 
-def _exp_jvp(result_tensor: TN):
+def _exp_jvp(frame, result_tensor: TN):
     """指数 JVP：y = exp(x) → y_t = y · x_t。"""
-    frame = current_jvp_frame()
-    x_t = _input_tangent(frame, result_tensor.fromvars[0])
+    x_t = frame.tangent(result_tensor.fromvars[0])
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = result_tensor * x_t
+        return result_tensor * x_t
+    return None
 
 
-def _maximum_jvp(result_tensor: TN):
+def _maximum_jvp(frame, result_tensor: TN):
     """maximum JVP：前向取较大值，并列时两侧各取一半（与前向规则一致）。"""
-    frame = current_jvp_frame()
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     if left_t is None and right_t is None:
-        return
+        return None
     left_mask = where(left > right, 1.0, where(left < right, 0.0, 0.5))
     right_mask = 1.0 - left_mask
     total = None
@@ -1541,17 +1537,16 @@ def _maximum_jvp(result_tensor: TN):
     if right_t is not None:
         term = right_t * right_mask
         total = term if total is None else total + term
-    frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
-def _minimum_jvp(result_tensor: TN):
+def _minimum_jvp(frame, result_tensor: TN):
     """minimum JVP：前向取较小值，并列时两侧各取一半。"""
-    frame = current_jvp_frame()
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     if left_t is None and right_t is None:
-        return
+        return None
     left_mask = where(left < right, 1.0, where(left > right, 0.0, 0.5))
     right_mask = 1.0 - left_mask
     total = None
@@ -1560,19 +1555,18 @@ def _minimum_jvp(result_tensor: TN):
     if right_t is not None:
         term = right_t * right_mask
         total = term if total is None else total + term
-    frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
-def _prod_jvp(result_tensor: TN):
+def _prod_jvp(frame, result_tensor: TN):
     """连乘 JVP：y = ∏x → y_t = y · Σ(x_t / x)。
 
     该形式要求所有元素非零；含零元素时显式报错（C9：不做静默错误/静默零）。
     """
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is None:
-        return
+        return None
     if bool((x._array == 0).any()):
         # 含零元素时 Σ(x_t/x) 形式失效；显式报错而非返回静默错误值（C9）
         raise RuntimeError(
@@ -1580,66 +1574,66 @@ def _prod_jvp(result_tensor: TN):
             "use the fallback path or a rule with prefix/suffix products")
     dim, keepdim = result_tensor.parms[0]
     ratio_sum = sum(x_t / x, dim=dim, keepdim=keepdim)
-    frame.node_tangent[id(result_tensor)] = result_tensor * ratio_sum
+    return result_tensor * ratio_sum
 
 
-def _cumsum_jvp(result_tensor: TN):
+def _cumsum_jvp(frame, result_tensor: TN):
     """累积和 JVP：y = cumsum(x, dim) → y_t = cumsum(x_t, dim)。"""
-    frame = current_jvp_frame()
-    x_t = _input_tangent(frame, result_tensor.fromvars[0])
+    x_t = frame.tangent(result_tensor.fromvars[0])
     if x_t is not None:
         dim = result_tensor.parms[0][0]
-        frame.node_tangent[id(result_tensor)] = cumsum(x_t, dim=dim)
+        return cumsum(x_t, dim=dim)
+    return None
 
 
-def _stack_jvp(result_tensor: TN):
+def _stack_jvp(frame, result_tensor: TN):
     """堆叠 JVP：把各输入 tangent 按同一 dim 堆叠；缺失者用零补齐。"""
-    frame = current_jvp_frame()
     dim = result_tensor.parms[0] if result_tensor.parms else 0
     parts = []
     any_tangent = False
     for var in result_tensor.fromvars:
-        tangent = _input_tangent(frame, var)
+        tangent = frame.tangent(var)
         if tangent is None:
             parts.append(zeros_like(var))
         else:
             parts.append(tangent)
             any_tangent = True
     if any_tangent:
-        frame.node_tangent[id(result_tensor)] = stack(parts, dim=dim)
+        return stack(parts, dim=dim)
+    return None
 
 
-def _concatenate_jvp(result_tensor: TN):
+def _concatenate_jvp(frame, result_tensor: TN):
     """拼接 JVP：把各输入 tangent 按同一 dim 拼接；缺失者用零补齐。"""
-    frame = current_jvp_frame()
     dim = result_tensor.parms[0] if result_tensor.parms else 0
     parts = []
     any_tangent = False
     for var in result_tensor.fromvars:
-        tangent = _input_tangent(frame, var)
+        tangent = frame.tangent(var)
         if tangent is None:
             parts.append(zeros_like(var))
         else:
             parts.append(tangent)
             any_tangent = True
     if any_tangent:
-        frame.node_tangent[id(result_tensor)] = concatenate(parts, dim=dim)
+        return concatenate(parts, dim=dim)
+    return None
 
 
-def _tril_jvp(result_tensor: TN):
+def _tril_jvp(frame, result_tensor: TN):
     """下三角 JVP：y = tril(x, diagonal) → y_t = tril(x_t, diagonal)。"""
-    frame = current_jvp_frame()
-    x_t = _input_tangent(frame, result_tensor.fromvars[0])
+    x_t = frame.tangent(result_tensor.fromvars[0])
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = tril(x_t, result_tensor.parms[0])
+        return tril(x_t, result_tensor.parms[0])
+    return None
 
 
-def _triu_jvp(result_tensor: TN):
+def _triu_jvp(frame, result_tensor: TN):
     """上三角 JVP：y = triu(x, diagonal) → y_t = triu(x_t, diagonal)。"""
-    frame = current_jvp_frame()
-    x_t = _input_tangent(frame, result_tensor.fromvars[0])
+    x_t = frame.tangent(result_tensor.fromvars[0])
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = triu(x_t, result_tensor.parms[0])
+        return triu(x_t, result_tensor.parms[0])
+    return None
 
 
 def _gather_along_dim(tangent: TN, indices_tensor: TN, dim: int) -> TN:
@@ -1647,33 +1641,32 @@ def _gather_along_dim(tangent: TN, indices_tensor: TN, dim: int) -> TN:
     return gather(tangent, dim, indices_tensor)
 
 
-def _sort_jvp(result_tensor: TN):
+def _sort_jvp(frame, result_tensor: TN):
     """排序 JVP：values = gather(x, sorted_indices) → values_t = gather(x_t, indices)。"""
-    frame = current_jvp_frame()
     indices_tensor, dim = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
+    tangent = frame.tangent(result_tensor.fromvars[0])
     if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = _gather_along_dim(
+        return _gather_along_dim(
             tangent, indices_tensor, dim)
+    return None
 
 
-def _topk_jvp(result_tensor: TN):
+def _topk_jvp(frame, result_tensor: TN):
     """topk JVP：values = gather(x, topk_indices) → values_t = gather(x_t, indices)。"""
-    frame = current_jvp_frame()
     indices_tensor, dim = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
+    tangent = frame.tangent(result_tensor.fromvars[0])
     if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = _gather_along_dim(
+        return _gather_along_dim(
             tangent, indices_tensor, dim)
+    return None
 
 
-def _var_jvp(result_tensor: TN):
+def _var_jvp(frame, result_tensor: TN):
     """方差 JVP：y = Σ(x−mean)²/(n−ddof) → y_t = 2Σ((x−mean)·x_t)/(n−ddof)。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is None:
-        return
+        return None
     dim, unbiased, keepdim = result_tensor.parms[0]
     if dim is None:
         n = x.numel()
@@ -1686,7 +1679,7 @@ def _var_jvp(result_tensor: TN):
     ddof = 1 if unbiased else 0
     x_mean = mean(x, dim=dim, keepdim=True)
     numerator = sum((x - x_mean) * x_t, dim=dim, keepdim=keepdim)
-    frame.node_tangent[id(result_tensor)] = numerator * (2.0 / (n - ddof))
+    return numerator * (2.0 / (n - ddof))
 
 
 @api_registry.register
@@ -2101,14 +2094,13 @@ def _atan2_grad(result_tensor: TN):
     return y_grad, x_grad
 
 
-def _atan2_jvp(result_tensor: TN):
+def _atan2_jvp(frame, result_tensor: TN):
     """atan2 JVP：(x·y_t − y·x_t)/(x²+y²)，缺失的切向按 0 处理。"""
-    frame = current_jvp_frame()
     y, x = result_tensor.fromvars
-    y_t = _input_tangent(frame, y)
-    x_t = _input_tangent(frame, x)
+    y_t = frame.tangent(y)
+    x_t = frame.tangent(x)
     if y_t is None and x_t is None:
-        return
+        return None
 
     denom = x * x + y * y
     if y_t is None:
@@ -2118,7 +2110,7 @@ def _atan2_jvp(result_tensor: TN):
     else:
         tangent = (x * y_t - y * x_t) / denom
 
-    frame.node_tangent[id(result_tensor)] = tangent
+    return tangent
 
 
 @api_registry.register
@@ -2172,18 +2164,17 @@ def _logsumexp_grad(result_tensor: TN):
     return (g_expanded * p.conj(),)
 
 
-def _logsumexp_jvp(result_tensor: TN):
+def _logsumexp_jvp(frame, result_tensor: TN):
     """logsumexp JVP：sum(softmax(x)·x_t, dim)。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
     dim, keepdim = result_tensor.parms[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is None:
-        return
+        return None
 
     y = result_tensor if (keepdim or dim is None) else result_tensor.unsqueeze(dim)
     p = exp(x - y)
-    frame.node_tangent[id(result_tensor)] = sum(p * x_t, dim=dim, keepdim=keepdim)
+    return sum(p * x_t, dim=dim, keepdim=keepdim)
 
 
 # ===========================================================================
@@ -2290,21 +2281,25 @@ def logical_not(x:TN)->TN:
     return as_tensor(value,device=x.device)
 
 
-def _sumall_grad(result: TN) -> tuple:
+def _sumall_grad(result: TN, *args) -> tuple:
     """
-    计算 sumall() 的梯度。
+    计算 sumall() 的梯度（register_grad_rule 的反向规则）。
 
-    对每个输入，按其与结果的广播关系对上游梯度求和，恢复到输入形状。
-    返回值与 result.fromvars（全部 TN 实参）等长；不需要梯度的 TN 参数返回 None。
+    对每个 TN 实参，按其与结果的广播关系对上游梯度求和，恢复到输入形状。
+    返回值与“全部 TN 实参”按调用顺序一一对应（非 TN 实参不占位），
+    requires_grad=False 的 TN 位置返回 None（反向传播不会为它累计梯度）。
 
     Args:
         result: sumall() 的输出张量，可通过 result._grad_value 获取上游梯度
+        *args: sumall() 的全部实参；非 TN 实参在此跳过
 
     Returns:
-        tuple: 每个 TN 输入对应的梯度（按参数出现顺序）
+        tuple: 每个 TN 实参对应的梯度（按参数出现顺序）
     """
     grads = []
-    for arg in result.fromvars:
+    for arg in args:
+        if not isinstance(arg, TN):
+            continue
         if not arg.requires_grad:
             grads.append(None)
             continue
@@ -2319,36 +2314,51 @@ def _sumall_grad(result: TN) -> tuple:
     return tuple(grads)
 
 
-def _sumall_jvp(result_tensor: TN):
+def _sumall_jvp(result_tensor: TN, *args):
     """sumall JVP：各 TN 实参 tangent 之和（非 TN 视为常量），并对齐输出形状。
 
-    多入边时直接调用 sumall 完成累加：tangent 图从 k-1 个加法节点降为 1 个
-    sumall 节点。规则中新建的节点不在本次 _propagate_jvp 的拓扑序快照内，
-    不会递归；sumall 自身登记 fromvars/_grad_rule/_jvp_rule，因此
-    create_graph=True 时 tangent 表达式仍与 primal 连通，可继续高阶求导。
+    实参按 register_jvp_rule 约定传入：TN 实参为 TangentPair(primal, tangent)，
+    tangent 为 None 表示该方向为零；非 TN 实参原样传入、视为常量。
+
+    多入边时先过滤出非零 tangent，再一次性调用 sumall 完成累加：tangent 图
+    从 k-1 个两两相加节点降为 1 个 sumall 节点。规则中新建的节点不在本次
+    _propagate_jvp 的拓扑序快照内，不会递归；sumall 自身登记
+    fromvars/_grad_rule/_jvp_rule，因此 create_graph=True 时 tangent 表达式
+    仍与 primal 连通，可继续高阶求导。
     """
-    frame = current_jvp_frame()
     tangents = []
-    for var in result_tensor.fromvars:
-        tangent = _input_tangent(frame, var)
+    for item in args:
+        # 只有 TN 实参才会被配对成 TangentPair；用标记类型判断可避免把
+        # 调用方传入的普通元组实参（数值常量）误当作配对
+        if not isinstance(item, TangentPair):
+            continue
+        _primal, tangent = item
         if tangent is not None:
             tangents.append(tangent)
     if not tangents:
-        return
+        return None
     total = tangents[0] if len(tangents) == 1 else sumall(*tangents)
+    if total is None:
+        return None
     if total.shape != result_tensor.shape:
         # 非 TN 常量实参可能参与输出广播；补齐到输出形状
         total = total._expand(result_tensor.shape)
-    frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
+@register_grad_rule(_sumall_grad)
+@register_jvp_rule(_sumall_jvp)
 def sumall(*args) -> TN:
     """
     将多个张量或非张量相加，返回和
-        
+
+    计算图由两个装饰器按本次调用实参登记：
+      - register_grad_rule：反向时调用 _sumall_grad，按广播关系回传上游梯度；
+      - register_jvp_rule：前向时调用 _sumall_jvp，累加各入边 tangent。
+
     Args:
         *args: 任意数量的张量或非张量参数
-        
+
     Returns:
         TN: 所有参数的和
     """
@@ -2380,18 +2390,11 @@ def sumall(*args) -> TN:
                 return cp.asarray(arg)              # CPU → GPU
         return arg                                  # python 值 / 同库数组
 
-    # 累加；计算图在下方显式登记
+    # 只做数值求和；fromvars / _grad_rule / _jvp_rule 与 requires_grad
+    # 由装饰器根据调用实参统一登记
     # 注意：模块内定义了名为 sum 的算子，此处必须用 builtins.sum 调用内置实现
-    requires_grad = is_grad_enabled() and any(arg.requires_grad for arg in tensor_args)
-    ret = as_tensor(builtins.sum(_align(arg) for arg in args),
-                    device=target_device, requires_grad=requires_grad)
-
-    if ret.requires_grad or forward_ad_trace_active():
-        ret.fromvars = tuple(tensor_args)
-        ret._grad_rule = _sumall_grad
-        ret._jvp_rule = _sumall_jvp
-
-    return ret
+    ret = builtins.sum(_align(arg) for arg in args)
+    return as_tensor(ret, device=target_device)
 
 
 def isum(*args, **kwargs):
@@ -4271,11 +4274,6 @@ def _compose_inplace_grad(input:TN, grad_rule):
     """
     old_rule = input._grad_rule
 
-    # JVP 的迁移期回退路径需要在“剥离原地前缀后的 base fromvars”上调用原始梯度
-    # 规则，因此保留首次原地修改前的规则；fused 规则会临时剥离前缀，不能直接复用。
-    if not hasattr(input, '_grad_rule_base'):
-        input._grad_rule_base = old_rule
-
     def fused(result:TN):
         # 先按当前记录计算本次原地操作的梯度（首条记录即本操作的上下文）
         first = grad_rule(result)
@@ -4386,14 +4384,14 @@ def _apply_inplace_jvp_steps(node:TN, frame) -> None:
         return
     tangent = frame.node_tangent.get(id(node))
     for step_name, record in steps:
-        tangent = _INPLACE_JVP_STEPS[step_name](node, record, tangent)
+        tangent = _INPLACE_JVP_STEPS[step_name](frame, node, record, tangent)
     frame.node_tangent[id(node)] = tangent
 
 
-def _jvp_step_set(node:TN, record, tangent):
+def _jvp_step_set(frame, node:TN, record, tangent):
     """原地覆盖写的 JVP：被写区域的 tangent 直接替换为右值 tangent（无右值则置零）。"""
     index = record.stored_index
-    dy = _input_tangent(current_jvp_frame(), record.right)
+    dy = frame.tangent(record.right)
     if dy is None:
         local = zeros_like(node) if _jvp_is_full_index(index) else zeros_like(node[index])
     else:
@@ -4401,23 +4399,23 @@ def _jvp_step_set(node:TN, record, tangent):
     return _jvp_merge(node, index, tangent, local, False)
 
 
-def _jvp_step_add(node:TN, record, tangent):
+def _jvp_step_add(frame, node:TN, record, tangent):
     """原地加法的 JVP：区域 tangent 加上右值 tangent（右值为零方向时不变）。"""
-    dy = _input_tangent(current_jvp_frame(), record.right)
+    dy = frame.tangent(record.right)
     if dy is None:
         return tangent
     return _jvp_merge(node, record.stored_index, tangent, dy, True)
 
 
-def _jvp_step_sub(node:TN, record, tangent):
+def _jvp_step_sub(frame, node:TN, record, tangent):
     """原地减法的 JVP：区域 tangent 减去右值 tangent（右值为零方向时不变）。"""
-    dy = _input_tangent(current_jvp_frame(), record.right)
+    dy = frame.tangent(record.right)
     if dy is None:
         return tangent
     return _jvp_merge(node, record.stored_index, tangent, -dy, True)
 
 
-def _jvp_step_mul(node:TN, record, tangent):
+def _jvp_step_mul(frame, node:TN, record, tangent):
     """原地乘法的 JVP：d(l*r) = l_t*r + l*r_t（左值取操作前副本）。"""
     index = record.stored_index
     right = record.right
@@ -4425,7 +4423,7 @@ def _jvp_step_mul(node:TN, record, tangent):
     t = _jvp_region(tangent, index)
     if t is not None:
         local = t * right
-    dy = _input_tangent(current_jvp_frame(), right)
+    dy = frame.tangent(right)
     if dy is not None:
         term = record.left_copy * dy
         local = term if local is None else local + term
@@ -4434,7 +4432,7 @@ def _jvp_step_mul(node:TN, record, tangent):
     return _jvp_merge(node, index, tangent, local, False)
 
 
-def _jvp_step_div(node:TN, record, tangent):
+def _jvp_step_div(frame, node:TN, record, tangent):
     """原地除法的 JVP：d(l/r) = l_t/r - l*r_t/r²（左值取操作前副本）。"""
     index = record.stored_index
     right = record.right
@@ -4442,7 +4440,7 @@ def _jvp_step_div(node:TN, record, tangent):
     t = _jvp_region(tangent, index)
     if t is not None:
         local = t / right
-    dy = _input_tangent(current_jvp_frame(), right)
+    dy = frame.tangent(right)
     if dy is not None:
         term = -(record.left_copy * dy) / (right * right)
         local = term if local is None else local + term
@@ -4451,7 +4449,7 @@ def _jvp_step_div(node:TN, record, tangent):
     return _jvp_merge(node, index, tangent, local, False)
 
 
-def _jvp_step_pow(node:TN, record, tangent):
+def _jvp_step_pow(frame, node:TN, record, tangent):
     """原地幂的 JVP：d(l**r) = l_t*r*l**(r-1) + r_t*l**r*log(l)。"""
     index = record.stored_index
     right = record.right
@@ -4460,7 +4458,7 @@ def _jvp_step_pow(node:TN, record, tangent):
     t = _jvp_region(tangent, index)
     if t is not None:
         local = t * (right * (left ** (right - 1.)))
-    dy = _input_tangent(current_jvp_frame(), right)
+    dy = frame.tangent(right)
     if dy is not None:
         term = dy * ((left ** right) * log(left))
         local = term if local is None else local + term
@@ -4469,13 +4467,13 @@ def _jvp_step_pow(node:TN, record, tangent):
     return _jvp_merge(node, index, tangent, local, False)
 
 
-def _jvp_step_mod(node:TN, record, tangent):
+def _jvp_step_mod(frame, node:TN, record, tangent):
     """原地取余的 JVP：d(l%r) = l_t - floor(l/r)*r_t。"""
     index = record.stored_index
     right = record.right
     left = record.left_copy
     local = _jvp_region(tangent, index)
-    dy = _input_tangent(current_jvp_frame(), right)
+    dy = frame.tangent(right)
     if dy is not None:
         term = -(floor(left / right) * dy)
         local = term if local is None else local + term
@@ -4484,12 +4482,12 @@ def _jvp_step_mod(node:TN, record, tangent):
     return _jvp_merge(node, index, tangent, local, False)
 
 
-def _jvp_step_floordiv(node:TN, record, tangent):
+def _jvp_step_floordiv(frame, node:TN, record, tangent):
     """原地整除不可导：与反向一致，直接抛 RuntimeError。"""
     raise RuntimeError('derivative for aten::floor_divide is not implemented')
 
 
-def _jvp_step_neg(node:TN, record, tangent):
+def _jvp_step_neg(frame, node:TN, record, tangent):
     """原地取负的 JVP：区域 tangent 取负。"""
     index = record.stored_index
     t = _jvp_region(tangent, index)
@@ -4498,7 +4496,7 @@ def _jvp_step_neg(node:TN, record, tangent):
     return _jvp_merge(node, index, tangent, -t, False)
 
 
-def _jvp_step_abs(node:TN, record, tangent):
+def _jvp_step_abs(frame, node:TN, record, tangent):
     """原地绝对值的 JVP：区域 tangent 乘 sign(左值)，零点按 0 处理。
 
     与 abs 的 jvp_rule 采用相同的零点保护写法（where 构造符号），
@@ -4527,6 +4525,135 @@ _INPLACE_JVP_STEPS = {
     'floordiv': _jvp_step_floordiv,
     'neg': _jvp_step_neg,
     'abs': _jvp_step_abs,
+}
+
+
+# ---------------------------------------------------------------------------
+# 非原地 *at 接口的前向规则
+#
+# ret = input.copy(); ret[index] op= right，因此 tangent 的构造方式与原地步骤
+# 一致，区别只在于左值取 fromvars[0]（原 input），而不是操作前的副本。
+# ---------------------------------------------------------------------------
+
+def _setat_jvp(frame, result_tensor:TN):
+    """setat 的 JVP：被写区域替换为右值 tangent，其余位置保持 input tangent。"""
+    index = result_tensor.parms[0]
+    left, right = result_tensor.fromvars
+    dy = frame.tangent(right)
+    if dy is None:
+        local = zeros_like(result_tensor) if _jvp_is_full_index(index) else zeros_like(result_tensor[index])
+    else:
+        local = dy
+    return _jvp_merge(result_tensor, index, frame.tangent(left), local, False)
+
+
+def _addat_jvp(frame, result_tensor:TN):
+    """addat 的 JVP：区域 tangent 加上右值 tangent。"""
+    index = result_tensor.parms[0]
+    left, right = result_tensor.fromvars
+    lt = frame.tangent(left)
+    dy = frame.tangent(right)
+    if dy is None:
+        return lt
+    return _jvp_merge(result_tensor, index, lt, dy, True)
+
+
+def _subat_jvp(frame, result_tensor:TN):
+    """subat 的 JVP：区域 tangent 减去右值 tangent。"""
+    index = result_tensor.parms[0]
+    left, right = result_tensor.fromvars
+    lt = frame.tangent(left)
+    dy = frame.tangent(right)
+    if dy is None:
+        return lt
+    return _jvp_merge(result_tensor, index, lt, -dy, True)
+
+
+def _mulat_jvp(frame, result_tensor:TN):
+    """mulat 的 JVP：d(l*r) = l_t*r + l*r_t。"""
+    index = result_tensor.parms[0]
+    left, right = result_tensor.fromvars
+    lt = frame.tangent(left)
+    local = None
+    t = _jvp_region(lt, index)
+    if t is not None:
+        local = t * right
+    dy = frame.tangent(right)
+    if dy is not None:
+        term = _jvp_region(left, index) * dy
+        local = term if local is None else local + term
+    if local is None:
+        return lt
+    return _jvp_merge(result_tensor, index, lt, local, False)
+
+
+def _divat_jvp(frame, result_tensor:TN):
+    """divat 的 JVP：d(l/r) = l_t/r - l*r_t/r²。"""
+    index = result_tensor.parms[0]
+    left, right = result_tensor.fromvars
+    lt = frame.tangent(left)
+    local = None
+    t = _jvp_region(lt, index)
+    if t is not None:
+        local = t / right
+    dy = frame.tangent(right)
+    if dy is not None:
+        term = -(_jvp_region(left, index) * dy) / (right * right)
+        local = term if local is None else local + term
+    if local is None:
+        return lt
+    return _jvp_merge(result_tensor, index, lt, local, False)
+
+
+def _powat_jvp(frame, result_tensor:TN):
+    """powat 的 JVP：d(l**r) = l_t*r*l**(r-1) + r_t*l**r*log(l)。"""
+    index = result_tensor.parms[0]
+    left, right = result_tensor.fromvars
+    lt = frame.tangent(left)
+    lval = _jvp_region(left, index)
+    local = None
+    t = _jvp_region(lt, index)
+    if t is not None:
+        local = t * (right * (lval ** (right - 1.)))
+    dy = frame.tangent(right)
+    if dy is not None:
+        term = dy * ((lval ** right) * log(lval))
+        local = term if local is None else local + term
+    if local is None:
+        return lt
+    return _jvp_merge(result_tensor, index, lt, local, False)
+
+
+def _modat_jvp(frame, result_tensor:TN):
+    """modat 的 JVP：d(l%r) = l_t - floor(l/r)*r_t。"""
+    index = result_tensor.parms[0]
+    left, right = result_tensor.fromvars
+    lt = frame.tangent(left)
+    local = _jvp_region(lt, index)
+    dy = frame.tangent(right)
+    if dy is not None:
+        term = -(floor(_jvp_region(left, index) / right) * dy)
+        local = term if local is None else local + term
+    if local is None:
+        return lt
+    return _jvp_merge(result_tensor, index, lt, local, False)
+
+
+def _floordivat_jvp(frame, result_tensor:TN):
+    """floordivat 的 JVP：与反向一致，向下整除不可导。"""
+    raise RuntimeError('derivative for aten::floor_divide is not implemented')
+
+
+# 非原地 grad_rule 名 -> 前向规则；_non_inplace_oper_at 据此挂接 _jvp_rule。
+_NON_INPLACE_AT_JVP = {
+    '_setat_grad': _setat_jvp,
+    '_addat_grad': _addat_jvp,
+    '_subat_grad': _subat_jvp,
+    '_mulat_grad': _mulat_jvp,
+    '_divat_grad': _divat_jvp,
+    '_powat_grad': _powat_jvp,
+    '_modat_grad': _modat_jvp,
+    '_floordivat_grad': _floordivat_jvp,
 }
 
 
@@ -4580,10 +4707,6 @@ def _inplace_unary_at_(input:TN, index, data_func, grad_rule):
         placeholder = zeros((), dtype=input.dtype, device=input.device,
                             requires_grad=bool(need_grad))
         record = InplaceRecord(None, placeholder, index_val, target_copy)
-
-        # JVP 回退路径需要首次原地修改前的梯度规则；须在融合前保存
-        if not hasattr(input, '_grad_rule_base'):
-            input._grad_rule_base = input._grad_rule
 
         # 融合规则必须在本条记录插入 fromvars/_inplace_ops 之前完成
         if need_grad:
@@ -4689,10 +4812,6 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, grad_rule, vector_func=No
             target_copy,
         )
 
-        # JVP 回退路径需要首次原地修改前的梯度规则；须在融合前保存
-        if not hasattr(input, '_grad_rule_base'):
-            input._grad_rule_base = input._grad_rule
-
         # 融合规则必须在本条记录插入 fromvars/_inplace_ops 之前完成
         if need_grad:
             if right_val.requires_grad == False:
@@ -4729,6 +4848,7 @@ def _non_inplace_oper_at(input:TN, index, val, oper_func, grad_rule):
         ret.fromvars = (input,right_val)
         ret.parms = (index_val,)
         ret._grad_rule = grad_rule
+        ret._jvp_rule = _NON_INPLACE_AT_JVP[grad_rule.__name__]
 
     return ret
 
@@ -5933,17 +6053,16 @@ def _split_grad(result_tensor: TN):
     return (grad,)
 
 
-def _split_jvp(result_tensor: TN):
+def _split_jvp(frame, result_tensor: TN):
     """split JVP：子张量的 tangent 是父 tangent 在 dim 上对应的切片。"""
-    frame = current_jvp_frame()
     split_sizes, dim, split_pos = result_tensor.parms[0]
-    x_t = _input_tangent(frame, result_tensor.fromvars[0])
+    x_t = frame.tangent(result_tensor.fromvars[0])
     if x_t is None:
-        return
+        return None
     dim = dim % x_t.ndim
     start = builtins.sum(split_sizes[:split_pos]) if split_pos > 0 else 0
     index = (slice(None),) * dim + (slice(start, start + split_sizes[split_pos]),)
-    frame.node_tangent[id(result_tensor)] = x_t[index]
+    return x_t[index]
 
 
 def _split_with_indices(input: TN, indices_or_sections, dim: int) -> tuple[TN, ...]:
@@ -6384,12 +6503,12 @@ def unfold(tensor_obj: TN, dimension: int, size: int, step: int = None) -> 'TN':
     return result
 
 
-def _repeat_jvp(result_tensor: TN):
+def _repeat_jvp(frame, result_tensor: TN):
     """repeat JVP：y = repeat(x, repeats) → y_t = repeat(x_t, repeats)。"""
-    frame = current_jvp_frame()
-    x_t = _input_tangent(frame, result_tensor.fromvars[0])
+    x_t = frame.tangent(result_tensor.fromvars[0])
     if x_t is not None:
-        frame.node_tangent[id(result_tensor)] = repeat(x_t, result_tensor.parms[0])
+        return repeat(x_t, result_tensor.parms[0])
+    return None
 
 
 @api_registry.register
@@ -7342,7 +7461,7 @@ def _einsum_grad(result_tensor: TN):
     return tuple(grads)
 
 
-def _einsum_jvp(result_tensor: TN):
+def _einsum_jvp(frame, result_tensor: TN):
     """
     einsum 的直接前向规则。
 
@@ -7351,19 +7470,17 @@ def _einsum_jvp(result_tensor: TN):
     即依次把第 i 个操作数替换为其 tangent（其余保持 primal），再把各线性项相加。
     前向已把完整方程存入 parms[0]，操作数列表即 fromvars（保持不变）。
     """
-    frame = current_jvp_frame()
     equation = result_tensor.parms[0]
     operands = result_tensor.fromvars
     total = None
     for i, operand in enumerate(operands):
-        tangent = _input_tangent(frame, operand)
+        tangent = frame.tangent(operand)
         if tangent is None:
             continue
         replaced = [tangent if j == i else op for j, op in enumerate(operands)]
         term = einsum(equation, *replaced)
         total = term if total is None else total + term
-    if total is not None:
-        frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
 @api_registry.register
@@ -8374,6 +8491,14 @@ def clamp(x: TN, min: float | TN | None = None, max: float | TN | None = None, o
     return _apply_out(out, y, (x, min, max), "clamp")
 
 
+def _attach_zero_grad_sources_jvp(frame, result_tensor: TN):
+    """attach_zero_grad_sources 的 JVP：值恒等于 input，前向 tangent 直接透传。
+
+    依附来源只用于反向传播零梯度，对前向值没有贡献，因此不读取它们的 tangent。
+    """
+    return frame.tangent(result_tensor.fromvars[0])
+
+
 def attach_zero_grad_sources(input:TN, sources:tuple|list) -> TN:
     """
     返回一个新张量：值不变，梯度透传给 input，同时向 sources 传递全 0 梯度。
@@ -8416,7 +8541,16 @@ def attach_zero_grad_sources(input:TN, sources:tuple|list) -> TN:
         )
 
     result._grad_rule = _attach_zero_grad_sources_grad
+    result._jvp_rule = _attach_zero_grad_sources_jvp
     return result
+
+
+def _map_value_connect_grad_jvp(frame, result_tensor: TN):
+    """map_value_connect_grad 的 JVP：副本值恒等于 fromvars[0]，tangent 直接透传。
+
+    其余来源只参与反向零梯度连接，对前向值没有贡献，因此不读取它们的 tangent。
+    """
+    return frame.tangent(result_tensor.fromvars[0])
 
 
 def map_value_connect_grad(tensors:tuple|list):
@@ -8500,6 +8634,7 @@ def map_value_connect_grad(tensors:tuple|list):
             if node.requires_grad:
                 node.fromvars = (t,) + others
                 node._grad_rule = _map_value_connect_grad_rule
+                node._jvp_rule = _map_value_connect_grad_jvp
             target_list.append(node)
         else:
             target_list.append(t)

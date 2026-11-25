@@ -67,7 +67,7 @@ import functools
 import inspect
 import itertools
 import warnings
-from typing import Callable, Any, Optional
+from typing import Callable, Any, Optional, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 import numpy as np
 from ..cuda import Device, cp, get_default_device
@@ -229,8 +229,9 @@ class TN:
         self.parms = ()                 #算子附加参数（如sum的dim、where的cond），不参与图遍历
         self._grad_rule = None          #梯度规则：接收本节点，返回与fromvars等长且按位置对齐
                                         #的梯度元组，非可微来源用None占位
-        self._jvp_rule = None           #前向规则：接收本节点，从当前JVPFrame拉取各入边tangent，
-                                        #用普通TN算子计算并写回当前节点的tangent；无规则时为None
+        self._jvp_rule = None           #前向规则：接收(frame, 本节点)，从frame拉取各入边tangent，
+                                        #用普通TN算子计算并返回本节点的tangent（None表示零方向）；
+                                        #无规则时为None
         self._inplace_ops = ()          #原地操作记录，最新在前，元素为InplaceRecord；
                                         #同时供反向梯度规则和__setitem__重放使用
         self._rcv_grad_count = 0        #在具体计算图中，self可接收梯度的计数，计算梯度时临时使用
@@ -3048,9 +3049,9 @@ def _save_grad(item: TN, input_ids=None) -> bool:
     返回是否为叶子节点：叶子没有来源，调用方据此清空 _grad_value 并跳过
     后续传播。
 
-    is_leaf 依据“fromvars 为空”判定，该判定是可靠的：fromvars 仅在
-    requires_grad=True 时记录，且非空时至少含一个可微 TN 来源，因此不存在
-    “fromvars 全为非 TN”的节点；全为 False 的节点保持空 fromvars。
+    is_leaf 依据“fromvars 为空”判定：fromvars 记录影响前向值的 TN 来源
+    （可能含 requires_grad=False 的实参），非空即说明存在上游 TN，因此空
+    fromvars 等价于叶子。
     """
     is_leaf = not item.fromvars
 
@@ -4602,8 +4603,69 @@ def eye(n: int, m: int | None = None, dtype:np.dtype|None = None,device:str|int|
 # 定义函数类型别名
 ForwardFunc = Callable[..., Any]  # 前向函数类型：输入任意数量的参数，返回任意类型
 GradFunc = Callable[..., tuple[Optional[TN], ...]]  # 梯度函数类型：首参为结果张量，后续为前向输入，返回包含每个输入梯度的元组
-BackwardFunc = Callable[[TN, int], TN]  # 反向函数类型：输入一个TN和一个int，返回一个TN
-DecoratorFunc = Callable[[Callable[..., Any]], Callable[..., TN]]  # 修饰器类型：输入一个返回任意类型的函数，返回一个返回TN的函数
+JvpFunc = Callable[..., Optional[TN]]  # 切线函数类型：首参为结果张量，后续为前向输入的 (primal, tangent) 配对，返回结果张量方向的切线
+DecoratorFunc = Callable[[ForwardFunc], ForwardFunc]  # 修饰器类型：输入前向函数，返回包装后的前向函数
+# 实参展开布局：与 bind(...).arguments 逐位对应；None 表示该形参不产生实参，
+# (形参种类, skip) 表示展开方式（skip 为展开 *args 时开头丢弃的个数）
+ArgLayout = list[Optional[tuple[Any, int]]]
+
+
+def _argument_layout(sig: inspect.Signature, drop_first: bool = False) -> ArgLayout:
+    """按签名顺序记录每个形参的展开方式，供按实参顺序遍历复用。
+
+    返回与 ``sig.bind(...).arguments`` 逐位对应的列表，元素取值为：
+      - None         —— 该形参不产生实参（drop_first=True 时的首参 result）
+      - (kind, skip) —— kind 为形参种类；skip 表示展开 *args 时开头要丢弃的个数
+    展开规则：VAR_POSITIONAL 逐项、VAR_KEYWORD 逐个值、普通形参 1 项。
+    装饰阶段调用一次即可，避免每次前向/传播时反复查询签名。
+    """
+    layout = []
+    for index, param in enumerate(sig.parameters.values()):
+        if drop_first and index == 0:
+            # 首参是 result：普通形参不参与展开；若 grad_func 写成 *args，
+            # 则 result 是 args[0]，需要展开时丢弃
+            if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                layout.append((param.kind, 1))
+            else:
+                layout.append(None)
+        else:
+            layout.append((param.kind, 0))
+    return layout
+
+
+def _iter_bound_values(layout: ArgLayout, arguments: Mapping[str, Any]) -> Iterator[Any]:
+    """按签名顺序展开已绑定的实参（*args 逐项、**kwargs 逐个值、普通形参 1 项）。
+
+    layout 由 _argument_layout 生成，arguments 为 sig.bind(...).arguments，
+    两者都按签名顺序，逐位配对即可。
+    """
+    for entry, value in zip(layout, arguments.values()):
+        if entry is None:
+            continue
+        kind, skip = entry
+        if kind is inspect.Parameter.VAR_POSITIONAL:
+            yield from value[skip:]
+        elif kind is inspect.Parameter.VAR_KEYWORD:
+            yield from value.values()
+        else:
+            yield value
+
+
+def _scan_operands(values: Iterable[Any]) -> tuple[Optional[TN], bool]:
+    """扫描实参序列，返回 (首个 TN, 是否存在 requires_grad=True 的 TN)。
+
+    首个 TN 用于把非 TN 的返回值转换到同一 device；第二个返回值用于决定
+    是否建立反向图。没有 TN 时首个元素为 None。
+    """
+    first_tn = None
+    for value in values:
+        if isinstance(value, TN):
+            if first_tn is None:
+                first_tn = value
+            if value.requires_grad:
+                return first_tn, True
+    return first_tn, False
+
 
 def register_grad_rule(grad_func:GradFunc)->DecoratorFunc:
     """
@@ -4616,7 +4678,7 @@ def register_grad_rule(grad_func:GradFunc)->DecoratorFunc:
         grad_func (GradFunc): 梯度计算函数，签名与前向函数一致，只是首位多一个 result，
             即 ``grad_func(result, *args, **kwargs)``，result 是前向函数的返回值。
             它返回一个元组，按签名顺序给出“全部 TN 实参”各自的梯度；非 TN 参数不占位。
-            requires_grad=False 的 TN 位置不会被读取，填 None 即可。
+            requires_grad=False 的 TN 位置不会累计梯度，填 None 即可。
 
     Returns:
         DecoratorFunc: 用于修饰前向函数的修饰器。
@@ -4626,7 +4688,8 @@ def register_grad_rule(grad_func:GradFunc)->DecoratorFunc:
           不需要梯度的 TN 位置填 None。
         - ``result._grad_value`` 是上游梯度，求各输入梯度时必须使用；``result`` 及其余
           实参也可直接参与计算（如复用前向结果、避免重算中间量）。
-        - 非 TN 参数与不需要梯度的 TN 不进入计算图，但仍可在 grad_func 中正常读取。
+        - 非 TN 参数不是图节点；不需要梯度的 TN 仍记录在 fromvars 中（前向图需要
+          它的边），但反向时不会累计梯度。
         - 本装饰器会用 grad_func 覆盖前向内部已建立的图，因此 grad_func 必须给出完整
           梯度；若前向结果 requires_grad=True 而所有形参都不需要梯度，会丢弃原图并告警。
         - 可与 register_jvp_rule 同时修饰同一函数，装饰顺序任意。
@@ -4679,7 +4742,7 @@ def register_grad_rule(grad_func:GradFunc)->DecoratorFunc:
         >>> print(f'x.grad = {x.grad}')  # 输出: x.grad = 12.0 (3 * 2^2)
 
         >>> # ========== 示例 4：部分输入不需要梯度 ==========
-        >>> # 不需要梯度的输入不会出现在 fromvars 中，对应的梯度位置可为 None。
+        >>> # 不需要梯度的输入仍是一条图边，但反向不会为它累计梯度，其梯度位置填 None。
         >>> def _add_derivative(result: TN, x: TN, y: TN) -> tuple[TN, TN]:
         ...     return (result._grad_value, result._grad_value)
         >>>
@@ -4713,9 +4776,10 @@ def register_grad_rule(grad_func:GradFunc)->DecoratorFunc:
     工作原理：
         1. 先执行前向计算，再由“梯度模式是否开启、是否有形参 requires_grad”决定
            结果张量是否参与梯度跟踪；
-        2. 需要跟踪时，把本次实参按签名顺序展平成实参序列，只为 requires_grad=True
-           的 TN 登记图来源 fromvars，并记录它们在梯度元组中的下标 grad_indices；
-        3. 反向时对该节点调用一次 grad_func，再按 grad_indices 取出各来源的梯度。
+        2. 需要跟踪时，把本次实参按签名顺序展平成 TN 实参序列写入 fromvars
+           （含 requires_grad=False 的实参，与内置算子一致：图边由 fromvars 定义，
+           反向时按各个来源的 requires_grad 决定是否累计梯度）；
+        3. 反向时对该节点调用一次 grad_func，其返回元组与 fromvars 逐位对齐。
     """
     # grad_func 在装饰阶段固定，预先解析签名，避免每次前向调用重复解析
     grad_sig = inspect.signature(grad_func)
@@ -4726,115 +4790,60 @@ def register_grad_rule(grad_func:GradFunc)->DecoratorFunc:
     if first_param.kind is inspect.Parameter.VAR_KEYWORD:
         raise TypeError("grad_func's first parameter cannot be **kwargs")
 
-    # 实参布局（arg_layout）：与 grad_func 的形参一一对应，记录每个形参的“种类”，
-    # 据此决定它的实参值要展开成几个实参。装饰阶段算好一次，前向调用时不再解析签名。
-    # 它与 wrapper 里 grad_sig.bind(...).arguments 得到的“形参名 → 实参值”
-    # 有序映射逐位对应（两者都按签名顺序），取值为：
-    #   None           —— 首参 result：它不产生梯度，展开为 0 个实参
-    #   (种类, 跳过数) —— 种类即 inspect.Parameter.kind：
-    #                       POSITIONAL_ONLY / POSITIONAL_OR_KEYWORD → 普通形参，1 个实参
-    #                       VAR_POSITIONAL                          → *args，全部实参
-    #                       VAR_KEYWORD                             → **kwargs，其全部值
-    #                     跳过数只在“种类是 VAR_POSITIONAL 且为首参”时为 1，
-    #                     用来丢掉 args[0]（即 result），其余情况为 0
-    # 展开后的实参序列按顺序编号，只有 TN 实参占用编号（这个编号就是 grad_func
-    # 返回的梯度元组下标）；fromvars 在此之上再筛出 requires_grad=True 的那些。
-    # 例：
-    #   def g(result, x, y)  → [None, (POSITIONAL_OR_KEYWORD, 0), (POSITIONAL_OR_KEYWORD, 0)]
-    #   def g(result, *args) → [None, (VAR_POSITIONAL, 0)]
-    #   def g(*args)         → [(VAR_POSITIONAL, 1)]
-    arg_layout = []
-    for index, param in enumerate(grad_params.values()):
-        if index == 0 and param.kind is not inspect.Parameter.VAR_POSITIONAL:
-            arg_layout.append(None)
-        else:
-            arg_layout.append((param.kind, 1 if index == 0 else 0))
+    # 实参布局：与 grad_sig.bind(...).arguments（“形参名 → 实参值”的有序映射）
+    # 逐位对应，记录每个形参的展开方式，首参 result 不产生实参。
+    # 装饰阶段算好一次，前向调用时只做 zip + 展开，不再解析签名。
+    # 展开后只有 TN 实参进入 fromvars（其顺序就是 grad_func 返回元组的顺序），
+    # 因此 grad_func 的返回值与 fromvars 逐位对齐。
+    arg_layout = _argument_layout(grad_sig, drop_first=True)
 
     def decorator(forward_func:ForwardFunc)->ForwardFunc:
-        def _build_grad_rule(xs, kwargs, grad_indices):
-            """构造该节点的反向规则：反向时调用一次 grad_func，再按需拆出梯度。
+        def _build_grad_rule(xs, kwargs, fromvars):
+            """构造该节点的反向规则：反向时调用一次 grad_func。
 
-            grad_indices[k] 是 fromvars[k] 在“全部 TN 实参”编号空间中的下标，
-            据此从 grad_func 的返回值中挑出各来源的梯度，使返回元组与 fromvars
-            一一对齐（编号约定见 register_grad_rule 文档）。
+            grad_func 的返回值与 fromvars 逐位对齐（两者都按签名顺序编号，
+            非 TN 实参不占位）。requires_grad=False 的来源不参与反向，其位置
+            允许为 None；requires_grad=True 的位置为 None 说明规则不完整，报错。
             """
             def grad_rule(result_tensor: TN):
                 grads = grad_func(result_tensor, *xs, **kwargs)
                 # 兼容单输入函数直接返回单个梯度（非元组）的写法
                 if not isinstance(grads, tuple):
                     grads = (grads,)
-                fused_grads = []
-                for grad_index in grad_indices:
-                    if grad_index >= len(grads):
+                if len(grads) != len(fromvars):
+                    raise ValueError(
+                        f"grad_func returned {len(grads)} gradients, "
+                        f"but the forward function has {len(fromvars)} TN arguments"
+                    )
+                for index, (var, grad) in enumerate(zip(fromvars, grads)):
+                    if grad is None and var.requires_grad:
                         raise ValueError(
-                            f"grad_func returned {len(grads)} gradients, "
-                            f"but TN parameter at index {grad_index} needs one"
-                        )
-                    grad = grads[grad_index]
-                    if grad is None:
-                        raise ValueError(
-                            f"Gradient for TN parameter at index {grad_index} is None, "
+                            f"Gradient for TN argument at index {index} is None, "
                             f"but requires_grad is True"
                         )
-                    fused_grads.append(grad)
-                return tuple(fused_grads)
+                return grads
             return grad_rule
 
-        def _scan_args(args, kwargs):
-            """扫描本次实参，返回 (首个 TN, 是否存在 requires_grad=True 的 TN)。
-
-            首个 TN 用于把非 TN 的前向结果转换到同一 device；后者决定是否建图。
-            """
-            first_tn = None
-            for param in itertools.chain(args, kwargs.values()):
-                if isinstance(param, TN):
-                    if first_tn is None:
-                        first_tn = param
-                    if param.requires_grad:
-                        return first_tn, True
-            return first_tn, False
-
         def _collect_fromvars(bound_args):
-            """按签名顺序扫描本次实参，收集可微来源并给出它们的梯度下标。
+            """按签名顺序展开本次实参，返回全部 TN 实参组成的 fromvars。
 
             bound_args 是 grad_sig.bind(...).arguments，即“形参名 → 实参值”的有序
             映射（签名顺序，未传参数已补默认值），因此无需区分位置传参和关键字传参。
 
-            返回 (fromvars, grad_indices)：
-              - fromvars[k] 是第 k 个可微来源，即 requires_grad=True 的 TN 实参，
-                按签名顺序排列；它将成为 ret.fromvars 的第 k 项（反向图的一条边）。
-              - grad_func 的返回值按“全部 TN 实参”的签名顺序编号（非 TN 不占位），
-                grad_indices[k] 是 fromvars[k] 在该编号中的下标，反向时据此取出
-                属于它的梯度。两套编号不可混用。
+            这里与内置算子保持同一约定：fromvars 记录“影响前向值的全部 TN 操作数”
+            （含 requires_grad=False 的实参），反向传播再按各来源的 requires_grad
+            决定是否累计梯度（见 _propagate_grad_to_sources）。这样前向图（JVP）
+            与反向图共用同一份边定义，图遍历无需了解规则实现细节。
             """
-            fromvars = []
-            grad_indices = []
-            grad_index = 0
-            # arg_layout 与 bound_args 都按签名顺序，逐位配对即可
-            for entry, value in zip(arg_layout, bound_args.values()):
-                if entry is None:
-                    continue
-                kind, skip = entry
-                if kind is inspect.Parameter.VAR_POSITIONAL:
-                    values = value[skip:]                 # *args 展开为多个实参
-                elif kind is inspect.Parameter.VAR_KEYWORD:
-                    values = value.values()               # **kwargs 展开为多个实参
-                else:
-                    values = (value,)                     # 普通形参只有 1 个实参
-                for v in values:
-                    if isinstance(v, TN):
-                        if v.requires_grad:
-                            fromvars.append(v)
-                            grad_indices.append(grad_index)
-                        grad_index += 1
-            return tuple(fromvars), tuple(grad_indices)
+            return tuple(v for v in _iter_bound_values(arg_layout, bound_args)
+                         if isinstance(v, TN))
 
         @functools.wraps(forward_func)
         def wrapper(*xs, **kwargs)->TN:
             ret_val = forward_func(*xs, **kwargs)
 
             grad_on = is_grad_enabled()
-            first_tn, has_diff_arg = _scan_args(xs, kwargs)
+            first_tn, has_diff_arg = _scan_operands(itertools.chain(xs, kwargs.values()))
             track = grad_on and has_diff_arg
 
             if isinstance(ret_val, TN):
@@ -4851,6 +4860,12 @@ def register_grad_rule(grad_func:GradFunc)->DecoratorFunc:
                 # 前向返回值可能不是 TN（如 numpy 数组），用首个 TN 输入的 device 转换
                 ret = as_tensor(ret_val, device=first_tn.device if first_tn is not None else None)
 
+            # 恒等映射（直接返回某个输入节点本身）：输出就是这个输入，它自己的
+            # 梯度路径已经存在。若继续写入 fromvars，会形成“节点引用自身”的自环，
+            # 并覆盖输入节点原有的规则，因此原样返回。
+            if any(value is ret for value in itertools.chain(xs, kwargs.values())):
+                return ret
+
             # 自定义梯度会覆盖前向算子登记的图，旧的来源与规则一并失效
             ret._grad_rule = None
             ret.requires_grad = track
@@ -4858,97 +4873,122 @@ def register_grad_rule(grad_func:GradFunc)->DecoratorFunc:
             if track:
                 # 关键字实参的书写顺序可能与签名不同，先用 bind 归位成
                 # “形参名 → 实参值”的有序映射（同时校验参数、补默认值），
-                # 再按签名顺序展开，使 fromvars/grad_indices 与签名一一对应
+                # 再按签名顺序展开，使 fromvars 与签名一一对应
                 bound = grad_sig.bind(ret, *xs, **kwargs)
                 bound.apply_defaults()
-                ret.fromvars, grad_indices = _collect_fromvars(bound.arguments)
-                ret._grad_rule = _build_grad_rule(xs, kwargs, grad_indices)
+                ret.fromvars = _collect_fromvars(bound.arguments)
+                ret._grad_rule = _build_grad_rule(xs, kwargs, ret.fromvars)
             return ret
         return wrapper
     return decorator
 
 
-def _tangent_sources(forward_sig, xs, kwargs):
-    """按签名顺序展平本次调用的全部 TN 实参（含 *args/**kwargs 与默认值）。
+class TangentPair(tuple):
+    """jvp_func 实参中 ``(primal, tangent)`` 的标记类型。
 
-    前向 AD 是线性映射，所有 TN 实参都可作为 tangent 的来源，因此这里不像
-    register_grad_rule 那样按 requires_grad 过滤，保证 jvp 规则看到的输入列表与
-    “有手写 _jvp_rule 时”的 fromvars 约定一致。
-
-    注意只收 TN：非 TN 参数无法承载 tangent，需要它们的规则应改从 result.parms 读取。
+    继承自 tuple：可以像普通二元组一样解包（``x, x_t = arg``），且
+    ``isinstance(arg, tuple)`` 仍为 True，保持“配对元组”的直观用法。
+    它同时提供一个明确的类型，供 ``*args`` 这类变参规则区分“配对的 TN 实参”
+    和“本身就是元组的非 TN 实参”（例如 ``dim=(0, 1)``）：后者会原样传入，
+    不会被误配对。``tangent`` 为 None 表示该输入方向为零。
     """
-    bound = forward_sig.bind(*xs, **kwargs)
-    bound.apply_defaults()
-    sources = []
-    for name, value in bound.arguments.items():
-        kind = forward_sig.parameters[name].kind
+    __slots__ = ()
+
+    def __new__(cls, primal: TN, tangent: Optional[TN]) -> "TangentPair":
+        return tuple.__new__(cls, (primal, tangent))
+
+
+def _tangent_value(frame: JVPFrame, value: Any) -> Any:
+    """把单个实参准备成 jvp_func 看到的形式：TN → TangentPair(primal, tangent)。
+
+    非 TN 实参原样返回（包括元组、列表等容器），因此 ``dim=(0, 1)`` 这类参数
+    不会被误认为配对元组；TN 实参的 tangent 通过 frame 读取，未播种时为 None
+    （表示该输入方向为零），规则据此决定是否贡献切线。
+    """
+    if isinstance(value, TN):
+        return TangentPair(value, frame.tangent(value))
+    return value
+
+
+def _rebuild_tangent_call(layout: ArgLayout, arguments: Mapping[str, Any],
+                          frame: JVPFrame) -> tuple[list[Any], dict[str, Any]]:
+    """按签名顺序重建 jvp_func 的 (args, kwargs)。
+
+    位置形参（含 POSITIONAL_ONLY）与 *args 走位置实参，KEYWORD_ONLY 与
+    **kwargs 走关键字实参，保证 jvp_func 的调用形状与原算子一致。
+    layout 由 _argument_layout 生成，与 arguments（签名顺序）逐位对应。
+    """
+    call_args = []
+    call_kwargs = {}
+    for (name, value), entry in zip(arguments.items(), layout):
+        kind = entry[0]
         if kind is inspect.Parameter.VAR_POSITIONAL:
-            values = value
+            call_args.extend(_tangent_value(frame, v) for v in value)
         elif kind is inspect.Parameter.VAR_KEYWORD:
-            values = tuple(value.values())
+            for key, v in value.items():
+                call_kwargs[key] = _tangent_value(frame, v)
+        elif kind is inspect.Parameter.KEYWORD_ONLY:
+            call_kwargs[name] = _tangent_value(frame, value)
         else:
-            values = (value,)
-        sources.extend(v for v in values if isinstance(v, TN))
-    return tuple(sources)
+            call_args.append(_tangent_value(frame, value))
+    return call_args, call_kwargs
 
 
-def _make_tangent_rule(jvp_func, sources):
-    """把 jvp_func 包装成 _jvp_rule：执行期间用 sources 作为 fromvars，结束后恢复。
+def _make_tangent_rule(jvp_func: JvpFunc, layout: ArgLayout,
+                       arguments: Mapping[str, Any]
+                       ) -> Callable[[JVPFrame, TN], Optional[TN]]:
+    """把用户规则 jvp_func(result, *args, **kwargs) 包装成内部 _jvp_rule。
 
-    这样 jvp_func 总能拿到“本次全部 TN 实参”，不受 register_grad_rule 的
-    requires_grad 过滤影响；未播种的冻结 TN 由 _input_tangent 返回 None，
-    规则按零切线处理。
+    用户规则不接触 JVPFrame：传播时按签名顺序重建实参，TN 实参替换为
+    TangentPair(primal, tangent)（tangent=None 表示零方向），非 TN 实参原样透传。
+
+    本函数不登记任何图信息：edge 由调用方写入 ret.fromvars，图遍历与传播只认
+    fromvars，因此不需要在规则对象上附加私有属性。
     """
-    def jvp_rule(result_tensor: TN):
-        saved = result_tensor.fromvars
-        result_tensor.fromvars = sources
-        try:
-            jvp_func(result_tensor)
-        finally:
-            result_tensor.fromvars = saved
+    def jvp_rule(frame: JVPFrame, result_tensor: TN) -> Optional[TN]:
+        call_args, call_kwargs = _rebuild_tangent_call(layout, arguments, frame)
+        return jvp_func(result_tensor, *call_args, **call_kwargs)
+
     return jvp_rule
 
 
-def register_jvp_rule(jvp_func):
+def register_jvp_rule(jvp_func: JvpFunc) -> DecoratorFunc:
     """
     装饰器：为算子函数登记前向自动微分（JVP）规则。
 
     规则约定：
-        - jvp_func 的写法与手写 _jvp_rule 一致，只接收结果节点：通过
-          ``result_tensor.fromvars`` 读取输入，用 current_jvp_frame() 取当前帧、
-          _input_tangent(frame, x) 取切线（无切线返回 None），最后写入
-          ``frame.node_tangent[id(result_tensor)]``。
-        - 只负责输出切线，不要读写 ``_grad_value``；规则内使用的普通 TN 算子会被继续
-          追踪，因此支持二阶导数。
-        - 规则执行期间 fromvars 保证是“本次调用的全部 TN 实参（签名顺序）”，与
-          register_grad_rule 的 requires_grad 过滤无关；规则内不要改写它。
-        - 非 TN 参数（beta、dim 等）需由前向在 ``requires_grad or
-          forward_ad_trace_active()`` 时存入 ``result_tensor.parms``，规则再从 parms
-          读取；只有定义期常量可在闭包中捕获。
-        - 可与 register_grad_rule 同时修饰同一函数，装饰顺序任意。单独使用时反向仍由
-          函数体内部的可微算子负责，行为不变。
+        - jvp_func 的调用形状与原算子一致，首参是输出张量 result：
+          ``jvp_func(result, *args, **kwargs) -> TN | None``；
+        - 每个 **TN 实参**以 ``TangentPair(primal, tangent)``（tuple 子类，可直接
+          解包成两个变量）传入；tangent 为 None 表示该输入方向未播种（零方向）。
+          非 TN 实参原样透传，包括 ``dim=(0, 1)`` 这类元组参数；变参规则可用
+          ``isinstance(arg, TangentPair)`` 区分“配对实参”与“普通元组实参”；
+        - 返回本节点 tangent（None 表示零方向），不要直接写 frame，也不读写
+          ``_grad_value``；规则内使用的普通 TN 算子会被继续追踪，因此支持二阶导数；
+        - 规则不接触 JVPFrame；位置形参、关键字形参、*args/**kwargs 与默认值
+          都按签名顺序自动配对，规则只需按原函数签名解包；
+        - 可与 register_grad_rule 同时修饰同一函数，装饰顺序任意。单独使用时
+          反向仍由函数体内部的可微算子负责，行为不变。
 
     Args:
-        jvp_func: 前向规则函数，签名固定为 jvp_func(result_tensor)。
+        jvp_func (JvpFunc): 前向规则函数，签名为 jvp_func(result, *args, **kwargs)，
+            返回与输出同形的 tangent；零方向返回 None。
 
     Returns:
         装饰器，接受算子函数并返回登记了 _jvp_rule 的包装函数。
 
     Examples:
         >>> from riemann import tensor
+        >>> from riemann.func import jvp
         >>> from riemann.core import register_grad_rule, register_jvp_rule
-        >>> from riemann.core.ad_context import current_jvp_frame
-        >>> from riemann.core.tensordef import _input_tangent
         >>>
         >>> def _square_derivative(result, x):
         ...     return (2.0 * x * result._grad_value,)
         >>>
-        >>> def _square_jvp(result):
-        ...     frame = current_jvp_frame()
-        ...     x = result.fromvars[0]
-        ...     x_t = _input_tangent(frame, x)
-        ...     if x_t is not None:
-        ...         frame.node_tangent[id(result)] = 2.0 * x * x_t
+        >>> def _square_jvp(result, x):
+        ...     x, x_t = x                    # TN 实参 = (primal, tangent)
+        ...     if x_t is not None:           # None 表示该方向为零
+        ...         return 2.0 * x * x_t
         >>>
         >>> @register_grad_rule(_square_derivative)      # 反向规则
         ... @register_jvp_rule(_square_jvp)         # 前向规则
@@ -4962,39 +5002,47 @@ def register_jvp_rule(jvp_func):
     if not callable(jvp_func):
         raise TypeError("register_jvp_rule's first argument must be a callable jvp rule")
 
-    def decorator(forward_func: ForwardFunc)->ForwardFunc:
+    def decorator(forward_func: ForwardFunc) -> ForwardFunc:
         # 装饰阶段解析一次签名；若 forward_func 已被 register_grad_rule 包装，
         # functools.wraps 保证 signature 仍指向原算子函数
         forward_sig = inspect.signature(forward_func)
+        # 与 grad_sig 的布局同理：记录每个形参的展开方式，传播时只做 zip + 展开
+        arg_layout = _argument_layout(forward_sig)
 
         @functools.wraps(forward_func)
-        def wrapper(*xs, **kwargs)->TN:
+        def wrapper(*xs: Any, **kwargs: Any) -> TN:
             ret_val = forward_func(*xs, **kwargs)
             trace = forward_ad_trace_active()
 
-            first_tn = None
-            for value in itertools.chain(xs, kwargs.values()):
-                if isinstance(value, TN):
-                    first_tn = value
-                    break
-
             if isinstance(ret_val, TN):
                 ret = ret_val
-            elif first_tn is None:
-                # 没有 TN 实参，也无法确定设备：保持原返回值
-                return ret_val
             else:
-                # 与 register_grad_rule 一致：非 TN 返回值转换到首个 TN 实参的设备
-                ret = as_tensor(ret_val, device=first_tn.device)
+                # 与 register_grad_rule 一致：非 TN 返回值转换成 TN，并放到首个
+                # TN 实参的设备上；没有 TN 实参时用默认设备
+                first_tn, _ = _scan_operands(itertools.chain(xs, kwargs.values()))
+                ret = as_tensor(ret_val, device=first_tn.device if first_tn is not None else None)
 
             if ret.requires_grad or trace:
-                sources = _tangent_sources(forward_sig, xs, kwargs)
+                # 按签名归位实参（补默认值、区分 *args/**kwargs），供规则调用时
+                # 重建“与算子调用形状一致”的实参；fromvars 记录本次全部 TN 实参
+                # （含 requires_grad=False 的实参），与内置算子约定一致：图边由
+                # fromvars 定义，反向传播再按各来源的 requires_grad 过滤。
+                bound = forward_sig.bind(*xs, **kwargs)
+                bound.apply_defaults()
+                arguments = bound.arguments
+                sources = tuple(v for v in _iter_bound_values(arg_layout, arguments)
+                                if isinstance(v, TN))
+                # 恒等映射（直接返回某个输入节点本身）：输出就是该输入，它自己的
+                # tangent/梯度路径已经存在。此时登记规则会把节点自身写进
+                # fromvars 形成自引用边，使图拓扑排序无法结束，也会覆盖输入节点
+                # 原有的规则，因此直接跳过。
+                if not sources or any(src is ret for src in sources):
+                    return ret
                 # 函数体内已有可微算子时 fromvars 可能已由内层节点设置，
                 # 此时保留它作为图边；仅当为空时才按实参补齐
-                if sources and not ret.fromvars:
+                if not ret.fromvars:
                     ret.fromvars = sources
-                if sources:
-                    ret._jvp_rule = _make_tangent_rule(jvp_func, sources)
+                ret._jvp_rule = _make_tangent_rule(jvp_func, arg_layout, arguments)
             return ret
         return wrapper
     return decorator
@@ -5342,19 +5390,17 @@ def _abs_grad(result_tensor:TN):
 
     return (grad,)
 
-def _abs_jvp(result_tensor: TN):
+def _abs_jvp(frame, result_tensor: TN):
     """绝对值 JVP：y_t = Re(conj(x)·x_t)/|x|（实数时退化为 sign(x)·x_t）。"""
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    x_t = _input_tangent(frame, x)
+    x_t = frame.tangent(x)
     if x_t is None:
-        return
+        return None
     # 与 _abs_grad 相同的零点保护：|x| 为零时导数为 0
     is_zero = (result_tensor == 0)
     safe_divisor = where(is_zero, ones_like(result_tensor), result_tensor)
     tangent = (x.conj() * x_t).real / safe_divisor
-    frame.node_tangent[id(result_tensor)] = where(
-        is_zero, zeros_like(result_tensor), tangent)
+    return where(is_zero, zeros_like(result_tensor), tangent)
 
 
 def abs(x:TN)->TN:
@@ -5689,84 +5735,58 @@ def _matmul_grad(result_tensor:TN):
 
     return left_grad, right_grad
 
-def _input_tangent(frame, var):
-    """从当前 JVPFrame 拉取某个入边的 tangent；非 TN 或未播种时返回 None。
 
-    None 表示该入边当前方向为零（零 tangent / 常量 / 不可微输入），
-    规则据此跳过对应项，不构造 zeros_like。
-    """
-    if frame is None or not isinstance(var, TN):
-        return None
-    return frame.node_tangent.get(id(var))
-
-
-def _match_shape(tangent:TN, result_shape):
-    """把单条入边的局部 JVP 结果广播到输出形状，保证多入边求和可对齐。
-
-    直接调用 _expand（已含形状相同快速路径、零拷贝视图），跳过
-    broadcast_to 的参数解析与类型检查，与 _expand_jvp 内部用法一致。
-    """
-    return tangent._expand(result_shape)
-
-
-def _add_jvp(result_tensor: TN):
+def _add_jvp(frame, result_tensor: TN):
     """加法（含减法）之外的基础 JVP：y = a + b → y_t = a_t + b_t。"""
-    frame = current_jvp_frame()
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     total = None
     if left_t is not None and right_t is not None:
         # tangent 形状等于各自 primal 形状，相加时的广播结果必然等于输出形状
         total = left_t + right_t
     elif left_t is not None:
         # 单边 tangent 需要显式广播到输出形状（常量侧不提供输出形状）
-        total = _match_shape(left_t, result_tensor.shape)
+        total = left_t._expand(result_tensor.shape)
     elif right_t is not None:
-        total = _match_shape(right_t, result_tensor.shape)
-    if total is not None:
-        frame.node_tangent[id(result_tensor)] = total
+        total = right_t._expand(result_tensor.shape)
+    return total
 
 
-def _sub_jvp(result_tensor: TN):
+def _sub_jvp(frame, result_tensor: TN):
     """减法 JVP：fromvars[0] 为被减数、fromvars[1] 为减数。"""
-    frame = current_jvp_frame()
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     total = None
     if left_t is not None and right_t is not None:
         total = left_t - right_t
     elif left_t is not None:
-        total = _match_shape(left_t, result_tensor.shape)
+        total = left_t._expand(result_tensor.shape)
     elif right_t is not None:
-        total = -_match_shape(right_t, result_tensor.shape)
-    if total is not None:
-        frame.node_tangent[id(result_tensor)] = total
+        total = -right_t._expand(result_tensor.shape)
+    return total
 
 
-def _mul_jvp(result_tensor: TN):
+def _mul_jvp(frame, result_tensor: TN):
     """乘法 JVP：y = a · b → y_t = a_t · b + a · b_t。"""
-    frame = current_jvp_frame()
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     total = None
     if left_t is not None:
         total = left_t * right
     if right_t is not None:
         term = left * right_t
         total = term if total is None else total + term
-    if total is not None:
-        frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
-def _div_jvp(result_tensor: TN):
+def _div_jvp(frame, result_tensor: TN):
     """除法 JVP：y = a / b → y_t = a_t / b − a · b_t / b²。"""
-    frame = current_jvp_frame()
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     total = None
     if left_t is not None:
         total = left_t / right
@@ -5774,19 +5794,17 @@ def _div_jvp(result_tensor: TN):
         # 复用前向输出 y = a/b：∂y/∂b = −y/b，省掉 a/b² 的一次乘法与临时量
         term = (result_tensor * right_t) / right
         total = -term if total is None else total - term
-    if total is not None:
-        frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
-def _pow_jvp(result_tensor: TN):
+def _pow_jvp(frame, result_tensor: TN):
     """幂运算 JVP：y = a^b → y_t = b·a^(b−1)·a_t + y·log(a)·b_t。
 
     指数为非 TN 常量时只剩第一项；指数是 TN 时按完整公式。
     """
-    frame = current_jvp_frame()
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     total = None
     if left_t is not None:
         if isinstance(right, (list, tuple)):
@@ -5804,16 +5822,14 @@ def _pow_jvp(result_tensor: TN):
                                    device=result_tensor.device)
         term = result_tensor * _log(left_value) * right_t
         total = term if total is None else total + term
-    if total is not None:
-        frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
-def _mod_jvp(result_tensor: TN):
+def _mod_jvp(frame, result_tensor: TN):
     """取余 JVP：y = a % b → y_t = a_t − floor(a / b)·b_t（与 _mod_grad 一致）。"""
-    frame = current_jvp_frame()
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     total = None
     if left_t is not None:
         total = left_t
@@ -5825,42 +5841,39 @@ def _mod_jvp(result_tensor: TN):
                                    device=result_tensor.device)
         term = floor(left_value / right) * right_t
         total = -term if total is None else total - term
-    if total is not None:
-        frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
-def _clone_jvp(result_tensor: TN):
+def _clone_jvp(frame, result_tensor: TN):
     """克隆 JVP：y = clone(x) → y_t = clone(x_t)。"""
-    frame = current_jvp_frame()
-    x = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, x)
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.clone()
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.clone()
 
 
-def _contiguous_jvp(result_tensor: TN):
+def _contiguous_jvp(frame, result_tensor: TN):
     """contiguous JVP：y 与 x 数值相同 → y_t = x_t.contiguous()。"""
-    frame = current_jvp_frame()
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.contiguous()
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.contiguous()
 
 
-def _to_jvp(result_tensor: TN):
+def _to_jvp(frame, result_tensor: TN):
     """类型/设备转换 JVP：y = x.to(...) → y_t = x_t.to(与 y 相同的 dtype/device)。"""
-    frame = current_jvp_frame()
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.to(
-            dtype=result_tensor.dtype, device=result_tensor.device)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.to(dtype=result_tensor.dtype, device=result_tensor.device)
 
 
-def _neg_jvp(result_tensor: TN):
+def _neg_jvp(frame, result_tensor: TN):
     """取负 JVP：y = -x → y_t = -x_t。"""
-    frame = current_jvp_frame()
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = -tangent
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return -tangent
 
 
 # ---------------------------------------------------------------------------
@@ -5870,185 +5883,178 @@ def _neg_jvp(result_tensor: TN):
 # 做同样的线性搬运（转置/重排/切片/归约），不构造反向图，也不依赖 requires_grad。
 # ---------------------------------------------------------------------------
 
-def _transpose_jvp(result_tensor: TN):
+def _transpose_jvp(frame, result_tensor: TN):
     """转置 JVP：y = x.transpose(d1, d2) → y_t = x_t.transpose(d1, d2)。"""
-    frame = current_jvp_frame()
     dim1, dim2 = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.transpose(dim1, dim2)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.transpose(dim1, dim2)
 
 
-def _permute_jvp(result_tensor: TN):
+def _permute_jvp(frame, result_tensor: TN):
     """维度重排 JVP：y = x.permute(*dims) → y_t = x_t.permute(*dims)。"""
-    frame = current_jvp_frame()
     dims = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.permute(*dims)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.permute(*dims)
 
 
-def _reshape_jvp(result_tensor: TN):
+def _reshape_jvp(frame, result_tensor: TN):
     """reshape JVP：y = x.reshape(new_shape) → y_t = x_t.reshape(new_shape)。"""
-    frame = current_jvp_frame()
     new_shape = result_tensor.parms[0][1]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.reshape(*new_shape)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.reshape(*new_shape)
 
 
-def _expand_jvp(result_tensor: TN):
+def _expand_jvp(frame, result_tensor: TN):
     """expand JVP：y = x.expand(new_shape) → y_t = x_t.expand(new_shape)。
 
     广播是把同一元素复制到多个输出位置，其切向随之前向复制；
     反向的“沿广播轴求和”只属于 VJP，前向不需要。
     """
-    frame = current_jvp_frame()
     new_shape = result_tensor.parms[0][1]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent._expand(new_shape)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent._expand(new_shape)
 
 
-def _squeeze_jvp(result_tensor: TN):
+def _squeeze_jvp(frame, result_tensor: TN):
     """squeeze JVP：y = x.squeeze(dims) → y_t = x_t.squeeze(dims)。"""
-    frame = current_jvp_frame()
     squeezed_dims = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent._squeeze(squeezed_dims)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent._squeeze(squeezed_dims)
 
 
-def _unsqueeze_jvp(result_tensor: TN):
+def _unsqueeze_jvp(frame, result_tensor: TN):
     """unsqueeze JVP：y = x.unsqueeze(dim) → y_t = x_t.unsqueeze(dim)。"""
-    frame = current_jvp_frame()
     dim = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.unsqueeze(dim)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.unsqueeze(dim)
 
 
-def _getitem_jvp(result_tensor: TN):
+def _getitem_jvp(frame, result_tensor: TN):
     """索引选择 JVP：对 tangent 施加完全相同的索引。"""
-    frame = current_jvp_frame()
     index = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent[index]
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent[index]
 
 
-def _flip_jvp(result_tensor: TN):
+def _flip_jvp(frame, result_tensor: TN):
     """翻转 JVP：y = flip(x, dims) → y_t = flip(x_t, dims)。"""
-    frame = current_jvp_frame()
     dims = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = flip(tangent, dims)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return flip(tangent, dims)
 
 
-def _sum_jvp(result_tensor: TN):
+def _sum_jvp(frame, result_tensor: TN):
     """求和 JVP：y = sum(x, dim) → y_t = sum(x_t, dim)。"""
-    frame = current_jvp_frame()
     dim, keepdim = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = sum(
-            tangent, dim=dim, keepdim=keepdim)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return sum(tangent, dim=dim, keepdim=keepdim)
 
 
-def _mean_jvp(result_tensor: TN):
+def _mean_jvp(frame, result_tensor: TN):
     """均值 JVP：y = mean(x, dim) → y_t = mean(x_t, dim)。"""
-    frame = current_jvp_frame()
     dim, keepdim = result_tensor.parms[0]
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = mean(
-            tangent, dim=dim, keepdim=keepdim)
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return mean(tangent, dim=dim, keepdim=keepdim)
 
 
-def _extreme_jvp(result_tensor: TN):
+def _extreme_jvp(frame, result_tensor: TN):
     """max/min 共用 JVP：只让取到极值位置的 tangent 通过（并列时全部计入）。
 
     前向极值的选择是局部常数映射，因此 JVP 等价于“按选择掩码筛选再归约”。
     掩码用前向值比较得到，避免依赖 parms 中保存的 argmax 展平索引。
     """
-    frame = current_jvp_frame()
     x = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, x)
+    tangent = frame.tangent(x)
     if tangent is None:
-        return
+        return None
     dim, keepdim = result_tensor.parms[0][0], result_tensor.parms[0][1]
     selected_value = result_tensor if (dim is None or keepdim) else result_tensor.unsqueeze(dim)
     mask = where(x == selected_value, ones_like(tangent), zeros_like(tangent))
-    frame.node_tangent[id(result_tensor)] = sum(
-        tangent * mask, dim=dim, keepdim=keepdim)
+    return sum(tangent * mask, dim=dim, keepdim=keepdim)
 
 
-def _max_jvp(result_tensor: TN):
-    _extreme_jvp(result_tensor)
+def _max_jvp(frame, result_tensor: TN):
+    return _extreme_jvp(frame, result_tensor)
 
 
-def _min_jvp(result_tensor: TN):
-    _extreme_jvp(result_tensor)
+def _min_jvp(frame, result_tensor: TN):
+    return _extreme_jvp(frame, result_tensor)
 
 
-def _where_jvp(result_tensor: TN):
+def _where_jvp(frame, result_tensor: TN):
     """where JVP：y = where(cond, a, b) → y_t = where(cond, a_t, b_t)。
 
     cond 为不参与微分的静态参数；缺失的一侧按零 tangent 处理，并广播到输出形状。
     """
-    frame = current_jvp_frame()
     cond = result_tensor.parms[0]
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     if left_t is None and right_t is None:
-        return
+        return None
     zero = zeros_like(result_tensor)
     # where 自身按 NumPy 规则广播；cond 或 zeros_like 已提供输出形状
     left_t = zero if left_t is None else left_t
     right_t = zero if right_t is None else right_t
-    frame.node_tangent[id(result_tensor)] = where(cond, left_t, right_t)
+    return where(cond, left_t, right_t)
 
 
-def _matmul_jvp(result_tensor: TN):
+def _matmul_jvp(frame, result_tensor: TN):
     """矩阵乘 JVP：y = A @ B → y_t = A_t @ B + A @ B_t（双线性）。"""
-    frame = current_jvp_frame()
     left, right = result_tensor.fromvars
-    left_t = _input_tangent(frame, left)
-    right_t = _input_tangent(frame, right)
+    left_t = frame.tangent(left)
+    right_t = frame.tangent(right)
     total = None
     if left_t is not None:
         total = left_t @ right
     if right_t is not None:
         term = left @ right_t
         total = term if total is None else total + term
-    if total is not None:
-        frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
-def _real_jvp(result_tensor: TN):
+def _real_jvp(frame, result_tensor: TN):
     """实部 JVP：y = Re(x) → y_t = Re(x_t)。"""
-    frame = current_jvp_frame()
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.real
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.real
 
 
-def _imag_jvp(result_tensor: TN):
+def _imag_jvp(frame, result_tensor: TN):
     """虚部 JVP：y = Im(x) → y_t = Im(x_t)。"""
-    frame = current_jvp_frame()
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.imag
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.imag
 
 
-def _conj_jvp(result_tensor: TN):
+def _conj_jvp(frame, result_tensor: TN):
     """共轭 JVP：y = conj(x) → y_t = conj(x_t)（前向不取共轭梯度约定）。"""
-    frame = current_jvp_frame()
-    tangent = _input_tangent(frame, result_tensor.fromvars[0])
-    if tangent is not None:
-        frame.node_tangent[id(result_tensor)] = tangent.conj()
+    tangent = frame.tangent(result_tensor.fromvars[0])
+    if tangent is None:
+        return None
+    return tangent.conj()
 
 
 def _add_grad(result_tensor:TN):
@@ -6145,6 +6151,11 @@ def _div_grad(result_tensor:TN):
             right_grad = sum(right_grad, dim=broadcast_axes, keepdim=False)._reshape(right.shape)
 
     return left_grad, right_grad
+
+
+def _floordiv_jvp(frame, result_tensor:TN):
+    """向下整除的前向导数未定义：与反向及 PyTorch 一致，直接报错。"""
+    raise RuntimeError('derivative for aten::floor_divide is not implemented')
 
 
 def _floordiv_grad(result_tensor:TN):
@@ -6573,6 +6584,7 @@ def floor_divide(x, y)->TN:
         # 这里同样在 backward 时显式报错，避免静默给出错误梯度
         ret.fromvars = (right, left) if reversed_order else (left, right)
         ret._grad_rule = _floordiv_grad
+        ret._jvp_rule = _floordiv_jvp
 
     return ret
 

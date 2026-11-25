@@ -284,6 +284,12 @@ class _TestFuncsCases:
         # 返回顺序与 argnums 一致
         _run_case("grad - argnums_order", lambda: self._check_grad_argnums_order())
 
+        # 未连通输入返回零块（与 torch.func 一致）
+        _run_case("grad - unused_input_zero", lambda: self._check_grad_unused_zero())
+
+        # 输入可不带 requires_grad，且不修改用户张量
+        _run_case("grad - plain_input", lambda: self._check_grad_plain_input())
+
     def _check_grad(self, func_def, inputs_rm, argnums, expected):
         df = func.grad(func_def, argnums=argnums)
         grad_val = df(*inputs_rm)
@@ -314,7 +320,7 @@ class _TestFuncsCases:
 
     def _check_grad_create_graph(self):
         f = lambda x: (x ** 4).sum()
-        d1 = func.grad(f, create_graph=True)
+        d1 = func.grad(f)
         # d1 本身还能再被 grad —— create_graph=True 保留计算图
         d2y = func.grad(lambda a: d1(a).sum())(_rm_tensor(np.array([1.0, 2.0, 3.0])))
         return _close(d2y, 12.0 * np.array([1.0, 4.0, 9.0]))
@@ -337,6 +343,18 @@ class _TestFuncsCases:
         y = _rm_tensor(np.array([3.0, 4.0]))
         g = func.grad(lambda a, b: (a * b).sum(), argnums=(1, 0))(x, y)
         return _close(g[0], np.array([1.0, 2.0])) and _close(g[1], np.array([3.0, 4.0]))
+
+    def _check_grad_unused_zero(self):
+        f = lambda a, b: (a * 2).sum()
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        y = _rm_tensor(np.array([3.0, 4.0]))
+        gx, gy = func.grad(f, argnums=(0, 1))(x, y)
+        return _close(gx, np.array([2.0, 2.0])) and _close(gy, np.zeros(2))
+
+    def _check_grad_plain_input(self):
+        x = _rm_tensor(np.array([1.0, 2.0]), requires_grad=False)
+        g = func.grad(lambda a: (a ** 3).sum())(x)
+        return _close(g, np.array([3.0, 12.0])) and not x.requires_grad
 
     # ---------------------------------------------------------------
     # grad_and_value
@@ -388,7 +406,7 @@ class _TestFuncsCases:
 
     def _check_gav_create_graph(self):
         f = lambda x: (x ** 3).sum()
-        gav = func.grad_and_value(f, create_graph=True)
+        gav = func.grad_and_value(f)
         g, v = gav(_rm_tensor(np.array([1.0, 2.0, 3.0])))
         # g = 3*x^2, d(g.sum())/dx = 6*x
         g2 = func.grad(lambda a: gav(a)[0].sum())(_rm_tensor(np.array([1.0, 2.0, 3.0])))
@@ -396,7 +414,7 @@ class _TestFuncsCases:
 
     def _check_gav_aux_create_graph(self):
         def f_aux(x): return ((x ** 3).sum(), "meta_info")
-        gav = func.grad_and_value(f_aux, has_aux=True, create_graph=True)
+        gav = func.grad_and_value(f_aux, has_aux=True)
         g, v, aux = gav(_rm_tensor(np.array([1.0, 2.0, 3.0])))
         # g = 3x^2, 对 g.sum() 再求 grad 得 6x
         g2 = func.grad(lambda a: gav(a)[0].sum())(_rm_tensor(np.array([1.0, 2.0, 3.0])))
@@ -426,10 +444,6 @@ class _TestFuncsCases:
         _run_case("jvp - multi_input",
                   lambda: self._check_jvp_multi_input())
 
-        # create_graph=True
-        _run_case("jvp - create_graph",
-                  lambda: self._check_jvp_create_graph())
-
         # tangents=None：单输入时方向取标量 1.0
         _run_case("jvp - default_tangent", lambda: self._check_jvp_default_tangent())
 
@@ -445,7 +459,7 @@ class _TestFuncsCases:
     def _check_jvp(self, f, p_np, t_np, exp_out, exp_jvp):
         p = _rm_tensor(p_np)
         t = _rm_tensor(t_np, requires_grad=False)
-        out, jvp_res = func.jvp(f, p, t)
+        out, jvp_res = func.jvp(f, (p,), (t,))
         return _close(out, exp_out) and _close(jvp_res, exp_jvp)
 
     def _check_jvp_fd(self):
@@ -454,7 +468,7 @@ class _TestFuncsCases:
         v_np = np.array([0.5, 1.0, 0.0])
         x = _rm_tensor(x_np)
         v = _rm_tensor(v_np, requires_grad=False)
-        _, jvp_res = func.jvp(f, x, v)
+        _, jvp_res = func.jvp(f, (x,), (v,))
         eps = 1e-5
         fd = ((x_np + eps * v_np) ** 2 + 3 * (x_np + eps * v_np)).sum() - \
              ((x_np - eps * v_np) ** 2 + 3 * (x_np - eps * v_np)).sum()
@@ -476,8 +490,8 @@ class _TestFuncsCases:
             + np.log(2.0) * 2.0 ** x_np - np.floor(11.0 / x_np)
         ) * v_np
         passed = True
-        for create_graph in (False, True):
-            out, jvp_res = func.jvp(f, x, v, create_graph=create_graph)
+        for _ in (False, True):
+            out, jvp_res = func.jvp(f, (x,), (v,))
             passed = passed and _close(out, expected_out) and _close(jvp_res, expected_jvp)
         return passed
 
@@ -492,17 +506,10 @@ class _TestFuncsCases:
         # jvp = y·vx + x·vy = 3 + 2 = 5
         return _close(out, 11.0) and _close(jvp_res, 5.0)
 
-    def _check_jvp_create_graph(self):
-        f = lambda x: (x ** 2).sum()
-        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        v = _rm_tensor(np.array([0.5, 1.0, 0.5]), requires_grad=False)
-        _, jvp_res = func.jvp(f, x, v, create_graph=True)
-        # jvp = 2x·v = 1 + 4 + 3 = 8
-        return _close(jvp_res, 8.0)
-
     def _check_jvp_default_tangent(self):
         f = lambda x: (x ** 3).sum()
-        out, jvp_res = func.jvp(f, _rm_tensor(np.array([1.0, 2.0])), None)
+        out, jvp_res = func.jvp(f, (_rm_tensor(np.array([1.0, 2.0])),),
+                                 (func.ones_like(_rm_tensor(np.array([1.0, 2.0]))),))
         # out = 1 + 8 = 9；jvp = 3*(1 + 4) = 15（方向取标量 1.0）
         return _close(out, 9.0) and _close(jvp_res, 15.0)
 
@@ -510,7 +517,7 @@ class _TestFuncsCases:
         f = lambda x: (x.sum(), (x ** 2).sum())
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         v = _rm_tensor(np.array([1.0, 0.0, 1.0]), requires_grad=False)
-        out, jvp_res = func.jvp(f, x, v)
+        out, jvp_res = func.jvp(f, (x,), (v,))
         # out = (6, 14)；jvp = (sum(v)=2, 2x·v=8)
         return (isinstance(out, tuple) and isinstance(jvp_res, tuple)
                 and len(out) == 2 and len(jvp_res) == 2
@@ -520,7 +527,7 @@ class _TestFuncsCases:
     def _check_jvp_complex(self):
         z = _rm_ctensor(np.array([1.0 + 2.0j, 3.0 - 1.0j]))
         v = _rm_ctensor(np.array([1.0 + 0.0j, 1.0 + 0.0j]), requires_grad=False)
-        out, jvp_res = func.jvp(lambda t: (t ** 2).sum(), z, v)
+        out, jvp_res = func.jvp(lambda t: (t ** 2).sum(), (z,), (v,))
         # sum(z^2) = 5 - 2j；J·v = 2z = 8 + 2j（两次共轭抵消）
         return _close(out, 5.0 - 2.0j) and _close(jvp_res, 8.0 + 2.0j)
 
@@ -528,7 +535,7 @@ class _TestFuncsCases:
         x = _rm_tensor(np.array([1.0, 2.0]))
         v = _rm_tensor(np.array([1.0, 1.0]), requires_grad=False)
         try:
-            func.jvp(lambda _: tensor(3.0), x, v, strict=True)
+            func.jvp(lambda _: tensor(3.0), (x,), (v,), strict=True)
             return False
         except RuntimeError:
             return True
@@ -538,9 +545,9 @@ class _TestFuncsCases:
     # ---------------------------------------------------------------
     def test_vjp(self):
         cases = [
-            ("scalar_default_v",          lambda x: (x ** 2).sum() + x.sum(),  np.array([1.0, 2.0, 3.0]), None,             20.0, np.array([3.0, 5.0, 7.0])),
+            ("scalar_ones_v",             lambda x: (x ** 2).sum() + x.sum(),  np.array([1.0, 2.0, 3.0]), _rm_tensor(np.array(1.0), requires_grad=False), 20.0, np.array([3.0, 5.0, 7.0])),
             ("scalar_custom_v",           lambda x: (x ** 2).sum() + x.sum(),  np.array([1.0, 2.0, 3.0]), _rm_tensor(np.array(2.0), requires_grad=False), 20.0, np.array([6.0, 10.0, 14.0])),
-            ("vector_default_cotangent",  lambda x: x ** 2,                   np.array([1.0, 2.0, 3.0]), None,             np.array([1.0, 4.0, 9.0]), np.array([2.0, 4.0, 6.0])),
+            ("vector_ones_cotangent",     lambda x: x ** 2,                   np.array([1.0, 2.0, 3.0]), _rm_tensor(np.ones(3), requires_grad=False), np.array([1.0, 4.0, 9.0]), np.array([2.0, 4.0, 6.0])),
         ]
         for desc, f, p_np, v, exp_out, exp_vjp in cases:
             _run_case(f"vjp - {desc}",
@@ -562,18 +569,21 @@ class _TestFuncsCases:
         # cotangents 数量与输出不匹配
         _run_case("vjp - cotangent_count_mismatch", lambda: self._check_vjp_cotangent_mismatch())
 
-        # 常量输出：strict=False 返回零块，strict=True 报错
+        # 常量输出：返回零块
         _run_case("vjp - constant_output_zeros", lambda: self._check_vjp_constant())
 
     def _check_vjp(self, f, p_np, v, exp_out, exp_vjp):
         p = _rm_tensor(p_np)
-        out, vjp_res = func.vjp(f, p, v)
+        out, vjp_fn = func.vjp(f, p)
+        # vjp_fn 恒返回 tuple（单 primal 为 1-tuple），与 torch.func 一致
+        vjp_res = vjp_fn(v)[0]
         return _close(out, exp_out) and _close(vjp_res, exp_vjp)
 
     def _check_vjp_grad(self):
         f = lambda x: (x ** 2 + 3 * x).sum()
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        _, vjp_res = func.vjp(f, x)
+        _, vjp_fn = func.vjp(f, x)
+        vjp_res = vjp_fn(_rm_tensor(np.array(1.0), requires_grad=False))[0]
         grad_direct = func.grad(f)(x)
         return _close(vjp_res, grad_direct)
 
@@ -581,14 +591,16 @@ class _TestFuncsCases:
         f = lambda x: x ** 2  # 向量输出
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         cot = _rm_tensor(np.array([0.5, 1.0, 2.0]), requires_grad=False)
-        out, vjp_res = func.vjp(f, x, cot)
+        out, vjp_fn = func.vjp(f, x)
+        vjp_res = vjp_fn(cot)[0]
         # out = [1,4,9]; vjp = 2*x * cot = [1, 4, 12]
         return _close(out, np.array([1.0, 4.0, 9.0])) and _close(vjp_res, np.array([1.0, 4.0, 12.0]))
 
     def _check_vjp_multi_input(self):
         x = _rm_tensor(np.array([1.0, 2.0]))
         y = _rm_tensor(np.array([3.0, 4.0]))
-        out, res = func.vjp(lambda a, b: (a * b).sum(), (x, y))
+        out, vjp_fn = func.vjp(lambda a, b: (a * b).sum(), x, y)
+        res = vjp_fn(_rm_tensor(np.array(1.0), requires_grad=False))
         # out = 11；∂f/∂x = y，∂f/∂y = x
         return (_close(out, 11.0) and isinstance(res, tuple) and len(res) == 2
                 and _close(res[0], np.array([3.0, 4.0]))
@@ -597,30 +609,30 @@ class _TestFuncsCases:
     def _check_vjp_multi_output(self):
         f = lambda x: (x.sum(), (x ** 2).sum())
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        out, res = func.vjp(f, x, (_rm_tensor(2.0, requires_grad=False),
-                                   _rm_tensor(3.0, requires_grad=False)))
-        # grad = 2*ones + 3*2x = [8, 14, 20]
+        out, vjp_fn = func.vjp(f, x)
+        res = vjp_fn((_rm_tensor(2.0, requires_grad=False),
+                      _rm_tensor(3.0, requires_grad=False)))
+        # grad = 2*ones + 3*2x = [8, 14, 20]；结果仍是 1-tuple
         return (isinstance(out, tuple) and _close(out[0], 6.0) and _close(out[1], 14.0)
-                and _close(res, np.array([8.0, 14.0, 20.0])))
+                and isinstance(res, tuple) and len(res) == 1
+                and _close(res[0], np.array([8.0, 14.0, 20.0])))
 
     def _check_vjp_cotangent_mismatch(self):
         f = lambda x: (x.sum(), (x ** 2).sum())
         x = _rm_tensor(np.array([1.0, 2.0]))
         try:
-            func.vjp(f, x, tensor(1.0))   # 单余切 vs 双输出
+            _, vjp_fn = func.vjp(f, x)
+            vjp_fn(tensor(1.0))   # 单余切 vs 双输出
             return False
         except RuntimeError:
             return True
 
     def _check_vjp_constant(self):
         x = _rm_tensor(np.array([1.0, 2.0]))
-        out, res = func.vjp(lambda _: tensor(3.0), x)
+        out, vjp_fn = func.vjp(lambda _: tensor(3.0), x)
+        res = vjp_fn(_rm_tensor(np.array(1.0), requires_grad=False))[0]
         zeros_ok = _close(out, 3.0) and _close(res, np.zeros(2))
-        try:
-            func.vjp(lambda _: tensor(3.0), x, strict=True)
-            return False
-        except RuntimeError:
-            return zeros_ok
+        return zeros_ok
 
     # ---------------------------------------------------------------
     # jacrev
@@ -653,8 +665,9 @@ class _TestFuncsCases:
         _run_case("jacrev - multi_output_argnums_filter",
                   lambda: self._check_jacrev_multi_output_argnums())
 
-        # 独立输入：strict=False 返回零块，strict=True 报错
-        _run_case("jacrev - independent_input", lambda: self._check_jacrev_independent())
+        # 独立输入：未连通的位置返回零块（与 torch.func 一致）
+        _run_case("jacrev - independent_input_zeros",
+                  lambda: self._check_jacrev_independent())
 
         # 0 维输入：Jacobian 为 0 维
         _run_case("jacrev - scalar_input", lambda: self._check_jacrev_scalar_input())
@@ -723,14 +736,10 @@ class _TestFuncsCases:
     def _check_jacrev_independent(self):
         x = _rm_tensor(np.array([1.0, 2.0]))
         y = _rm_tensor(np.array([3.0, 4.0]))
-        zeros_ok = _close(
-            func.jacrev(lambda a, b: (b ** 2).sum(), argnums=0, strict=False)(x, y),
-            np.zeros(2))
-        try:
-            func.jacrev(lambda a, b: (b ** 2).sum(), argnums=0, strict=True)(x, y)
-            return False
-        except RuntimeError:
-            return zeros_ok
+        jac = func.jacrev(lambda a, b: (b ** 2).sum(), argnums=(0, 1))(x, y)
+        return (isinstance(jac, tuple) and len(jac) == 2
+                and _close(jac[0], np.zeros(2))
+                and _close(jac[1], np.array([6.0, 8.0])))
 
     def _check_jacrev_scalar_input(self):
         x = _rm_tensor(2.0)
@@ -835,8 +844,8 @@ class _TestFuncsCases:
 
         _run_case("hessian - argnums_filter", lambda: self._check_hessian_argnums())
 
-        # create_graph=True
-        _run_case("hessian - create_graph", lambda: self._check_hessian_create_graph())
+        # 高阶可导：Hessian 结果默认保留计算图
+        _run_case("hessian - higher_order", lambda: self._check_hessian_create_graph())
 
         # 非标量函数应抛异常
         _run_case("hessian - non_scalar_raises", lambda: self._check_hessian_non_scalar())
@@ -848,8 +857,8 @@ class _TestFuncsCases:
         _run_case("hessian - noncontiguous_argnums",
                   lambda: self._check_hessian_noncontiguous())
 
-        # argnums 子集 + 与其余参数无关：strict 自动放宽
-        _run_case("hessian - strict_relaxed_subset",
+        # argnums 子集：未选中参数不参与，结果只含所选输入的块
+        _run_case("hessian - argnums_subset",
                   lambda: self._check_hessian_strict_relaxed())
 
     def _check_hessian(self, f, x_np, expected):
@@ -859,7 +868,6 @@ class _TestFuncsCases:
 
     def _check_hessian_argnums(self):
         # 不可分离函数：f = x * y²，∂²f/∂x² = 0，∂²f/∂x∂y = 2y
-        # cross-Hessian 非零 → strict 检查通过
         def f(x, y): return (x * y ** 2).sum()
         x = _rm_tensor(np.array([1.0, 2.0]))
         y = _rm_tensor(np.array([3.0, 4.0]))
@@ -869,9 +877,12 @@ class _TestFuncsCases:
 
     def _check_hessian_create_graph(self):
         f = lambda x: (x ** 4).sum()
-        h = func.hessian(f, create_graph=True)(_rm_tensor(np.array([1.0, 2.0, 3.0])))
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
+        h = func.hessian(f)(x)
         # Hessian of x^4: diag(12x^2) = diag([12, 48, 108])
-        return _close(h, np.diag([12.0, 48.0, 108.0]))
+        # 默认保留计算图，可由 grad 再求导：d(sum(H))/dx 需经 H 的 12x² 关系
+        d3 = func.grad(lambda a: func.hessian(f)(a).sum())(x)
+        return _close(h, np.diag([12.0, 48.0, 108.0])) and _close(d3, 24.0 * _to_np(x))
 
     def _check_hessian_non_scalar(self):
         f = lambda x: x ** 2  # 向量输出，不是标量
@@ -902,7 +913,7 @@ class _TestFuncsCases:
                 and _close(h[1], np.diag([24.0, 30.0])))
 
     def _check_hessian_strict_relaxed(self):
-        # 梯度 ∂f/∂x = 3x² 与 y 无关；argnums=(0,) 时 strict 应自动放宽
+        # 梯度 ∂f/∂x = 3x² 与 y 无关；argnums=(0,) 时 y 不参与，结果为非零对角块
         h = func.hessian(lambda x, y: (x ** 3).sum() + (y ** 3).sum(), argnums=(0,))(
             _rm_tensor(np.array([1.0, 2.0])), _rm_tensor(np.array([3.0, 4.0])))
         return not isinstance(h, tuple) and _close(h, np.diag([6.0, 12.0]))
@@ -962,7 +973,7 @@ class _TestFuncsCases:
     def _check_vmap_passthrough(self):
         f = lambda x: (x ** 2).sum()
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        out = func.vmap(f, in_dims=None)(x)
+        out = func.vmap(f, in_dims=(None,))(x)
         return _close(out, 14.0)
 
     def _check_vmap_tuple_out(self):
@@ -1031,7 +1042,7 @@ class _TestFuncsCases:
 
     def _check_vmap_non_tensor_arg(self):
         x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
-        out = func.vmap(lambda row, c: c * (row ** 2).sum())(x, 2.0)
+        out = func.vmap(lambda row, c: c * (row ** 2).sum(), in_dims=(0, None))(x, 2.0)
         return _close(out, np.array([10.0, 50.0]))
 
     # ---------------------------------------------------------------
@@ -1268,6 +1279,8 @@ class _TestFuncsCases:
         _run_case("linearize - multi_output", lambda: self._check_linearize_multi())
         _run_case("linearize - tangent_shape_check",
                   lambda: self._check_linearize_shape_error())
+        _run_case("linearize - second_order_zero",
+                  lambda: self._check_linearize_second_order())
 
     def _check_linearize(self):
         f = lambda x: x * x
@@ -1285,7 +1298,7 @@ class _TestFuncsCases:
         # 同一 linear_fn 可复用多次
         a = lin(v)
         b = lin(v)
-        _, jvp_val = func.jvp(f, x, v)
+        _, jvp_val = func.jvp(f, (x,), (v,))
         return _close(a, jvp_val) and _close(a, b) and _close(out, 14.0)
 
     def _check_linearize_multi(self):
@@ -1309,8 +1322,15 @@ class _TestFuncsCases:
         except RuntimeError:
             return True
 
+    def _check_linearize_second_order(self):
+        x = _rm_tensor(np.array([1.0, 2.0]))
+        _, lin = func.linearize(lambda a: (a ** 3).sum(), x)
+        v = _rm_tensor(np.array([1.0, 1.0]))
+        g2 = func.grad(lambda t: func.grad(lambda u: lin(u).sum())(t).sum())(v)
+        return _close(g2, np.zeros(2))
+
     # ---------------------------------------------------------------
-    # chunk_size（vmap / jacrev / jacfwd）
+    # chunk_size（vmap / jacrev；jacfwd 与 torch.func 一致无 chunk_size）
     # ---------------------------------------------------------------
     def test_chunk_size(self):
         _run_case("chunk_size - vmap_matches_unchunked",
@@ -1319,8 +1339,6 @@ class _TestFuncsCases:
                   lambda: self._check_vmap_chunk_multi())
         _run_case("chunk_size - jacrev_matches_unchunked",
                   lambda: self._check_jacrev_chunk())
-        _run_case("chunk_size - jacfwd_matches_unchunked",
-                  lambda: self._check_jacfwd_chunk())
         _run_case("chunk_size - invalid_raises",
                   lambda: self._check_chunk_invalid())
 
@@ -1343,18 +1361,20 @@ class _TestFuncsCases:
         x = _rm_tensor(np.arange(6.0).reshape(2, 3))
         return _close(func.jacrev(f)(x), func.jacrev(f, chunk_size=2)(x))
 
-    def _check_jacfwd_chunk(self):
-        f = lambda x: x * x
-        x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
-        return _close(func.jacfwd(f)(x), func.jacfwd(f, chunk_size=1)(x))
-
     def _check_chunk_invalid(self):
         for bad in (0, -1):
             try:
                 func.vmap(lambda a: a, chunk_size=bad)
                 return False
-            except ValueError:
-                pass
+            except ValueError as e:
+                if "chunk_size should be None or greater than 0" not in str(e):
+                    return False
+            try:
+                func.jacrev(lambda a: a, chunk_size=bad)
+                return False
+            except ValueError as e:
+                if "chunk_size` should be greater than 0" not in str(e):
+                    return False
         return True
 
     # ---------------------------------------------------------------
@@ -1508,7 +1528,7 @@ class _TestFuncsCases:
     def _check_comp_grad_grad(self):
         f = lambda x: (x ** 4).sum()
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        d1f = func.grad(f, create_graph=True)
+        d1f = func.grad(f)
         grad_norm = lambda a: d1f(a).sum()
         d2y = func.grad(grad_norm)(x)
         return _close(d2y, 12.0 * _to_np(x) ** 2)
@@ -1517,7 +1537,7 @@ class _TestFuncsCases:
         f = lambda x: (x ** 4 + x ** 2).sum()
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         hess_direct = func.hessian(f)(x)
-        grad_f = func.grad(f, create_graph=True)
+        grad_f = func.grad(f)
         hess_via_jacrev = func.jacrev(grad_f)(x)
         return _close(hess_via_jacrev, hess_direct)
 
@@ -1527,7 +1547,7 @@ class _TestFuncsCases:
         v_np = np.array([0.3, 0.7, 0.0])
         x = _rm_tensor(x_np)
         v = _rm_tensor(v_np, requires_grad=False)
-        _, jvp_res = func.jvp(f, x, v)
+        _, jvp_res = func.jvp(f, (x,), (v,))
         eps = 1e-5
         f_p = (x_np + eps * v_np) ** 3 + (x_np + eps * v_np) ** 2
         f_m = (x_np - eps * v_np) ** 3 + (x_np - eps * v_np) ** 2
@@ -1541,18 +1561,20 @@ class _TestFuncsCases:
         f = lambda x: x ** 3  # f: R^3 -> R^3, 向量输出
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         v = _rm_tensor(np.array([0.5, 1.0, 0.5]), requires_grad=False)
-        _, jvp_val = func.jvp(f, x, v)
-        _, vjp_val = func.vjp(f, x, jvp_val)
+        _, jvp_val = func.jvp(f, (x,), (v,))
+        _, vjp_fn = func.vjp(f, x)
+        vjp_val = vjp_fn(jvp_val)[0]
         # 验证形状一致（VJP 应回到输入空间 R^3）
         return vjp_val.shape == (3,)
 
     def _check_comp_jvp_vjp_scalar(self):
-        # 标量输出 f: jvp(f,x,v) = ∇f·v，vjp(f,x)（默认 cot=ones）= ∇f
+        # 标量输出 f: jvp(f,x,v) = ∇f·v，vjp(f,x)(cot=1) = ∇f
         f = lambda x: (x ** 2).sum() + x.sum()  # ∇f = 2x+1
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         v = _rm_tensor(np.array([0.5, 1.0, 0.5]), requires_grad=False)
-        _, jvpr = func.jvp(f, x, v)
-        _, vjpr = func.vjp(f, x)
+        _, jvpr = func.jvp(f, (x,), (v,))
+        _, vjp_fn = func.vjp(f, x)
+        vjpr = vjp_fn(_rm_tensor(np.array(1.0), requires_grad=False))[0]
         expected_grad = np.array([3.0, 5.0, 7.0])  # 2x+1
         # jvpr = grad · v = 3*0.5 + 5*1 + 7*0.5 = 1.5+5+3.5 = 10
         return _close(vjpr, expected_grad) and _close(jvpr, 10.0)
@@ -1683,14 +1705,14 @@ class _TestFuncsCases:
     def _ho_grad_3rd(self):
         # f = sum(x^4): f'=4x^3, f''=12x^2, f'''=24x
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        d1 = func.grad(lambda a: (a ** 4).sum(), create_graph=True)
-        d2 = func.grad(lambda a: d1(a).sum(), create_graph=True)
+        d1 = func.grad(lambda a: (a ** 4).sum())
+        d2 = func.grad(lambda a: d1(a).sum())
         d3 = func.grad(lambda a: d2(a).sum())(x)
         return _close(d3, 24.0 * np.array([1.0, 2.0, 3.0]))
 
     def _ho_gav_2nd(self):
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        gav = func.grad_and_value(lambda a: (a ** 4).sum(), create_graph=True)
+        gav = func.grad_and_value(lambda a: (a ** 4).sum())
         _, v = gav(x)
         d2 = func.grad(lambda a: gav(a)[0].sum())(x)
         return _close(v, 98.0) and _close(d2, 12.0 * np.array([1.0, 4.0, 9.0]))
@@ -1699,15 +1721,15 @@ class _TestFuncsCases:
         # h(a) = jvp(sum(z^3), a, v)[1] = 3*sum(a^2*v); jvp(h, x, v)[1] = 6*sum(x*v^2)
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         v = _rm_tensor(np.array([1.0, 1.0, 1.0]), requires_grad=False)
-        h = lambda a: func.jvp(lambda z: (z ** 3).sum(), (a,), (v,), create_graph=True)[1]
-        _, res = func.jvp(h, (x,), (v,), create_graph=True)
+        h = lambda a: func.jvp(lambda z: (z ** 3).sum(), (a,), (v,))[1]
+        _, res = func.jvp(h, (x,), (v,))
         return _close(res, 36.0)
 
     def _ho_vjp_2nd(self):
         # vjp 结果为 4x^3，再对输入求导应得 12x^2
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
-        _, g = func.vjp(lambda z: (z ** 4).sum(), (x,),
-                        _rm_tensor(np.array(1.0), requires_grad=False), create_graph=True)
+        _, vjp_fn = func.vjp(lambda z: (z ** 4).sum(), x)
+        g = vjp_fn(_rm_tensor(np.array(1.0), requires_grad=False))[0]
         d2 = func.grad(lambda a: g.sum())(x)
         return _close(d2, 12.0 * np.array([1.0, 4.0, 9.0]))
 
@@ -1715,46 +1737,45 @@ class _TestFuncsCases:
         # jacrev(jacrev(sum(x^3)) 对输入求导 = 6*diag(x)
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         f = lambda b: (b ** 3).sum()
-        h = func.jacrev(lambda a: func.jacrev(f, create_graph=True)(a), create_graph=True)(x)
+        h = func.jacrev(lambda a: func.jacrev(f)(a))(x)
         return _close(h, np.diag(6.0 * _to_np(x)))
 
     def _ho_jacfwd_2nd(self):
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         f = lambda b: (b ** 3).sum()
-        h = func.jacfwd(lambda a: func.jacfwd(f, create_graph=True)(a), create_graph=True)(x)
+        h = func.jacfwd(lambda a: func.jacfwd(f)(a))(x)
         return _close(h, np.diag(6.0 * _to_np(x)))
 
     def _ho_jacfwd_jacrev(self):
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         f = lambda b: (b ** 3).sum()
-        return _close(func.jacfwd(lambda a: func.jacrev(f, create_graph=True)(a),
-                                  create_graph=True)(x), np.diag(6.0 * _to_np(x)))
+        return _close(func.jacfwd(lambda a: func.jacrev(f)(a))(x),
+                      np.diag(6.0 * _to_np(x)))
 
     def _ho_jacrev_jacfwd(self):
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         f = lambda b: (b ** 3).sum()
-        return _close(func.jacrev(lambda a: func.jacfwd(f, create_graph=True)(a),
-                                  create_graph=True)(x), np.diag(6.0 * _to_np(x)))
+        return _close(func.jacrev(lambda a: func.jacfwd(f)(a))(x),
+                      np.diag(6.0 * _to_np(x)))
 
     def _ho_hessian_3rd(self):
         # hessian(sum(x^3)) = 6*diag(x)，对其和再求导得 6*ones
         x = _rm_tensor(np.array([1.0, 2.0, 3.0]))
         f = lambda b: (b ** 3).sum()
-        d3 = func.jacrev(lambda a: func.hessian(f, create_graph=True)(a).sum(),
-                         create_graph=True)(x)
+        d3 = func.jacrev(lambda a: func.hessian(f)(a).sum())(x)
         return _close(d3, 6.0 * np.ones(3))
 
     def _ho_vmap_grad_2nd(self):
         # 逐样本 grad of sum(z^3) = 3z^2，再对输入求导得 6z
         z = _rm_tensor(np.array([1.0, 2.0]))
         per_sample = lambda v: (v ** 3).sum()
-        res = func.grad(lambda a: func.vmap(func.grad(per_sample, create_graph=True))(a).sum())(z)
+        res = func.grad(lambda a: func.vmap(func.grad(per_sample))(a).sum())(z)
         return _close(res, 6.0 * _to_np(z))
 
     def _ho_vmap_jacrev_2nd(self):
         x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
         f = lambda b: (b ** 3).sum()
-        res = func.jacrev(lambda p: func.vmap(lambda r: func.jacrev(f, create_graph=True)(r))(p).sum())(x)
+        res = func.jacrev(lambda p: func.vmap(lambda r: func.jacrev(f)(r))(p).sum())(x)
         return _close(res, 6.0 * _to_np(x))
 
     def _ho_functional_call_2nd(self):
@@ -1769,7 +1790,7 @@ class _TestFuncsCases:
         w = _rm_tensor(W)
         x = _rm_tensor(np.array([1.0, 2.0]))
         f = lambda a: (func.functional_call(model, [w], (a,)) ** 3).sum()
-        h = func.jacrev(lambda a: func.grad(f, create_graph=True)(a), create_graph=True)(x)
+        h = func.jacrev(lambda a: func.grad(f)(a))(x)
         return _close(h, np.array([[282.0, 606.0], [606.0, 1338.0]]))
 
 

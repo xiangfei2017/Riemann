@@ -34,10 +34,10 @@ Riemann 的核心价值在于其**简洁性**和**可学习性**——代码结�
 
 - **backward 方法**：触发反向传播计算梯度
 - **grad 函数**：计算函数相对于输入的梯度
-- **func 模块**：torch.func 风格的函数式自动求导 API，提供柯里化的 ``grad``、``jvp``、``jvp2``、``vjp``、``linearize``、``jacrev``、``jacfwd``、``hessian``、``vmap``、``functional_call``、``stack_module_state`` 等函数，适合链式高阶求导；``jvp`` 由直接前向规则驱动，``jvp2`` 保留旧的局部 VJP 转置实现
+- **func 模块**：torch.func 风格的函数式自动求导 API，提供柯里化的 ``grad``、``jvp``、``vjp``、``linearize``、``jacrev``、``jacfwd``、``hessian``、``vmap``、``functional_call``、``stack_module_state`` 等函数，适合链式高阶求导；``jvp`` 由直接前向规则驱动
 - **register_grad_rule 装饰器**：使用 ``@register_grad_rule`` 装饰器自定义梯度跟踪函数（Riemann 特有）
 - **register_jvp_rule 装饰器**：使用 ``@register_jvp_rule`` 为函数登记直接前向（JVP）规则，可与 ``register_grad_rule`` 单独或同时使用（Riemann 特有）
-- **Function 类**：通过继承 Function 类自定义前向、反向与可选的前向模式（``jvp``）规则，支持 ``setup_context``、``save_for_forward``（Riemann 特有）
+- **Function 类**：通过继承 Function 类自定义前向、反向与可选的前向模式 ``jvp`` 规则，支持 ``setup_context``、``save_for_forward`` 等接口（Riemann 特有）
 - **雅可比矩阵和海森矩阵**：支持多输入多输出函数的雅可比矩阵计算，支持多输入函数的海森矩阵计算
 
 线性代数模块

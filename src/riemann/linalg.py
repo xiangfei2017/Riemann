@@ -64,8 +64,7 @@ import numpy as np
 from .core import *
 from .cuda import cp
 from .core.tensordef import (
-    _apply_out, _apply_out_tuple, _same_device, api_registry,
-    _input_tangent
+    _apply_out, _apply_out_tuple, _same_device, api_registry
 )
 import builtins
 
@@ -219,21 +218,19 @@ def cross(input, other, *, dim=-1, out=None):
     return _apply_out(out, ret, (input, other), "cross")
 
 
-def _cross_jvp(result_tensor: TN):
+def _cross_jvp(frame, result_tensor: TN):
     """叉积 JVP：y = a × b → y_t = a_t × b + a × b_t。"""
-    frame = current_jvp_frame()
     dim = result_tensor.parms[0]
     a, b = result_tensor.fromvars
-    a_t = _input_tangent(frame, a)
-    b_t = _input_tangent(frame, b)
+    a_t = frame.tangent(a)
+    b_t = frame.tangent(b)
     total = None
     if a_t is not None:
         total = cross(a_t, b, dim=dim)
     if b_t is not None:
         term = cross(a, b_t, dim=dim)
         total = term if total is None else total + term
-    if total is not None:
-        frame.node_tangent[id(result_tensor)] = total
+    return total
 
 
 def _cross_grad(result_tensor: TN):
@@ -1183,18 +1180,17 @@ def det(A:TN):
     
     return ret
 
-def _det_jvp(result_tensor:TN):
+def _det_jvp(frame, result_tensor:TN):
     """行列式的直接前向规则：d(det A) = det(A) · tr(A⁻¹ dA)。"""
-    frame = current_jvp_frame()
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
-        return
+        return None
     
     # tr(A⁻¹ dA) 对批量矩阵逐矩阵计算
     prod = inv(A) @ tangent
     tr = prod.diagonal(dim1=-2, dim2=-1).sum(-1)
-    frame.node_tangent[id(result_tensor)] = result_tensor * tr
+    return result_tensor * tr
 
 def _det_grad(result_tensor:TN):
     """计算行列式的反向传播梯度。"""
@@ -1258,16 +1254,15 @@ def inv(A:TN):
     
     return ret
 
-def _inv_jvp(result_tensor:TN):
+def _inv_jvp(frame, result_tensor:TN):
     """矩阵求逆的直接前向规则：d(A⁻¹) = -A⁻¹ (dA) A⁻¹。"""
-    frame = current_jvp_frame()
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
-        return
+        return None
     
     y = result_tensor
-    frame.node_tangent[id(result_tensor)] = -(y @ tangent @ y)
+    return -(y @ tangent @ y)
 
 def _inv_grad(result_tensor:TN):
     """计算矩阵求逆的反向传播梯度。"""
@@ -1380,17 +1375,16 @@ def svd(A, full_matrices=True, driver=None, out=None):
     return _apply_out_tuple(out, (U, S, Vh), (A,), "svd")
 
 
-def _svd_thin_parts(result_tensor: TN):
+def _svd_thin_parts(frame, result_tensor: TN):
     """
     SVD 前向规则共用的精简分解量。
 
-    返回 (frame, U_r, S, Vh_r, dP, tangent, m, n, r, A)；无输入 tangent 时返回 None。
+    返回 (U_r, S, Vh_r, dP, tangent, m, n, r, A)；无输入 tangent 时返回 None。
     其中 U_r/Vh_r 是裁剪到 r=min(m,n) 的精简因子，dP = U_rᴴ (dA) V_r。
     """
-    frame = current_jvp_frame()
     U, S, Vh, full_matrices = result_tensor.parms[0]
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
         return None
     m, n = A.shape[-2], A.shape[-1]
@@ -1402,7 +1396,7 @@ def _svd_thin_parts(result_tensor: TN):
         if n > r:
             Vh_r = Vh[..., :r, :]
     dP = U_r.mH @ tangent @ Vh_r.mH
-    return frame, U_r, S, Vh_r, dP, tangent, m, n, r, A
+    return U_r, S, Vh_r, dP, tangent, m, n, r, A
 
 
 def _svd_cauchy_matrix(S, A, r):
@@ -1436,21 +1430,21 @@ def _pad_last_dims(value: TN, target_shape, device):
     return concatenate((value, zeros(pad_shape, dtype=value.dtype, device=device)), dim=-2)
 
 
-def _svd_s_jvp(result_tensor: TN):
+def _svd_s_jvp(frame, result_tensor: TN):
     """奇异值的直接前向规则：dS = Re diag(Uᴴ dA V)。"""
-    parts = _svd_thin_parts(result_tensor)
+    parts = _svd_thin_parts(frame, result_tensor)
     if parts is None:
-        return
-    frame, U_r, S, Vh_r, dP, tangent, m, n, r, A = parts
-    frame.node_tangent[id(result_tensor)] = dP.diagonal(dim1=-2, dim2=-1).real
+        return None
+    U_r, S, Vh_r, dP, tangent, m, n, r, A = parts
+    return dP.diagonal(dim1=-2, dim2=-1).real
 
 
-def _svd_u_jvp(result_tensor: TN):
+def _svd_u_jvp(frame, result_tensor: TN):
     """U 的直接前向规则（精简分解公式，full_matrices 时多出的列为零）。"""
-    parts = _svd_thin_parts(result_tensor)
+    parts = _svd_thin_parts(frame, result_tensor)
     if parts is None:
-        return
-    frame, U_r, S, Vh_r, dP, tangent, m, n, r, A = parts
+        return None
+    U_r, S, Vh_r, dP, tangent, m, n, r, A = parts
     V_r = Vh_r.mH
     S_diag = batch_diag(S)
     F = _svd_cauchy_matrix(S, A, r)
@@ -1460,16 +1454,16 @@ def _svd_u_jvp(result_tensor: TN):
         Omega = Omega + phase.type(Omega.dtype)
     perp = (tangent @ V_r) * (1.0 / S)
     dU = U_r @ Omega + perp - U_r @ (U_r.mH @ perp)
-    frame.node_tangent[id(result_tensor)] = _pad_last_dims(
+    return _pad_last_dims(
         dU, result_tensor.shape, result_tensor.device)
 
 
-def _svd_vh_jvp(result_tensor: TN):
+def _svd_vh_jvp(frame, result_tensor: TN):
     """Vh 的直接前向规则（精简分解公式，full_matrices 时多出的行为零）。"""
-    parts = _svd_thin_parts(result_tensor)
+    parts = _svd_thin_parts(frame, result_tensor)
     if parts is None:
-        return
-    frame, U_r, S, Vh_r, dP, tangent, m, n, r, A = parts
+        return None
+    U_r, S, Vh_r, dP, tangent, m, n, r, A = parts
     V_r = Vh_r.mH
     S_diag = batch_diag(S)
     F = _svd_cauchy_matrix(S, A, r)
@@ -1479,7 +1473,7 @@ def _svd_vh_jvp(result_tensor: TN):
         Gamma = Gamma - phase.type(Gamma.dtype)
     perp = (tangent.mH @ U_r) * (1.0 / S)
     dV = V_r @ Gamma + perp - V_r @ (V_r.mH @ perp)
-    frame.node_tangent[id(result_tensor)] = _pad_last_dims(
+    return _pad_last_dims(
         dV.mH, result_tensor.shape, result_tensor.device)
 
 # U的梯度计算函数 - 支持full_matrices参数
@@ -1800,35 +1794,33 @@ def _eig_cauchy_matrix(w, device, n):
     return where(eye_mask, 0.0, 1.0 / w_diff).type(w.dtype)
 
 
-def _eig_w_jvp(result_tensor: TN):
+def _eig_w_jvp(frame, result_tensor: TN):
     """特征值的直接前向规则：dw = diag(Uᴴ dA V)，U = V⁻ᴴ。"""
-    frame = current_jvp_frame()
     w, V, U = result_tensor.parms[0]
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
-        return
+        return None
     M = U.mH @ tangent.type(V.dtype) @ V
-    frame.node_tangent[id(result_tensor)] = M.diagonal(dim1=-2, dim2=-1)
+    return M.diagonal(dim1=-2, dim2=-1)
 
 
-def _eig_v_jvp(result_tensor: TN):
+def _eig_v_jvp(frame, result_tensor: TN):
     """特征向量的直接前向规则。
 
     dV_off = V (F ∘ (Uᴴ dA V))，F_ij = 1/(w_j - w_i)，再按特征向量的单位
     2-范数归一化约定扣除径向分量：Re(v_jᴴ dv_j) = 0。与 torch.func.jvp 一致。
     """
-    frame = current_jvp_frame()
     w, V, U = result_tensor.parms[0]
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
-        return
+        return None
     M = U.mH @ tangent.type(V.dtype) @ V
     F = _eig_cauchy_matrix(w, A.device, V.shape[-1])
     dV = V @ (F * M)
     radial = (V.mH @ dV).diagonal(dim1=-2, dim2=-1).real
-    frame.node_tangent[id(result_tensor)] = dV - V * radial.unsqueeze(-2)
+    return dV - V * radial.unsqueeze(-2)
 
 
 def _eig_w_grad(result_tensor: TN):
@@ -2078,29 +2070,27 @@ def eigh(A, *, UPLO='L', out=None):
     return _apply_out_tuple(out, (w, V), (A,), "eigh")
 
 
-def _eigh_w_jvp(result_tensor: TN):
+def _eigh_w_jvp(frame, result_tensor: TN):
     """特征值的直接前向规则：dw = Re diag(Vᴴ dA V)。"""
-    frame = current_jvp_frame()
     w, V = result_tensor.parms[0]
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
-        return
+        return None
     M = V.mH @ tangent @ V
-    frame.node_tangent[id(result_tensor)] = M.diagonal(dim1=-2, dim2=-1).real
+    return M.diagonal(dim1=-2, dim2=-1).real
 
 
-def _eigh_v_jvp(result_tensor: TN):
+def _eigh_v_jvp(frame, result_tensor: TN):
     """特征向量的直接前向规则：dV = V (F ∘ (Vᴴ dA V))，F_ij = 1/(w_j - w_i)。"""
-    frame = current_jvp_frame()
     w, V = result_tensor.parms[0]
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
-        return
+        return None
     M = V.mH @ tangent @ V
     F = _eig_cauchy_matrix(w, A.device, V.shape[-1])
-    frame.node_tangent[id(result_tensor)] = V @ (F * M)
+    return V @ (F * M)
 
 def _eigh_w_grad(result_tensor: TN):
     """计算特征值的反向传播梯度 - 使用正确的解析公式"""
@@ -2486,32 +2476,31 @@ def _squared_mat_lu(A, *, pivot=True):
     
     return P, L, U
 
-def _lu_jvp_middle(result_tensor: TN):
+def _lu_jvp_middle(frame, result_tensor: TN):
     """计算 M = L⁻¹ (Pᵀ dA) U⁻¹（A = P·L·U），pivot=False 时 M = L⁻¹ dA U⁻¹。"""
-    frame = current_jvp_frame()
     P, L, U = result_tensor.parms[0]
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
-        return None, None, None, None
+        return None, None, None
     dA = P.mH @ tangent if P.shape != (0,) else tangent
-    return frame, L, U, pinv(L) @ dA @ pinv(U)
+    return L, U, pinv(L) @ dA @ pinv(U)
 
 
-def _lu_l_jvp(result_tensor: TN):
+def _lu_l_jvp(frame, result_tensor: TN):
     """L 的直接前向规则：dL = L · tril(M, -1)，M = L⁻¹(PᵀdA)U⁻¹。"""
-    frame, L, _, M = _lu_jvp_middle(result_tensor)
+    L, _, M = _lu_jvp_middle(frame, result_tensor)
     if M is None:
-        return
-    frame.node_tangent[id(result_tensor)] = L @ tril(M, diagonal=-1)
+        return None
+    return L @ tril(M, diagonal=-1)
 
 
-def _lu_u_jvp(result_tensor: TN):
+def _lu_u_jvp(frame, result_tensor: TN):
     """U 的直接前向规则：dU = triu(M) · U，M = L⁻¹(PᵀdA)U⁻¹。"""
-    frame, _, U, M = _lu_jvp_middle(result_tensor)
+    _, U, M = _lu_jvp_middle(frame, result_tensor)
     if M is None:
-        return
-    frame.node_tangent[id(result_tensor)] = triu(M) @ U
+        return None
+    return triu(M) @ U
 
 
 def _lu_l_grad(result_tensor: TN):
@@ -2840,12 +2829,11 @@ def qr(A, mode='reduced', *, out=None):
     return _apply_out_tuple(out, (Q, R), (A,), "qr")
 
 
-def _qr_thin_parts(result_tensor: TN):
-    """QR 前向规则共用的精简分解量，返回 (frame, Q_r, R_r, M, tangent, m, n, k, Rk, A)。"""
-    frame = current_jvp_frame()
+def _qr_thin_parts(frame, result_tensor: TN):
+    """QR 前向规则共用的精简分解量，返回 (Q_r, R_r, M, Omega, tangent, m, n, k, Rk)。"""
     Q, R, mode = result_tensor.parms[0]
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
         return None
     m, n = A.shape[-2], A.shape[-1]
@@ -2867,31 +2855,31 @@ def _qr_thin_parts(result_tensor: TN):
         R_diag = Rk.diagonal(dim1=-2, dim2=-1).real
         t = (M_diag - strict_term).imag / R_diag
         Omega = Omega + batch_diag(t) * (1j)
-    return frame, Q_r, R_r, M, Omega, tangent, m, n, k, Rk
+    return Q_r, R_r, M, Omega, tangent, m, n, k, Rk
 
 
-def _qr_q_jvp(result_tensor: TN):
+def _qr_q_jvp(frame, result_tensor: TN):
     """Q 的直接前向规则：dQ = Q Ω + (I - Q Qᴴ) dA R⁻¹。"""
-    parts = _qr_thin_parts(result_tensor)
+    parts = _qr_thin_parts(frame, result_tensor)
     if parts is None:
-        return
-    frame, Q_r, R_r, M, Omega, tangent, m, n, k, Rk = parts
+        return None
+    Q_r, R_r, M, Omega, tangent, m, n, k, Rk = parts
     dQ = Q_r @ Omega
     if m > k:
         perp = tangent @ inv(Rk)
         dQ = dQ + perp - Q_r @ (Q_r.mH @ perp)
-    frame.node_tangent[id(result_tensor)] = _pad_last_dims(
+    return _pad_last_dims(
         dQ, result_tensor.shape, result_tensor.device)
 
 
-def _qr_r_jvp(result_tensor: TN):
+def _qr_r_jvp(frame, result_tensor: TN):
     """R 的直接前向规则：dR = Qᴴ dA - Ω R。"""
-    parts = _qr_thin_parts(result_tensor)
+    parts = _qr_thin_parts(frame, result_tensor)
     if parts is None:
-        return
-    frame, Q_r, R_r, M, Omega, tangent, m, n, k, Rk = parts
+        return None
+    Q_r, R_r, M, Omega, tangent, m, n, k, Rk = parts
     dR = M - Omega @ R_r
-    frame.node_tangent[id(result_tensor)] = _pad_last_dims(
+    return _pad_last_dims(
         dR, result_tensor.shape, result_tensor.device)
 
 # Q的梯度计算函数
@@ -3086,7 +3074,7 @@ def cholesky(input: TN, upper: bool = False, *, out: TN = None) -> TN:
     return _apply_out(out, result, (input,), "cholesky")
 
 
-def _cholesky_jvp(result_tensor: TN):
+def _cholesky_jvp(frame, result_tensor: TN):
     """
     Cholesky 分解的直接前向规则。
 
@@ -3096,12 +3084,11 @@ def _cholesky_jvp(result_tensor: TN):
     与后端前向实现保持一致：直接使用完整 dA（不做对称化），
     与 torch.func.jvp 对 cholesky 的约定相同。
     """
-    frame = current_jvp_frame()
     upper = result_tensor.parms[0]
     A = result_tensor.fromvars[0]
-    tangent = _input_tangent(frame, A)
+    tangent = frame.tangent(A)
     if tangent is None:
-        return
+        return None
     
     L = result_tensor.mT if upper else result_tensor
     L_inv = inv(L)
@@ -3109,7 +3096,7 @@ def _cholesky_jvp(result_tensor: TN):
     phi = M.tril() - 0.5 * batch_diag(M.diagonal(dim1=-2, dim2=-1))
     dL = L @ phi
     # upper=True 时后端返回的是 L 的转置（非共轭转置），因此 tangent 同样取转置
-    frame.node_tangent[id(result_tensor)] = dL.mT if upper else dL
+    return dL.mT if upper else dL
 
 def _cholesky_grad(result_tensor: TN):
     """Cholesky 分解的反向梯度计算函数。

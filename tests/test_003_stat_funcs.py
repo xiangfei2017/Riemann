@@ -9,6 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..','sr
 # 导入riemann模块
 try:
     import riemann as rm
+    from riemann.func import jvp
 except ImportError:
     print("无法导入riemann模块，请确保项目路径设置正确")
     sys.exit(1)
@@ -2651,11 +2652,10 @@ class TestMaxMinFunctions(unittest.TestCase):
             print(f"x.grad = {x.grad}")
             print(f"y.grad = {y.grad}")
             
-            # 验证梯度
-            self.assertIsNotNone(x.grad)
-            self.assertIsNotNone(y.grad)
-            self.assertEqual(x.grad.shape, x.shape)
-            self.assertEqual(y.grad.shape, y.shape)
+            # 验证前向值与梯度值
+            np.testing.assert_allclose(z.detach().numpy(), np.array([5.0, 7.0, 9.0]))
+            np.testing.assert_allclose(x.grad.numpy(), np.ones(3))
+            np.testing.assert_allclose(y.grad.numpy(), np.ones(3))
             
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("两个张量相加", True)
@@ -2680,9 +2680,9 @@ class TestMaxMinFunctions(unittest.TestCase):
             z2_sum.backward()
             print(f"x2.grad = {x2.grad}")
             
-            # 验证梯度
-            self.assertIsNotNone(x2.grad)
-            self.assertEqual(x2.grad.shape, x2.shape)
+            # 验证前向值与梯度值
+            np.testing.assert_allclose(z2.detach().numpy(), np.array([6.0, 7.0, 8.0]))
+            np.testing.assert_allclose(x2.grad.numpy(), np.ones(3))
             
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("张量与标量相加", True)
@@ -2710,13 +2710,11 @@ class TestMaxMinFunctions(unittest.TestCase):
             print(f"b.grad = {b.grad}")
             print(f"c.grad = {c.grad}")
             
-            # 验证梯度
-            self.assertIsNotNone(a.grad)
-            self.assertIsNotNone(b.grad)
-            self.assertIsNotNone(c.grad)
-            self.assertEqual(a.grad.shape, a.shape)
-            self.assertEqual(b.grad.shape, b.shape)
-            self.assertEqual(c.grad.shape, c.shape)
+            # 验证前向值与梯度值
+            np.testing.assert_allclose(z3.detach().numpy(), np.array([9.0, 12.0]))
+            np.testing.assert_allclose(a.grad.numpy(), np.ones(2))
+            np.testing.assert_allclose(b.grad.numpy(), np.ones(2))
+            np.testing.assert_allclose(c.grad.numpy(), np.ones(2))
             
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("多个张量相加", True)
@@ -2742,9 +2740,9 @@ class TestMaxMinFunctions(unittest.TestCase):
             result4_sum.backward()
             print(f"x4.grad = {x4.grad}")
             
-            # 验证梯度
-            self.assertIsNotNone(x4.grad)
-            self.assertEqual(x4.grad.shape, x4.shape)
+            # 验证前向值与梯度值（非张量常量只参与前向，不回传梯度）
+            np.testing.assert_allclose(result4.detach().numpy(), np.array([6.0, 7.0, 8.0]))
+            np.testing.assert_allclose(x4.grad.numpy(), np.ones(3))
             
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("混合张量和非张量相加", True)
@@ -2775,12 +2773,12 @@ class TestMaxMinFunctions(unittest.TestCase):
             print(f"b_vector.grad = {b_vector.grad}")
             print(f"c_matrix.grad = {c_matrix.grad}")
             
-            # 验证梯度
-            self.assertIsNotNone(a_scalar.grad)
-            self.assertIsNotNone(b_vector.grad)
-            self.assertIsNotNone(c_matrix.grad)
-            self.assertEqual(b_vector.grad.shape, b_vector.shape)
-            self.assertEqual(c_matrix.grad.shape, c_matrix.shape)
+            # 验证前向值与梯度值（广播后梯度按被广播维度求和）
+            np.testing.assert_allclose(result5.detach().numpy(),
+                                       np.array([[7.0, 9.0], [9.0, 11.0]]))
+            np.testing.assert_allclose(a_scalar.grad.numpy(), 4.0)
+            np.testing.assert_allclose(b_vector.grad.numpy(), np.array([2.0, 2.0]))
+            np.testing.assert_allclose(c_matrix.grad.numpy(), np.ones((2, 2)))
             
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("广播兼容的情况", True)
@@ -2805,9 +2803,9 @@ class TestMaxMinFunctions(unittest.TestCase):
             result6_sum.backward()
             print(f"x6.grad = {x6.grad}")
             
-            # 验证梯度
-            self.assertIsNotNone(x6.grad)
-            self.assertEqual(x6.grad.shape, x6.shape)
+            # 验证前向值与梯度值（numpy 常量不回传梯度）
+            np.testing.assert_allclose(result6.detach().numpy(), np.array([5.0, 7.0, 9.0]))
+            np.testing.assert_allclose(x6.grad.numpy(), np.ones(3))
             
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("非张量参数为numpy数组", True)
@@ -2834,9 +2832,10 @@ class TestMaxMinFunctions(unittest.TestCase):
                     result7_sum.backward()
                     print(f"x7.grad = {x7.grad}")
                     
-                    # 验证梯度
-                    self.assertIsNotNone(x7.grad)
-                    self.assertEqual(x7.grad.shape, x7.shape)
+                    # 验证前向值与梯度值（cupy 常量不回传梯度）
+                    np.testing.assert_allclose(result7.detach().cpu().numpy(),
+                                               np.array([5.0, 7.0, 9.0]))
+                    np.testing.assert_allclose(x7.grad.cpu().numpy(), np.ones(3))
                     
                     if IS_RUNNING_AS_SCRIPT:
                         stats.add_result("非张量参数为cupy数组", True)
@@ -2928,9 +2927,7 @@ class TestMaxMinFunctions(unittest.TestCase):
                 result10_sum.backward()
                 print(f"tensor_param.grad = {tensor_param.grad}")
                 
-                # 验证梯度
-                self.assertIsNotNone(tensor_param.grad)
-                self.assertEqual(tensor_param.grad.shape, tensor_param.shape)
+                # 前向值与梯度值在 if/else 汇合后统一校验
                 
             else:
                 # 没有GPU支持，使用python量、numpy数组和张量
@@ -2947,10 +2944,16 @@ class TestMaxMinFunctions(unittest.TestCase):
                 result10_sum.backward()
                 print(f"tensor_param.grad = {tensor_param.grad}")
                 
-                # 验证梯度
-                self.assertIsNotNone(tensor_param.grad)
-                self.assertEqual(tensor_param.grad.shape, tensor_param.shape)
+                # 前向值与梯度值在 if/else 汇合后统一校验
             
+            # 两个分支的参数组合不同，期望值也不同
+            if CUDA_AVAILABLE:
+                expected10 = np.array([22.0, 25.0, 28.0])
+            else:
+                expected10 = np.array([15.0, 17.0, 19.0])
+            np.testing.assert_allclose(result10.detach().cpu().numpy(), expected10)
+            np.testing.assert_allclose(tensor_param.grad.cpu().numpy(), np.ones(3))
+
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("混合类型参数组合", True)
                 print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
@@ -3074,6 +3077,130 @@ class TestMaxMinFunctions(unittest.TestCase):
         except Exception as e:
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("非对称广播", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
+        # 测试16: jvp（多输入全 TN）
+        print("\n测试16: jvp 多输入全 TN")
+        start_time = time.time()
+        try:
+            a = rm.tensor([1.0, 2.0])
+            b = rm.tensor([3.0, 4.0])
+            va = rm.tensor([0.5, -0.25])
+            vb = rm.tensor([0.25, 0.5])
+            out, tan = jvp(lambda p, q: rm.sumall(p, q), (a, b), (va, vb))
+            # 前向值 = a + b；tangent = va + vb
+            np.testing.assert_allclose(out.detach().numpy(), np.array([4.0, 6.0]))
+            np.testing.assert_allclose(tan.detach().numpy(), np.array([0.75, 0.25]))
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 多输入全 TN", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 多输入全 TN", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
+        # 测试17: jvp（含非张量常量与广播）
+        print("\n测试17: jvp 含非张量常量与广播")
+        start_time = time.time()
+        try:
+            x = rm.tensor([[1.0], [2.0]])                                   # shape (2,1)
+            v = rm.tensor([[0.5], [0.25]])                                  # shape (2,1)
+            np_arr = np.array([[10.0, 20.0, 30.0]], dtype=np.float32)       # shape (1,3)
+            out, tan = jvp(lambda p: rm.sumall(p, 2.0, np_arr), (x,), (v,))
+            # 非张量常量只贡献前向值；tangent 只有 v，并补齐到输出形状 (2,3)
+            np.testing.assert_allclose(out.detach().numpy(),
+                                       np.array([[13.0, 23.0, 33.0], [14.0, 24.0, 34.0]]))
+            np.testing.assert_allclose(tan.detach().numpy(),
+                                       np.array([[0.5, 0.5, 0.5], [0.25, 0.25, 0.25]]))
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 含非张量常量与广播", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 含非张量常量与广播", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
+        # 测试18: jvp（冻结实参带切线）
+        print("\n测试18: jvp 冻结实参带切线")
+        start_time = time.time()
+        try:
+            x = rm.tensor([1.0, 2.0], requires_grad=True)
+            const = rm.tensor([3.0, 4.0], requires_grad=False)
+            vx = rm.tensor([0.5, 0.25])
+            vc = rm.tensor([0.125, 0.25])
+            out, tan = jvp(lambda p, q: rm.sumall(p, q), (x, const), (vx, vc))
+            np.testing.assert_allclose(out.detach().numpy(), np.array([4.0, 6.0]))
+            np.testing.assert_allclose(tan.detach().numpy(), np.array([0.625, 0.5]))
+            # 冻结实参参与 tangent 传播，但不累计反向梯度
+            out.sum().backward()
+            np.testing.assert_allclose(x.grad.numpy(), np.ones(2))
+            self.assertIsNone(const.grad)
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 冻结实参带切线", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 冻结实参带切线", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
+        # 测试19: jvp（重复实参与单输入）
+        print("\n测试19: jvp 重复实参与单输入")
+        start_time = time.time()
+        try:
+            x = rm.tensor([1.0, 2.0], requires_grad=True)
+            v = rm.tensor([0.5, -0.25])
+            out, tan = jvp(lambda p: rm.sumall(p, p), (x,), (v,))
+            self.assertEqual(len(out.fromvars), 2, "重复实参应在 fromvars 中保留两份")
+            np.testing.assert_allclose(out.detach().numpy(), np.array([2.0, 4.0]))
+            np.testing.assert_allclose(tan.detach().numpy(), np.array([1.0, -0.5]))
+            out.sum().backward()
+            np.testing.assert_allclose(x.grad.numpy(), np.array([2.0, 2.0]))
+
+            # 单输入：tangent 直接透传，不额外构造累加节点
+            x2 = rm.tensor([1.0, 2.0])
+            v2 = rm.tensor([0.5, -0.25])
+            _, tan2 = jvp(lambda p: rm.sumall(p), (x2,), (v2,))
+            np.testing.assert_allclose(tan2.detach().numpy(), np.array([0.5, -0.25]))
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 重复实参与单输入", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 重复实参与单输入", False, [str(e)])
+                print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
+            raise
+
+        # 测试20: jvp（零方向 tangent）
+        print("\n测试20: jvp 零方向 tangent")
+        start_time = time.time()
+        try:
+            a = rm.tensor([1.0, 2.0])
+            b = rm.tensor([3.0, 4.0])
+            va = rm.tensor([0.5, 0.25])
+            vb = rm.tensor([0.25, 0.5])
+            zeros_a = rm.zeros_like(a)
+            zeros_b = rm.zeros_like(b)
+            _, t1 = jvp(lambda p, q: rm.sumall(p, q), (a, b), (zeros_a, vb))
+            _, t2 = jvp(lambda p, q: rm.sumall(p, q), (a, b), (va, zeros_b))
+            _, t3 = jvp(lambda p, q: rm.sumall(p, q), (a, b), (zeros_a, zeros_b))
+            np.testing.assert_allclose(t1.detach().numpy(), np.array([0.25, 0.5]))
+            np.testing.assert_allclose(t2.detach().numpy(), np.array([0.5, 0.25]))
+            np.testing.assert_allclose(t3.detach().numpy(), np.zeros(2))
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 零方向 tangent", True)
+                print(f"{Colors.OKGREEN}测试通过{Colors.ENDC} ({time.time() - start_time:.4f}秒)")
+        except Exception as e:
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("jvp 零方向 tangent", False, [str(e)])
                 print(f"{Colors.FAIL}测试失败{Colors.ENDC} ({time.time() - start_time:.4f}秒) - {str(e)}")
             raise
 

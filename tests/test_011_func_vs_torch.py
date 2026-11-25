@@ -13,16 +13,17 @@ riemann.func 与 torch.func 的数值对照测试（含高阶导数）。
         jacrev(jacrev), jacrev(hessian), grad(jvp), grad(vjp)。
 
 已知语义差异（在 test_api_differences 中显式核对，而不是当作失败）:
-    1. riemann 的 grad 默认 create_graph=False，嵌套求导必须显式传
-       create_graph=True；torch.func 的变换天然可再求导。
-    2. riemann 的 jacrev 默认 strict=True，输入与输出不连通时抛 RuntimeError；
-       torch.func 返回零块。传 strict=False 后数值一致。jacfwd 内部逐列调用
-       func.jvp（未选中的输入以零 tangent 播种），没有 strict 参数，对应位置
-       始终按零块返回。
-    3. torch.func.hessian(argnums=(0,1)) 返回完整的分块矩阵（含交叉块）；
+    1. torch.func.hessian(argnums=(0,1)) 返回完整的分块矩阵（含交叉块）；
        riemann.func.hessian 只返回各 argnums 位置的对角块。
-    4. torch.func.vjp 对单输入也返回长度为 1 的 tuple；riemann.func.vjp
-       单输入时直接返回 TN（多输入才返回 tuple）。
+
+接口已对齐的部分（签名与 torch.func 一致）:
+    grad / grad_and_value / jvp / vjp / linearize / jacrev / jacfwd / hessian /
+    vmap 均无额外的 create_graph / strict 参数；jacrev 为 keyword-only 的
+    has_aux / chunk_size，jacfwd 为 keyword-only 的 randomness（占位，非法值
+    报错与 torch 一致），vmap 的 chunk_size 为 keyword-only，randomness 校验
+    取值（'error' / 'different' / 'same'）。
+    vjp_fn 返回 tuple（单 primal 也是 1-tuple），并接受
+    (cotangents, retain_graph=True, create_graph=None)。
 
 运行:
     独立脚本 → 详细打印 + 统计表；pytest → 仅断言。
@@ -275,6 +276,9 @@ class TestFuncVsTorch(unittest.TestCase):
         _run_case("grad - argnums_second", lambda: self._cmp_grad_argnums_second())
         _run_case("grad - has_aux", lambda: self._cmp_grad_has_aux())
         _run_case("grad - create_graph_value", lambda: self._cmp_grad_create_graph())
+        _run_case("grad - unused_input_zero", lambda: self._cmp_grad_unused())
+        _run_case("grad - const_output_zero", lambda: self._cmp_grad_const())
+        _run_case("grad - plain_input", lambda: self._cmp_grad_plain())
         _run_case("grad_and_value - grad_part", lambda: self._cmp_grad_and_value())
 
     def _cmp_grad_vector(self):
@@ -318,9 +322,31 @@ class TestFuncVsTorch(unittest.TestCase):
 
     def _cmp_grad_create_graph(self):
         f = lambda x: (x ** 3).sum()
-        rm_g = func.grad(f, create_graph=True)(_rm([1.0, 2.0]))
+        rm_g = func.grad(f)(_rm([1.0, 2.0]))
         tt_g = torch.func.grad(f)(_tt([1.0, 2.0]))
         return _tree_close(rm_g, tt_g) and rm_g.requires_grad
+
+    def _cmp_grad_unused(self):
+        f = lambda a, b: (a * 2).sum()
+        return _tree_close(
+            func.grad(f, argnums=(0, 1))(_rm([1.0, 2.0]), _rm([3.0, 4.0])),
+            torch.func.grad(f, argnums=(0, 1))(_tt([1.0, 2.0]), _tt([3.0, 4.0])),
+        )
+
+    def _cmp_grad_const(self):
+        return _tree_close(
+            func.grad(lambda a: rm.tensor(1.0))(_rm([1.0, 2.0])),
+            torch.func.grad(lambda a: torch.tensor(1.0))(_tt([1.0, 2.0])),
+        )
+
+    def _cmp_grad_plain(self):
+        rm_x = _rm([1.0, 2.0], requires_grad=False)
+        tt_x = _tt([1.0, 2.0], requires_grad=False)
+        ok = _tree_close(
+            func.grad(lambda a: (a ** 3).sum())(rm_x),
+            torch.func.grad(lambda a: (a ** 3).sum())(tt_x),
+        )
+        return ok and not rm_x.requires_grad
 
     def _cmp_grad_and_value(self):
         f = lambda x: (x ** 3).sum()
@@ -337,13 +363,12 @@ class TestFuncVsTorch(unittest.TestCase):
         _run_case("jvp - multi_input", lambda: self._cmp_jvp_multi_input())
         _run_case("jvp - multi_output", lambda: self._cmp_jvp_multi_output())
         _run_case("jvp - default_tangent", lambda: self._cmp_jvp_default_tangent())
-        _run_case("jvp - create_graph_value", lambda: self._cmp_jvp_create_graph())
 
     def _cmp_jvp_scalar_output(self):
         f = lambda x: (x ** 3).sum()
         rm_x, rm_v = _rm([1.0, 2.0]), _rm([1.0, -1.0], requires_grad=False)
         tt_x, tt_v = _tt([1.0, 2.0]), _tt([1.0, -1.0], requires_grad=False)
-        rm_out, rm_jvp = func.jvp(f, rm_x, rm_v)
+        rm_out, rm_jvp = func.jvp(f, (rm_x,), (rm_v,))
         tt_out, tt_jvp = torch.func.jvp(f, (tt_x,), (tt_v,))
         return _tree_close((rm_out, rm_jvp), (tt_out, tt_jvp))
 
@@ -351,7 +376,7 @@ class TestFuncVsTorch(unittest.TestCase):
         f = lambda x: x ** 3
         rm_x, rm_v = _rm([1.0, 2.0]), _rm([0.5, 2.0], requires_grad=False)
         tt_x, tt_v = _tt([1.0, 2.0]), _tt([0.5, 2.0], requires_grad=False)
-        rm_out, rm_jvp = func.jvp(f, rm_x, rm_v)
+        rm_out, rm_jvp = func.jvp(f, (rm_x,), (rm_v,))
         tt_out, tt_jvp = torch.func.jvp(f, (tt_x,), (tt_v,))
         return _tree_close((rm_out, rm_jvp), (tt_out, tt_jvp))
 
@@ -371,7 +396,7 @@ class TestFuncVsTorch(unittest.TestCase):
         f = lambda x: (x.sum(), (x ** 2).sum())
         rm_x, rm_v = _rm([1.0, 2.0, 3.0]), _rm([1.0, 0.0, 1.0], requires_grad=False)
         tt_x, tt_v = _tt([1.0, 2.0, 3.0]), _tt([1.0, 0.0, 1.0], requires_grad=False)
-        rm_out, rm_jvp = func.jvp(f, rm_x, rm_v)
+        rm_out, rm_jvp = func.jvp(f, (rm_x,), (rm_v,))
         tt_out, tt_jvp = torch.func.jvp(f, (tt_x,), (tt_v,))
         return _tree_close((rm_out, rm_jvp), (tt_out, tt_jvp))
 
@@ -379,19 +404,11 @@ class TestFuncVsTorch(unittest.TestCase):
         # riemann 扩展：tangents=None 表示全 1 方向；torch 需显式传入 ones
         f = lambda x: (x ** 3).sum()
         rm_x, tt_x = _rm([1.0, 2.0]), _tt([1.0, 2.0])
-        rm_out, rm_jvp = func.jvp(f, rm_x, None)
+        rm_out, rm_jvp = func.jvp(f, (rm_x,), (func.ones_like(rm_x),))
         tt_out, tt_jvp = torch.func.jvp(
             f, (tt_x,), (torch.ones_like(tt_x, requires_grad=False),)
         )
         return _tree_close((rm_out, rm_jvp), (tt_out, tt_jvp))
-
-    def _cmp_jvp_create_graph(self):
-        f = lambda x: (x ** 3).sum()
-        rm_x, rm_v = _rm([1.0, 2.0]), _rm([1.0, -1.0], requires_grad=False)
-        tt_x, tt_v = _tt([1.0, 2.0]), _tt([1.0, -1.0], requires_grad=False)
-        _, rm_jvp = func.jvp(f, rm_x, rm_v, create_graph=True)
-        _, tt_jvp = torch.func.jvp(f, (tt_x,), (tt_v,))
-        return _tree_close(rm_jvp, tt_jvp) and rm_jvp.requires_grad
 
     # ---------------------------------------------------------------
     # vjp
@@ -401,32 +418,35 @@ class TestFuncVsTorch(unittest.TestCase):
         _run_case("vjp - vector_output", lambda: self._cmp_vjp_vector_output())
         _run_case("vjp - multi_input", lambda: self._cmp_vjp_multi_input())
         _run_case("vjp - multi_output", lambda: self._cmp_vjp_multi_output())
-        _run_case("vjp - default_cotangent", lambda: self._cmp_vjp_default_cotangent())
+        _run_case("vjp - ones_cotangent", lambda: self._cmp_vjp_default_cotangent())
         _run_case("vjp - create_graph_value", lambda: self._cmp_vjp_create_graph())
 
     def _cmp_vjp_scalar_output(self):
         f = lambda x: (x ** 3).sum()
         rm_x, tt_x = _rm([1.0, 2.0]), _tt([1.0, 2.0])
-        rm_out, rm_g = func.vjp(f, rm_x, _rm(2.0, requires_grad=False))
+        rm_out, rm_vfn = func.vjp(f, rm_x)
+        rm_g = rm_vfn(_rm(2.0, requires_grad=False))
         tt_out, tt_vfn = torch.func.vjp(f, tt_x)
         tt_g = tt_vfn(_tt(2.0, requires_grad=False))
-        return _tree_close((rm_out, rm_g), (tt_out, _unwrap_single(tt_g)))
+        return _tree_close((rm_out, rm_g), (tt_out, tt_g))
 
     def _cmp_vjp_vector_output(self):
         f = lambda x: x ** 3
         rm_x, tt_x = _rm([1.0, 2.0]), _tt([1.0, 2.0])
         rm_cot = _rm([1.0, 2.0], requires_grad=False)
         tt_cot = _tt([1.0, 2.0], requires_grad=False)
-        rm_out, rm_g = func.vjp(f, rm_x, rm_cot)
+        rm_out, rm_vfn = func.vjp(f, rm_x)
+        rm_g = rm_vfn(rm_cot)
         tt_out, tt_vfn = torch.func.vjp(f, tt_x)
         tt_g = tt_vfn(tt_cot)
-        return _tree_close((rm_out, rm_g), (tt_out, _unwrap_single(tt_g)))
+        return _tree_close((rm_out, rm_g), (tt_out, tt_g))
 
     def _cmp_vjp_multi_input(self):
         f = lambda x, y: (x * y).sum()
         rm_x, rm_y = _rm([1.0, 2.0]), _rm([3.0, 4.0])
         tt_x, tt_y = _tt([1.0, 2.0]), _tt([3.0, 4.0])
-        rm_out, rm_g = func.vjp(f, (rm_x, rm_y), _rm(1.0, requires_grad=False))
+        rm_out, rm_vfn = func.vjp(f, rm_x, rm_y)
+        rm_g = rm_vfn(_rm(1.0, requires_grad=False))
         tt_out, tt_vfn = torch.func.vjp(f, tt_x, tt_y)
         tt_g = tt_vfn(_tt(1.0, requires_grad=False))
         return _tree_close((rm_out, rm_g), (tt_out, tt_g))
@@ -436,27 +456,32 @@ class TestFuncVsTorch(unittest.TestCase):
         rm_x, tt_x = _rm([1.0, 2.0]), _tt([1.0, 2.0])
         rm_cot = (_rm(2.0, requires_grad=False), _rm(3.0, requires_grad=False))
         tt_cot = (_tt(2.0, requires_grad=False), _tt(3.0, requires_grad=False))
-        rm_out, rm_g = func.vjp(f, rm_x, rm_cot)
+        rm_out, rm_vfn = func.vjp(f, rm_x)
+        rm_g = rm_vfn(rm_cot)
         tt_out, tt_vfn = torch.func.vjp(f, tt_x)
         tt_g = tt_vfn(tt_cot)
-        return _tree_close((rm_out, rm_g), (tt_out, _unwrap_single(tt_g)))
+        return _tree_close((rm_out, rm_g), (tt_out, tt_g))
 
     def _cmp_vjp_default_cotangent(self):
-        # cotangents=None 等价于全 1；torch 需显式传入 ones_like
+        # 显式传入全 1 cotangent（两边接口一致，不存在隐式默认）
         f = lambda x: x ** 3
         rm_x, tt_x = _rm([1.0, 2.0]), _tt([1.0, 2.0])
-        rm_out, rm_g = func.vjp(f, rm_x, None)
+        rm_out, rm_vfn = func.vjp(f, rm_x)
+        rm_g = rm_vfn(rm.ones_like(rm_x, requires_grad=False))
         tt_out, tt_vfn = torch.func.vjp(f, tt_x)
         tt_g = tt_vfn(torch.ones_like(tt_x, requires_grad=False))
-        return _tree_close((rm_out, rm_g), (tt_out, _unwrap_single(tt_g)))
+        return _tree_close((rm_out, rm_g), (tt_out, tt_g))
 
     def _cmp_vjp_create_graph(self):
         f = lambda x: (x ** 3).sum()
         rm_x, tt_x = _rm([1.0, 2.0]), _tt([1.0, 2.0])
-        rm_out, rm_g = func.vjp(f, rm_x, _rm(2.0, requires_grad=False), create_graph=True)
+        rm_out, rm_vfn = func.vjp(f, rm_x)
+        rm_g = rm_vfn(_rm(2.0, requires_grad=False))
         tt_out, tt_vfn = torch.func.vjp(f, tt_x)
-        tt_g = _unwrap_single(tt_vfn(_tt(2.0, requires_grad=False)))
-        return _tree_close((rm_out, rm_g), (tt_out, tt_g)) and rm_g.requires_grad
+        tt_g = tt_vfn(_tt(2.0, requires_grad=False))
+        # create_graph 默认取当前梯度模式（此处为 True），结果可再求导
+        return (_tree_close((rm_out, rm_g), (tt_out, tt_g))
+                and rm_g[0].requires_grad)
 
     # ---------------------------------------------------------------
     # jacrev
@@ -490,7 +515,7 @@ class TestFuncVsTorch(unittest.TestCase):
         )
 
     def _cmp_jacrev_multi_input(self):
-        # 两个输出同时依赖 x 与 y，避免触发 strict 的未使用输入检查
+        # 两个输出同时依赖 x 与 y
         f = lambda x, y: ((x * y).sum(), (x * y ** 2).sum())
         rm_x, rm_y = _rm([1.0, 2.0]), _rm([3.0, 4.0])
         tt_x, tt_y = _tt([1.0, 2.0]), _tt([3.0, 4.0])
@@ -500,12 +525,12 @@ class TestFuncVsTorch(unittest.TestCase):
         )
 
     def _cmp_jacrev_noncontiguous(self):
-        # 中间参数 w 未被使用，riemann 需要 strict=False（差异见 test_api_differences）
+        # 中间参数 w 未被使用：未连通位置按零块返回（与 torch 一致）
         f = lambda x, w, z: (x ** 2 * z).sum() + (z ** 3).sum()
         rm_args = (_rm([1.0, 2.0]), _rm([1.0, 1.0]), _rm([2.0, 3.0]))
         tt_args = (_tt([1.0, 2.0]), _tt([1.0, 1.0]), _tt([2.0, 3.0]))
         return _tree_close(
-            func.jacrev(f, argnums=(0, 2), strict=False)(*rm_args),
+            func.jacrev(f, argnums=(0, 2))(*rm_args),
             torch.func.jacrev(f, argnums=(0, 2))(*tt_args),
         )
 
@@ -586,7 +611,7 @@ class TestFuncVsTorch(unittest.TestCase):
         for k in range(2):
             e_k = np.zeros(2)
             e_k[k] = 1.0
-            _, col = func.jvp(f, rm_x, _rm(e_k))
+            _, col = func.jvp(f, (rm_x,), (_rm(e_k),))
             cols.append(col)
         manual = rm.stack(cols, dim=-1)
 
@@ -807,6 +832,8 @@ class TestFuncVsTorch(unittest.TestCase):
     def test_linearize(self):
         _run_case("linearize - value_and_linear_fn", lambda: self._cmp_linearize())
         _run_case("linearize - multi_output", lambda: self._cmp_linearize_multi())
+        _run_case("linearize - second_order_zero",
+                  lambda: self._cmp_linearize_second_order())
 
     @staticmethod
     def _torch_linearize(f, x):
@@ -843,6 +870,16 @@ class TestFuncVsTorch(unittest.TestCase):
         return _tree_close(rm_out, tt_out) and _tree_close(
             rm_lin(_rm(v_np)), tt_lin(_tt(v_np)))
 
+    def _cmp_linearize_second_order(self):
+        f = lambda x: (x ** 3).sum()
+        _, rm_lin = func.linearize(f, _rm([1.0, 2.0]))
+        _, tt_lin = self._torch_linearize(f, _tt([1.0, 2.0]))
+        rm_g = func.grad(
+            lambda t: func.grad(lambda u: rm_lin(u).sum())(t).sum())(_rm([1.0, 1.0]))
+        tt_g = torch.func.grad(
+            lambda t: torch.func.grad(lambda u: tt_lin(u).sum())(t).sum())(_tt([1.0, 1.0]))
+        return _tree_close(rm_g, tt_g)
+
     # ---------------------------------------------------------------
     # has_aux
     # ---------------------------------------------------------------
@@ -858,19 +895,20 @@ class TestFuncVsTorch(unittest.TestCase):
 
     def _cmp_aux_jvp(self):
         x_np, v_np = np.array([1.0, 2.0, 3.0]), np.array([0.5, -1.0, 2.0])
-        rm_res = func.jvp(self._aux_fn, _rm(x_np), _rm(v_np), has_aux=True)
+        rm_res = func.jvp(self._aux_fn, (_rm(x_np),), (_rm(v_np),), has_aux=True)
         tt_res = torch.func.jvp(self._aux_fn, (_tt(x_np),), (_tt(v_np),),
                                 has_aux=True)
         return _tree_close(rm_res, tt_res)
 
     def _cmp_aux_vjp(self):
         x_np = np.array([1.0, 2.0, 3.0])
-        rm_out, rm_g, rm_aux = func.vjp(self._aux_fn, _rm(x_np), _rm(1.0),
-                                        has_aux=True)
+        rm_out, rm_vfn, rm_aux = func.vjp(self._aux_fn, _rm(x_np),
+                                           has_aux=True)
+        rm_g = rm_vfn(_rm(1.0))
         tt_out, tt_fn, tt_aux = torch.func.vjp(self._aux_fn, _tt(x_np),
                                               has_aux=True)
         return _tree_close((rm_out, rm_g, rm_aux),
-                           (tt_out, _unwrap_single(tt_fn(_tt(1.0))), tt_aux))
+                           (tt_out, tt_fn(_tt(1.0)), tt_aux))
 
     def _cmp_aux_jacrev(self):
         x_np = np.array([1.0, 2.0, 3.0])
@@ -888,7 +926,6 @@ class TestFuncVsTorch(unittest.TestCase):
     def test_chunk_size(self):
         _run_case("chunk_size - vmap", lambda: self._cmp_chunk_vmap())
         _run_case("chunk_size - jacrev", lambda: self._cmp_chunk_jacrev())
-        _run_case("chunk_size - jacfwd", lambda: self._cmp_chunk_jacfwd())
 
     def _cmp_chunk_vmap(self):
         f = lambda row: (row ** 2).sum()
@@ -906,14 +943,65 @@ class TestFuncVsTorch(unittest.TestCase):
             torch.func.jacrev(f, chunk_size=2)(_tt(x)),
         )
 
-    def _cmp_chunk_jacfwd(self):
-        # torch.func.jacfwd 无 chunk_size；用 riemann 分块结果对照 torch 不分块结果
-        f = lambda x: x ** 2
-        x = [[1.0, 2.0], [3.0, 4.0]]
-        return _tree_close(
-            func.jacfwd(f, chunk_size=1)(_rm(x)),
-            torch.func.jacfwd(f)(_tt(x)),
-        )
+    # ---------------------------------------------------------------
+    # 参数校验：错误类型与关键信息需与 torch.func 一致
+    # ---------------------------------------------------------------
+    @staticmethod
+    def _cmp_error(rm_fn, tt_fn, exc_type, msg_part):
+        """两侧调用都必须抛出 exc_type，且消息包含同一关键片段。"""
+        def _hit(fn):
+            try:
+                fn()
+            except exc_type as e:
+                return msg_part in str(e)
+            return False
+        return _hit(rm_fn) and _hit(tt_fn)
+
+    def test_argument_validation(self):
+        _run_case("validation - vmap invalid randomness", lambda: self._cmp_error(
+            lambda: func.vmap(lambda a: a, randomness='foo'),
+            lambda: torch.func.vmap(lambda a: a, randomness='foo'),
+            RuntimeError, "Only allowed values for randomness"))
+        _run_case("validation - jacfwd invalid randomness", lambda: self._cmp_error(
+            lambda: func.jacfwd(lambda a: a, randomness='foo')(_rm([1.0])),
+            lambda: torch.func.jacfwd(lambda a: a, randomness='foo')(_tt([1.0])),
+            RuntimeError, "Only allowed values for randomness"))
+        _run_case("validation - vmap invalid chunk_size", lambda: self._cmp_error(
+            lambda: func.vmap(lambda a: a, chunk_size=0),
+            lambda: torch.func.vmap(lambda a: a, chunk_size=0),
+            ValueError, "chunk_size should be None or greater than 0"))
+        _run_case("validation - jacrev invalid chunk_size", lambda: self._cmp_error(
+            lambda: func.jacrev(lambda a: a, chunk_size=0),
+            lambda: torch.func.jacrev(lambda a: a, chunk_size=0),
+            ValueError, "chunk_size` should be greater than 0"))
+        _run_case("validation - vmap in_dims None", lambda: self._cmp_error(
+            lambda: func.vmap(lambda a: a, in_dims=None)(_rm([1.0, 2.0])),
+            lambda: torch.func.vmap(lambda a: a, in_dims=None)(_tt([1.0, 2.0])),
+            ValueError, "expected `in_dims` to be int"))
+        _run_case("validation - vmap in_dims length", lambda: self._cmp_error(
+            lambda: func.vmap(lambda a, b: a, in_dims=(0,))(_rm([1.0]), _rm([2.0])),
+            lambda: torch.func.vmap(lambda a, b: a, in_dims=(0,))(_tt([1.0]), _tt([2.0])),
+            ValueError, "in_dims is not compatible with the structure"))
+        _run_case("validation - vmap non-tensor dim", lambda: self._cmp_error(
+            lambda: func.vmap(lambda a, s: a * s, in_dims=(0, 0))(_rm([1.0]), 2.0),
+            lambda: torch.func.vmap(lambda a, s: a * s, in_dims=(0, 0))(_tt([1.0]), 2.0),
+            ValueError, "We cannot vmap over non-Tensor arguments"))
+        _run_case("validation - vmap batch size", lambda: self._cmp_error(
+            lambda: func.vmap(lambda a, b: a + b)(_rm([1.0]), _rm([1.0, 2.0])),
+            lambda: torch.func.vmap(lambda a, b: a + b)(_tt([1.0]), _tt([1.0, 2.0])),
+            ValueError, "same size in the mapped dimension"))
+        _run_case("validation - vmap in_dim out of range", lambda: self._cmp_error(
+            lambda: func.vmap(lambda a: a, in_dims=3)(_rm([[1.0]])),
+            lambda: torch.func.vmap(lambda a: a, in_dims=3)(_tt([[1.0]])),
+            ValueError, "expected in_dim to satisfy"))
+        _run_case("validation - vmap out_dims None", lambda: self._cmp_error(
+            lambda: func.vmap(lambda a: a, out_dims=None)(_rm([1.0])),
+            lambda: torch.func.vmap(lambda a: a, out_dims=None)(_tt([1.0])),
+            ValueError, "can not return a BatchedTensor"))
+        _run_case("validation - vmap out_dims length", lambda: self._cmp_error(
+            lambda: func.vmap(lambda a: (a, a), out_dims=(0,))(_rm([1.0])),
+            lambda: torch.func.vmap(lambda a: (a, a), out_dims=(0,))(_tt([1.0])),
+            ValueError, "out_dims is not compatible with the structure"))
 
     # ---------------------------------------------------------------
     # stack_module_state
@@ -987,14 +1075,13 @@ class TestFuncVsTorch(unittest.TestCase):
 
     def _ho_grad2_scalar(self):
         f = lambda x: x ** 4
-        rm_g2 = func.grad(func.grad(f, create_graph=True))(_rm(1.5))
+        rm_g2 = func.grad(func.grad(f))(_rm(1.5))
         tt_g2 = torch.func.grad(torch.func.grad(f))(_tt(1.5))
         return _tree_close(rm_g2, tt_g2)
 
     def _ho_grad3_scalar(self):
         f = lambda x: x ** 4
-        rm_g3 = func.grad(func.grad(func.grad(f, create_graph=True),
-                                    create_graph=True))(_rm(1.5))
+        rm_g3 = func.grad(func.grad(func.grad(f)))(_rm(1.5))
         tt_g3 = torch.func.grad(torch.func.grad(torch.func.grad(f)))(_tt(1.5))
         return _tree_close(rm_g3, tt_g3)
 
@@ -1007,28 +1094,28 @@ class TestFuncVsTorch(unittest.TestCase):
     def _ho_jacrev_jacfwd(self):
         rm_f, tt_f = self._vector_func_pair()
         return _tree_close(
-            func.jacrev(func.jacfwd(rm_f, create_graph=True))(_rm([1.0, 2.0])),
+            func.jacrev(func.jacfwd(rm_f))(_rm([1.0, 2.0])),
             torch.func.jacrev(torch.func.jacfwd(tt_f))(_tt([1.0, 2.0])),
         )
 
     def _ho_jacfwd_jacrev(self):
         rm_f, tt_f = self._vector_func_pair()
         return _tree_close(
-            func.jacfwd(func.jacrev(rm_f, create_graph=True))(_rm([1.0, 2.0])),
+            func.jacfwd(func.jacrev(rm_f))(_rm([1.0, 2.0])),
             torch.func.jacfwd(torch.func.jacrev(tt_f))(_tt([1.0, 2.0])),
         )
 
     def _ho_jacrev_jacrev(self):
         rm_f, tt_f = self._vector_func_pair()
         return _tree_close(
-            func.jacrev(func.jacrev(rm_f, create_graph=True))(_rm([1.0, 2.0])),
+            func.jacrev(func.jacrev(rm_f))(_rm([1.0, 2.0])),
             torch.func.jacrev(torch.func.jacrev(tt_f))(_tt([1.0, 2.0])),
         )
 
     def _ho_jacrev_hessian(self):
         f = lambda x: (x ** 3).sum()
         return _tree_close(
-            func.jacrev(func.hessian(f, create_graph=True))(_rm([1.0, 2.0])),
+            func.jacrev(func.hessian(f))(_rm([1.0, 2.0])),
             torch.func.jacrev(torch.func.hessian(f))(_tt([1.0, 2.0])),
         )
 
@@ -1036,7 +1123,7 @@ class TestFuncVsTorch(unittest.TestCase):
         # 含交叉项的标量函数，三阶张量中会出现非对角元
         f = lambda x: (x[0] ** 2 * x[1] + x[1] ** 3)
         return _tree_close(
-            func.jacrev(func.hessian(f, create_graph=True))(_rm([2.0, 3.0])),
+            func.jacrev(func.hessian(f))(_rm([2.0, 3.0])),
             torch.func.jacrev(torch.func.hessian(f))(_tt([2.0, 3.0])),
         )
 
@@ -1044,15 +1131,15 @@ class TestFuncVsTorch(unittest.TestCase):
         f = lambda x: (x ** 3).sum()
         v_np = np.array([1.0, 0.0])
         rm_g = func.grad(lambda x: func.jvp(
-            f, x, _rm(v_np, requires_grad=False), create_graph=True)[1])(_rm([1.0, 2.0]))
+            f, (x,), (_rm(v_np, requires_grad=False),))[1])(_rm([1.0, 2.0]))
         tt_g = torch.func.grad(lambda x: torch.func.jvp(
             f, (x,), (_tt(v_np, requires_grad=False),))[1])(_tt([1.0, 2.0]))
         return _tree_close(rm_g, tt_g)
 
     def _ho_grad_vjp(self):
         f = lambda x: (x ** 3).sum()
-        rm_g = func.grad(lambda x: func.vjp(
-            f, x, _rm(1.0, requires_grad=False), create_graph=True)[1].sum())(
+        rm_g = func.grad(lambda x: func.vjp(f, x)[1](
+            _rm(1.0, requires_grad=False))[0].sum())(
             _rm([1.0, 2.0]))
         tt_g = torch.func.grad(lambda x: torch.func.vjp(f, x)[1](
             _tt(1.0, requires_grad=False))[0].sum())(_tt([1.0, 2.0]))
@@ -1062,41 +1149,35 @@ class TestFuncVsTorch(unittest.TestCase):
     # 显式核对的 API 语义差异
     # ---------------------------------------------------------------
     def test_api_differences(self):
-        _run_case("api_diff - grad_nesting_needs_create_graph",
+        _run_case("api_diff - grad_nesting",
                   lambda: self._diff_grad_nesting())
-        _run_case("api_diff - jacrev_strict_default",
+        _run_case("api_diff - jacrev_unused_input_zeros",
                   lambda: self._diff_jacrev_strict_default())
         _run_case("api_diff - hessian_multi_argnums_structure",
                   lambda: self._diff_hessian_structure())
-        _run_case("api_diff - vjp_single_input_container",
+        _run_case("api_diff - vjp_result_tuple",
                   lambda: self._diff_vjp_container())
 
     def _diff_grad_nesting(self):
-        """差异 1：riemann 嵌套求导必须显式 create_graph=True。"""
+        """rm.grad 嵌套求导（默认建图）与 torch.func.grad 行为一致。"""
         f = lambda x: x ** 4
         rm_x = _rm(1.5)
-        with self.assertRaises(RuntimeError):
-            func.grad(func.grad(f))(rm_x)
-
-        rm_g2 = func.grad(func.grad(f, create_graph=True))(rm_x)
+        rm_g2 = func.grad(func.grad(f))(rm_x)
         tt_g2 = torch.func.grad(torch.func.grad(f))(_tt(1.5))
         return _tree_close(rm_g2, tt_g2)
 
     def _diff_jacrev_strict_default(self):
-        """差异 2：riemann 默认 strict=True，torch 对未使用输入返回零块。"""
+        """未使用输入：两边都返回零块（接口已无 strict 参数）。"""
         f = lambda x, y: (x ** 2).sum()
         rm_x, rm_y = _rm([1.0, 2.0]), _rm([3.0, 4.0])
         tt_x, tt_y = _tt([1.0, 2.0]), _tt([3.0, 4.0])
-        with self.assertRaises(RuntimeError):
-            func.jacrev(f, argnums=(0, 1))(rm_x, rm_y)
-
-        rm_res = func.jacrev(f, argnums=(0, 1), strict=False)(rm_x, rm_y)
+        rm_res = func.jacrev(f, argnums=(0, 1))(rm_x, rm_y)
         tt_res = torch.func.jacrev(f, argnums=(0, 1))(tt_x, tt_y)
         return (_tree_close(rm_res, tt_res)
                 and _tree_close(rm_res[1], np.zeros(2)))
 
     def _diff_hessian_structure(self):
-        """差异 3：torch 返回完整分块矩阵，riemann 只返回对角块。"""
+        """差异：torch 返回完整分块矩阵，riemann 只返回对角块。"""
         f = lambda x, y: (x ** 2 * y ** 2).sum()
         rm_h = func.hessian(f, argnums=(0, 1))(_rm([1.0, 2.0]), _rm([3.0, 4.0]))
         tt_h = torch.func.hessian(f, argnums=(0, 1))(_tt([1.0, 2.0]), _tt([3.0, 4.0]))
@@ -1105,25 +1186,39 @@ class TestFuncVsTorch(unittest.TestCase):
         structure_differs = (len(rm_h) == 2 and len(tt_h) == 2 and len(tt_h[0]) == 2)
         # 对角块数值一致
         diag_ok = _tree_close(rm_h[0], tt_h[0][0]) and _tree_close(rm_h[1], tt_h[1][1])
-        # 交叉块可用 riemann 的 jacrev(grad) 复现（内层 grad 需 create_graph=True）
-        rm_cross = func.jacrev(func.grad(f, argnums=0, create_graph=True), argnums=1)(
+        # 交叉块可用 riemann 的 jacrev(grad) 复现
+        rm_cross = func.jacrev(func.grad(f, argnums=0), argnums=1)(
             _rm([1.0, 2.0]), _rm([3.0, 4.0]))
         cross_ok = (_tree_close(rm_cross, tt_h[0][1])
                     and _tree_close(rm_cross, tt_h[1][0]))
         return structure_differs and diag_ok and cross_ok
 
     def _diff_vjp_container(self):
-        """差异 4：torch.vjp 单输入返回 1-tuple，riemann 直接返回 TN。"""
+        """vjp_fn 恒返回 tuple，与 torch.func 一致（单 primal 为 1-tuple）。"""
         f = lambda x: x ** 3
         rm_x, tt_x = _rm([1.0, 2.0]), _tt([1.0, 2.0])
         rm_cot = _rm([1.0, 2.0], requires_grad=False)
         tt_cot = _tt([1.0, 2.0], requires_grad=False)
-        _, rm_g = func.vjp(f, rm_x, rm_cot)
-        _, tt_vfn = torch.func.vjp(f, tt_x)
+        rm_out, rm_vfn = func.vjp(f, rm_x)
+        tt_out, tt_vfn = torch.func.vjp(f, tt_x)
+        rm_g = rm_vfn(rm_cot)
         tt_g = tt_vfn(tt_cot)
+        single_ok = (isinstance(rm_g, tuple) and isinstance(tt_g, tuple)
+                     and len(rm_g) == len(tt_g) == 1
+                     and _tree_close(rm_g, tt_g))
 
-        container_differs = isinstance(rm_g, rm.TN) and isinstance(tt_g, tuple) and len(tt_g) == 1
-        return container_differs and _tree_close(rm_g, tt_g[0])
+        # 多输入：两边都返回与 primal 一一对应的 tuple
+        g = lambda a, b: (a * b).sum()
+        rm_x2, rm_y2 = _rm([1.0, 2.0]), _rm([3.0, 4.0])
+        tt_x2, tt_y2 = _tt([1.0, 2.0]), _tt([3.0, 4.0])
+        _, rm_vfn2 = func.vjp(g, rm_x2, rm_y2)
+        _, tt_vfn2 = torch.func.vjp(g, tt_x2, tt_y2)
+        rm_g2 = rm_vfn2(_rm(1.0, requires_grad=False))
+        tt_g2 = tt_vfn2(_tt(1.0, requires_grad=False))
+        multi_ok = (isinstance(rm_g2, tuple) and isinstance(tt_g2, tuple)
+                    and len(rm_g2) == len(tt_g2) == 2
+                    and _tree_close(rm_g2, tt_g2))
+        return single_ok and multi_ok
 
 
 # ---------------------------------------------------------------------------

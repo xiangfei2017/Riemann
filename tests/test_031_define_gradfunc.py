@@ -12,10 +12,8 @@ try:
     import riemann as rm
     from riemann import TN
     from riemann.autograd import gradcheck
-    from riemann.core import register_grad_rule, register_jvp_rule
+    from riemann.core import register_grad_rule, register_jvp_rule, TangentPair
     from riemann.core import set_grad_enabled
-    from riemann.core.ad_context import current_jvp_frame
-    from riemann.core.tensordef import _input_tangent
     from riemann.func import jvp
     from riemann.autograd.grad import Function  # 正确导入Function类
 except ImportError:
@@ -54,11 +52,6 @@ def _raises_runtime_error(call):
         return True
     return False
 
-
-def _jvp_tangent(result, index=0):
-    """读取 result 的第 index 个入边 tangent，返回 (frame, tangent)"""
-    frame = current_jvp_frame()
-    return frame, _input_tangent(frame, result.fromvars[index])
 
 # 定义颜色类用于美化输出
 class Colors:
@@ -347,6 +340,22 @@ class TestDefineGradFunc(unittest.TestCase):
         def mysum_bare(*xs):
             return rm.tensor(sum(x.detach().array() for x in xs), device=xs[0].device)
 
+        # 12. 仅关键字形参（KEYWORD_ONLY）：非 TN 的 scale 只能按关键字传入
+        def _scale_kw_derivative(result, x, *, scale=1.0):
+            return (result._grad_value * scale,)
+
+        @register_grad_rule(_scale_kw_derivative)
+        def myscale_kw(x, *, scale=1.0):
+            return rm.tensor(scale * x.detach().array(), device=x.device)
+
+        # 13. 位置限定形参（POSITIONAL_ONLY）
+        def _divpos_derivative(result, x, y, /):
+            return (result._grad_value / y, result._grad_value * (-x / (y * y)))
+
+        @register_grad_rule(_divpos_derivative)
+        def mydivpos(x, y, /):
+            return x / y
+
         # ==================== 辅助函数 ====================
         def to_np(t):
             return t.detach().cpu().numpy()
@@ -561,6 +570,51 @@ class TestDefineGradFunc(unittest.TestCase):
             return forward_ok and np.allclose(to_np(a.grad), np.ones_like(np_a)) \
                 and np.allclose(to_np(b.grad), np.ones_like(np_b))
 
+        def case_keyword_only(device):
+            # 仅关键字形参：scale 只能按关键字传入，梯度仍按签名顺序对齐
+            np_x = np.array([2.0, 3.0], dtype=np.float32)
+            x = make(np_x, device)
+            y = myscale_kw(x, scale=3.0)
+            forward_ok = np.allclose(to_np(y), 3.0 * np_x)
+            y.sum().backward()
+            explicit_ok = forward_ok and np.allclose(to_np(x.grad), np.full_like(np_x, 3.0))
+
+            x2 = make(np_x, device)
+            y2 = myscale_kw(x2)          # 使用默认值 scale=1.0
+            y2.sum().backward()
+            return explicit_ok and np.allclose(to_np(y2), np_x) \
+                and np.allclose(to_np(x2.grad), np.ones_like(np_x))
+
+        def case_positional_only(device):
+            x = rm.tensor(6.0, requires_grad=True, device=device)
+            y = rm.tensor(3.0, requires_grad=True, device=device)
+            z = mydivpos(x, y)
+            forward_ok = np.allclose(to_np(z), 2.0)
+            z.backward()
+            return forward_ok \
+                and np.allclose(to_np(x.grad), 1.0 / 3.0) \
+                and np.allclose(to_np(y.grad), -2.0 / 3.0)
+
+        def case_mixed_positional_keyword(device):
+            # 同一个调用里位置与关键字混用，fromvars 仍按签名顺序（x, y）
+            np_a = np.array([1.0, 2.0], dtype=np.float32)
+            np_b = np.array([3.0, 4.0], dtype=np.float32)
+            a, b = make(np_a, device), make(np_b, device)
+            y = myadd(a, y=b)
+            forward_ok = np.allclose(to_np(y), np_a + np_b)
+            y.sum().backward()
+            return forward_ok and np.allclose(to_np(a.grad), np.ones_like(np_a)) \
+                and np.allclose(to_np(b.grad), np.ones_like(np_b))
+
+        def case_duplicate_input(device):
+            # 同一个 TN 占据两个实参位置：fromvars 保留两份，梯度应累加两次
+            np_x = np.array([1.0, 2.0], dtype=np.float32)
+            x = make(np_x, device)
+            y = myadd(x, x)
+            forward_ok = np.allclose(to_np(y), 2.0 * np_x)
+            y.sum().backward()
+            return forward_ok and np.allclose(to_np(x.grad), np.full_like(np_x, 2.0))
+
         def case_no_grad(device):
             np_x = np.array([1.0, 2.0], dtype=np.float32)
             x = make(np_x, device)
@@ -631,6 +685,10 @@ class TestDefineGradFunc(unittest.TestCase):
             ("*args 变长参数", case_varargs),
             ("**kwargs 变长参数", case_kwargs),
             ("非 TN 参数关键字调用", case_non_tn_keyword),
+            ("仅关键字形参", case_keyword_only),
+            ("位置限定形参", case_positional_only),
+            ("位置与关键字混用", case_mixed_positional_keyword),
+            ("重复实参梯度累加", case_duplicate_input),
             ("矩阵乘法", case_matmul),
             ("前向返回非TN", case_non_tn_return),
             ("重复反向(retain_graph)", case_repeat_backward),
@@ -672,12 +730,11 @@ class TestDefineGradFunc(unittest.TestCase):
         def to_np(t):
             return _arr(t)
 
-        # ==================== 规则函数（签名与手写 _jvp_rule 相同） ====================
-        def _square_jvp(result):
-            frame, x_t = _jvp_tangent(result)
-            x = result.fromvars[0]
+        # ==================== 规则函数（签名与原函数一致；TN 实参为 (primal, tangent)） ====================
+        def _square_jvp(result, x):
+            x, x_t = x
             if x_t is not None:
-                frame.node_tangent[id(result)] = (2.0 * x) * x_t
+                return (2.0 * x) * x_t
 
         def _square_grad(result, x):
             return (2.0 * x * result._grad_value,)
@@ -685,34 +742,28 @@ class TestDefineGradFunc(unittest.TestCase):
         def _mul_grad(result, x, y):
             return (result._grad_value * y, result._grad_value * x)
 
-        def _mul_jvp(result):
-            frame = current_jvp_frame()
-            x, y = result.fromvars
-            x_t = _input_tangent(frame, x)
-            y_t = _input_tangent(frame, y)
+        def _mul_jvp(result, x, y):
+            x, x_t = x
+            y, y_t = y
             total = None
             if x_t is not None:
                 total = x_t * y
             if y_t is not None:
                 term = x * y_t
                 total = term if total is None else total + term
-            if total is not None:
-                frame.node_tangent[id(result)] = total
+            return total
 
-        def _sum_jvp(result):
-            frame = current_jvp_frame()
+        def _sum_jvp(result, *args, **kwargs):
             total = None
-            for var in result.fromvars:
-                tangent = _input_tangent(frame, var)
+            for _primal, tangent in list(args) + list(kwargs.values()):
                 if tangent is not None:
                     total = tangent if total is None else total + tangent
-            if total is not None:
-                frame.node_tangent[id(result)] = total
+            return total
 
-        def _double_jvp(result):
-            frame, x_t = _jvp_tangent(result)
+        def _double_jvp(result, x):
+            _x, x_t = x
             if x_t is not None:
-                frame.node_tangent[id(result)] = 2.0 * x_t
+                return 2.0 * x_t
 
         # ==================== 被测函数 ====================
         # 1. 只登记 jvp 规则：反向由函数体内的可微算子提供
@@ -752,13 +803,85 @@ class TestDefineGradFunc(unittest.TestCase):
         def mydouble_jvp(x):
             return 2.0 * x.detach().array()
 
+        # 7. 元组实参：非 TN 元组原样传入，不能被误当作 (primal, tangent) 配对
+        def _mean_dim_jvp(result, x, dim):
+            x, x_t = x
+            if x_t is None:
+                return None
+            return x_t.sum(dim=dim) / (x.shape[0] * x.shape[1])
+
+        @register_jvp_rule(_mean_dim_jvp)
+        def mymean_dim(x, dim=None):
+            return rm.tensor(x.detach().array().mean(axis=dim), device=x.device)
+
+        def _sum_mixed_jvp(result, *args):
+            total = None
+            for item in args:
+                # 只有配对实参才是 TangentPair；普通元组/标量视为常量
+                if not isinstance(item, TangentPair):
+                    continue
+                _primal, tangent = item
+                if tangent is not None:
+                    total = tangent if total is None else total + tangent
+            return total
+
+        @register_jvp_rule(_sum_mixed_jvp)
+        def mysum_mixed(*xs):
+            total = None
+            for v in xs:
+                if isinstance(v, TN):
+                    total = v if total is None else total + v
+            # 加 0.0 生成新节点：若直接返回输入张量本身，修饰器会把规则挂到输入节点上
+            # 并写入自引用的 fromvars，图排序时沿自环死循环
+            return total + 0.0
+
+        # 8. 恒等映射：前向直接返回输入节点本身
+        def _id_jvp(result, x):
+            _primal, tangent = x
+            return tangent
+
+        @register_jvp_rule(_id_jvp)
+        def myid_jvp(x):
+            return x
+
+        # 9. 仅关键字形参（KEYWORD_ONLY）与位置限定形参（POSITIONAL_ONLY）
+        def _scale_kw_jvp(result, x, *, scale=1.0):
+            _x, x_t = x
+            if x_t is not None:
+                return x_t * scale
+
+        @register_jvp_rule(_scale_kw_jvp)
+        def myscale_kw_jvp(x, *, scale=1.0):
+            return rm.tensor(scale * x.detach().array(), device=x.device)
+
+        def _divpos_jvp(result, x, y, /):
+            x, x_t = x
+            y, y_t = y
+            total = None
+            if x_t is not None:
+                total = x_t / y
+            if y_t is not None:
+                term = -(x / (y * y)) * y_t
+                total = term if total is None else total + term
+            return total
+
+        @register_jvp_rule(_divpos_jvp)
+        def mydivpos_jvp(x, y, /):
+            return rm.tensor(x.detach().array() / y.detach().array(), device=x.device)
+
+        # 10. 两个装饰器同时使用（jvp 在外层）+ 多输入关键字反序
+        @register_jvp_rule(_mul_jvp)
+        @register_grad_rule(_mul_grad)
+        def myprod_jvp_outer(x, y):
+            return rm.tensor(x.detach().array() * y.detach().array(), device=x.device)
+
         # ==================== 各场景用例 ====================
         def _check_square(fn):
             a = np.array([2.0, 3.0])
             va = np.array([0.1, -0.4])
             x = _mk(a, device)
             v = _mk(va, device, requires_grad=False)
-            y, y_t = jvp(fn, x, v)
+            y, y_t = jvp(fn, (x,), (v,))
             forward_ok = np.allclose(to_np(y), a * a)
             tangent_ok = np.allclose(to_np(y_t), 2.0 * a * va)
             y.sum().backward()
@@ -779,9 +902,9 @@ class TestDefineGradFunc(unittest.TestCase):
             va = np.array([0.5, -0.5])
             vb = np.array([0.2, 0.3])
             x, y = _mk(a, device), _mk(b, device)
-            o, t = jvp(myprod, [x, y],
-                       [_mk(va, device, requires_grad=False),
-                        _mk(vb, device, requires_grad=False)])
+            o, t = jvp(myprod, (x, y),
+                       (_mk(va, device, requires_grad=False),
+                        _mk(vb, device, requires_grad=False)))
             forward_ok = np.allclose(to_np(o), a * b)
             tangent_ok = np.allclose(to_np(t), va * b + a * vb)
             o.sum().backward()
@@ -790,25 +913,29 @@ class TestDefineGradFunc(unittest.TestCase):
                     and np.allclose(to_np(y.grad), a))
 
         def case_filtered_fromvars():
-            # const 不参与反向，fromvars 被 register_grad_rule 过滤；
-            # jvp 规则执行期间应临时拿到完整实参，执行后恢复过滤后的 fromvars
+            # fromvars 记录全部 TN 实参（含 requires_grad=False 的 const），
+            # 这是前向图（JVP）与反向图共用的边定义；反向传播再按各来源的
+            # requires_grad 过滤，因此冻结实参不会收到梯度。jvp 规则通过
+            # (primal, tangent) 实参拿到完整输入，不依赖 fromvars 的过滤结果。
             a = np.array([1.0, 2.0])
             b = np.array([3.0, 4.0])
             va = np.array([0.5, -0.5])
             x = _mk(a, device)
             const = _mk(b, device, requires_grad=False)
             v = _mk(va, device, requires_grad=False)
-            o, t = jvp(lambda p: myprod(p, const), x, v)
+            o, t = jvp(lambda p: myprod(p, const), (x,), (v,))
+            o.sum().backward()
             return (np.allclose(to_np(o), a * b)
                     and np.allclose(to_np(t), va * b)
-                    and len(o.fromvars) == 1)
+                    and len(o.fromvars) == 2
+                    and const.grad is None)
 
         def case_varargs():
             arrays = [np.array([1.0, 2.0]), np.array([3.0, 4.0]), np.array([5.0, 6.0])]
             vecs = [np.array([0.1, 0.2]), np.array([0.3, 0.4]), np.array([-0.1, 0.1])]
             xs = [_mk(a, device) for a in arrays]
             vs = [_mk(v, device, requires_grad=False) for v in vecs]
-            o, t = jvp(mysum_jvp, xs, vs)
+            o, t = jvp(mysum_jvp, tuple(xs), tuple(vs))
             return (np.allclose(to_np(o), sum(arrays))
                     and np.allclose(to_np(t), sum(vecs)))
 
@@ -818,9 +945,9 @@ class TestDefineGradFunc(unittest.TestCase):
             va = np.array([0.1, 0.2])
             vb = np.array([0.3, 0.4])
             x, y = _mk(a, device), _mk(b, device)
-            o, t = jvp(lambda p, q: mysum_kw_jvp(x=p, y=q), [x, y],
-                       [_mk(va, device, requires_grad=False),
-                        _mk(vb, device, requires_grad=False)])
+            o, t = jvp(lambda p, q: mysum_kw_jvp(x=p, y=q), (x, y),
+                       (_mk(va, device, requires_grad=False),
+                        _mk(vb, device, requires_grad=False)))
             return (np.allclose(to_np(o), a + b)
                     and np.allclose(to_np(t), va + vb))
 
@@ -829,7 +956,7 @@ class TestDefineGradFunc(unittest.TestCase):
             va = np.array([0.1, -0.4])
             x = _mk(a, device)
             v = _mk(va, device, requires_grad=False)
-            y, y_t = jvp(mydouble_jvp, x, v)
+            y, y_t = jvp(mydouble_jvp, (x,), (v,))
             # 前向返回值被修饰器转换为 TN；无 grad 规则，仅校验前向与 tangent
             return (isinstance(y, TN)
                     and np.allclose(to_np(y), 2.0 * a)
@@ -840,7 +967,7 @@ class TestDefineGradFunc(unittest.TestCase):
             va = np.array([0.1, -0.2])
             x = _mk(a, device)
             v = _mk(va, device, requires_grad=False)
-            _, t = jvp(sq_both_grad_outer, x, v, create_graph=True)
+            _, t = jvp(sq_both_grad_outer, (x,), (v,))
             total = t.sum()
             total.backward()
             return (np.allclose(to_np(total), np.sum(2.0 * a * va))
@@ -858,7 +985,7 @@ class TestDefineGradFunc(unittest.TestCase):
             va = np.random.randn(3, 4)
             x = _mk(a, device)
             v = _mk(va, device, requires_grad=False)
-            y, y_t = jvp(sq_both_grad_outer, x, v)
+            y, y_t = jvp(sq_both_grad_outer, (x,), (v,))
             tx = torch.tensor(a, requires_grad=True)
             with warnings.catch_warnings():
                 # Python 3.14 下 torch.func.jvp 内部会触发 jit.script 的 FutureWarning
@@ -868,6 +995,115 @@ class TestDefineGradFunc(unittest.TestCase):
             return (np.allclose(to_np(y), ty.detach().numpy(), atol=1e-5, rtol=1e-5)
                     and np.allclose(to_np(y_t), ty_t.detach().numpy(), atol=1e-5, rtol=1e-5))
 
+        def case_tuple_args():
+            # 非 TN 的元组实参（如 dim=(0, 1)）必须原样传给规则；
+            # 即使元组里含 TN（(p, 1.0)），也不是 TangentPair，按常量处理
+            a = np.array([[1.0, 2.0], [3.0, 4.0]])
+            va = np.array([[0.5, -0.5], [0.5, -0.5]])
+            x = _mk(a, device)
+            v = _mk(va, device, requires_grad=False)
+            o1, t1 = jvp(lambda p: mymean_dim(p, dim=(0, 1)), (x,), (v,))
+            o2, t2 = jvp(lambda p: mysum_mixed(p, (p, 1.0)), (x,), (v,))
+            return (np.allclose(to_np(o1), a.mean(axis=(0, 1)))
+                    and np.allclose(to_np(t1), va.mean(axis=(0, 1)))
+                    and np.allclose(to_np(o2), a)
+                    and np.allclose(to_np(t2), va))
+
+        def case_identity_return():
+            # 前向直接返回输入节点：装饰器不得写入自引用的 fromvars（图排序会
+            # 沿自环死循环），也不得覆盖输入节点；输出 tangent 就是输入 tangent
+            a = np.array([1.0, 2.0])
+            va = np.array([0.3, -0.2])
+            x = _mk(a, device)
+            v = _mk(va, device, requires_grad=False)
+            o, t = jvp(myid_jvp, (x,), (v,))
+            return (o is x and not x.fromvars
+                    and np.allclose(to_np(o), a)
+                    and np.allclose(to_np(t), va))
+
+        def case_keyword_only():
+            # 仅关键字形参：scale 走关键字实参，规则按签名收到它；默认值同样生效
+            a = np.array([2.0, 3.0])
+            va = np.array([0.1, 0.2])
+            x = _mk(a, device)
+            v = _mk(va, device, requires_grad=False)
+            y1, t1 = jvp(lambda p: myscale_kw_jvp(p, scale=3.0), (x,), (v,))
+            y2, t2 = jvp(lambda p: myscale_kw_jvp(p), (x,), (v,))   # 默认 scale=1.0
+            return (np.allclose(to_np(y1), 3.0 * a) and np.allclose(to_np(t1), 3.0 * va)
+                    and np.allclose(to_np(y2), a) and np.allclose(to_np(t2), va))
+
+        def case_positional_only():
+            # 位置限定形参（POSITIONAL_ONLY）：规则同样按位置拿到两个配对实参
+            x = _mk(6.0, device)
+            y = _mk(3.0, device)
+            vx = _mk(0.5, device, requires_grad=False)
+            vy = _mk(-0.25, device, requires_grad=False)
+            o, t = jvp(lambda p, q: mydivpos_jvp(p, q), (x, y), (vx, vy))
+            expected = 0.5 / 3.0 - (6.0 / 9.0) * (-0.25)
+            return np.allclose(to_np(o), 2.0) and np.allclose(to_np(t), expected)
+
+        def case_mixed_kw_call():
+            # 位置与关键字混用、关键字顺序与签名相反；同时使用两个装饰器（jvp 外层）
+            a = np.array([1.0, 2.0])
+            b = np.array([3.0, 4.0])
+            va = np.array([0.5, -0.5])
+            vb = np.array([0.2, 0.3])
+            x, y = _mk(a, device), _mk(b, device)
+            o, t = jvp(lambda p, q: myprod_jvp_outer(y=q, x=p), (x, y),
+                       (_mk(va, device, requires_grad=False),
+                        _mk(vb, device, requires_grad=False)))
+            forward_ok = np.allclose(to_np(o), a * b)
+            tangent_ok = np.allclose(to_np(t), va * b + a * vb)
+            o.sum().backward()
+            return (forward_ok and tangent_ok
+                    and np.allclose(to_np(x.grad), b) and np.allclose(to_np(y.grad), a))
+
+        def case_duplicate_input():
+            # 同一张量占据两个输入位置：切线按各位置贡献叠加，梯度累加两次
+            a = np.array([1.0, 2.0])
+            va = np.array([0.3, -0.2])
+            x = _mk(a, device)
+            v = _mk(va, device, requires_grad=False)
+            o, t = jvp(lambda p: myprod(p, p), (x,), (v,))
+            o.sum().backward()
+            return (np.allclose(to_np(o), a * a) and np.allclose(to_np(t), 2.0 * a * va)
+                    and np.allclose(to_np(x.grad), 2.0 * a))
+
+        def case_frozen_tangent():
+            # 冻结实参（requires_grad=False）也可以有切线：它仍在 fromvars 中，
+            # 图遍历会访问并播种它的方向；反向仍不为它累计梯度
+            a = np.array([1.0, 2.0])
+            b = np.array([3.0, 4.0])
+            va = np.array([0.5, -0.5])
+            vb = np.array([0.2, 0.3])
+            x = _mk(a, device)
+            const = _mk(b, device, requires_grad=False)
+            o, t = jvp(lambda p, q: myprod(p, q), (x, const),
+                       (_mk(va, device, requires_grad=False),
+                        _mk(vb, device, requires_grad=False)))
+            ok = np.allclose(to_np(o), a * b) and np.allclose(to_np(t), va * b + a * vb)
+            o.sum().backward()
+            return ok and np.allclose(to_np(x.grad), b) and const.grad is None
+
+        def case_zero_direction():
+            # tangents 中某个位置为零向量：该输入方向为零
+            a = np.array([1.0, 2.0])
+            b = np.array([3.0, 4.0])
+            va = np.array([0.5, -0.5])
+            vb = np.array([0.2, 0.3])
+            zeros_a = np.zeros_like(a)
+            zeros_b = np.zeros_like(b)
+            x = _mk(a, device)
+            const = _mk(b, device, requires_grad=False)
+            o1, t1 = jvp(lambda p, q: myprod(p, q), (x, const),
+                         (_mk(zeros_a, device, requires_grad=False),
+                          _mk(vb, device, requires_grad=False)))
+            o2, t2 = jvp(lambda p, q: myprod(p, q), (x, const),
+                         (_mk(va, device, requires_grad=False),
+                          _mk(zeros_b, device, requires_grad=False)))
+            return (np.allclose(to_np(o1), a * b) and np.allclose(to_np(t1), a * vb)
+                    and np.allclose(to_np(o2), a * b) and np.allclose(to_np(t2), va * b))
+
         cases = [
             ("单独登记 jvp 规则", case_jvp_only),
             ("grad 外层组合", case_combined_grad_outer),
@@ -876,6 +1112,14 @@ class TestDefineGradFunc(unittest.TestCase):
             ("冻结实参 fromvars 过滤与恢复", case_filtered_fromvars),
             ("*args 变长参数", case_varargs),
             ("**kwargs 变长参数", case_kwargs),
+            ("元组实参不误配对", case_tuple_args),
+            ("恒等映射不建自环", case_identity_return),
+            ("仅关键字形参", case_keyword_only),
+            ("位置限定形参", case_positional_only),
+            ("位置与关键字混用", case_mixed_kw_call),
+            ("重复实参切线叠加", case_duplicate_input),
+            ("冻结实参带切线", case_frozen_tangent),
+            ("零方向 tangent", case_zero_direction),
             ("前向返回非TN", case_non_tn_return),
             ("create_graph 二阶", case_second_order),
             ("非法 jvp_func 报错", case_invalid_rule),
@@ -921,7 +1165,7 @@ class TestDefineGradFunc(unittest.TestCase):
                 return total
 
         class MulNoJvp(Function):
-            """未实现 jvp：应回退到基于 backward 的局部 VJP"""
+            """未实现 jvp：前向模式 AD 应直接报错"""
 
             @staticmethod
             def forward(ctx, x, y):
@@ -1068,6 +1312,76 @@ class TestDefineGradFunc(unittest.TestCase):
             def backward(ctx, grad_output):
                 return (grad_output * 2.0,)
 
+        class VarargsFn(Function):
+            """变长参数：inputs 为 *xs，backward/jvp 也按位置逐项对应"""
+
+            @staticmethod
+            def forward(ctx, *xs):
+                ctx.save_for_backward(*xs)
+                ctx.save_for_forward(*xs)
+                total = xs[0]
+                for v in xs[1:]:
+                    total = total + v
+                return total
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                return tuple(grad_output for _ in ctx.saved_tensors)
+
+            @staticmethod
+            def jvp(ctx, *gxs):
+                total = None
+                for gx in gxs:
+                    if gx is not None:
+                        total = gx if total is None else total + gx
+                return total
+
+        class ZeroJvpFn(Function):
+            """jvp 返回 None 表示零方向：传播后得到与输出同形的零 tangent"""
+
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_backward(x)
+                return x * x
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                (x,) = ctx.saved_tensors
+                return (grad_output * 2.0 * x,)
+
+            @staticmethod
+            def jvp(ctx, gx):
+                return None
+
+        class NonTensorJvpFn(Function):
+            """jvp 返回非 TN（numpy 数组）：由 apply 的规则包装转换为 TN"""
+
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_backward(x)
+                return x * 3.0
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                return (grad_output * 3.0,)
+
+            @staticmethod
+            def jvp(ctx, gx):
+                return None if gx is None else gx.detach().array() * 3.0
+
+        # 与 Function 节点混用同一张图的装饰器算子（同时登记反向与前向规则）
+        def _affine_jvp(result, x):
+            _x, x_t = x
+            return None if x_t is None else 2.0 * x_t
+
+        def _affine_grad(result, x):
+            return (2.0 * result._grad_value,)
+
+        @register_jvp_rule(_affine_jvp)
+        @register_grad_rule(_affine_grad)
+        def mydouble(x):
+            return rm.tensor(2.0 * x.detach().array(), device=x.device)
+
         a = np.array([[1.0, -2.0], [3.0, 0.5]])
         b = np.array([[0.5, 2.0], [-1.0, 4.0]])
         va = np.array([[0.1, 0.2], [-0.3, 0.4]])
@@ -1077,7 +1391,7 @@ class TestDefineGradFunc(unittest.TestCase):
             x, y = _mk(a, device), _mk(b, device)
             vx = _mk(va, device, requires_grad=False)
             vy = _mk(vb, device, requires_grad=False)
-            o, t = jvp(MulFn.apply, [x, y], [vx, vy])
+            o, t = jvp(MulFn.apply, (x, y), (vx, vy))
             forward_ok = np.allclose(to_np(o), a * b)
             tangent_ok = np.allclose(to_np(t), va * b + a * vb)
             o.sum().backward()
@@ -1085,20 +1399,21 @@ class TestDefineGradFunc(unittest.TestCase):
                     and np.allclose(to_np(x.grad), b)
                     and np.allclose(to_np(y.grad), a))
 
-        def case_fallback_without_jvp():
+        def case_missing_jvp_raises():
             x, y = _mk(a, device), _mk(b, device)
             vx = _mk(va, device, requires_grad=False)
             vy = _mk(vb, device, requires_grad=False)
-            o1, t1 = jvp(MulFn.apply, [x, y], [vx, vy])
-            o2, t2 = jvp(MulNoJvp.apply, [x, y], [vx, vy])
-            return (np.allclose(to_np(o2), to_np(o1))
-                    and np.allclose(to_np(t2), to_np(t1)))
+            try:
+                jvp(MulNoJvp.apply, (x, y), (vx, vy))
+            except RuntimeError as exc:
+                return "no forward (jvp) rule" in str(exc)
+            return False
 
         def case_split_saved_tensors():
             x, y = _mk(a, device), _mk(b, device)
             vx = _mk(va, device, requires_grad=False)
             vy = _mk(vb, device, requires_grad=False)
-            o, t = jvp(SplitSaveFn.apply, [x, y], [vx, vy])
+            o, t = jvp(SplitSaveFn.apply, (x, y), (vx, vy))
             tangent_ok = np.allclose(to_np(t), 3.0 * (va * b + a * vb))
             o.sum().backward()
             return (tangent_ok
@@ -1108,14 +1423,14 @@ class TestDefineGradFunc(unittest.TestCase):
         def case_empty_forward_saved():
             x = _mk(a, device)
             vx = _mk(va, device, requires_grad=False)
-            o, t = jvp(EmptyFwdSaveFn.apply, x, vx)
+            o, t = jvp(EmptyFwdSaveFn.apply, (x,), (vx,))
             return (np.allclose(to_np(o), a * a)
                     and np.allclose(to_np(t), np.zeros_like(a)))
 
         def case_non_tensor_arg():
             x = _mk(a, device)
             vx = _mk(va, device, requires_grad=False)
-            o, t = jvp(lambda p: ScaleFn.apply(p, 3.0), x, vx)
+            o, t = jvp(lambda p: ScaleFn.apply(p, 3.0), (x,), (vx,))
             o.sum().backward()
             return (np.allclose(to_np(o), a * 3.0)
                     and np.allclose(to_np(t), va * 3.0)
@@ -1124,7 +1439,7 @@ class TestDefineGradFunc(unittest.TestCase):
         def case_second_order():
             x = _mk(a, device)
             vx = _mk(va, device, requires_grad=False)
-            _, t = jvp(lambda p: MulFn.apply(p, p), x, vx, create_graph=True)
+            _, t = jvp(lambda p: MulFn.apply(p, p), (x,), (vx,))
             total = t.sum()
             total.backward()
             return (np.allclose(to_np(total), np.sum(2.0 * a * va))
@@ -1142,7 +1457,7 @@ class TestDefineGradFunc(unittest.TestCase):
             x, y = _mk(a, device), _mk(b, device)
             vx = _mk(va, device, requires_grad=False)
             vy = _mk(vb, device, requires_grad=False)
-            o, t = jvp(NewStyleFn.apply, [x, y], [vx, vy])
+            o, t = jvp(NewStyleFn.apply, (x, y), (vx, vy))
             tangent_ok = np.allclose(to_np(t), va * b + a * vb)
             o.sum().backward()
             return (np.allclose(to_np(o), a * b)
@@ -1179,7 +1494,7 @@ class TestDefineGradFunc(unittest.TestCase):
             x, y = _mk(a, device), _mk(b, device)
             vx = _mk(va, device, requires_grad=False)
             vy = _mk(vb, device, requires_grad=False)
-            o, t = jvp(MulFn.apply, [x, y], [vx, vy])
+            o, t = jvp(MulFn.apply, (x, y), (vx, vy))
             tx = torch.tensor(a, requires_grad=True)
             ty = torch.tensor(b, requires_grad=True)
             with warnings.catch_warnings():
@@ -1191,9 +1506,119 @@ class TestDefineGradFunc(unittest.TestCase):
             return (np.allclose(to_np(o), to.detach().numpy(), atol=1e-5, rtol=1e-5)
                     and np.allclose(to_np(t), tt.detach().numpy(), atol=1e-5, rtol=1e-5))
 
+        def case_backward_only_function():
+            # 只实现 backward 的 Function：不请求前向 AD 时正常参与反向
+            x, y = _mk(a, device), _mk(b, device)
+            o = MulNoJvp.apply(x, y)
+            forward_ok = np.allclose(to_np(o), a * b)
+            rules_ok = o._grad_rule is not None
+            o.sum().backward()
+            return (forward_ok and rules_ok
+                    and np.allclose(to_np(x.grad), b)
+                    and np.allclose(to_np(y.grad), a))
+
+        def case_varargs_function():
+            # 变长参数 Function：fromvars 与 jvp 的 *gxs 都按 *xs 位置对齐
+            arrays = [np.array([1.0, 2.0]), np.array([3.0, 4.0]), np.array([5.0, 6.0])]
+            vecs = [np.array([0.1, 0.2]), np.array([0.3, 0.4]), np.array([-0.1, 0.1])]
+            xs = [_mk(v, device) for v in arrays]
+            vs = [_mk(v, device, requires_grad=False) for v in vecs]
+            o, t = jvp(VarargsFn.apply, tuple(xs), tuple(vs))
+            tangent_ok = np.allclose(to_np(t), sum(vecs))
+            o.sum().backward()
+            grads_ok = all(np.allclose(to_np(x.grad), np.ones_like(arr))
+                           for x, arr in zip(xs, arrays))
+            return np.allclose(to_np(o), sum(arrays)) and tangent_ok and grads_ok
+
+        def case_duplicate_input_function():
+            # 同一个 TN 占据两个输入位置：切线按两位置叠加，梯度累加两次
+            x = _mk(a, device)
+            v = _mk(va, device, requires_grad=False)
+            o, t = jvp(lambda p: MulFn.apply(p, p), (x,), (v,))
+            o.sum().backward()
+            return (np.allclose(to_np(o), a * a)
+                    and np.allclose(to_np(t), 2.0 * a * va)
+                    and np.allclose(to_np(x.grad), 2.0 * a))
+
+        def case_frozen_tangent_function():
+            # 冻结输入（requires_grad=False）带非零切线：前向跟踪时它仍在
+            # fromvars 中并参与 tangent 传播，但反向不为其累计梯度
+            x = _mk(a, device)
+            const = _mk(b, device, requires_grad=False)
+            vx = _mk(va, device, requires_grad=False)
+            vy = _mk(vb, device, requires_grad=False)
+            o, t = jvp(lambda p, q: MulFn.apply(p, q), (x, const), (vx, vy))
+            ok = (np.allclose(to_np(o), a * b)
+                  and np.allclose(to_np(t), va * b + a * vb))
+            o.sum().backward()
+            return ok and np.allclose(to_np(x.grad), b) and const.grad is None
+
+        def case_zero_direction_function():
+            # 某位置切线为零向量：只保留另一位置的方向
+            x, y = _mk(a, device), _mk(b, device)
+            vx = _mk(va, device, requires_grad=False)
+            vy = _mk(vb, device, requires_grad=False)
+            zx = _mk(np.zeros_like(a), device, requires_grad=False)
+            zy = _mk(np.zeros_like(b), device, requires_grad=False)
+            o1, t1 = jvp(lambda p, q: MulFn.apply(p, q), (x, y), (zx, vy))
+            o2, t2 = jvp(lambda p, q: MulFn.apply(p, q), (x, y), (vx, zy))
+            return (np.allclose(to_np(o1), a * b) and np.allclose(to_np(t1), a * vb)
+                    and np.allclose(to_np(o2), a * b) and np.allclose(to_np(t2), va * b))
+
+        def case_jvp_returns_none():
+            # jvp 返回 None 表示零方向：对外仍返回同形零 tangent，反向不受影响
+            x = _mk(a, device)
+            vx = _mk(va, device, requires_grad=False)
+            o, t = jvp(ZeroJvpFn.apply, (x,), (vx,))
+            rules_ok = (o._grad_rule is not None) and (o._jvp_rule is not None)
+            o.sum().backward()
+            return (rules_ok
+                    and np.allclose(to_np(o), a * a)
+                    and np.allclose(to_np(t), np.zeros_like(a))
+                    and np.allclose(to_np(x.grad), 2.0 * a))
+
+        def case_jvp_returns_non_tensor():
+            # jvp 返回 numpy 数组：apply 的规则包装会把它转换成 TN 再传播
+            x = _mk(a, device)
+            vx = _mk(va, device, requires_grad=False)
+            o, t = jvp(NonTensorJvpFn.apply, (x,), (vx,))
+            o.sum().backward()
+            return (np.allclose(to_np(o), 3.0 * a)
+                    and np.allclose(to_np(t), 3.0 * va)
+                    and np.allclose(to_np(x.grad), np.full_like(a, 3.0)))
+
+        def case_both_rules_same_node():
+            # 同一个 Function 输出节点上 _grad_rule 与 _jvp_rule 同时存在：
+            # 先针对已有节点求 jvp，再反向，两个规则互不干扰
+            x, y = _mk(a, device), _mk(b, device)
+            vx = _mk(va, device, requires_grad=False)
+            vy = _mk(vb, device, requires_grad=False)
+            o = MulFn.apply(x, y)
+            rules_ok = (o._grad_rule is not None) and (o._jvp_rule is not None)
+            _, t = jvp(lambda p, q: o, (x, y), (vx, vy))
+            tangent_ok = np.allclose(to_np(t), va * b + a * vb)
+            o.sum().backward()
+            return (rules_ok and tangent_ok
+                    and np.allclose(to_np(x.grad), b)
+                    and np.allclose(to_np(y.grad), a))
+
+        def case_mixed_with_decorator():
+            # Function 节点与 register_*_rule 装饰器节点在同一张图中混用：
+            # jvp 与反向都要跨两类节点正确传播
+            x, y = _mk(a, device), _mk(b, device)
+            vx = _mk(va, device, requires_grad=False)
+            vy = _mk(vb, device, requires_grad=False)
+            o, t = jvp(lambda p, q: MulFn.apply(p, q) + mydouble(p),
+                       (x, y), (vx, vy))
+            tangent_ok = np.allclose(to_np(t), va * b + a * vb + 2.0 * va)
+            o.sum().backward()
+            return (np.allclose(to_np(o), a * b + 2.0 * a) and tangent_ok
+                    and np.allclose(to_np(x.grad), b + 2.0)
+                    and np.allclose(to_np(y.grad), a))
+
         cases = [
             ("MulFn jvp 与反向", case_mul_jvp_and_backward),
-            ("未实现 jvp 时回退一致", case_fallback_without_jvp),
+            ("未实现 jvp 时前向模式报错", case_missing_jvp_raises),
             ("backward/jvp 保存集合隔离", case_split_saved_tensors),
             ("未调用 save_for_forward 时为空", case_empty_forward_saved),
             ("非张量参数传入 None", case_non_tensor_arg),
@@ -1204,6 +1629,15 @@ class TestDefineGradFunc(unittest.TestCase):
             ("needs_input_grad 无梯度输入", case_needs_input_grad_false),
             ("setup_context 默认未实现", case_default_setup_context),
             ("no_grad 下不建图", case_no_grad_mode),
+            ("只实现 backward 的 Function", case_backward_only_function),
+            ("变长参数 Function", case_varargs_function),
+            ("重复实参梯度/切线叠加", case_duplicate_input_function),
+            ("冻结输入带切线", case_frozen_tangent_function),
+            ("零方向 tangent", case_zero_direction_function),
+            ("jvp 返回 None 为零切线", case_jvp_returns_none),
+            ("jvp 返回非 TN 自动转换", case_jvp_returns_non_tensor),
+            ("grad/jvp 规则同一节点共存", case_both_rules_same_node),
+            ("Function 与装饰器节点混合图", case_mixed_with_decorator),
         ]
         if TORCH_AVAILABLE and device == "cpu":
             cases.append(("PyTorch 对比验证", case_pytorch_compare))
@@ -1515,89 +1949,206 @@ class TestDefineGradFunc(unittest.TestCase):
         return cases
 
     def test_function_class_grad(self):
-        """测试 Function 类的自定义梯度功能（CPU + CUDA）"""
+        """测试 Function 类的自定义反向梯度：参数组合、冻结输入、重复使用与重复反向"""
+        for device in _devices():
+            self._run_function_grad_cases(device)
 
-        # 定义一个自定义的乘法函数
+    def _run_function_grad_cases(self, device):
+        """Function.backward 用例组"""
+        def to_np(t):
+            return _arr(t)
+
+        # ==================== 被测 Function 类 ====================
         class MulFunction(Function):
             """自定义乘法函数类"""
 
             @staticmethod
             def forward(ctx, x, y):
-                """前向传播"""
                 ctx.save_for_backward(x, y)
                 return x * y
 
             @staticmethod
             def backward(ctx, grad_output):
-                """反向传播"""
                 x, y = ctx.saved_tensors
                 return grad_output * y, grad_output * x
 
-        # 定义一个自定义的ReLU函数（设备无关写法：零常量与掩码都建在输入所在设备上）
         class ReLUFunction(Function):
-            """自定义ReLU函数类"""
+            """自定义ReLU函数类；backward 返回单个 TN（非元组），由 apply 包装"""
 
             @staticmethod
             def forward(ctx, x):
-                """前向传播"""
                 ctx.save_for_backward(x)
                 return rm.maximum(x, rm.tensor(0.0, device=x.device))
 
             @staticmethod
             def backward(ctx, grad_output):
-                """反向传播"""
                 x, = ctx.saved_tensors
                 arr = x.detach().array()
                 return grad_output * rm.tensor((arr > 0).astype(arr.dtype), device=x.device)
 
-        # 测试用例列表（make_inputs 接收设备参数，便于在 CPU/CUDA 上分别构造）
-        test_cases = [
-            {
-                "name": "MulFunction 梯度计算",
-                "func": MulFunction.apply,
-                "make_inputs": lambda d: [rm.tensor(2.0, device=d, requires_grad=True),
-                                          rm.tensor(3.0, device=d, requires_grad=True)],
-                "expected": [[3.0], [2.0]],
-            },
-            {
-                "name": "ReLUFunction 梯度计算",
-                "func": ReLUFunction.apply,
-                "make_inputs": lambda d: [rm.tensor([-1.0, 2.0], device=d, requires_grad=True)],
-                "expected": [[0.0, 1.0]],
-            },
+        class ScaleFn(Function):
+            """非张量参数：needs_input_grad 逐位置对应，backward 该位置返回 None"""
+
+            @staticmethod
+            def forward(ctx, x, k):
+                ctx.save_for_backward(x)
+                assert ctx.needs_input_grad == (True, False), ctx.needs_input_grad
+                return x * k
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                (x,) = ctx.saved_tensors
+                return grad_output * 3.0, None
+
+        class MixedGradFn(Function):
+            """两个 TN 输入、只对第一个求梯度：fromvars 只保留可微输入"""
+
+            @staticmethod
+            def forward(ctx, x, y):
+                ctx.save_for_backward(x, y)
+                assert ctx.needs_input_grad == (True, False), ctx.needs_input_grad
+                return x * y
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                x, y = ctx.saved_tensors
+                return grad_output * y, grad_output * x
+
+        class VarargsFn(Function):
+            """变长参数：backward 的返回值与 *xs 逐位置对应"""
+
+            @staticmethod
+            def forward(ctx, *xs):
+                ctx.save_for_backward(*xs)
+                total = xs[0]
+                for v in xs[1:]:
+                    total = total + v
+                return total
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                return tuple(grad_output for _ in ctx.saved_tensors)
+
+        class NumpyOutFn(Function):
+            """forward 返回 numpy 数组：apply 转换为 TN 后仍可反向"""
+
+            @staticmethod
+            def forward(ctx, x):
+                ctx.save_for_backward(x)
+                return 2.0 * x.detach().array()
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                return (grad_output * 2.0,)
+
+        # ==================== 各场景用例 ====================
+        def case_mul():
+            x, y = _mk(2.0, device), _mk(3.0, device)
+            o = MulFunction.apply(x, y)
+            forward_ok = np.allclose(to_np(o), 6.0)
+            o.backward()
+            return (forward_ok
+                    and np.allclose(to_np(x.grad), 3.0)
+                    and np.allclose(to_np(y.grad), 2.0))
+
+        def case_relu():
+            x = _mk([-1.0, 2.0], device)
+            o = ReLUFunction.apply(x)
+            forward_ok = np.allclose(to_np(o), [0.0, 2.0])
+            o.sum().backward()
+            return forward_ok and np.allclose(to_np(x.grad), [0.0, 1.0])
+
+        def case_non_tensor_arg():
+            # 非张量参数占据输入位置：backward 对应位置返回 None，不被当作梯度
+            x = _mk([1.0, 2.0], device)
+            o = ScaleFn.apply(x, 3.0)
+            forward_ok = np.allclose(to_np(o), [3.0, 6.0])
+            o.sum().backward()
+            return forward_ok and np.allclose(to_np(x.grad), [3.0, 3.0])
+
+        def case_frozen_input():
+            # 冻结 TN 输入：不进 fromvars、不累计梯度，但 backward 仍返回它的位置值
+            x = _mk([1.0, 2.0], device)
+            y = _mk([3.0, 4.0], device, requires_grad=False)
+            o = MixedGradFn.apply(x, y)
+            fromvars_ok = len(o.fromvars) == 1 and o.fromvars[0] is x
+            o.sum().backward()
+            return (fromvars_ok
+                    and np.allclose(to_np(x.grad), [3.0, 4.0])
+                    and y.grad is None)
+
+        def case_varargs():
+            xs = [_mk([1.0, 2.0], device),
+                  _mk([3.0, 4.0], device),
+                  _mk([5.0, 6.0], device)]
+            o = VarargsFn.apply(*xs)
+            forward_ok = np.allclose(to_np(o), [9.0, 12.0])
+            o.sum().backward()
+            return forward_ok and all(
+                np.allclose(to_np(x.grad), np.ones(2)) for x in xs)
+
+        def case_duplicate_input():
+            # 同一 TN 占据两个输入位置：fromvars 保留两份，梯度累加两次
+            x = _mk([1.0, 2.0], device)
+            o = MulFunction.apply(x, x)
+            forward_ok = np.allclose(to_np(o), [1.0, 4.0])
+            o.sum().backward()
+            return forward_ok and np.allclose(to_np(x.grad), [2.0, 4.0])
+
+        def case_numpy_forward():
+            x = _mk([1.0, 2.0], device)
+            o = NumpyOutFn.apply(x)
+            o.sum().backward()
+            return (isinstance(o, TN)
+                    and np.allclose(to_np(o), [2.0, 4.0])
+                    and np.allclose(to_np(x.grad), [2.0, 2.0]))
+
+        def case_shared_output():
+            # 同一输出被两条路径引用：每条边的梯度都要累加
+            x, y = _mk([1.0, 2.0], device), _mk([3.0, 4.0], device)
+            (MulFunction.apply(x, y) * 1.0 + 0.0).sum().backward()
+            single_ok = (np.allclose(to_np(x.grad), [3.0, 4.0])
+                         and np.allclose(to_np(y.grad), [1.0, 2.0]))
+            x.grad = None
+            y.grad = None
+            o = MulFunction.apply(x, y)
+            (o + o).sum().backward()
+            return (single_ok
+                    and np.allclose(to_np(x.grad), [6.0, 8.0])
+                    and np.allclose(to_np(y.grad), [2.0, 4.0]))
+
+        def case_repeat_backward():
+            x, y = _mk(2.0, device), _mk(3.0, device)
+            o = MulFunction.apply(x, y)
+            o.backward()
+            first_ok = (np.allclose(to_np(x.grad), 3.0)
+                        and np.allclose(to_np(y.grad), 2.0))
+            x.grad = None
+            y.grad = None
+            o.backward(gradient=rm.tensor(2.0, device=device), retain_graph=True)
+            return (first_ok
+                    and np.allclose(to_np(x.grad), 6.0)
+                    and np.allclose(to_np(y.grad), 4.0))
+
+        def case_no_grad_mode():
+            x, y = _mk(2.0, device), _mk(3.0, device)
+            with set_grad_enabled(False):
+                o = MulFunction.apply(x, y)
+            return (not o.requires_grad) and np.allclose(to_np(o), 6.0)
+
+        cases = [
+            ("MulFunction 梯度计算", case_mul),
+            ("ReLUFunction 梯度计算", case_relu),
+            ("非张量参数返回 None", case_non_tensor_arg),
+            ("冻结输入不进 fromvars", case_frozen_input),
+            ("变长参数 Function", case_varargs),
+            ("重复实参梯度累加", case_duplicate_input),
+            ("前向返回 numpy", case_numpy_forward),
+            ("输出被多次引用", case_shared_output),
+            ("重复反向(retain_graph)", case_repeat_backward),
+            ("no_grad 下不建图", case_no_grad_mode),
         ]
-
-        for device in _devices():
-            for case in test_cases:
-                full_name = f"{case['name']} - {device}"
-                error_msg = None
-                try:
-                    inputs = case["make_inputs"](device)
-                    result = case["func"](*inputs)
-                    # 反向传播
-                    result.sum().backward()
-
-                    actuals = [_arr(t.grad) for t in inputs]
-                    expecteds = [np.asarray(e, dtype=a.dtype)
-                                 for a, e in zip(actuals, case["expected"])]
-                    passed = len(actuals) == len(expecteds) and all(
-                        np.allclose(a, e, atol=1e-8, rtol=0) for a, e in zip(actuals, expecteds))
-                    if IS_SCRIPT_MODE:
-                        color = Colors.OKGREEN if passed else Colors.FAIL
-                        status = "PASS" if passed else "FAIL"
-                        detail = ", ".join(
-                            f"in{i}.grad={_arr(t.grad).tolist()}" for i, t in enumerate(inputs))
-                        print(f"{color}[{status}]{Colors.ENDC} [{device}] {case['name']}: "
-                              f"{detail}, 预期={[e.tolist() for e in expecteds]}")
-                except Exception as e:
-                    passed = False
-                    error_msg = str(e)
-                    if IS_SCRIPT_MODE:
-                        print(f"{Colors.FAIL}[FAIL]{Colors.ENDC} [{device}] {case['name']}: 错误 - {str(e)}")
-                # 统计在两种运行模式下均完整工作
-                stats.add_result(full_name, passed)
-                # 断言传导：确保 unittest/pytest 将比较失败判为测试失败
-                self.assertTrue(passed, full_name + (f": {error_msg}" if error_msg else ""))
+        self._run_cases(cases, device)
 
 if __name__ == "__main__":
     print("\n开始测试自定义梯度功能...")

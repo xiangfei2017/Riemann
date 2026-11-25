@@ -3179,31 +3179,32 @@ CUDA支持
    ``register_jvp_rule`` 是 **Riemann 特有** 接口，PyTorch 中没有同名装饰器
    （PyTorch 的前向模式规则需通过 ``autograd.Function.jvp`` 实现）。
 
-   :param jvp_func: 前向规则函数，签名为 ``jvp_func(result)``。``result`` 为前向函数的输出张量；
-                    函数内部通过 ``current_jvp_frame()`` 获取当前 JVP 帧，用
-                    ``_input_tangent(frame, var)`` 读取入边 tangent，并把计算结果写入
-                    ``frame.node_tangent[id(result)]``，形状必须与 ``result`` 相同。
-                    若输出不依赖任何可微输入，可以不写（视为无 tangent）
+   :param jvp_func: 前向规则函数，调用形状与原函数一致、首参为输出：
+                    ``jvp_func(result, *args, **kwargs)``。每个 **TN 实参** 以
+                    ``TangentPair(primal, tangent)``（``tuple`` 子类，可直接解包）传入，
+                    ``tangent`` 为 ``None`` 表示该方向为零；非 TN 实参（包括
+                    ``dim=(0, 1)`` 这类元组参数）原样传入。变参规则可用
+                    ``isinstance(arg, TangentPair)`` 区分配对实参与普通元组实参。
+                    函数返回与 ``result`` 同形的输出 tangent，若输出不依赖任何
+                    可微输入则返回 ``None``
    :type jvp_func: callable
    :return: 一个修饰器函数，用于为前向计算函数登记 JVP 规则
    :rtype: callable
 
    该装饰器与 ``register_grad_rule`` 完全独立：可单独使用，也可任意顺序同时装饰同一函数。
-   规则执行期间 ``result.fromvars`` 会被临时替换为完整的 TN 实参列表，执行后恢复，
-   因此部分实参不需要梯度也不影响前向规则读取输入。未登记前向规则的算子在
-   ``func.jvp`` 中回退到局部 VJP 转置。更多示例参见 :doc:`autograd_basics`。
+   规则不接触内部 ``JVPFrame``，位置形参、关键字形参、``*args``/``**kwargs`` 及默认值
+   都按原函数签名自动配对，因此规则只需按原函数签名解包即可。自定义算子若未登记前向规则，
+   ``func.jvp`` 执行到该节点时会直接报错，需要补充 jvp 规则。
+   更多示例参见 :doc:`autograd_basics`。
 
    示例：
 
    .. code-block:: python
 
-      from riemann.core.ad_context import current_jvp_frame
-      from riemann.core.tensordef import _input_tangent
-
-      def _square_jvp(result):
-          frame = current_jvp_frame()
-          x = result.fromvars[0]
-          frame.node_tangent[id(result)] = 2.0 * x * _input_tangent(frame, x)
+      def _square_jvp(result, x):
+          x, x_t = x                  # TN 实参 = (primal, tangent)
+          if x_t is not None:         # None 表示该方向为零
+              return 2.0 * x * x_t
 
       @register_jvp_rule(_square_jvp)
       def mysquare(x):
@@ -3227,7 +3228,7 @@ CUDA支持
    - setup_context（可选）: 新式写法，``forward(*inputs)`` + ``setup_context(ctx, inputs, output)``
    - ``ctx.needs_input_grad``: 逐输入布尔元组，非张量位置与 no_grad 下为 False
 
-   若未实现 ``jvp``，``func.jvp`` 会自动回退到局部 VJP 转置；当前 ``apply`` 仅支持单输出。
+   若未实现 ``jvp``，``func.jvp`` 执行到该节点时会直接报错；当前 ``apply`` 仅支持单输出。
 
    示例：
    
@@ -3250,32 +3251,133 @@ CUDA支持
 函数式自动求导函数（riemann.func）
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. function:: riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False)
+本模块的公开接口与 ``torch.func`` 同名函数严格对齐（参数名称、默认值、位置/关键字
+参数种类一致），不再提供额外的开关：与 ``torch.func`` 同名的导函数结果默认保留计算图，
+可直接嵌套求导，入选参数不必自带 ``requires_grad``，未连通的输入/输出按零块处理。
+
+.. function:: riemann.func.grad(func, argnums=0, has_aux=False)
+
+   返回 ``func`` 的导函数，``func`` 输出必须是标量张量。
+
+   :param func: 可微函数，输出为 0 维张量
+   :param argnums: 求导参数位置，int 或 tuple[int, ...]，默认 0
+   :param has_aux: 为 True 时 ``func`` 返回 ``(value, aux)``，导函数返回 ``(梯度, aux)``
+   :return: 导函数（接受与 ``func`` 相同的参数）
+
+   与 ``torch.func.grad`` 一致：入选参数不必自带 ``requires_grad``，内部使用可微副本；
+   输出与某个入选参数不连通、或输出本身不可微时，该位置返回同形状零张量。
+
+.. function:: riemann.func.grad_and_value(func, argnums=0, has_aux=False)
+
+   返回 ``func`` 的导函数，同时返回前向输出值。
+
+   :return: 导函数，返回 ``(梯度, value)``；``has_aux=True`` 时返回
+            ``(梯度, value, aux)``
+
+   与 ``func.grad`` 相同，不连通或不可微的位置按零张量返回。
+
+.. function:: riemann.func.jvp(func, primals, tangents, *, strict=False, has_aux=False)
 
    计算雅可比矩阵与给定向量的乘积（前向模式自动微分）。
 
    计算过程由算子节点的直接前向规则驱动：PRIMAL 阶段建立计算图并登记规则，
-   TANGENT 阶段按拓扑序遍历一次，用规则计算每个节点的 tangent；未登记规则的算子
-   回退到局部 VJP 转置。原地算子按时间顺序作为步骤施加到 tangent 上。
+   TANGENT 阶段按拓扑序遍历一次，用规则计算每个节点的 tangent；缺少规则的节点
+   （内置算子均已覆盖）会直接报错。原地算子按时间顺序作为步骤施加到 tangent 上。
 
    :param func: 可微函数，输入为一个或多个张量，输出可为单个张量或张量元组
-   :param primals: 求值点，单个张量或元组/list
-   :param tangents: 与 primals 逐项对应且形状相同的切向量
-   :param create_graph: 是否保留计算图以支持高阶微分，默认 False
-   :param strict: 严格模式，输出与输入无关时 True 抛错、False 按 0 处理，默认 False
-   :return: ``(output, jvp_result)``，形状与 output 一致
+   :param primals: 求值点，tuple（单输入也须包成 1-tuple）
+   :param tangents: 与 primals 逐项对应且形状相同的切向量 tuple
+   :param strict: 关键字参数。输出与输入无关时 True 抛错、False 按 0 处理，默认 False
+   :param has_aux: 关键字参数。为 True 时 ``func`` 返回 ``(output, aux)``
+   :return: ``(output, jvp_result)``；``has_aux=True`` 时追加 aux
    :rtype: tuple
 
-.. function:: riemann.func.jvp2(func, primals, tangents, create_graph=False, strict=False)
+.. function:: riemann.func.vjp(func, *primals, has_aux=False)
 
-   旧版 JVP 实现，接口与 ``riemann.func.jvp`` 完全一致，内部基于逐边局部 VJP 转置。
-   保留用于与直接规则路径对照或回退，新代码建议使用 ``riemann.func.jvp``。
+   计算向量与雅可比矩阵的乘积（反向模式自动微分），前向只求值一次。
 
-.. function:: riemann.func.jacfwd(func, argnums=0, create_graph=False)
+   :param primals: 求值点输入，按 ``func`` 的位置参数顺序给出
+   :param has_aux: 为 True 时 ``func`` 返回 ``(output, aux)``
+   :return: ``(输出值, vjp_fn)`` 或 ``(输出值, vjp_fn, aux)``。``vjp_fn`` 的调用方式为
+            ``vjp_fn(cotangents, retain_graph=True, create_graph=None)``，恒返回 tuple
+            （单 primal 也返回 1-tuple）；``create_graph=None`` 时取当前梯度模式。
+            ``retain_graph`` 仅为接口对齐而接受（本实现的图不主动释放）。
 
-   返回计算 Jacobian 矩阵的函数（前向模式），由 linearize + vmap(jvp) 实现，基于直接规则的
-   ``riemann.func.jvp``：primal 图只记录一次，每个输入基向量仅需复用该图重新传播 one-hot tangent。
-   参数与 ``riemann.func.jacrev`` 相同，但不支持 ``strict``。
+.. function:: riemann.func.linearize(func, *primals)
+
+   在 ``primals`` 处线性化 ``func``：前向只求值一次并记录 primal 图，返回
+   ``(primal_out, linear_fn)``；``linear_fn(*tangents)`` 复用同一张图计算 J(x)·v。
+   ``linear_fn`` 的 tangent 依赖仅保留到一阶，对 ``linear_fn`` 再求二阶导返回零张量
+   （与 ``torch.func`` 一致）。
+
+.. function:: riemann.func.jacrev(func, argnums=0, *, has_aux=False, chunk_size=None)
+
+   通过反向模式计算 Jacobian 矩阵，实现为 vmap(vjp)，前向只执行一次。
+
+   :param argnums: 求导参数位置，int 或 tuple[int, ...]，默认 0；多位置时返回元组
+   :param has_aux: 关键字参数。为 True 时返回 ``(jacobian, aux)``
+   :param chunk_size: 关键字参数。每次处理的输出基向量个数，None 表示一次处理全部
+
+.. function:: riemann.func.jacfwd(func, argnums=0, has_aux=False, *, randomness='error')
+
+   返回计算 Jacobian 矩阵的函数（前向模式），基于 ``riemann.func.jvp``：primal 图只
+   记录一次，每个输入基向量复用该图重新传播 one-hot tangent。
+
+   :param argnums: 输入位置，int、tuple[int, ...] 或 None（None 表示全部参数），默认 0
+   :param has_aux: 为 True 时返回 ``(jacobian, aux)``
+   :param randomness: 关键字参数，取值 ``'error'`` / ``'different'`` / ``'same'``，
+                      非法值在调用导函数时抛 ``RuntimeError``（与 ``torch.func`` 一致）；
+                      当前不做随机性重参数化。与 ``torch.func`` 一致，不支持 ``chunk_size``
+
+.. function:: riemann.func.hessian(func, argnums=0)
+
+   计算标量值函数的 Hessian 矩阵，实现为 jacrev(grad(func))（反向叠反向）。
+
+   :param func: 标量值函数，输出必须是 0 维张量
+   :param argnums: 求导参数位置，int 或 tuple[int, ...]，默认 0；多位置时返回各位置
+                   的对角 Hessian 块组成的元组
+
+.. function:: riemann.func.vmap(func, in_dims=0, out_dims=0, randomness='error', *, chunk_size=None)
+
+   向量化映射：沿指定批次维度循环调用 ``func`` 并堆叠结果（接口与 ``torch.func.vmap``
+   对齐）。
+
+   :param in_dims: 输入批次维度，int 或与输入个数等长的 tuple（元素可为 None，表示
+                   该输入不批处理）；顶层 None 非法（与 ``torch.func`` 一致）
+   :param out_dims: 输出批次维度，语义同 ``in_dims``；给 tuple 时长度必须与输出个数
+                   一致，元素不能为 None
+   :param randomness: 取值 ``'error'`` / ``'different'`` / ``'same'``；非法值在创建
+                      包裹函数时抛 ``RuntimeError``（与 ``torch.func`` 一致）
+   :param chunk_size: 关键字参数。每次处理的批次样本数，None 表示一次处理全部；非法值
+                      抛 ``ValueError``
+
+.. function:: riemann.func.functional_call(module, parameter_and_buffer_dicts, args=None, kwargs=None, *, tie_weights=True, strict=False)
+
+   以自定义参数与缓冲区调用 ``module.forward``：按名称临时替换后调用，并在
+   ``finally`` 中无条件恢复，不修改 module 自身状态。
+
+   :param module: 带有 ``forward`` 的对象（通常是 ``riemann.nn.Module``）
+   :param parameter_and_buffer_dicts: ``{名称: 张量}``，或由若干键互不重叠的字典组成的
+                                      序列；名称遵循 state_dict 约定（如 ``l1.weight``）。
+                                      为 ``None`` 时使用模块自身状态；为兼容旧用法，也接受
+                                      按 ``named_parameters()`` 顺序排列的张量（或张量序列）
+   :param args: ``forward`` 的位置参数；None 表示无参数
+   :param kwargs: ``forward`` 的关键字参数
+   :param tie_weights: 关键字参数。为 True 时保留原有的权重绑定语义；同一绑定组给出
+                       不同对象时抛 ``ValueError``
+   :param strict: 关键字参数。为 True 时名称必须与模块参数/缓冲区完全一致，
+                  缺失或多出都抛 ``RuntimeError``
+   :return: ``module.forward(*args, **kwargs)`` 的返回值
+
+.. function:: riemann.func.stack_module_state(models)
+
+   把多个同构 Module 的参数与缓冲区沿新维度 0 堆叠，返回 ``(params, buffers)``
+   两个 ``{名称: 堆叠张量}`` 字典，可直接配合 ``functional_call`` + ``vmap``
+   做模型集成（ensemble）。
+
+   :param models: Module 序列或 ModuleList，至少一个；须同类、同 training/eval 模式、
+                  参数/缓冲区名称一致，且同名张量的 ``requires_grad`` 一致，
+                  否则抛 ``RuntimeError``
 
 .. note::
 

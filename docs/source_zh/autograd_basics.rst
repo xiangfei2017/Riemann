@@ -767,7 +767,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
     # ===== 二阶: Jacobian 的 Jacobian —— 三阶张量 =====
     # T_{ijk} = ∂²f_i/∂x_j∂x_k
     # 对 f_i = x_i³: 仅当 i=j=k 时 T_{ijk} = 6x_i，其余为 0
-    T = func.jacrev(lambda xv: func.jacrev(f, create_graph=True)(xv))(x)
+    T = func.jacrev(lambda xv: func.jacrev(f)(xv))(x)
     print(T)
     # T.shape = (3, 3, 3)
     # T[0,0,0] = 6·1 = 6,  T[1,1,1] = 6·2 = 12,  T[2,2,2] = 6·3 = 18
@@ -796,7 +796,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
     # ===== Hessian 矩阵 =====
     # 最小二乘的 Hessian 恒等于 2·AᵀA（与 x 无关！）
-    H = func.jacrev(func.grad(f_least_squares, create_graph=True))(x)
+    H = func.jacrev(func.grad(f_least_squares))(x)
     # H.shape = (2, 2)
     # H = 2·AᵀA = [[70, 88], [88, 112]]
 
@@ -818,20 +818,20 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
     # 对 x 二阶: ∂²f/∂x² = 6xy⁴ = 6·2·81 = 972
     d2x = func.grad(
-        lambda xv, yv: func.grad(f, argnums=0, create_graph=True)(xv, yv),
+        lambda xv, yv: func.grad(f, argnums=0)(xv, yv),
         argnums=0
     )(x, y)   # → 972.0
     print(d2x)
 
     # 对 y 二阶: ∂²f/∂y² = 12x³y² = 12·8·9 = 864
     d2y = func.grad(
-        lambda xv, yv: func.grad(f, argnums=1, create_graph=True)(xv, yv),
+        lambda xv, yv: func.grad(f, argnums=1)(xv, yv),
         argnums=1
     )(x, y)   # → 864.0
     print(d2y)
 
     # 同时对两个输入求一阶（argnums 为 tuple）
-    dx, dy = func.grad(f, argnums=(0, 1), create_graph=True)(x, y)
+    dx, dy = func.grad(f, argnums=(0, 1))(x, y)
     print(dx, dy)
     # dx = 3x²y⁴ = 972.0,  dy = x³·4y³ = 864.0
 
@@ -854,7 +854,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
         return rm.log(xv), rm.tensor(1.0)   # (value, aux)
 
     # 构建带 has_aux 的高阶梯度函数
-    grad_fn = func.grad(f_with_aux, has_aux=True, create_graph=True)
+    grad_fn = func.grad(f_with_aux, has_aux=True)
     g1, aux = grad_fn(x)
     print(g1, aux)
     # g1 = 1/x = 0.5,  aux = 1.0（原样返回）
@@ -880,7 +880,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
     # 梯度函数 g = ∇f
     # Hessian = Jacobian_of_forward(∇f)
-    H = func.jacrev(func.grad(f, create_graph=True))(x)
+    H = func.jacrev(func.grad(f))(x)
     print(H)
 
     # H.shape = (3, 3)
@@ -897,7 +897,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
     x = rm.tensor([1., 2., 3.], requires_grad=True)
     f = lambda xv: (xv ** 4).sum()
-    H_fwd = func.jacfwd(func.grad(f, create_graph=True))(x)
+    H_fwd = func.jacfwd(func.grad(f))(x)
     print(H_fwd)
     # → 与 H 完全相同
 
@@ -961,7 +961,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
     # 方式 B: func.grad 函数式高阶链
     f_fn = lambda xv, yv: xv ** 3 * yv ** 2
-    gf = func.grad(f_fn, argnums=0, create_graph=True)
+    gf = func.grad(f_fn, argnums=0)
     ggf = func.grad(lambda xv, yv: gf(xv, yv), argnums=0)
     fg_x2 = ggf(x, y)
     print(fg_x2)
@@ -976,7 +976,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
      - 理由
    * - 标量计算图上的纯高阶导数
      - ``f.d((x, n))``
-     - 一行搞定，内部自动管理 create_graph 链
+     - 一行搞定；结果默认保留计算图，可继续嵌套
    * - 多变量混合偏导
      - ``f.d(x, y, z)``
      - 自动管理顺序和阶数累加
@@ -1658,15 +1658,15 @@ func 模块求导函数
    * - has_aux
      - 不支持
      - grad / grad_and_value 支持
-   * - create_graph
+   * - 高阶导数
      - 部分函数支持
-     - 所有函数统一支持
+     - grad / jacrev / jacfwd / hessian 无 create_graph 参数，结果默认可再求导
    * - 组合能力
      - 不易与 vmap 等复合
      - 返回 Callable，可自由嵌套
-   * - 默认 cotangents=None
+   * - vjp 余切向量
      - 向量输出会报错
-     - 自动填全 1，对齐 torch.func.vjp
+     - 必须显式传入，vjp_fn 返回 tuple
    * - 非 leaf 输入
      - 需张量为 leaf 且 requires_grad=True
      - 自动 detach().requires_grad_(True) 处理
@@ -1689,7 +1689,7 @@ func 模块求导函数
 
 .. code-block:: python
 
-    riemann.func.grad(func, argnums=0, has_aux=False, create_graph=False) -> Callable
+    riemann.func.grad(func, argnums=0, has_aux=False) -> Callable
 
 **参数**: 
 
@@ -1700,13 +1700,14 @@ func 模块求导函数
   - 整数元组：对元组中每个位置的参数分别求导，例如 ``argnums=(0, 1)``
   - 非法取值：``()``、``None``、含非整数元素的元组、list 等，在调用导函数时抛出 ``RuntimeError``，错误信息与 ``torch.func.grad`` 一致（``()`` 报 ``argnums must be non-empty``；``None`` 报 ``argnums must be int or Tuple[int, ...], got: <class 'NoneType'>``）
 - has_aux：如果为 ``True``，``func`` 必须返回 ``(value, aux)`` 二元组。``value`` 是 ``func`` 的前向计算输出，``grad`` 要求它必须是标量张量；``aux`` 是 ``func`` 顺带输出的辅助结果（可以是任意对象，不参与求导）。导函数只从 ``value`` 计算梯度，并把 ``aux`` 原样透传在返回值中。这样可以在同一次前向计算中顺带获得不需要求导的结果（如损失值、统计量或其它中间输出），无需重复计算
-- create_graph：如果为 ``True``，梯度张量会被追踪，可用于高阶微分
 
 **返回**: ``func`` 的导函数（一个函数对象），它接受与 ``func`` 相同的参数。调用导函数时：
 
 - ``has_aux=False``：返回 ``grad_result``
 - ``has_aux=True``：返回 ``(grad_result, aux)``，其中 ``aux`` 为 ``func`` 原样透传的辅助结果
 - ``grad_result`` 是标量输出 ``value`` 关于 ``argnums`` 所选参数的梯度：只含 1 个参数位置时为单个梯度张量（形状与对应输入张量相同），含多个位置时为多个梯度张量构成的元组（顺序与 ``argnums`` 一致）
+
+与 ``torch.func.grad`` 一致：入选参数不必自带 ``requires_grad``（内部会使用可微副本，不修改用户张量）；若 ``value`` 与某个入选参数不连通、或 ``value`` 本身不可微（常量、已 ``detach()``），该位置返回同形状的**零张量**而不是报错。
 
 .. note::
 
@@ -1745,9 +1746,9 @@ func 模块求导函数
     print(grad)  # [3., 12., 27.]
     print(aux)   # sqrt(1+4+9) ≈ 3.7417
 
-    # create_graph=True 支持高阶导：内层 grad 返回带计算图的梯度，
+    # 高阶导：内层 grad 返回带计算图的梯度，
     # 外层 grad 需要标量输出，因此对梯度做 .sum() 标量化
-    grad_fn = func.grad(lambda x: (x ** 4).sum(), create_graph=True)
+    grad_fn = func.grad(lambda x: (x ** 4).sum())
     g_higher = func.grad(lambda x: grad_fn(x).sum())
     h = g_higher(rm.tensor([1., 2., 3.], requires_grad=True))
     print(h)  # 二阶导 12*x² = [12., 48., 108.]
@@ -1766,14 +1767,13 @@ func 模块求导函数
 
 .. code-block:: python
 
-    riemann.func.grad_and_value(func, argnums=0, has_aux=False, create_graph=False) -> Callable
+    riemann.func.grad_and_value(func, argnums=0, has_aux=False) -> Callable
 
 **参数**: 与 ``func.grad`` 相同，逐项说明如下：
 
 - func：可微函数，输出必须是标量张量（``ndim == 0``），否则抛出 ``RuntimeError``
 - argnums：需要求导的参数位置，整数或整数元组，默认 ``0``；整数表示只对该位置求导，整数元组表示对多个位置分别求导；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``
 - has_aux：为 ``True`` 时 ``func`` 必须返回 ``(value, aux)`` 二元组，``value`` 是参与求导的标量输出，``aux`` 是不参与求导、原样透传的辅助结果
-- create_graph：为 ``True`` 时梯度张量保留计算图，可继续求高阶导数
 
 **返回**: ``func`` 的导函数（一个函数对象），它接受与 ``func`` 相同的参数。调用导函数时返回：
 
@@ -1781,6 +1781,8 @@ func 模块求导函数
 - ``has_aux=True``：``(grad_result, value, aux)``
 
 其中 ``value`` 是 ``func`` 的前向输出（标量张量），``aux`` 是原样透传的辅助结果；``grad_result`` 的形态由 ``argnums`` 决定（同 ``func.grad``：1 个位置为单个梯度张量，多个位置为梯度元组）
+
+与 ``func.grad`` 相同：入选参数不必自带 ``requires_grad``（内部使用可微副本，不修改用户张量）；若 ``value`` 与某个入选参数不连通、或 ``value`` 本身不可微（常量、已 ``detach()``），该位置返回同形状的**零张量**而不是报错。
 
 **示例**: 
 
@@ -1805,8 +1807,7 @@ func 模块求导函数
 
 实现上，``jvp`` 由算子的直接前向规则（``_jvp_rule``）驱动：PRIMAL 阶段建立计算图并登记
 各节点规则，TANGENT 阶段按拓扑序只遍历一次，用规则直接计算每个节点的 tangent；
-未登记规则的算子回退到局部 VJP 转置。旧版基于局部 VJP 转置的实现保留为
-``func.jvp2``（接口相同，便于对照与回退）。原地算子按时间顺序作为步骤施加到 tangent 上，
+缺少规则的节点会直接报错（内置算子均已覆盖）。原地算子按时间顺序作为步骤施加到 tangent 上，
 支持 ``add_/sub_/mul_/div_/pow_/remainder_/copy_/fill_/abs_/neg_`` 及索引赋值，
 ``//=``（``floor_divide_``）与前向规则一致地因无导数而报错。
 
@@ -1814,21 +1815,19 @@ func 模块求导函数
 
 .. code-block:: python
 
-    riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False,
-                     has_aux=False) -> (output, jvp_result[, aux])
+    riemann.func.jvp(func, primals, tangents, *, strict=False, has_aux=False) -> (output, jvp_result[, aux])
 
 **参数**: 
 
 - func：可微函数，输入为一个或多个张量，输出可为单个张量或张量元组（输出可以是标量，也可以是非标量）
-- primals：**求值点** (primal point)，即函数的前向输入，单个张量或元组/list（与 ``func`` 的多输入一一对应）。数学上 ``primal`` 指“原始值” x₀，与之相对的是无穷小扰动项（tangent）；传入的张量不需要 ``requires_grad=True``，内部会自动处理
-- tangents：**切向量** (tangent vector)，与 ``primals`` 逐项对应的扰动方向 v，要求每一项的形状与对应输入完全相同（否则抛 ``RuntimeError``）；单输入时传单个张量，多输入时须传与 ``primals`` 等长的元组/list。把输入看成一条过求值点的曲线 x(t) = x₀ + t·v，那么 v 就是该曲线在 t = 0 处的切向量，而 JVP 正是沿该切向的方向导数：
+- primals：**求值点** (primal point)，即函数的前向输入，类型为 tuple（单输入也须包成 1-tuple，与 ``torch.func.jvp`` 一致）。数学上 ``primal`` 指“原始值” x₀，与之相对的是无穷小扰动项（tangent）；传入的张量不需要 ``requires_grad=True``，内部会自动处理
+- tangents：**切向量** (tangent vector)，与 ``primals`` 逐项对应的扰动方向 v，类型为 tuple（单输入也须包成 1-tuple），长度与 ``primals`` 相同，且每一项的形状与对应输入完全相同（否则抛 ``RuntimeError``）。把输入看成一条过求值点的曲线 x(t) = x₀ + t·v，那么 v 就是该曲线在 t = 0 处的切向量，而 JVP 正是沿该切向的方向导数：
 
   ``JVP = J(x₀)·v = d/dt f(x₀ + t·v) |_(t=0)``
 
   即“雅可比矩阵 × 切向量”，结果是输出空间中曲线 f(x₀ + t·v) 在 t = 0 处的切向量——这也正是（前向模式）自动微分的传播方式
-- create_graph（bool，默认 ``False``）：为 ``True`` 时 JVP 结果保留计算图且可继续求导（支持高阶微分）；``False`` 时结果不带梯度追踪
-- strict（bool，默认 ``False``）：严格模式。当某个输出与某个输入完全无关（该输入对应梯度为 ``None``）时，``False`` 按数学语义贡献 0；``True`` 则抛出 ``RuntimeError``
-- has_aux（bool，默认 ``False``）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 JVP，``aux`` 原样附在返回值末尾
+- strict（bool，默认 ``False``，keyword-only）：严格模式。当某个输出与某个输入完全无关（该输入对应梯度为 ``None``）时，``False`` 按数学语义贡献 0；``True`` 则抛出 ``RuntimeError``
+- has_aux（bool，默认 ``False``，keyword-only）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 JVP，``aux`` 原样附在返回值末尾
 
 **返回**: 二元组 ``(output, jvp_result)``（``has_aux=True`` 时为三元组 ``(output, jvp_result, aux)``）
 
@@ -1848,7 +1847,7 @@ func 模块求导函数
     x = rm.tensor([1., 2., 3.], requires_grad=True)
     v = rm.tensor([0.5, 1., 0.5], requires_grad=False)
 
-    out, jvp_val = func.jvp(f, x, v)
+    out, jvp_val = func.jvp(f, (x,), (v,))
     print(out)      # [1., 8., 27.] —— 前向输出 f(x)
     print(jvp_val)  # 3*x^2 * v = [3*0.5, 12*1, 27*0.5] = [1.5, 12., 13.5]
 
@@ -1856,45 +1855,42 @@ func 模块求导函数
     def g(x, y):
         return (x * y).sum()
 
-    out2, jvp2 = func.jvp(g,
+    out2, jvp_result = func.jvp(g,
                           (rm.tensor([1., 2.], requires_grad=True),
                            rm.tensor([3., 4.], requires_grad=True)),
                           (rm.tensor([1., 0.], requires_grad=False),
                            rm.tensor([0., 1.], requires_grad=False)))
-    print(jvp2)  # 1*3 + 2*1 = 5.0  (∂g/∂x·vx + ∂g/∂y·vy)
+    print(jvp_result)  # 1*3 + 2*1 = 5.0  (∂g/∂x·vx + ∂g/∂y·vy)
 
 ``vjp()`` — vector-Jacobian 积
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 计算给定向量与 Jacobian 矩阵的乘积（JVP 的反向对偶）。
-对于标量输出 ``f: R^n -> R``，``vjp(f, x)`` 等价于 ``grad(f)(x)`` （默认 cotangent 为全 1）。
+对于标量输出 ``f: R^n -> R``，``vjp_fn(1)`` 等价于 ``grad(f)(x)``。
 
 **函数签名**: 
 
 .. code-block:: python
 
-    riemann.func.vjp(func, primals, cotangents=None, create_graph=False,
-                     strict=False, has_aux=False) -> (output, vjp_result[, aux])
+    riemann.func.vjp(func, *primals, has_aux=False) -> (output, vjp_fn[, aux])
 
 **参数**: 
 
 - func：可微函数，输入为一个或多个张量，输出可为单个张量或张量元组（输出可以是标量，也可以是非标量）
-- primals：**求值点** (primal point)，即函数的前向输入，单个张量或元组/list（与 ``func`` 的多输入一一对应）。与 JVP 中的 ``primals`` 含义相同，是未加扰动的“原始值” x₀；不需要 ``requires_grad=True``，内部会自动处理
-- cotangents：**余切向量** (cotangent vector)，输出空间的权向量 w，与 ``func`` 的每个输出逐项对应，且形状必须与对应输出完全相同（否则抛 ``RuntimeError``）；单输出时传单个张量，多输出时传与输出等长的元组/list。为 ``None`` 时自动按输出形状填全 1（标量输出填标量 1，对齐 ``torch.func.vjp`` 行为）。
-
-  数学上，前向的雅可比 J 把输入切向量映射为输出切向量，而余切向量属于输出切空间的**对偶空间**：它不表示“往哪个方向走”，而是一个线性泛函，作用在输出增量 dy 上给出标量 wᵀ·dy。VJP 计算的就是
-
-  ``VJP = wᵀ·J(x₀)``
-
-  它等价于标量函数 L(x) = wᵀ·f(x) 在 x₀ 处的梯度 ``∇L(x₀)``。反向模式自动微分每一步传播的正是这种余切向量（即通常所说的“上游梯度”），因此 VJP 是反向模式的核心原语
-- create_graph（bool，默认 ``False``）：为 ``True`` 时 ``output`` 与 ``vjp_result`` 均以可微方式计算（保留计算图），可继续求高阶导数；``False`` 时结果不带梯度追踪
-- strict（bool，默认 ``False``）：严格模式。当某个输入与所有输出都无关（梯度为 ``None``）时，``False`` 返回同形状零张量（数学上 VJP 即为 0）；``True`` 则抛出 ``RuntimeError``
+- primals：**求值点** (primal point)，即函数的前向输入，按 ``func`` 的位置参数顺序给出，必须都是张量。与 JVP 中的 ``primals`` 含义相同，是未加扰动的“原始值” x₀；不需要 ``requires_grad=True``，内部会自动处理
 - has_aux（bool，默认 ``False``）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 VJP，``aux`` 原样附在返回值末尾
 
-**返回**: 二元组 ``(output, vjp_result)``（``has_aux=True`` 时为三元组 ``(output, vjp_result, aux)``）
+**返回**: 二元组 ``(output, vjp_fn)``（``has_aux=True`` 时为三元组 ``(output, vjp_fn, aux)``）
 
 - ``output``：**前向计算的输出值**，即 ``func(*primals)`` 的结果（单输出为一个张量，多输出为张量元组）。它只是求值点处的函数值，与导数无关，随返回值一并给出是为了避免重复执行前向计算
-- ``vjp_result``：VJP 结果 ``wᵀ·J(x₀)``，形状与对应输入相同；单输入时为单个张量，多输入时为与 ``primals`` 逐项对应的元组。当 ``func`` 输出为标量且 ``cotangents=None`` 时（即 w = 1），它就退化为普通梯度
+- ``vjp_fn``：**惰性 VJP 闭包**，调用方式为 ``vjp_fn(cotangents, retain_graph=True, create_graph=None)``：
+
+  - ``cotangents``：**余切向量** (cotangent vector)，输出空间的权向量 w，与 ``func`` 的每个输出逐项对应，且形状必须与对应输出完全相同（否则抛 ``RuntimeError``）；单输出时传单个张量，多输出时传与输出等长的元组/list
+  - 返回值恒为 tuple：每个输入一项，顺序与 ``primals`` 一致（单输入也返回 1-tuple，与 ``torch.func`` 一致）
+  - ``create_graph=None`` 时取当前梯度模式（与 ``torch.func`` 一致），结果默认可继续求导
+  - ``retain_graph`` 仅为接口对齐而接受——本实现的图不主动释放，恒等价于 ``retain_graph=True``
+
+  数学上，前向的雅可比 J 把输入切向量映射为输出切向量，而余切向量属于输出切空间的**对偶空间**：它不表示“往哪个方向走”，而是一个线性泛函，作用在输出增量 dy 上给出标量 wᵀ·dy。VJP 计算的就是 ``VJP = wᵀ·J(x₀)``，等价于标量函数 L(x) = wᵀ·f(x) 在 x₀ 处的梯度 ``∇L(x₀)``。反向模式自动微分每一步传播的正是这种余切向量（即通常所说的“上游梯度”），因此 VJP 是反向模式的核心原语
 
 **示例**: 
 
@@ -1908,21 +1904,20 @@ func 模块求导函数
 
     x = rm.tensor([1., 2., 3.], requires_grad=True)
 
-    # 默认 cotangent=None 等价于 [1., 1., 1.]
-    out, vjp_val = func.vjp(f, x)
-    print(out)      # 20.0 —— 前向输出 f(x)
-    print(vjp_val)  # 2x + 1 = [3., 5., 7.]
+    # 前向只执行一次，vjp_fn 可反复用不同 cotangent 调用
+    out, vjp_fn = func.vjp(f, x)
+    print(out)                         # 20.0 —— 前向输出 f(x)
+    print(vjp_fn(rm.tensor(1.0))[0])   # 2x + 1 = [3., 5., 7.]
 
-    # 自定义 cotangent（标量输出对应标量 cotangent，相当于把函数输出加权求和）
-    out2, vjp_val2 = func.vjp(f, x, rm.tensor(2.0))
-    print(vjp_val2)  # 2 * (2x + 1) = [6., 10., 14.]
+    # 自定义 cotangent（相当于把函数输出加权求和）
+    print(vjp_fn(rm.tensor(2.0))[0])   # 2 * (2x + 1) = [6., 10., 14.]
 
-    # 向量输出也支持默认 cotangent
+    # 向量输出
     def g(x):
         return x ** 2   # R^3 -> R^3, 向量输出
 
-    out3, vjp_val3 = func.vjp(g, x)     # cotangent=None 自动填全1
-    print(vjp_val3)  # J^T @ ones = [2., 4., 6.]
+    out3, vjp_fn_g = func.vjp(g, x)
+    print(vjp_fn_g(rm.ones_like(x, requires_grad=False))[0])  # J^T @ ones = [2., 4., 6.]
 
 ``linearize()`` — 一次前向的线性化
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1945,6 +1940,8 @@ func 模块求导函数
 
 **返回**: ``(primal_out, linear_fn)``。``primal_out`` 与 ``func`` 的返回结构一致；
 ``linear_fn(*tangents)`` 返回 ``J(x)·v``，tangent 的个数与形状必须和 ``primals`` 一一对应
+
+``linear_fn`` 对 tangent 是线性映射（只保留一阶依赖），因此其结果可再求一阶导，而对 ``linear_fn`` 再求二阶导恒为**零张量**（与 ``torch.func`` 一致）。需要真实高阶导数请对原始 ``func`` 使用 ``grad`` / ``jvp``。
 
 **示例**: 
 
@@ -1973,19 +1970,17 @@ func 模块求导函数
 
 .. code-block:: python
 
-    riemann.func.jacrev(func, argnums=0, create_graph=False, strict=True,
-                        has_aux=False, chunk_size=None) -> Callable
-    riemann.func.jacfwd(func, argnums=0, create_graph=False,
-                        has_aux=False, chunk_size=None) -> Callable
+    riemann.func.jacrev(func, argnums=0, *, has_aux=False, chunk_size=None) -> Callable
+    riemann.func.jacfwd(func, argnums=0, has_aux=False, *, randomness='error') -> Callable
 
 **参数**: 
 
 - func：可微函数，输入为一个或多个张量，输出可为单个张量或张量元组
 - argnums：需要计算 Jacobian 的输入位置，整数或整数元组，默认 ``0``；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``，错误信息与 ``torch.func`` 一致（``torch.func.jacrev`` 对 ``()`` 和 ``None`` 均抛 ``RuntimeError``；``torch.func.jacfwd`` 对 ``()`` 抛 ``RuntimeError``，对 ``None`` 则按全部参数求导）
-- create_graph（bool，默认 ``False``）：为 ``True`` 时 Jacobian 的每个元素都保留计算图，可再对其求导（例如 ``func.jacrev(func.jacrev(f, create_graph=True))`` 得到二阶导数）
-- strict（bool，默认 ``True``，仅 ``jacrev`` 支持）：严格模式。当某个输出与某个输入完全无关（该输入对应的梯度为 ``None``）时，``True`` 抛出 ``RuntimeError``；``False`` 时该部分按数学语义填 0。``jacfwd`` 内部逐列调用 ``func.jvp``，未选中的输入以零 tangent 播种，没有此参数
-- has_aux（bool，默认 ``False``）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 Jacobian，返回 ``(Jacobian, aux)``
-- chunk_size（int 或 ``None``，默认 ``None``）：每次处理的基向量个数，用于限制峰值内存；``None`` 表示一次处理全部。结果与不分块一致，非法值（``<= 0`` 或非整数）抛 ``ValueError``
+- 无 ``create_graph`` / ``strict`` 参数：结果始终保留计算图，可直接嵌套求导；某个输出与某个输入完全无关时，对应部分按数学语义填 0（不再抛错）
+- has_aux（bool，默认 ``False``）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 Jacobian，返回 ``(Jacobian, aux)``。``jacrev`` 中为 keyword-only
+- chunk_size（int 或 ``None``，默认 ``None``，仅 ``jacrev`` 支持，keyword-only）：每次处理的输出基向量个数，用于限制峰值内存；``None`` 表示一次处理全部。结果与不分块一致，非法值（``<= 0`` 或非整数）抛 ``ValueError``。``jacfwd`` 与 ``torch.func`` 一致，没有 ``chunk_size``
+- randomness（str，默认 ``'error'``，仅 ``jacfwd`` 支持，keyword-only）：取值 ``'error'`` / ``'different'`` / ``'same'``，非法值在调用导函数时抛 ``RuntimeError``（与 ``torch.func`` 一致）；当前不做随机性重参数化
 
 **返回**: 一个包裹函数，接受与 ``func`` 相同的参数；调用后返回 Jacobian 矩阵（形状见下）。只含 1 个参数位置时返回单个张量，含多个位置时返回元组（顺序与 ``argnums`` 一致）；``jacfwd`` 在 ``argnums=None`` 时按全部参数求导，此时即使只有 1 个参数也返回元组
 
@@ -2027,16 +2022,13 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 .. code-block:: python
 
-    riemann.func.hessian(func, argnums=0, create_graph=False, strict=True,
-                         has_aux=False) -> Callable
+    riemann.func.hessian(func, argnums=0) -> Callable
 
 **参数**: 
 
 - func：可微函数，输出必须是标量张量（``ndim == 0``），向量输出会抛 ``RuntimeError``
 - argnums：需要计算 Hessian 的输入位置，整数或整数元组，默认 ``0``；非法取值（``()``、``None``、含非整数元素的元组、list 等）在调用导函数时抛 ``RuntimeError``，错误信息与 ``torch.func.hessian`` 一致
-- create_graph（bool，默认 ``False``）：为 ``True`` 时 Hessian 的每个元素都保留计算图，可继续求高阶导数；``False`` 时结果不带梯度追踪
-- strict（bool，默认 ``True``）：严格模式。当函数对某个输入的梯度为 ``None``（即输出与该输入无关）时报错；当 ``argnums`` 未覆盖全部参数时，内部会自动放宽为 ``False``
-- has_aux（bool，默认 ``False``）：为 ``True`` 时 ``func`` 必须返回 ``(output, aux)``，只对 ``output`` 求 Hessian，返回 ``(Hessian, aux)``（``torch.func.hessian`` 无此参数，这是 riemann 的扩展）
+- 无 ``create_graph`` / ``strict`` / ``has_aux`` 参数：结果始终保留计算图，可继续求高阶导数；未连通的 Hessian 块按零块返回（与 ``torch.func`` 一致）
 
 **返回**: 一个包裹函数，接受与 ``func`` 相同的参数；调用后返回 Hessian 矩阵。只含 1 个参数位置时返回单个张量，含多个位置时返回元组（顺序与 ``argnums`` 一致）
 
@@ -2057,7 +2049,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 **注意事项**: 
 
 - 仅支持标量值函数，向量输出会抛错
-- 当 ``argnums`` 不是全部参数位置时，内部自动放宽严格模式（cross-Hessian 零值不再报错）
+- 当 ``argnums`` 不是全部参数位置时，未选中的参数不参与计算，结果只含所选输入的 Hessian 块
 
 ``vmap()`` — 向量化映射
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2069,16 +2061,17 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 .. code-block:: python
 
-    riemann.func.vmap(func, in_dims=0, out_dims=0, chunk_size=None) -> Callable
+    riemann.func.vmap(func, in_dims=0, out_dims=0, randomness='error', *, chunk_size=None) -> Callable
 
 **参数**: 
 
 - func：需要被批处理的函数。它作用于单个样本（形如 ``func(x)``），输入/输出可以是张量或张量元组
 - in_dims：每个输入的批次维度，默认 ``0``。
   - ``int``：所有输入共用该维度位置
-  - ``tuple[int|None, ...]``：每个输入各自的维度位置；``None`` 表示该输入不批处理（直接透传，适合模型参数等共享量）
-- out_dims：每个输出的批次维度，默认 ``0``，语义同 ``in_dims``；返回的每个输出都会沿该维度堆叠
-- chunk_size（int 或 ``None``，默认 ``None``）：每次处理的批次样本数，用于控制循环与堆叠粒度；``None`` 表示一次处理整个批次。结果与不分块一致，非法值（``<= 0`` 或非整数）抛 ``ValueError``
+  - ``tuple[int|None, ...]``：每个输入各自的维度位置，长度必须与输入个数一致；``None`` 表示该输入不批处理（直接透传，适合模型参数等共享量）。顶层 ``in_dims=None`` 非法（与 ``torch.func`` 一致）
+- out_dims：每个输出的批次维度，默认 ``0``，语义同 ``in_dims``；给 tuple 时长度必须与输出个数一致，元素不能为 ``None``
+- randomness（str，默认 ``'error'``）：取值 ``'error'`` / ``'different'`` / ``'same'``，非法值在创建包裹函数时抛 ``RuntimeError``（与 ``torch.func`` 一致）；当前不做随机性重参数化
+- chunk_size（int 或 ``None``，默认 ``None``，keyword-only）：每次处理的批次样本数，用于控制循环与堆叠粒度；``None`` 表示一次处理整个批次。结果与不分块一致，非法值（``<= 0`` 或非整数）抛 ``ValueError``
 
 **返回**: 一个包裹函数，接受带批次维的输入，返回带批次维的输出。单输出时返回单个张量，多输出（tuple）时返回与之结构相同的元组
 
@@ -2261,7 +2254,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
         return (x ** 4).sum()
 
     x = rm.tensor([1., 2., 3.], requires_grad=True)
-    h_via_jac = func.jacrev(func.jacrev(f, create_graph=True))(x)
+    h_via_jac = func.jacrev(func.jacrev(f))(x)
     print(h_via_jac)
     # 对角矩阵，对角元 [12·1², 12·2², 12·3²] = [12, 48, 108]
 
@@ -2284,7 +2277,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     g_w, g_b = func.grad(param_loss, argnums=(0, 1))(alt_weight, alt_bias)
     print(g_w.shape, g_b.shape)
 
-**模式 4：create_graph 链 — 高阶微分**
+**模式 4：嵌套求导 — 高阶微分**
 
 .. code-block:: python
 
@@ -2295,10 +2288,10 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     x = rm.tensor([1., 2., 3.], requires_grad=True)
 
     # 一阶
-    g = func.grad(f, create_graph=True)
+    g = func.grad(f)
     print(g(x))
-    # 二阶：对梯度再求 grad，同样需要 create_graph=True 才能继续链式高阶
-    h = func.grad(lambda a: g(a).sum(), create_graph=True)
+    # 二阶：对梯度再求 grad（结果默认保留计算图，可继续链式高阶）
+    h = func.grad(lambda a: g(a).sum())
     print(h(x))
     # 三阶：继续叠加
     third = func.grad(lambda a: h(a).sum())(x)
@@ -2326,9 +2319,9 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
    * - 向量输出 vjp 默认 cotangent
      - ``func.vjp``
      - 自动填全 1，更安全
-   * - create_graph 高阶微分
+   * - 高阶微分（嵌套求导）
      - ``func``
-     - 所有函数统一支持
+     - 结果默认保留计算图，可直接嵌套
 
 自定义梯度函数
 -------------------------
@@ -2544,29 +2537,30 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
 
    **jvp_func 接口：**
 
-   - 签名为 ``jvp_func(result)``，``result`` 是前向函数的输出张量
-   - 用 ``current_jvp_frame()`` 取当前 JVP 帧，用 ``_input_tangent(frame, var)``
-     读取某个入边对应的 tangent（``var`` 为 ``result.fromvars`` 中的输入张量）
-   - 用 ``frame.node_tangent[id(result)] = tangent`` 写回输出 tangent；形状必须与
-     ``result`` 相同。若该输出不依赖任何可微输入，可以不写（视为无 tangent）
-   - 规则执行期间，``result.fromvars`` 会被临时替换为完整的 TN 实参列表
-     （即使部分实参 ``requires_grad=False``），执行结束后自动恢复，
-     因此 ``register_grad_rule`` 过滤后的 ``fromvars`` 不会影响前向规则读取输入
+   - 调用形状与原函数一致、首参为输出：``jvp_func(result, *args, **kwargs)``，
+     ``result`` 是前向函数的输出张量
+   - 每个 **TN 实参** 以 ``TangentPair(primal, tangent)``（``tuple`` 子类，可直接解包）
+     传入；``tangent`` 为 ``None`` 表示该输入方向为零，按零切线处理。非 TN 实参
+     原样传入（包括 ``dim=(0, 1)`` 这类元组参数），规则可直接读取其值
+   - 直接 **返回** 输出 tangent，形状必须与 ``result`` 相同；若该输出不依赖任何
+     可微输入，返回 ``None``（视为无 tangent）。规则不应接触内部 ``JVPFrame``
+   - 规则无需关心 ``fromvars``：位置形参、关键字形参、``*args``/``**kwargs`` 及
+     默认值都按原函数签名自动配对，``requires_grad=False`` 的输入同样会出现在实参中
+   - ``*args`` 这类变参规则可用 ``isinstance(arg, TangentPair)`` 区分“配对的 TN
+     实参”与“本身就是元组的非 TN 实参”，避免把 ``(0, 1)`` 之类误当配对
 
    示例：
 
    .. code-block:: python
 
        import riemann as rm
-       from riemann.core.ad_context import current_jvp_frame
-       from riemann.core.tensordef import _input_tangent
 
-       def _my_tanh_jvp(result):
-           frame = current_jvp_frame()
-           x = result.fromvars[0]
-           x_t = _input_tangent(frame, x)
+       def _my_tanh_jvp(result, x):
+           x, x_t = x                   # TN 实参 = (primal, tangent)
+           if x_t is None:              # None 表示该方向为零
+               return None
            # d(tanh(x))/dx = 1 - tanh(x)^2，直接复用前向输出
-           frame.node_tangent[id(result)] = (1.0 - result * result) * x_t
+           return (1.0 - result * result) * x_t
 
        @rm.register_jvp_rule(_my_tanh_jvp)
        def my_tanh(x):
@@ -2622,8 +2616,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
      当前 ``apply`` 仅支持单输出
    - **保存张量**: ``jvp`` 中 ``ctx.saved_tensors`` 只包含 ``save_for_forward()`` 保存的张量；
      ``save_for_backward()`` 保存的内容仍只在 ``backward`` 中可见
-   - **未实现时**: 框架会清除该节点的前向规则，``func.jvp`` 自动回退到局部 VJP 转置，
-     结果正确但开销更高
+   - **未实现时**: ``func.jvp`` 执行到该节点会直接报错；前向模式需要显式实现 ``jvp``
 
    **setup_context(ctx, inputs, output)（可选，新式写法）**
 

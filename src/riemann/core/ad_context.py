@@ -295,11 +295,36 @@ def set_grad_enabled(mode=True, func=None):
 # ---------------------------------------------------------------------------
 # 前向 AD（JVP）运行时上下文
 #
-# 与反向梯度模式（threading.local 的 _grad_mode_stack）并存，互不覆盖：
-#   - 反向：requires_grad + is_grad_enabled() 决定是否建反向图；
-#   - 前向：本模块的 frame 栈决定是否记录 primal 图并传播 tangent。
-# 使用 ContextVar 而非 threading.local，可同时满足线程与 asyncio 任务隔离，
-# 并支持 token 式压栈/出栈恢复（异常路径可安全回滚）。
+# 三个概念
+# --------
+#   ContextVar _forward_ad_state
+#            │ 当前线程/协程持有
+#            ▼
+#   _ForwardADState（不可变快照）
+#     └─ frames: (frame0, frame1, ...)   栈本体，末尾为栈顶；空表示无前向请求
+#            │ 每个元素是一层
+#            ▼
+#   JVPFrame（一次 JVP / 一个切方向的运行时状态）
+#     ├─ node_tangent / dependency_mask  本次传播的数据
+#     └─ strict / phase                  本次传播的配置与阶段
+#
+# 关系
+# ----
+# - ContextVar ↔ 快照：set() 整体替换并返回 token，reset(token) 精确回滚；
+#   快照不可变，线程/协程之间不会串状态。
+# - 快照 ↔ 栈：push/pop 各生成新快照（末尾追加/截断），旧快照由 token 持有。
+# - 栈 ↔ frame：每层独立，查 tangent 只查当前 frame，嵌套 JVP 互不覆盖。
+# - frame ↔ primal 图：frame 不持有图；_jvp_rule 常驻 TN，同一张图可多方向复用。
+#
+# 生命周期
+# --------
+#   PRIMAL ：执行原函数，记录 primal 图并挂 _jvp_rule。
+#   TANGENT：沿拓扑序调用规则，读 frame.tangent(...) 并写 node_tangent。
+#   phase 由 set_jvp_phase 推进，并触发计数重建。
+#
+# 为什么栈用 tuple：token 回滚与上下文复制都要求快照内容不变，详见
+# _ForwardADState 的说明；反向模式由 requires_grad + is_grad_enabled() 独立控制，
+# 与前向栈并存。
 # ---------------------------------------------------------------------------
 
 PRIMAL = 'primal'      # 阶段：原函数前向执行，记录 primal 图
@@ -307,124 +332,152 @@ TANGENT = 'tangent'    # 阶段：沿拓扑序传播 tangent
 
 
 class JVPFrame:
-    """一次 JVP 调用独立的切向传播状态。
+    """一次 JVP 调用（一个切方向）的传播状态，是前向 AD 栈中的一层。
 
-    状态不写入 TN 的持久字段，因此同一张 primal 图可对不同方向反复求 JVP，
-    嵌套调用也不会相互覆盖（见设计文档 §11/§12）。
+    tangent 数据放在 frame 而不是 TN 上，因此同一张 primal 图可对多个方向
+    反复求 JVP；嵌套调用时每层各有一张表，互不覆盖。
 
     属性:
-        seed_tangents:   id(primal) -> 输入 tangent，仅作调用期参考/调试
-        node_tangent:    本次调用的中间 tangent：id(node) -> TN 或 None
-        dependency_mask: id(node) -> 依赖位掩码，供 strict 判定
-        create_graph:    是否保留 tangent 规则产生的图（高阶）
-        strict:          输出与输入完全不连通时是否报错
-        phase:           PRIMAL 或 TANGENT
+        node_tangent:    当前方向的 tangent 表：id(node) -> TN | None。
+                         None 表示零方向/无贡献；键为 id(node)，只在对应图节点
+                         存活期间有效。
+        dependency_mask: 当前方向的输入依赖位掩码：id(node) -> int。
+                         第 k 位为 1 表示 node 依赖第 k 个输入，仅供 strict 判定。
+        前向请求存在期间始终记录计算图，不再有 create_graph 配置项。
+        strict:          输出与所有输入都不连通时是否报错。
+        phase:           PRIMAL（记录 primal 图）或 TANGENT（传播 tangent）。
     """
 
-    __slots__ = ('seed_tangents', 'node_tangent', 'dependency_mask',
-                 'create_graph', 'strict', 'phase')
+    __slots__ = ('node_tangent', 'dependency_mask', 'strict', 'phase')
 
-    def __init__(self, seed_tangents=None, create_graph: bool = False,
-                 strict: bool = False, phase: str = PRIMAL):
-        self.seed_tangents = {} if seed_tangents is None else seed_tangents
+    def __init__(self, strict: bool = False, phase: str = PRIMAL):
         self.node_tangent = {}
         self.dependency_mask = {}
-        self.create_graph = create_graph
         self.strict = strict
         self.phase = phase
 
+    def tangent(self, var):
+        """返回节点 var 在当前方向上的 tangent；未播种或零方向返回 None。
+
+        适用于任意节点（输入、中间结果或原地步骤的右值），不要求 var 是函数输入。
+        非 TN 对象不会出现在 node_tangent 中，id() 在对象存活期间唯一，因此直接
+        查表即可返回 None，无需 isinstance 检查。
+        """
+        return self.node_tangent.get(id(var))
+
 
 class _ForwardADState:
-    """ContextVar 中保存的前向 AD 状态快照（不可变，整对象替换）。"""
+    """前向 AD 栈的不可变快照：只保存栈的形状。
 
-    __slots__ = ('frames', 'primal_count', 'tangent_keep_count')
+    它是什么
+    --------
+    不是整个栈的深拷贝，而是一个轻量“版本对象”：frames 是不可变元组，新快照
+    与旧快照共享 frame 对象及其 node_tangent，只按需新建元组本身（push 为
+    frames + (frame,)，pop 为 frames[:-1]）。因此快照成本是 O(栈深) 的指针复制，
+    而不是 O(传播数据) 的拷贝。
 
-    def __init__(self, frames=(), primal_count: int = 0,
-                 tangent_keep_count: int = 0):
+    为什么必须不可变
+    ----------------
+    1. 可回滚：ContextVar.set() 返回 token，reset(token) 恢复的是“当时那个对象”。
+       只有对象内容不变，恢复才等价于回滚栈；若原地 append/pop，token 指向的
+       对象已被改写，reset 会静默失效。
+    2. 上下文隔离：asyncio 任务/线程池复制上下文时复制的是对象引用。原地修改会
+       让一个任务看到另一个任务的栈变化；不可变对象被共享时天然只读、无竞争。
+       不会出现中间态被其他上下文观察到。
+
+    反例（若改成可变 list / 可变对象）
+    ---------------------------------
+    A. 回滚失效：push F1 拿到 token1；再 push F2；finally 中 reset(token1)。
+       若 frames 是同一个 list，reset 后内容仍是 (F1, F2)，F2 泄漏。
+    B. 协程串状态：主协程 push 后创建子任务，子任务原地 push/pop 会改写同一个
+       list，主协程的栈随之变化，两个 JVP 的 node_tangent 互相干扰。
+
+    职责边界
+    --------
+    创建：push/pop；
+    读取：forward_ad_trace_active（判断栈是否为空）与 active_primal_frames；
+    不负责：tangent 数据、图结构、frame 内部可变状态。
+
+    不变性的边界
+    ------------
+    冻结的只有“栈结构”：frames 元组不可变；JVPFrame 本身是可变工作区——phase
+    由 set_jvp_phase 原地推进，node_tangent 在传播期持续写入。这样既有快照级的
+    安全回滚，又避免热路径反复复制传播数据。
+
+    生命周期示例
+    ------------
+    S0=((),) → push F1(PRIMAL) 得 S1=((F1,),)
+              → 原地切 TANGENT（快照对象不变）
+              → reset(token1) 回到 S0；frame 在各快照之间共享。
+
+    字段
+    ----
+        frames: 按入栈顺序排列的 frame 元组，末尾为栈顶；空元组表示当前没有
+                前向请求。
+    """
+
+    __slots__ = ('frames',)
+
+    def __init__(self, frames=()):
         self.frames = frames
-        self.primal_count = primal_count
-        self.tangent_keep_count = tangent_keep_count
 
 
-def _make_forward_ad_state(frames):
-    """由 frame 元组重算两个 O(1) 计数（帧数量很小，非热路径）。"""
-    primal_count = 0
-    tangent_keep_count = 0
-    for frame in frames:
-        if frame.phase == PRIMAL:
-            primal_count += 1
-        elif frame.create_graph:
-            tangent_keep_count += 1
-    return _ForwardADState(frames, primal_count, tangent_keep_count)
-
-
+# 每个线程/协程上下文各自持有当前快照；默认值为空栈。
 _forward_ad_state = contextvars.ContextVar(
     'riemann_forward_ad_state', default=_ForwardADState())
 
 
 def push_jvp_frame(frame: JVPFrame):
-    """把 frame 压入前向 AD 栈，返回供 pop_jvp_frame 使用的 token。"""
+    """把 frame 压入栈顶，返回供 pop_jvp_frame 精确恢复的 token。
+
+    追加操作生成新快照，旧快照保持不变并被返回的 token 引用，
+    因此后续 pop 可以精确恢复，不受中途再 push 的影响。
+    """
     state = _forward_ad_state.get()
     return _forward_ad_state.set(
-        _make_forward_ad_state(state.frames + (frame,)))
+        _ForwardADState(state.frames + (frame,)))
 
 
 def pop_jvp_frame(token=None):
-    """弹出前向 AD frame。
+    """弹出栈顶 frame。
 
-    token 由 push_jvp_frame 返回时按 token 精确恢复（可安全用于 try/finally）；
-    未提供 token 时直接弹出栈顶。
+    传入 push 返回的 token 时，恢复到压栈前的快照：即使之后又压入了其他
+    frame 也会一并丢弃，适合 try/finally 场景。
+    未传 token 时生成“截掉栈顶”的新快照，仅适用于确定栈顶就是目标 frame 的
+    简单场景。
     """
     if token is None:
         state = _forward_ad_state.get()
-        _forward_ad_state.set(_make_forward_ad_state(state.frames[:-1]))
+        _forward_ad_state.set(_ForwardADState(state.frames[:-1]))
     else:
         _forward_ad_state.reset(token)
 
 
-def current_jvp_frame():
-    """返回当前栈顶的 JVPFrame；未处于前向 AD 上下文时返回 None。"""
-    frames = _forward_ad_state.get().frames
-    return frames[-1] if frames else None
-
-
 def set_jvp_phase(frame: JVPFrame, phase: str):
-    """切换 frame 阶段并刷新 O(1) 计数（PRIMAL -> TANGENT）。"""
+    """切换 frame 阶段（PRIMAL -> TANGENT）。
+
+    唯一原地修改 frame 的入口；栈快照不重建，trace 判定只看栈是否非空。
+    """
     frame.phase = phase
-    state = _forward_ad_state.get()
-    _forward_ad_state.set(_make_forward_ad_state(state.frames))
 
 
 def forward_ad_trace_active() -> bool:
-    """O(1) 判定当前是否需要记录前向图（算子热路径只读一个计数）。
+    """当前是否存在前向 AD 请求，供算子热路径做 O(1) 判断。
 
-    满足任一条件即为 True：
-      - 存在 PRIMAL 阶段的 frame（正在为某次 JVP 记录 primal 图）；
-      - 栈顶 frame 已进入 TANGENT 且 create_graph=True（保留 tangent 图）。
-    没有前向请求时只多一次属性读取，不触碰 frame 内容。
+    栈非空即为 True：PRIMAL 阶段记录 primal 图，TANGENT 阶段记录 tangent
+    表达式自身的图（使 tangent 可继续求导）。
+
+    算子侧统一用它决定“是否写 fromvars 并挂 _jvp_rule”。
+    没有前向请求时只读一个 ContextVar 并检查元组是否为空。
     """
-    state = _forward_ad_state.get()
-    return state.primal_count > 0 or state.tangent_keep_count > 0
+    return len(_forward_ad_state.get().frames) > 0
 
 
 def active_primal_frames():
-    """返回当前栈中所有 PRIMAL 阶段的 frame（最内层在最后）。
+    """返回栈中所有 PRIMAL 阶段 frame 的元组（按入栈顺序，最内层在最后）。
 
-    原地算子据此给本次记录的前向步骤打标签：只有标签与本 frame 有交集的
-    步骤才会在 `_propagate_jvp` 中生效，避免复用同一张量连续调用 jvp 时
-    把上一次调用的原地步骤重复施加到本次 tangent 上。
+    原地算子记录的每个步骤都附带这些 frame 的身份；_propagate_jvp 只重放与
+    当前 frame 身份相交的步骤。这样同一张量连续求 jvp（或嵌套 jvp）时，不会
+    把上一次调用记录的原地步骤重复施加到本次 tangent 上。
     """
     return tuple(f for f in _forward_ad_state.get().frames if f.phase == PRIMAL)
-
-
-def outer_ad_trace_active() -> bool:
-    """排除栈顶 frame 后，是否仍有 PRIMAL 阶段的外层 frame。
-
-    用于“内层 create_graph=False 不能切断外层高阶图”的判定（§14.3）。
-    """
-    state = _forward_ad_state.get()
-    count = state.primal_count
-    frames = state.frames
-    if frames and frames[-1].phase == PRIMAL:
-        count -= 1
-    return count > 0

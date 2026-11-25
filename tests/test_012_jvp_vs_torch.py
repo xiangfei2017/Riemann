@@ -22,7 +22,8 @@ riemann 算子函数的 JVP（前向自动微分）与 torch.func.jvp 的数值�
     7. 复数             mul/real/imag/conj
     8. 原地操作         add_/sub_/mul_/div_/pow_/remainder_/copy_/fill_/
                        abs_/neg_/切片赋值/切片复合赋值/原地链
-    9. 嵌套与上下文     jvp 嵌套、上下文栈深度、异常后清理、多输入、多输出
+    9. jvp 函数语义     嵌套、上下文栈深度、异常后清理、多输入多输出、
+                       strict 参数控制
 
 运行:
     独立脚本 → 逐用例打印 + 统计表；pytest → 仅断言。
@@ -252,7 +253,7 @@ def _torch_jvp(f, primals, tangents):
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore", message=".*torch\\.jit\\.script.*", category=FutureWarning)
-            return torch.func.jvp(f, tp, tt), 1e-9
+            return torch.func.jvp(f, (tp,), (tt,)), 1e-9
     except Exception:
         pass
     try:
@@ -582,7 +583,7 @@ class TestJVPvsTorch(unittest.TestCase):
     def _svd_reconstruct(self):
         f = lambda a: rm.linalg.svd(a, full_matrices=False)
         (u, s, vh), (ut, st, vht) = func.jvp(
-            f, _rm(SQUARE), _rm(SQUARE_T, requires_grad=False))
+            f, (_rm(SQUARE),), (_rm(SQUARE_T, requires_grad=False),))
         rec = (ut.array() @ np.diag(s.array()) @ vh.array()
                + u.array() @ np.diag(st.array()) @ vh.array()
                + u.array() @ np.diag(s.array()) @ vht.array())
@@ -591,7 +592,7 @@ class TestJVPvsTorch(unittest.TestCase):
     def _qr_reconstruct(self):
         f = lambda a: rm.linalg.qr(a, mode="reduced")
         (q, r), (qt, rt) = func.jvp(
-            f, _rm(SQUARE), _rm(SQUARE_T, requires_grad=False))
+            f, (_rm(SQUARE),), (_rm(SQUARE_T, requires_grad=False),))
         rec = qt.array() @ r.array() + q.array() @ rt.array()
         return np.allclose(rec, SQUARE_T, atol=1e-8)
 
@@ -599,7 +600,7 @@ class TestJVPvsTorch(unittest.TestCase):
         # pivot=False 时 A = L·U，切线满足 dA = dL·U + L·dU
         f = lambda a: rm.linalg.lu(a, pivot=False)
         _, (_, lt, ut) = func.jvp(
-            f, _rm(SQUARE), _rm(SQUARE_T, requires_grad=False))
+            f, (_rm(SQUARE),), (_rm(SQUARE_T, requires_grad=False),))
         _, l, u = f(_rm(SQUARE))
         rec = lt.array() @ u.array() + l.array() @ ut.array()
         return np.allclose(rec, SQUARE_T, atol=1e-8)
@@ -662,7 +663,7 @@ class TestJVPvsTorch(unittest.TestCase):
         tt_idx = torch.tensor(idx)
         rm_out, rm_tan = func.jvp(
             lambda weight: rm.nn.functional.embedding(rm_idx, weight),
-            _rm(w), _rm(vw, requires_grad=False))
+            (_rm(w),), (_rm(vw, requires_grad=False),))
         try:
             tt_out, tt_tan = torch.func.jvp(
                 lambda weight: tF.embedding(tt_idx, weight),
@@ -765,23 +766,24 @@ class TestJVPvsTorch(unittest.TestCase):
         return z
 
     # ---------------------------------------------------------------
-    # 9. 嵌套与上下文
+    # 9. jvp 函数自身语义（不针对单个算子）
     # ---------------------------------------------------------------
-    def test_jvp_nesting_and_context(self):
+    def test_jvp_function_semantics(self):
         _run_case("嵌套 jvp", lambda: self._nested_jvp())
         _run_case("上下文栈深度", lambda: self._context_depth())
         _run_case("异常后上下文恢复", lambda: self._context_after_exception())
         _run_case("多输入多输出", lambda: self._multi_input_output())
         _run_case("连续调用独立", lambda: self._consecutive_calls())
         _run_case("上下文回调外关闭", lambda: self._inactive_outside())
+        _run_case("strict 控制", lambda: self._strict_control())
 
     def _nested_jvp(self):
         inner = lambda x: (x ** 3).sum()
-        outer_rm = lambda x: func.jvp(inner, x, x * 0.5)[1]
+        outer_rm = lambda x: func.jvp(inner, (x,), ((x * 0.5,)))[1]
         outer_tt = lambda x: torch.func.jvp(inner, (x,), (x * 0.5,))[1]
         x = np.array([1.0, 2.0, 3.0])
         v = np.array([0.3, -0.2, 0.5])
-        rm_out, rm_tan = func.jvp(outer_rm, _rm(x), _rm(v, requires_grad=False))
+        rm_out, rm_tan = func.jvp(outer_rm, (_rm(x),), (_rm(v, requires_grad=False),))
         tt_out, tt_tan = torch.func.jvp(
             outer_tt, (_tt(x),), (_tt(v, requires_grad=False),))
         return _tree_close((rm_out, rm_tan), (tt_out, tt_tan),
@@ -796,9 +798,9 @@ class TestJVPvsTorch(unittest.TestCase):
 
         def outer(x):
             depth["outer"] = len(active_primal_frames())
-            return func.jvp(inner, x, x * 0.5)[1]
+            return func.jvp(inner, (x,), (x * 0.5,))[1]
 
-        func.jvp(outer, _rm([1.0, 2.0]), _rm([0.3, -0.2], requires_grad=False))
+        func.jvp(outer, (_rm([1.0, 2.0]),), (_rm([0.3, -0.2], requires_grad=False),))
         return (depth.get("outer") == 1 and depth.get("inner") == 2
                 and not forward_ad_trace_active())
 
@@ -807,7 +809,7 @@ class TestJVPvsTorch(unittest.TestCase):
             raise ValueError("boom")
 
         try:
-            func.jvp(boom, _rm([1.0, 2.0]), _rm([0.3, 0.2], requires_grad=False))
+            func.jvp(boom, (_rm([1.0, 2.0]),), (_rm([0.3, 0.2], requires_grad=False),))
         except ValueError:
             pass
         return not forward_ad_trace_active()
@@ -825,16 +827,56 @@ class TestJVPvsTorch(unittest.TestCase):
     def _consecutive_calls(self):
         f = lambda x: (x ** 3).sum()
         x = _rm([1.0, 2.0, 3.0])
-        _, t1 = func.jvp(f, x, _rm([1.0, 0.0, -1.0], requires_grad=False))
-        _, t2 = func.jvp(f, x, _rm([0.5, 0.5, 0.5], requires_grad=False))
+        _, t1 = func.jvp(f, (x,), (_rm([1.0, 0.0, -1.0], requires_grad=False),))
+        _, t2 = func.jvp(f, (x,), (_rm([0.5, 0.5, 0.5], requires_grad=False),))
         return (np.allclose(t1.array(), -24.0)
                 and np.allclose(t2.array(), 21.0))
 
     def _inactive_outside(self):
         before = forward_ad_trace_active()
-        func.jvp(lambda x: (x ** 2).sum(), _rm([1.0, 2.0]),
-                 _rm([0.1, 0.2], requires_grad=False))
+        func.jvp(lambda x: (x ** 2).sum(), (_rm([1.0, 2.0]),),
+                 (_rm([0.1, 0.2], requires_grad=False),))
         return (not before) and (not forward_ad_trace_active())
+
+    def _strict_control(self):
+        """strict 控制“某个输出与某个输入完全不连通”时的处理方式。
+
+        行为逻辑（与 torch.func.jvp 一致）：
+          - strict=False：按数学语义处理，不连通即 J·v 的对应贡献为 0，
+            该输出返回同形零 tangent；
+          - strict=True：视为调用方假设“输出必须依赖全部输入”，一旦不连通
+            立即抛 RuntimeError（错误信息含 "independent of input"）；
+          - 输出正常依赖输入时 strict=True 不做任何额外限制，结果应与
+            strict=False / torch 完全相同。
+        """
+        # 常量输出：与输入 x 完全不连通，用于触发“独立性”判定。
+        const = lambda x: _rm([3.0], requires_grad=False)
+        x = _rm([1.0, 2.0])
+        v = _rm([0.3, 0.2], requires_grad=False)
+
+        # ① strict=False：返回零 tangent，数值与 torch 一致。
+        rm_res = func.jvp(const, (x,), (v,), strict=False)
+        tt_res = torch.func.jvp(
+            lambda t: torch.tensor([3.0], dtype=torch.float64),
+            (_tt([1.0, 2.0]),), (_tt([0.3, 0.2]),), strict=False)
+        if not _tree_close(rm_res, tt_res):
+            return False
+
+        # ② strict=True + 不连通输出：必须报错，且错误信息可区分于普通异常。
+        try:
+            func.jvp(const, (x,), (v,), strict=True)
+        except RuntimeError as exc:
+            if "independent of input" not in str(exc):
+                return False
+        else:
+            return False
+
+        # ③ strict=True + 连通输出：正常返回，结果与 torch 一致。
+        f = lambda t: (t ** 2).sum()
+        rm_res = func.jvp(f, (x,), (v,), strict=True)
+        tt_res = torch.func.jvp(f, (_tt([1.0, 2.0]),), (_tt([0.3, 0.2]),),
+                                strict=True)
+        return _tree_close(rm_res, tt_res)
 
 
 # ---------------------------------------------------------------------------

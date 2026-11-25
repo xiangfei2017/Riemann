@@ -57,7 +57,7 @@ from ..core.tensordef import (_same_device,
                             _backward_without_hooks,
                             _propagate_grad_to_sources
 )
-from ..core.ad_context import current_jvp_frame, forward_ad_trace_active, is_grad_enabled
+from ..core.ad_context import forward_ad_trace_active, is_grad_enabled
 
 
 def _normalize_roots(outputs, arg_name):
@@ -1104,14 +1104,13 @@ class Function:
 
             jvp_impl = cls.jvp
             if trace and jvp_impl is not Function.jvp:
-                def _apply_jvp(result_tensor: TN):
-                    frame = current_jvp_frame()
+                def _apply_jvp(frame, result_tensor: TN):
                     input_tangents = tuple(
                         frame.node_tangent.get(id(item)) if isinstance(item, TN) else None
                         for item in inputs
                     )
                     if all(tangent is None for tangent in input_tangents):
-                        return
+                        return None
                     # 与 torch 完全对齐：jvp 执行期间 saved_tensors 只暴露
                     # save_for_forward 保存的张量（未调用时为空元组）
                     saved = ctx.saved_tensors
@@ -1121,16 +1120,16 @@ class Function:
                     finally:
                         ctx.saved_tensors = saved
                     if output_tangent is None:
-                        return
+                        return None
                     if not isinstance(output_tangent, TN):
                         output_tangent = tensor(output_tangent,
                                                 device=result_tensor.device)
-                    frame.node_tangent[id(result_tensor)] = output_tangent
+                    return output_tangent
 
                 outputs._jvp_rule = _apply_jvp
             elif trace:
-                # 未实现 jvp：清掉 forward 内部算子留下的规则，
-                # 让 _propagate_jvp 用自定义 backward 走局部 VJP 回退
+                # 未实现 jvp：保持 None；jvp 传播遇到该节点会报错并提示实现
+                # Function.jvp
                 outputs._jvp_rule = None
 
         return outputs

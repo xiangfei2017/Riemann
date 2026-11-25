@@ -3091,22 +3091,26 @@ Gradient Computation
    ``register_jvp_rule`` is **Riemann-specific**; PyTorch has no decorator of this name
    (forward-mode rules there are provided through ``autograd.Function.jvp``).
 
-   :param jvp_func: Forward rule function with signature ``jvp_func(result)``. ``result`` is
-                    the output tensor of the forward function. Inside the rule, obtain the
-                    current frame via ``current_jvp_frame()``, read incoming tangents with
-                    ``_input_tangent(frame, var)``, and write the result to
-                    ``frame.node_tangent[id(result)]`` with the same shape as ``result``.
-                    Omit the write if the output has no differentiable dependency
+   :param jvp_func: Forward rule function whose call shape mirrors the original
+                    function and whose first parameter is the output:
+                    ``jvp_func(result, *args, **kwargs)``. Each **TN argument** is
+                    passed as ``TangentPair(primal, tangent)`` (a ``tuple`` subclass,
+                    so it unpacks directly), where ``tangent`` is ``None`` when that
+                    direction is zero. Non-TN arguments (including tuple parameters
+                    such as ``dim=(0, 1)``) are passed through unchanged; variadic
+                    rules can use ``isinstance(arg, TangentPair)`` to distinguish
+                    pairs from ordinary tuple arguments. Return the output tangent
+                    with the same shape as ``result``, or ``None`` if the output has
+                    no differentiable dependency
    :type jvp_func: callable
    :return: A decorator that registers the JVP rule for a forward function
    :rtype: callable
 
    The decorator is independent of ``register_grad_rule``: use either alone or decorate the
-   same function with both in any order. While the rule runs, ``result.fromvars`` is
-   temporarily replaced by the complete list of TN arguments and restored afterwards, so
-   inputs with ``requires_grad=False`` remain readable. Operators without a forward rule
-   fall back to transposed local VJPs in ``func.jvp``. See :doc:`autograd_basics` for a
-   complete example.
+   same function with both in any order. The rule never touches the internal ``JVPFrame``;
+   positional parameters, keyword parameters, ``*args``/``**kwargs`` and defaults are paired
+   automatically according to the original signature. Custom operators without a forward
+   rule raise an error when ``func.jvp`` reaches that node.
 
 .. class:: riemann.autograd.Function
 
@@ -3125,7 +3129,7 @@ Gradient Computation
    - ``ctx.needs_input_grad``: per-input boolean tuple; ``False`` for non-tensor positions
      and entirely ``False`` under ``no_grad``
 
-   If ``jvp`` is not implemented, ``func.jvp`` falls back to transposed local VJPs. ``apply``
+   If ``jvp`` is not implemented, ``func.jvp`` raises when it reaches the node. ``apply``
    currently supports single-output functions only.
 
    Example:
@@ -3149,36 +3153,150 @@ Gradient Computation
 Functional Autodiff Functions (riemann.func)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. function:: riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False)
+The public interfaces in this module match the same-named ``torch.func`` functions exactly
+(parameter names, defaults, and positional/keyword kinds). No extra switches are added:
+results of the same-named derivative functions always keep the graph so they can be nested
+for higher-order derivatives, selected arguments need not carry ``requires_grad``, and
+disconnected inputs/outputs yield zero blocks.
+
+.. function:: riemann.func.grad(func, argnums=0, has_aux=False)
+
+   Return the derivative of ``func``, which must return a scalar tensor.
+
+   :param func: Differentiable function returning a 0-dim tensor
+   :param argnums: Position(s) to differentiate, int or tuple[int, ...], default 0
+   :param has_aux: If True, ``func`` returns ``(value, aux)`` and the derivative returns ``(grad, aux)``
+   :return: The derivative function (accepts the same arguments as ``func``)
+
+   As in ``torch.func.grad``, selected arguments need not carry ``requires_grad`` (an
+   internal differentiable copy is used); disconnected or non-differentiable positions
+   return a zero tensor of the same shape.
+
+.. function:: riemann.func.grad_and_value(func, argnums=0, has_aux=False)
+
+   Return the derivative of ``func`` together with its forward value.
+
+   :return: The derivative function returning ``(grad, value)``, or ``(grad, value, aux)``
+            when ``has_aux=True``
+
+   Same as ``func.grad``: disconnected or non-differentiable positions yield zero tensors.
+
+.. function:: riemann.func.jvp(func, primals, tangents, *, strict=False, has_aux=False)
 
    Compute the Jacobian-vector product (forward-mode automatic differentiation).
 
    Driven by per-node direct forward rules: the PRIMAL phase builds the graph and registers
    rules; the TANGENT phase traverses the topological order once and computes each node's
-   tangent. Operators without a rule fall back to transposed local VJPs. In-place operators
-   are applied to the tangent as ordered steps.
+   tangent. Missing rules raise an error (all built-in operators are covered). In-place
+   operators are applied to the tangent as ordered steps.
 
    :param func: Differentiable function taking one or more tensors and returning a tensor or tuple of tensors
-   :param primals: Evaluation point, a single tensor or a tuple/list
+   :param primals: Evaluation point tuple (wrap a single input in a 1-tuple)
    :param tangents: One tangent per primal with matching shapes
-   :param create_graph: Keep the graph for higher-order differentiation, default ``False``
-   :param strict: Strict mode; raise when an output is independent of an input, default ``False``
-   :return: ``(output, jvp_result)`` with the same structure as the output
+   :param strict: Keyword-only. Raise when an output is independent of an input, default ``False``
+   :param has_aux: Keyword-only. Set True when ``func`` returns ``(output, aux)``
+   :return: ``(output, jvp_result)``, with ``aux`` appended when ``has_aux=True``
    :rtype: tuple
 
-.. function:: riemann.func.jvp2(func, primals, tangents, create_graph=False, strict=False)
+.. function:: riemann.func.vjp(func, *primals, has_aux=False)
 
-   Legacy JVP implementation with the same interface as ``riemann.func.jvp``; internally
-   based on per-edge transposed local VJPs. Kept for comparison or fallback; new code should
-   use ``riemann.func.jvp``.
+   Compute the vector-Jacobian product (reverse-mode automatic differentiation) with a
+   single forward evaluation.
 
-.. function:: riemann.func.jacfwd(func, argnums=0, create_graph=False)
+   :param primals: Evaluation point inputs, in the positional order of ``func``
+   :param has_aux: If True, ``func`` returns ``(output, aux)``
+   :return: ``(output, vjp_fn)`` or ``(output, vjp_fn, aux)``. Call
+            ``vjp_fn(cotangents, retain_graph=True, create_graph=None)``; it always returns
+            a tuple (a 1-tuple for a single primal). ``create_graph=None`` uses the current
+            grad mode. ``retain_graph`` is accepted for interface parity only (graphs are
+            not freed by this implementation).
 
-   Return a function computing the Jacobian matrix in forward mode, implemented as
-   linearize + vmap(jvp) on top of the direct-rule ``riemann.func.jvp``: the primal graph is
-   recorded once and each input basis vector only re-propagates its one-hot tangent through
-   the operators' JVP rules. It takes the same parameters as ``riemann.func.jacrev`` but does
-   not support ``strict``.
+.. function:: riemann.func.linearize(func, *primals)
+
+   Linearize ``func`` at ``primals``: the forward pass runs once and records the primal
+   graph, returning ``(primal_out, linear_fn)`` where ``linear_fn(*tangents)`` reuses the
+   same graph to compute J(x)·v. ``linear_fn`` keeps its tangent dependence only to first
+   order, so a second derivative of ``linear_fn`` yields a zero tensor (consistent with
+   ``torch.func``).
+
+.. function:: riemann.func.jacrev(func, argnums=0, *, has_aux=False, chunk_size=None)
+
+   Compute the Jacobian matrix in reverse mode, implemented as vmap(vjp) with a single
+   forward pass.
+
+   :param argnums: Position(s) to differentiate, int or tuple[int, ...], default 0;
+                   a tuple is returned when multiple positions are given
+   :param has_aux: Keyword-only. If True, return ``(jacobian, aux)``
+   :param chunk_size: Keyword-only. Number of output basis vectors per chunk; None processes all
+
+.. function:: riemann.func.jacfwd(func, argnums=0, has_aux=False, *, randomness='error')
+
+   Return a function computing the Jacobian matrix in forward mode, built on
+   ``riemann.func.jvp``: the primal graph is recorded once and each input basis vector
+   re-propagates its one-hot tangent through the operators' JVP rules.
+
+   :param argnums: Position(s) to differentiate, int, tuple[int, ...] or None (all args), default 0
+   :param has_aux: If True, return ``(jacobian, aux)``
+   :param randomness: Keyword-only. Accepts ``'error'`` / ``'different'`` / ``'same'``;
+                      invalid values raise ``RuntimeError`` when the derivative function is
+                      called (matching ``torch.func``). No randomness re-parameterization is
+                      performed. Like ``torch.func``, there is no ``chunk_size``.
+
+.. function:: riemann.func.hessian(func, argnums=0)
+
+   Compute the Hessian matrix of a scalar-valued function, implemented as
+   jacrev(grad(func)) (reverse over reverse).
+
+   :param func: Scalar-valued function returning a 0-dim tensor
+   :param argnums: Position(s) to differentiate, int or tuple[int, ...], default 0;
+                   with multiple positions, a tuple of diagonal Hessian blocks is returned
+
+.. function:: riemann.func.vmap(func, in_dims=0, out_dims=0, randomness='error', *, chunk_size=None)
+
+   Vectorized map: loop over the batch dimension and stack the results (interface aligned
+   with ``torch.func.vmap``).
+
+   :param in_dims: Input batch dimension(s): an int, or a tuple of the same length as the
+                   number of inputs whose elements may be None to skip batching for that
+                   input; a top-level None is invalid (matching ``torch.func``)
+   :param out_dims: Output batch dimension(s), same semantics as ``in_dims``; when a tuple
+                    is given it must match the number of outputs and its elements cannot be None
+   :param randomness: Accepts ``'error'`` / ``'different'`` / ``'same'``; invalid values
+                      raise ``RuntimeError`` when the wrapped function is created
+                      (matching ``torch.func``)
+   :param chunk_size: Keyword-only. Batch samples per chunk; None processes the whole batch.
+                      Invalid values raise ``ValueError``.
+
+.. function:: riemann.func.functional_call(module, parameter_and_buffer_dicts, args=None, kwargs=None, *, tie_weights=True, strict=False)
+
+   Call ``module.forward`` with custom parameters and buffers: values are substituted by
+   name, the call is executed, and the original state is restored unconditionally in a
+   ``finally`` block, so the module itself is never modified.
+
+   :param module: Object with a ``forward`` method (usually a ``riemann.nn.Module``)
+   :param parameter_and_buffer_dicts: ``{name: tensor}``, or a sequence of dictionaries with
+                                      distinct keys; names follow state_dict conventions
+                                      (e.g. ``l1.weight``). ``None`` uses the module's own
+                                      state; for backward compatibility, a tensor (or a
+                                      sequence of tensors) ordered like
+                                      ``named_parameters()`` is also accepted
+   :param args: Positional arguments for ``forward``; None means no arguments
+   :param kwargs: Keyword arguments for ``forward``
+   :param tie_weights: Keyword-only. When True, the original weight-tying semantics are kept;
+                       conflicting objects for one tied group raise ``ValueError``
+   :param strict: Keyword-only. When True, names must exactly match the module's
+                  parameters/buffers (missing or unexpected keys raise ``RuntimeError``)
+   :return: Whatever ``module.forward(*args, **kwargs)`` returns
+
+.. function:: riemann.func.stack_module_state(models)
+
+   Stack the parameters and buffers of several isomorphic Modules along a new leading
+   dimension 0 and return two ``{name: stacked tensor}`` dictionaries ``(params, buffers)``
+   that plug directly into ``functional_call`` + ``vmap`` for model ensembling.
+
+   :param models: Sequence or ModuleList of Modules, at least one; all must share the same
+                  class, training/eval mode, parameter/buffer names, and ``requires_grad``
+                  per name, otherwise ``RuntimeError`` is raised.
 
 .. note::
 

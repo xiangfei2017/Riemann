@@ -34,7 +34,7 @@ Automatic Differentiation
 
 - **backward method**: Triggers backpropagation to compute gradients
 - **grad function**: Computes gradients of functions with respect to inputs
-- **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``jvp2``, ``vjp``, ``linearize``, ``jacrev``, ``jacfwd``, ``hessian``, ``vmap``, ``functional_call``, ``stack_module_state``, suitable for chained higher-order derivatives; ``jvp`` is driven by direct forward rules while ``jvp2`` keeps the old transposed-local-VJP implementation
+- **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``vjp``, ``linearize``, ``jacrev``, ``jacfwd``, ``hessian``, ``vmap``, ``functional_call``, ``stack_module_state``, suitable for chained higher-order derivatives; ``jvp`` is driven by direct forward rules
 - **register_grad_rule decorator**: Use ``@register_grad_rule`` decorator to customize gradient tracking functions (Riemann-specific)
 - **register_jvp_rule decorator**: Use ``@register_jvp_rule`` to register direct forward (JVP) rules; usable alone or together with ``register_grad_rule`` (Riemann-specific)
 - **Function class**: Customize forward and backward propagation, plus optional forward-mode (``jvp``) rules, with ``setup_context`` and ``save_for_forward`` support (Riemann-specific)

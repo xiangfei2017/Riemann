@@ -773,7 +773,7 @@ Nesting ``jacrev`` inside itself yields the Jacobian-of-Jacobian — a third-ord
     # ===== Second-order: Jacobian-of-Jacobian — third-order tensor =====
     # T_{ijk} = ∂²f_i/∂x_j∂x_k
     # For f_i = x_i³:  non-zero only when i = j = k, T_{iii} = 6x_i
-    T = func.jacrev(lambda xv: func.jacrev(f, create_graph=True)(xv))(x)
+    T = func.jacrev(lambda xv: func.jacrev(f)(xv))(x)
     print(T)
     # T.shape = (3, 3, 3)
     # T[0,0,0] = 6·1 = 6,  T[1,1,1] = 6·2 = 12,  T[2,2,2] = 6·3 = 18
@@ -802,7 +802,7 @@ or ``func.hessian`` to obtain the Hessian matrix directly.
 
     # ===== Hessian matrix =====
     # The Hessian of least squares is always 2·AᵀA (independent of x!)
-    H = func.jacrev(func.grad(f_least_squares, create_graph=True))(x)
+    H = func.jacrev(func.grad(f_least_squares))(x)
     # H.shape = (2, 2)
     # H = 2·AᵀA = [[70, 88], [88, 112]]
 
@@ -824,20 +824,20 @@ Use ``argnums`` to specify which input position to differentiate, then nest ``fu
 
     # 2nd order w.r.t. x:  ∂²f/∂x² = 6xy⁴ = 6·2·81 = 972
     d2x = func.grad(
-        lambda xv, yv: func.grad(f, argnums=0, create_graph=True)(xv, yv),
+        lambda xv, yv: func.grad(f, argnums=0)(xv, yv),
         argnums=0
     )(x, y)   # → 972.0
     print(d2x)
 
     # 2nd order w.r.t. y:  ∂²f/∂y² = 12x³y² = 12·8·9 = 864
     d2y = func.grad(
-        lambda xv, yv: func.grad(f, argnums=1, create_graph=True)(xv, yv),
+        lambda xv, yv: func.grad(f, argnums=1)(xv, yv),
         argnums=1
     )(x, y)   # → 864.0
     print(d2y)
 
     # 1st order w.r.t. both inputs simultaneously (argnums as tuple)
-    dx, dy = func.grad(f, argnums=(0, 1), create_graph=True)(x, y)
+    dx, dy = func.grad(f, argnums=(0, 1))(x, y)
     print(dx, dy)
     # dx = 3x²y⁴ = 972.0,  dy = x³·4y³ = 864.0
 
@@ -860,7 +860,7 @@ compute gradients only from ``value`` while passing ``aux`` through unchanged:
         return rm.log(xv), rm.tensor(1.0)   # (value, aux)
 
     # Build a high-order grad function with has_aux
-    grad_fn = func.grad(f_with_aux, has_aux=True, create_graph=True)
+    grad_fn = func.grad(f_with_aux, has_aux=True)
     g1, aux = grad_fn(x)
     print(g1, aux)
     # g1 = 1/x = 0.5,  aux = 1.0 (passed through unchanged)
@@ -887,7 +887,7 @@ yields the complete Hessian matrix directly — more efficient than two manual
 
     # Gradient function g = ∇f
     # Hessian = Jacobian_of_forward(∇f)
-    H = func.jacrev(func.grad(f, create_graph=True))(x)
+    H = func.jacrev(func.grad(f))(x)
     print(H)
 
     # H.shape = (3, 3)
@@ -904,7 +904,7 @@ The forward-mode variant (``jacfwd``) produces the same result:
 
     x = rm.tensor([1., 2., 3.], requires_grad=True)
     f = lambda xv: (xv ** 4).sum()
-    H_fwd = func.jacfwd(func.grad(f, create_graph=True))(x)
+    H_fwd = func.jacfwd(func.grad(f))(x)
     print(H_fwd)
     # → identical to H
 
@@ -966,7 +966,7 @@ Both approaches produce identical results for the same computation:
 
     # Approach B: func.grad functional chain
     f_fn = lambda xv, yv: xv ** 3 * yv ** 2
-    gf = func.grad(f_fn, argnums=0, create_graph=True)
+    gf = func.grad(f_fn, argnums=0)
     ggf = func.grad(lambda xv, yv: gf(xv, yv), argnums=0)
     fg_x2 = ggf(x, y)
     print(fg_x2)
@@ -983,7 +983,7 @@ Both approaches produce identical results for the same computation:
      - Reason
    * - Pure higher-order on scalar graph node
      - ``f.d((x, n))``
-     - One-liner, handles ``create_graph`` chain
+     - One-liner; results keep the graph, so nesting works
    * - Mixed partials on multiple variables
      - ``f.d(x, y, z)``
      - Order and accumulation managed automatically
@@ -1737,15 +1737,15 @@ Key Differences from autograd.functional
    * - has_aux
      - Not supported
      - Supported by ``grad`` / ``grad_and_value``
-   * - create_graph
-     - Partial support
-     - Uniformly supported by all functions
+   * - Higher-order derivatives
+     - Needs explicit ``create_graph=True``
+     - No ``create_graph`` param for grad / jacrev / jacfwd / hessian; results can be re-differentiated
    * - Composability
      - Hard to combine with ``vmap`` etc.
      - All functions return Callable; nest freely
-   * - Default cotangents=None
-     - Raises error on vector outputs
-     - Auto-fill ones; matches torch.func.vjp
+   * - vjp cotangent
+     - Requires explicit cotangents
+     - Explicit cotangents; ``vjp_fn`` returns a tuple
    * - Non-leaf inputs
      - Requires leaf tensors with ``requires_grad``
      - Auto ``detach().requires_grad_(True)``
@@ -1769,7 +1769,7 @@ scalar-valued function with respect to the specified argument positions.
 
 .. code-block:: python
 
-    riemann.func.grad(func, argnums=0, has_aux=False, create_graph=False) -> Callable
+    riemann.func.grad(func, argnums=0, has_aux=False) -> Callable
 
 **Parameters**:
 
@@ -1780,8 +1780,6 @@ scalar-valued function with respect to the specified argument positions.
   - tuple of ints: differentiate with respect to each listed argument position, e.g. ``argnums=(0, 1)``
   - invalid values: ``()``, ``None``, tuples containing non-int elements, lists, etc. raise ``RuntimeError`` when the derivative function is called, with messages identical to ``torch.func.grad`` (``()`` gives ``argnums must be non-empty``; ``None`` gives ``argnums must be int or Tuple[int, ...], got: <class 'NoneType'>``)
 - **has_aux** (bool): If ``True``, ``func`` must return a ``(value, aux)`` pair. ``value`` is ``func``'s forward-computation output and ``grad`` requires it to be a scalar tensor; ``aux`` is an additional result produced by ``func`` (any object, not differentiated). The derivative function computes gradients only from ``value`` and passes ``aux`` through unchanged in its return value, so non-differentiable results (such as loss values, statistics, or other intermediate outputs) can be obtained from the same forward pass without recomputing them
-- **create_graph** (bool): If ``True``, gradient tensors are tracked for
-  higher-order differentiation
 
 **Returns**: The derivative function of ``func`` (a function object) that
 accepts the same arguments as ``func``. When called, it returns:
@@ -1789,6 +1787,8 @@ accepts the same arguments as ``func``. When called, it returns:
 - ``has_aux=False``: ``grad_result``
 - ``has_aux=True``: ``(grad_result, aux)``, where ``aux`` is passed through unchanged from ``func``
 - ``grad_result`` is the gradient of the scalar output ``value`` with respect to the arguments selected by ``argnums``: exactly one selected position returns a single gradient tensor (same shape as the corresponding input), while multiple positions return a tuple of gradients in the order of ``argnums``
+
+As in ``torch.func.grad``, the selected arguments do not need to carry ``requires_grad`` (an internal differentiable copy is used, leaving the user's tensor untouched). If ``value`` is disconnected from a selected argument, or ``value`` itself is not differentiable (a constant or already ``detach()``-ed), that position returns a **zero tensor** of the same shape instead of raising an error.
 
 .. note::
 
@@ -1827,10 +1827,10 @@ accepts the same arguments as ``func``. When called, it returns:
     print(grad)  # [3., 12., 27.]
     print(aux)   # sqrt(1+4+9) ≈ 3.7417
 
-    # create_graph=True enables higher-order derivatives: the inner grad
+    # Higher-order derivatives: the inner grad
     # returns a gradient that still has a computation graph; the outer
     # grad needs a scalar output, so we .sum() the gradient to scalarize
-    grad_fn = func.grad(lambda x: (x ** 4).sum(), create_graph=True)
+    grad_fn = func.grad(lambda x: (x ** 4).sum())
     g_higher = func.grad(lambda x: grad_fn(x).sum())
     h = g_higher(rm.tensor([1., 2., 3.], requires_grad=True))
     print(h)  # Second derivative: 12*x² = [12., 48., 108.]
@@ -1850,7 +1850,7 @@ forward + one backward pass instead of two.
 
 .. code-block:: python
 
-    riemann.func.grad_and_value(func, argnums=0, has_aux=False, create_graph=False) -> Callable
+    riemann.func.grad_and_value(func, argnums=0, has_aux=False) -> Callable
 
 **Parameters**: Same as ``func.grad`` (invalid ``argnums`` values raise ``RuntimeError`` when the derivative function is called)
 
@@ -1858,6 +1858,9 @@ forward + one backward pass instead of two.
 the same arguments as ``func``; when called it returns ``(grad_result, value)``,
 or ``(grad_result, value, aux)`` when ``has_aux=True``. The form of
 ``grad_result`` is determined by ``argnums`` (same as ``func.grad``)
+
+As in ``func.grad``, the selected arguments do not need ``requires_grad``; disconnected or
+non-differentiable positions return **zero tensors** instead of raising an error.
 
 **Example**:
 
@@ -1885,9 +1888,9 @@ multiplying.
 Implementation-wise, ``jvp`` is driven by per-operator direct forward rules
 (``_jvp_rule``): the PRIMAL phase builds the graph and registers rules, then the
 TANGENT phase traverses the topological order once and computes each node's
-tangent. Operators without a rule fall back to transposed local VJPs. The old
-local-VJP implementation is kept as ``func.jvp2`` (same interface, useful for
-comparison or fallback). In-place operators are applied as ordered steps on the
+tangent. Missing rules raise an error (all built-in operators are covered).
+
+In-place operators are applied as ordered steps on the
 tangent: ``add_/sub_/mul_/div_/pow_/remainder_/copy_/fill_/abs_/neg_`` and index
 assignments are supported, while ``//=`` (``floor_divide_``) raises because it has
 no derivative, consistent with the forward rules.
@@ -1896,16 +1899,14 @@ no derivative, consistent with the forward rules.
 
 .. code-block:: python
 
-    riemann.func.jvp(func, primals, tangents, create_graph=False, strict=False,
-                     has_aux=False) -> (output, jvp_result[, aux])
+    riemann.func.jvp(func, primals, tangents, *, strict=False, has_aux=False) -> (output, jvp_result[, aux])
 
 **Parameters**:
 
 - **func**: Differentiable function
-- **primals**: Function input (single tensor or tuple/list)
-- **tangents**: Tangent vectors with the same shape as ``primals``
-- **create_graph** (bool): Track JVP result for higher-order differentiation
-- **strict** (bool): Raise error on non-zero cross-JVP
+- **primals**: Function input tuple (a single input must still be wrapped in a 1-tuple, matching ``torch.func.jvp``)
+- **tangents**: Tangent vector tuple with the same length as ``primals``; each entry has the same shape as its primal
+- **strict** (bool, keyword-only): Raise error when an output is completely independent of an input
 - **has_aux** (bool): When ``True``, ``func`` must return ``(output, aux)``; only
   ``output`` is differentiated and ``aux`` is appended to the return value
 
@@ -1926,7 +1927,7 @@ tuple for multiple inputs)
     x = rm.tensor([1., 2., 3.], requires_grad=True)
     v = rm.tensor([0.5, 1., 0.5], requires_grad=False)
 
-    out, jvp_val = func.jvp(f, x, v)
+    out, jvp_val = func.jvp(f, (x,), (v,))
     print(out)      # [1., 8., 27.]
     print(jvp_val)  # 3*x^2 * v = [1.5, 12., 13.5]
 
@@ -1934,36 +1935,37 @@ tuple for multiple inputs)
     def g(x, y):
         return (x * y).sum()
 
-    out2, jvp2 = func.jvp(g,
+    out2, jvp_result = func.jvp(g,
                           (rm.tensor([1., 2.], requires_grad=True),
                            rm.tensor([3., 4.], requires_grad=True)),
                           (rm.tensor([1., 0.], requires_grad=False),
                            rm.tensor([0., 1.], requires_grad=False)))
-    print(jvp2)  # 1*3 + 2*1 = 5.0
+    print(jvp_result)  # 1*3 + 2*1 = 5.0
 
 ``vjp()`` — Vector-Jacobian Product
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Computes the product of a given vector with the Jacobian matrix (the reverse
-dual of JVP). For scalar outputs ``f: R^n -> R``, ``vjp(f, x)`` is equivalent
-to ``grad(f)(x)`` (with default all-ones cotangent).
+dual of JVP). For scalar outputs ``f: R^n -> R``, ``vjp_fn(1)`` is equivalent
+to ``grad(f)(x)``.
 
 **Function Signature**:
 
 .. code-block:: python
 
-    riemann.func.vjp(func, primals, cotangents=None, create_graph=False,
-                     strict=False, has_aux=False) -> (output, vjp_result[, aux])
+    riemann.func.vjp(func, *primals, has_aux=False) -> (output, vjp_fn[, aux])
 
 **Parameters**:
 
-- **cotangents** (optional): Vector in output space. When ``None``, all-ones
-  cotangent is automatically filled (matching ``torch.func.vjp`` behavior)
+- **primals**: Evaluation point inputs, in the positional order of ``func`` (must be tensors; ``requires_grad`` is handled internally)
 - **has_aux** (bool): When ``True``, ``func`` must return ``(output, aux)``; only
   ``output`` is differentiated and ``aux`` is appended to the return value
 
-**Returns**: ``(output, vjp_result)``, or ``(output, vjp_result, aux)`` when
-``has_aux=True``
+**Returns**: ``(output, vjp_fn)``, or ``(output, vjp_fn, aux)`` when ``has_aux=True``.
+Call ``vjp_fn(cotangents, retain_graph=True, create_graph=None)``: ``cotangents``
+must match every output in structure and shape, and the result is always a tuple
+(a 1-tuple for a single primal, matching ``torch.func``). ``create_graph=None``
+uses the current grad mode; ``retain_graph`` is accepted for interface parity only.
 
 **Example**:
 
@@ -1977,20 +1979,20 @@ to ``grad(f)(x)`` (with default all-ones cotangent).
 
     x = rm.tensor([1., 2., 3.], requires_grad=True)
 
-    # Default cotangent=None is equivalent to [1., 1., 1.]
-    out, vjp_val = func.vjp(f, x)
-    print(vjp_val)  # 2x + 1 = [3., 5., 7.]
+    # The forward pass runs once; vjp_fn can be called repeatedly
+    out, vjp_fn = func.vjp(f, x)
+    print(out)                         # 20.0 — forward output f(x)
+    print(vjp_fn(rm.tensor(1.0))[0])   # 2x + 1 = [3., 5., 7.]
 
-    # Custom cotangent (scalar output needs scalar cotangent; weighted output sum)
-    out2, vjp_val2 = func.vjp(f, x, rm.tensor(2.0))
-    print(vjp_val2)  # 2 * (2x + 1) = [6., 10., 14.]
+    # Custom cotangent (equivalent to a weighted sum of the outputs)
+    print(vjp_fn(rm.tensor(2.0))[0])   # 2 * (2x + 1) = [6., 10., 14.]
 
-    # Vector output also supports default cotangent
+    # Vector output
     def g(x):
         return x ** 2   # R^3 -> R^3, vector output
 
-    out3, vjp_val3 = func.vjp(g, x)     # cotangent=None auto-fills ones
-    print(vjp_val3)  # J^T @ ones = [2., 4., 6.]
+    out3, vjp_fn_g = func.vjp(g, x)
+    print(vjp_fn_g(rm.ones_like(x, requires_grad=False))[0])  # J^T @ ones = [2., 4., 6.]
 
 ``linearize()`` — Linearization from a Single Forward Pass
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2016,6 +2018,11 @@ used internally by ``jacfwd``: a constant term plus a linear term, i.e.
 **Returns**: ``(primal_out, linear_fn)``. ``primal_out`` has the same structure as
 ``func``'s output; ``linear_fn(*tangents)`` returns ``J(x)·v``, and the number and
 shapes of the tangents must match ``primals``.
+
+``linear_fn`` is linear in the tangents (it keeps only first-order dependence), so its
+result can be differentiated once more, while a second derivative of ``linear_fn`` is
+always a **zero tensor** (consistent with ``torch.func``). For genuine higher-order
+derivatives, differentiate the original ``func`` with ``grad`` / ``jvp``.
 
 **Example**:
 
@@ -2049,17 +2056,16 @@ Two ways to compute the Jacobian matrix:
 
 .. code-block:: python
 
-    riemann.func.jacrev(func, argnums=0, create_graph=False, strict=True,
-                        has_aux=False, chunk_size=None) -> Callable
-    riemann.func.jacfwd(func, argnums=0, create_graph=False,
-                        has_aux=False, chunk_size=None) -> Callable
+    riemann.func.jacrev(func, argnums=0, *, has_aux=False, chunk_size=None) -> Callable
+    riemann.func.jacfwd(func, argnums=0, has_aux=False, *, randomness='error') -> Callable
 
 **Parameters**:
 
 - **func**: Differentiable function
 - **argnums**: Input position(s) whose Jacobian is computed; int or tuple of ints, default ``0``. Invalid values (``()``, ``None``, tuples containing non-int elements, lists, etc.) raise ``RuntimeError`` when the derivative function is called, with messages identical to ``torch.func`` (``torch.func.jacrev`` raises for both ``()`` and ``None``; ``torch.func.jacfwd`` raises for ``()`` but treats ``None`` as all arguments)
-- **has_aux**: When ``True``, ``func`` must return ``(output, aux)``; only ``output`` is differentiated and the result becomes ``(Jacobian, aux)``
-- **chunk_size**: Number of basis vectors processed per chunk, to bound peak memory; ``None`` means process all at once. The result is identical to the unchunked computation; non-positive or non-int values raise ``ValueError``
+- **has_aux**: When ``True``, ``func`` must return ``(output, aux)``; only ``output`` is differentiated and the result becomes ``(Jacobian, aux)`` (keyword-only for ``jacrev``)
+- **chunk_size**: Keyword-only, ``jacrev`` only. Number of output basis vectors processed per chunk, to bound peak memory; ``None`` means process all at once. The result is identical to the unchunked computation; non-positive or non-int values raise ``ValueError``. Like ``torch.func``, ``jacfwd`` has no ``chunk_size``
+- **randomness**: Keyword-only, ``jacfwd`` only. Accepts ``'error'`` / ``'different'`` / ``'same'``; invalid values raise ``RuntimeError`` when the derivative function is called (matching ``torch.func``); no randomness re-parameterization is performed
 
 **Return Shape**: For output shape ``(y1, y2, ...)`` and input shape
 ``(x1, x2, ...)``, the Jacobian shape is ``(y1, y2, ..., x1, x2, ...)``.
@@ -2104,14 +2110,13 @@ O(n²); reverse-over-reverse avoids that.)
 
 .. code-block:: python
 
-    riemann.func.hessian(func, argnums=0, create_graph=False, strict=True,
-                         has_aux=False) -> Callable
+    riemann.func.hessian(func, argnums=0) -> Callable
 
 **Parameters**:
 
 - **func**: Differentiable function that returns a scalar tensor
 - **argnums**: Input position(s) whose Hessian is computed; int or tuple of ints, default ``0``. Invalid values (``()``, ``None``, tuples containing non-int elements, lists, etc.) raise ``RuntimeError`` when the derivative function is called, with messages identical to ``torch.func.hessian``
-- **has_aux**: When ``True``, ``func`` must return ``(output, aux)``; only ``output`` is differentiated and the result becomes ``(Hessian, aux)`` (a riemann extension; ``torch.func.hessian`` has no such parameter)
+- No ``create_graph`` / ``strict`` / ``has_aux`` parameter: results always keep the graph and disconnected Hessian blocks are returned as zeros (matching ``torch.func``)
 
 **Return Shape**: For input shape ``(n,)``, Hessian shape is ``(n, n)``.
 
@@ -2130,8 +2135,7 @@ O(n²); reverse-over-reverse avoids that.)
 **Notes**:
 
 - Only supports scalar-valued functions; vector output raises an error
-- When ``argnums`` is not all argument positions, strict mode is internally
-  relaxed (non-zero cross-Hessian no longer raises)
+- When ``argnums`` is not all argument positions, only the selected input blocks are computed and returned
 
 ``vmap()`` — Vectorized Map
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2145,17 +2149,22 @@ primitives like ``jacrev``.
 
 .. code-block:: python
 
-    riemann.func.vmap(func, in_dims=0, out_dims=0, chunk_size=None) -> Callable
+    riemann.func.vmap(func, in_dims=0, out_dims=0, randomness='error', *, chunk_size=None) -> Callable
 
 **Parameters**:
 
 - **in_dims**: Batch dimension for each input. Possible values:
   ``int`` — all inputs share this dimension;
-  ``tuple[int|None, ...]`` — per-input dimension position; ``None`` means the input
-  is not batched (passed through directly, useful for shared quantities like model
-  parameters).
-- **out_dims**: Batch dimension for each output; same semantics as ``in_dims``
-- **chunk_size**: Number of batch samples processed per chunk, controlling loop and
+  ``tuple[int|None, ...]`` — per-input dimension position, whose length must equal the
+  number of inputs; ``None`` means the input is not batched (passed through directly,
+  useful for shared quantities like model parameters). A top-level ``in_dims=None`` is
+  invalid (matching ``torch.func``).
+- **out_dims**: Batch dimension for each output; same semantics as ``in_dims``. When given
+  as a tuple its length must equal the number of outputs and its elements cannot be ``None``
+- **randomness**: Accepts ``'error'`` / ``'different'`` / ``'same'``; invalid values raise
+  ``RuntimeError`` when the wrapped function is created (matching ``torch.func``); no
+  randomness re-parameterization is performed
+- **chunk_size** (keyword-only): Number of batch samples processed per chunk, controlling loop and
   stacking granularity; ``None`` means the whole batch at once. The result is
   identical to the unchunked computation; non-positive or non-int values raise ``ValueError``
 
@@ -2354,7 +2363,7 @@ making them freely composable. Here are common higher-order patterns:
         return (x ** 4).sum()
 
     x = rm.tensor([1., 2., 3.], requires_grad=True)
-    h_via_jac = func.jacrev(func.jacrev(f, create_graph=True))(x)
+    h_via_jac = func.jacrev(func.jacrev(f))(x)
     print(h_via_jac)
     # Diagonal matrix with entries [12·1², 12·2², 12·3²] = [12, 48, 108]
 
@@ -2377,7 +2386,7 @@ making them freely composable. Here are common higher-order patterns:
     g_w, g_b = func.grad(param_loss, argnums=(0, 1))(alt_weight, alt_bias)
     print(g_w.shape, g_b.shape)
 
-**Pattern 4: create_graph chain — higher-order differentiation**
+**Pattern 4: nested differentiation — higher-order derivatives**
 
 .. code-block:: python
 
@@ -2388,11 +2397,10 @@ making them freely composable. Here are common higher-order patterns:
     x = rm.tensor([1., 2., 3.], requires_grad=True)
 
     # First-order
-    g = func.grad(f, create_graph=True)
+    g = func.grad(f)
     print(g(x))
-    # Second-order: differentiate the gradient — also needs create_graph=True
-    # so h(x) still carries a computation graph for further differentiation
-    h = func.grad(lambda a: g(a).sum(), create_graph=True)
+    # Second-order: differentiate the gradient (results keep the graph by default)
+    h = func.grad(lambda a: g(a).sum())
     print(h(x))
     # Third-order: keep stacking
     third = func.grad(lambda a: h(a).sum())(x)
@@ -2420,12 +2428,12 @@ func Module vs autograd.functional: When to Use Which?
    * - Differentiate through Module params
      - ``func.functional_call``
      - Not available in lower module
-   * - Vector output vjp with default cotangent
+   * - vjp for vector outputs
      - ``func.vjp``
-     - Auto-fills ones, safer
-   * - create_graph for higher-order derivatives
+     - Explicit cotangents; ``vjp_fn`` returns a tuple
+   * - Higher-order derivatives (nesting)
      - ``func``
-     - Uniformly supported
+     - Results keep the graph; nest freely
 
 Custom Gradient Functions
 -------------------------
@@ -2649,33 +2657,34 @@ Riemann provides three ways to implement custom functions with gradient tracking
 
    **jvp_func Interface:**
 
-   - Signature: ``jvp_func(result)``, where ``result`` is the output tensor of the
-     forward function
-   - Obtain the current frame with ``current_jvp_frame()`` and read an incoming edge's
-     tangent with ``_input_tangent(frame, var)`` (``var`` is an input tensor in
-     ``result.fromvars``)
-   - Write the output tangent with ``frame.node_tangent[id(result)] = tangent``; its
-     shape must equal ``result``'s. If the output does not depend on any differentiable
-     input, omit it (treated as no tangent)
-   - While the rule runs, ``result.fromvars`` is temporarily replaced by the complete
-     list of TN arguments (even those with ``requires_grad=False``) and restored
-     afterwards, so the filtered ``fromvars`` from ``register_grad_rule`` never hides
-     inputs from the forward rule
+   - Call shape mirrors the original function with the output first:
+     ``jvp_func(result, *args, **kwargs)``, where ``result`` is the output tensor
+   - Each **TN argument** is passed as ``TangentPair(primal, tangent)`` (a
+     ``tuple`` subclass, so it unpacks directly); ``tangent`` is ``None`` when that
+     input direction is zero. Non-TN arguments (including tuple parameters such as
+     ``dim=(0, 1)``) are passed through unchanged, so the rule can read their values
+     directly
+   - Return the output tangent; its shape must equal ``result``'s. Return ``None`` if
+     the output does not depend on any differentiable input (treated as no tangent).
+     The rule never touches the internal ``JVPFrame``
+   - The rule does not need ``fromvars``: positional parameters, keyword parameters,
+     ``*args``/``**kwargs`` and defaults are paired by the original signature, and
+     inputs with ``requires_grad=False`` are still passed to the rule
+   - Variadic rules can use ``isinstance(arg, TangentPair)`` to tell paired TN
+     arguments apart from ordinary tuple arguments such as ``(0, 1)``
 
    Example:
 
    .. code-block:: python
 
        import riemann as rm
-       from riemann.core.ad_context import current_jvp_frame
-       from riemann.core.tensordef import _input_tangent
 
-       def _my_tanh_jvp(result):
-           frame = current_jvp_frame()
-           x = result.fromvars[0]
-           x_t = _input_tangent(frame, x)
+       def _my_tanh_jvp(result, x):
+           x, x_t = x                   # TN argument = (primal, tangent)
+           if x_t is None:              # None means zero direction
+               return None
            # d(tanh(x))/dx = 1 - tanh(x)^2, reusing the forward output
-           frame.node_tangent[id(result)] = (1.0 - result * result) * x_t
+           return (1.0 - result * result) * x_t
 
        @rm.register_jvp_rule(_my_tanh_jvp)
        def my_tanh(x):
@@ -2738,8 +2747,8 @@ Riemann provides three ways to implement custom functions with gradient tracking
    - **Saved tensors**: inside ``jvp``, ``ctx.saved_tensors`` contains only tensors
      saved with ``save_for_forward()``; tensors saved with ``save_for_backward()``
      remain visible only in ``backward``
-   - **When not implemented**: the framework clears the node's forward rule and
-     ``func.jvp`` falls back to transposed local VJPs — correct but slower
+   - **When not implemented**: ``func.jvp`` raises when it reaches the node; forward
+     mode requires an explicit ``jvp`` static method
 
    **setup_context(ctx, inputs, output) (optional, new style)**
 
