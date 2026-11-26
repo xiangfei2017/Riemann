@@ -332,6 +332,16 @@ class TestCUDAUnit(unittest.TestCase):
                     "name": "test_tensor_to_combined_params",
                     "description": "测试 TN 张量 to() 函数 non_blocking 和 copy 参数组合使用",
                     "test_func": lambda: self._test_tensor_to_combined_params()
+                },
+                {
+                    "name": "test_tensor_to_non_blocking_semantics",
+                    "description": "测试 TN 张量 to() 的阻塞/异步语义及跨设备数据一致性",
+                    "test_func": lambda: self._test_tensor_to_non_blocking_semantics()
+                },
+                {
+                    "name": "test_tensor_to_argument_edge_cases",
+                    "description": "测试 TN 张量 to() 参数解析的边界情况与错误处理",
+                    "test_func": lambda: self._test_tensor_to_argument_edge_cases()
                 }
             ]
             
@@ -711,6 +721,85 @@ class TestCUDAUnit(unittest.TestCase):
         s = cuda_grad.sum()
         s.backward()
         self.assertIsNotNone(grad_tensor.grad)
+
+    def _test_tensor_to_non_blocking_semantics(self):
+        """测试 to() 的阻塞/异步语义及跨设备数据一致性（子用例）"""
+        cpu_tensor = rm.tensor(np.arange(256.0, dtype=np.float32), requires_grad=True)
+        expected = cpu_tensor.detach().numpy()
+
+        # non_blocking=False（默认）：返回时拷贝已完成，可直接读取
+        blocked = cpu_tensor.to('cuda:0', non_blocking=False)
+        self.assertTrue(np.allclose(blocked.detach().array(), expected))
+
+        # non_blocking=True：值正确性由当前流有序性保证，显式同步后校验
+        async_tensor = cpu_tensor.to('cuda:0', non_blocking=True)
+        cuda.Device('cuda:0').synchronize()
+        self.assertTrue(np.allclose(async_tensor.detach().array(), expected))
+
+        # 异步 + dtype 转换 + copy=True
+        async_cast = cpu_tensor.to('cuda:0', dtype=rm.float64, copy=True, non_blocking=True)
+        cuda.Device('cuda:0').synchronize()
+        self.assertEqual(async_cast.dtype, rm.float64)
+        self.assertTrue(np.allclose(async_cast.detach().array(), expected))
+
+        # 同设备 dtype 转换时 non_blocking 不影响结果
+        same_dev = async_cast.to('cuda:0', dtype=rm.float32, non_blocking=True)
+        self.assertEqual(same_dev.device.type, 'cuda')
+        self.assertEqual(same_dev.dtype, rm.float32)
+        self.assertTrue(np.allclose(same_dev.detach().array(), expected))
+
+        # 复数 -> 实数 + 跨设备（先取实部再传输）
+        cplx = rm.tensor([1+2j, 3+4j], dtype=rm.complex128)
+        cplx_real = cplx.to('cuda:0', dtype=rm.float64, non_blocking=False)
+        self.assertEqual(cplx_real.dtype, rm.float64)
+        self.assertTrue(np.allclose(cplx_real.detach().array(), [1.0, 3.0]))
+
+        # GPU -> CPU 恒为同步，non_blocking 不生效
+        back = blocked.to('cpu', non_blocking=True)
+        self.assertEqual(back.device.type, 'cpu')
+        self.assertTrue(np.allclose(back.detach().numpy(), expected))
+
+        # 阻塞迁移后可直接反向传播
+        blocked.sum().backward()
+        self.assertIsNotNone(cpu_tensor.grad)
+
+    def _test_tensor_to_argument_edge_cases(self):
+        """测试 to() 参数解析的边界情况与错误处理（子用例）"""
+        cpu_tensor = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float32)
+
+        # 无参数 / None：保持原 dtype 与 device，直接返回自身
+        self.assertIs(cpu_tensor.to(), cpu_tensor)
+        self.assertIs(cpu_tensor.to(None), cpu_tensor)
+
+        # dtype 支持字符串、Python 类型和 NumPy dtype
+        self.assertEqual(cpu_tensor.to('float64').dtype, rm.float64)
+        self.assertEqual(cpu_tensor.to(np.float64).dtype, rm.float64)
+        self.assertEqual(cpu_tensor.to(np.dtype('int32')).dtype, rm.int32)
+
+        # device 支持整数索引和 Device 对象
+        self.assertEqual(cpu_tensor.to(0).device.index, 0)
+        self.assertEqual(cpu_tensor.to(rm.cuda.Device('cuda:0')).device.index, 0)
+
+        # 位置参数（另一个张量）优先于关键字参数
+        other = rm.tensor([1.0, 2.0], dtype=rm.float64, device='cuda:0')
+        merged = cpu_tensor.to(other, dtype=rm.int32, device='cpu')
+        self.assertEqual(merged.dtype, rm.float64)
+        self.assertEqual(merged.device.type, 'cuda')
+
+        # dtype 与 device 均匹配时返回自身；copy=True 时返回内容相同的副本
+        self.assertIs(cpu_tensor.to('cpu', rm.float32), cpu_tensor)
+        copied = cpu_tensor.to('cpu', rm.float32, copy=True)
+        self.assertIsNot(copied, cpu_tensor)
+        self.assertTrue(np.allclose(copied.detach().numpy(), cpu_tensor.detach().numpy()))
+
+        # 超过两个位置参数报 TypeError
+        with self.assertRaises(TypeError):
+            cpu_tensor.to('cpu', rm.float64, 'cuda:0')
+
+        # type() 复用 to() 的 dtype 分支并保持设备
+        typed = cpu_tensor.type(rm.float64)
+        self.assertEqual(typed.dtype, rm.float64)
+        self.assertEqual(typed.device, cpu_tensor.device)
     
     def test_tensor_creation_device_resolution(self):
         """测试张量创建函数在上下文/默认设备下的设备解析"""

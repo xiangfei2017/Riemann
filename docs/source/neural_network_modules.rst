@@ -3694,11 +3694,11 @@ Below is a complete machine translation model example demonstrating the use of T
             memory = self.transformer.encoder(src_emb)
             
             # Autoregressive generation
-            tgt = rm.full((src.shape[0], 1), start_token, dtype=rm.int64)
+            tgt = rm.full(src.shape[0], 1, fill_value=start_token, dtype=rm.int64)
             
             for _ in range(max_len):
                 # Generate causal mask (upper triangle is True, prevent attending to future positions)
-                tgt_mask = rm.full((tgt.shape[1], tgt.shape[1]), float('-inf'))
+                tgt_mask = rm.full(tgt.shape[1], tgt.shape[1], fill_value=float('-inf'))
                 tgt_mask = tgt_mask.triu(diagonal=1)  # Upper triangle (excluding diagonal) set to -inf
                 
                 # Decode

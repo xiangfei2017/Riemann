@@ -11,7 +11,8 @@ Riemann是一个类似PyTorch的神经网络编程框架，支持张量计算中
 - 支持0到多维张量的数学运算，支持复数张量运算，支持CUDA
 - 线性代数模块支持矩阵运算,包括：批量矩阵乘法、矩阵分解、特征值与行列式、矩阵逆与伪逆、线性方程组求解、范数与秩等
 - 支持张量形状重塑、维度扩缩、索引和切片、元素收集/散射、拼接/分割等操作
-- 支持基于反向传播算法的自动梯度跟踪，支持函数对输入求导，支持用户自定义梯度函数
+- 支持双模式自动求导：反向模式（反向传播梯度，神经网络训练的核心机制）与前向模式（前向传播方向导数，JVP），二者均支持高阶求导
+- 支持函数对输入求导、雅可比/海森矩阵计算，支持用户自定义反向梯度规则与前向 JVP 规则
 - 支持张量序列化/反序列化，方便模型训练和部署
 
 ### 2. 神经网络模块
@@ -39,7 +40,7 @@ Riemann库设计时注重与PyTorch接口的兼容性，同名的函数和类接
 - **张量操作**：支持与PyTorch同名的张量操作函数和方法，如`tensor()`、`grad()`、`backward()`等
 - **神经网络组件**：`nn`模块中的层、激活函数和损失函数与PyTorch保持接口兼容
 - **优化器**：`optim`模块中的优化器（如SGD、Adam等）接口与PyTorch保持一致
-- **自动求导机制**：`requires_grad`、反向传播机制与PyTorch相似
+- **自动求导机制**：`requires_grad`、反向传播机制与PyTorch相似；前向模式方向导数（`jvp`）对齐 `torch.func` 风格
 - **torch.func兼容**：顶层 ``func`` 模块对齐 `torch.func` 接口——柯里化的 ``grad``、``jacrev``/``jacfwd``、``jvp``/``vjp``、``linearize``、``hessian``、``vmap``、``functional_call``、``stack_module_state``
 - **计算机视觉**：`vision`模块中的数据集和变换与torchvision保持接口兼容
 - **跨框架互操作**：Riemann 张量可与 NumPy 数组、CuPy 数组以及 PyTorch 等其它张量框架互相转换或共享数据，入口包括 `r.tensor()`、`r.as_tensor()`、`r.from_dlpack()`、`TN.array()`、`TN.numpy()`，底层依托 `__array__`、`__cuda_array_interface__`、`__dlpack__`、`__buffer__` 协议；设备与 dtype 一致时为零拷贝

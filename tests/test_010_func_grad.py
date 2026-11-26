@@ -965,6 +965,12 @@ class _TestFuncsCases:
         # 非张量参数透传
         _run_case("vmap - non_tensor_arg", lambda: self._check_vmap_non_tensor_arg())
 
+        # 空批次：loop 实现无法推断输出形状，应显式报错
+        _run_case("vmap - empty_batch_raises", lambda: self._check_vmap_empty_batch())
+
+        # out_dims 越界：应给出明确错误而非底层 IndexError
+        _run_case("vmap - out_dims_out_of_range", lambda: self._check_vmap_out_dims_range())
+
     def _check_vmap(self, f, inp_np, in_dims, expected):
         inp = _rm_tensor(inp_np)
         out = func.vmap(f, in_dims=in_dims)(inp)
@@ -1044,6 +1050,22 @@ class _TestFuncsCases:
         x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
         out = func.vmap(lambda row, c: c * (row ** 2).sum(), in_dims=(0, None))(x, 2.0)
         return _close(out, np.array([10.0, 50.0]))
+
+    def _check_vmap_empty_batch(self):
+        x = _rm_tensor(np.zeros((0, 3)), requires_grad=False)
+        try:
+            func.vmap(lambda row: row * 2)(x)
+            return False
+        except ValueError as e:
+            return "batch size 0 is not supported" in str(e)
+
+    def _check_vmap_out_dims_range(self):
+        x = _rm_tensor(np.array([[1.0, 2.0], [3.0, 4.0]]))
+        try:
+            func.vmap(lambda row: row * 2, out_dims=2)(x)
+            return False
+        except ValueError as e:
+            return "out of range" in str(e)
 
     # ---------------------------------------------------------------
     # functional_call
@@ -1281,6 +1303,8 @@ class _TestFuncsCases:
                   lambda: self._check_linearize_shape_error())
         _run_case("linearize - second_order_zero",
                   lambda: self._check_linearize_second_order())
+        _run_case("linearize - vmap_forward_trace",
+                  lambda: self._check_linearize_vmap())
 
     def _check_linearize(self):
         f = lambda x: x * x
@@ -1328,6 +1352,24 @@ class _TestFuncsCases:
         v = _rm_tensor(np.array([1.0, 1.0]))
         g2 = func.grad(lambda t: func.grad(lambda u: lin(u).sum())(t).sum())(v)
         return _close(g2, np.zeros(2))
+
+    def _check_linearize_vmap(self):
+        # 回归：vmap 的纯前向快速路径必须保留 JVP 边，否则 linearize 恒为零。
+        # 输入不可微，确保走"预分配缓冲写入"分支而非 stack。
+        x = _rm_tensor(np.array([1.0, 2.0, 3.0]), requires_grad=False)
+        v = _rm_tensor(np.array([1.0, 1.0, 1.0]), requires_grad=False)
+        out, lin = func.linearize(lambda a: func.vmap(lambda u: u * u)(a), x)
+        single_ok = (_close(out, np.array([1.0, 4.0, 9.0]))
+                     and _close(lin(v), np.array([2.0, 4.0, 6.0])))
+
+        out2, lin2 = func.linearize(
+            lambda a: (func.vmap(lambda u: u * u)(a), func.vmap(lambda u: u * 3)(a)), x)
+        t = lin2(v)
+        multi_ok = (_close(out2[0], np.array([1.0, 4.0, 9.0]))
+                    and _close(out2[1], np.array([3.0, 6.0, 9.0]))
+                    and _close(t[0], np.array([2.0, 4.0, 6.0]))
+                    and _close(t[1], np.array([3.0, 3.0, 3.0])))
+        return single_ok and multi_ok
 
     # ---------------------------------------------------------------
     # chunk_size（vmap / jacrev；jacfwd 与 torch.func 一致无 chunk_size）
@@ -1389,6 +1431,14 @@ class _TestFuncsCases:
                   lambda: self._check_fc_strict())
         _run_case("functional_call - tie_weights propagates",
                   lambda: self._check_fc_tied())
+        _run_case("functional_call - tie_weights with strict",
+                  lambda: self._check_fc_tied_strict())
+        _run_case("functional_call - tied buffers with strict",
+                  lambda: self._check_fc_tied_buffer_strict())
+        _run_case("functional_call - no_params module strict unexpected",
+                  lambda: self._check_fc_noparams_strict())
+        _run_case("functional_call - list args as single argument",
+                  lambda: self._check_fc_list_args())
 
     def _make_nested_module(self):
         class Net(rm.nn.Module):
@@ -1446,6 +1496,75 @@ class _TestFuncsCases:
         y = func.functional_call(net, {"a.weight": zero}, (x,))
         return _close(y, np.zeros((3, 2)))
 
+    def _check_fc_tied_strict(self):
+        class Tied(rm.nn.Module):
+            def __init__(self, device=None):
+                super().__init__()
+                self.a = rm.nn.Linear(2, 2, bias=False, device=device)
+                self.b = rm.nn.Linear(2, 2, bias=False, device=device)
+                self.b.weight = self.a.weight
+
+            def forward(self, x):
+                return self.a(x) + self.b(x)
+
+        net = Tied(device=_CURRENT_DEVICE)
+        orig = net.a.weight.clone()
+        w = _rm_tensor(np.eye(2))
+        x = _rm_tensor(np.ones((1, 2)), requires_grad=False)
+        # 绑定组只提供一个名字时，strict=True 应视为已满足（与 torch 一致）
+        y = func.functional_call(net, {"a.weight": w}, (x,), strict=True)
+        return (_close(y, 2.0 * x)
+                and net.a.weight is net.b.weight      # 调用后仍保持绑定
+                and _close(net.a.weight, orig))
+
+    def _check_fc_tied_buffer_strict(self):
+        class TiedBuf(rm.nn.Module):
+            def __init__(self, device=None):
+                super().__init__()
+                buf = _rm_tensor(np.array([1.0, 2.0]))
+                self.register_buffer("b1", buf)
+                self.register_buffer("b2", buf)
+
+            def forward(self, x):
+                return x + self.b1 + self.b2
+
+        net = TiedBuf(device=_CURRENT_DEVICE)
+        x = _rm_tensor(np.zeros(2), requires_grad=False)
+        # 只提供 b1，绑定的 b2 应同步，strict=True 也应通过
+        y = func.functional_call(
+            net, {"b1": _rm_tensor(np.array([10.0, 20.0]))}, (x,), strict=True)
+        return _close(y, np.array([20.0, 40.0])) and net.b1 is net.b2
+
+    def _check_fc_noparams_strict(self):
+        class Const:
+            def forward(self, x):
+                return x * 2.0
+
+        x = _rm_tensor(np.array([1.0]), requires_grad=False)
+        try:
+            func.functional_call(Const(), {"foo": _rm_tensor(np.array(1.0))},
+                                 (x,), strict=True)
+            return False
+        except RuntimeError as e:
+            return "Unexpected key(s)" in str(e)
+
+    def _check_fc_list_args(self):
+        class ListArg:
+            def __init__(self, w):
+                self.w = w
+
+            def forward(self, xs):
+                return (xs[0] + xs[1]) * self.w
+
+            def named_parameters(self):
+                yield "w", self.w
+
+        w = _rm_tensor(np.array([2.0, 3.0]))
+        t = _rm_tensor(np.ones(2), requires_grad=False)
+        # 与 torch 一致：list 作为单个位置参数传入，而不是展开
+        y = func.functional_call(ListArg(w), {"w": w}, [t, t])
+        return _close(y, np.array([4.0, 6.0]))
+
     # ---------------------------------------------------------------
     # stack_module_state
     # ---------------------------------------------------------------
@@ -1458,6 +1577,8 @@ class _TestFuncsCases:
                   lambda: self._check_stack_empty())
         _run_case("stack_module_state + vmap functional_call",
                   lambda: self._check_stack_ensemble())
+        _run_case("stack_module_state - tied_weights_dedup",
+                  lambda: self._check_stack_tied_dedup())
 
     def _make_scalar_models(self, values):
         """同一类构造的一组标量模型（stack_module_state 要求同类）。"""
@@ -1504,6 +1625,43 @@ class _TestFuncsCases:
             lambda w, a: func.functional_call(models[0], {"w": w}, (a,)),
             in_dims=(0, None))(params["w"], x)
         return _close(out.reshape(-1), np.array([2.0, 4.0, 6.0]))
+
+    def _check_stack_tied_dedup(self):
+        class Tied(rm.nn.Module):
+            def __init__(self, v):
+                super().__init__()
+                self.a = rm.nn.Linear(2, 2, bias=False, device=_CURRENT_DEVICE)
+                self.b = rm.nn.Linear(2, 2, bias=False, device=_CURRENT_DEVICE)
+                self.b.weight = self.a.weight
+                with rm.no_grad():
+                    self.a.weight[...] = _rm_tensor(np.full((2, 2), float(v)))
+
+            def forward(self, x):
+                return self.a(x) + self.b(x)
+
+        models = [Tied(1.0), Tied(2.0)]
+        params, buffers = func.stack_module_state(models)
+        # 绑定名只保留首个（与 torch remove_duplicate=True 一致）
+        keys_ok = list(params) == ["a.weight"] and buffers == {}
+        values_ok = _close(params["a.weight"],
+                           np.stack([np.full((2, 2), 1.0), np.full((2, 2), 2.0)]))
+        # 堆叠状态可直接用于 functional_call：b.weight 由 tie_weights 自动补齐
+        x = _rm_tensor(np.ones((1, 2)), requires_grad=False)
+        y = func.functional_call(models[0], {k: v[0] for k, v in params.items()}, (x,))
+        call_ok = _close(y, np.array([[4.0, 4.0]]))
+
+        class TiedBuf(rm.nn.Module):
+            def __init__(self, v):
+                super().__init__()
+                buf = _rm_tensor(np.array([float(v)]))
+                self.register_buffer("b1", buf)
+                self.register_buffer("b2", buf)
+
+            def forward(self, x):
+                return x + self.b1 + self.b2
+
+        _, bufs = func.stack_module_state([TiedBuf(1.0), TiedBuf(2.0)])
+        return keys_ok and values_ok and call_ok and list(bufs) == ["b1"]
 
     # ---------------------------------------------------------------
     # 函数组合（跨原语组合能力）

@@ -47,8 +47,7 @@ func 模块 —— 函数式自动微分接口，参考 torch.func 设计。
 
 所有函数间相互复用：jvp / vjp 是前向 / 反向模式原语；jvp 基于 _record_primal +
 _jvp_with_primal_graph 复用前向图，vjp 基于 _call_and_split + _vjp_with_output 复用
-反向图；jvp2 走 _traceable_args / _prepare_forward 的旧路径，jacrev / jacfwd 也复用
-_traceable_args 做参数归一化。
+反向图；jacrev / jacfwd 复用 _traceable_args 做参数归一化。
 jacrev / jacfwd 共用 _make_jacobian 做 argnums 校验与结果整形，内核分别是 vmap(vjp)
 与逐列 jvp（func 只前向求值一次并记录图，各列复用该图，等价于 vmap(jvp)）。两者均
 支持 has_aux；jacrev 另支持 chunk_size（与 torch.func 一致，jacfwd 无 chunk_size）。
@@ -57,11 +56,10 @@ hessian 复用 _jacobian_via_vjp 内核，对 grad 的结果再求一次 Jacobia
 
 补充说明：jvp 走直接规则路径——算子登记 `_jvp_rule`，前向执行时记录 primal 图，
 再沿拓扑序直接传播 tangent；缺少规则的节点会直接报错，内置算子均已覆盖。
-jvp2 走旧路径——算子只登记局部 VJP（反向模式），jvp2 通过"对局部 VJP 再做
-一次转置"沿计算图正向传播 tangent（细节见 _local_jvp）。
 """
 
 import builtins
+from contextlib import contextmanager
 from typing import Callable, Any, Optional, Union
 from .core import *
 from .core.ad_context import (
@@ -447,148 +445,6 @@ def _vjp_with_output(out: TN, inputs, cotangent: TN, strict: bool):
     return [zeros_like(inp, requires_grad=True) if gv is None else gv
             for inp, gv in zip(inputs, grads)]
 
-def _make_shadow(node: TN, leaf_map: dict) -> TN:
-    """构造计算图节点的"局部影子"。
-
-    影子节点与真实节点共享底层数据，其中 TN 来源替换为叶子副本，
-    非 TN 原始操作数保持不变，因此在影子上求局部 VJP 的转置时只会遍历当前算子。
-
-    参数:
-        node: 前向图中的真实节点。
-        leaf_map: id(原始张量) -> 叶子副本 的映射，保证同一张量在多处被引用时
-            共用同一个叶子副本。
-
-    返回:
-        影子节点：共享 node._array 与 node.parms，TN 来源为无计算图的叶子，
-        非 TN 来源保留原值。
-    """
-    shadow = TN(node._array, requires_grad=False)
-    shadow.parms = node.parms
-    fromvars = []
-    for var in node.fromvars:
-        if not isinstance(var, TN):
-            fromvars.append(var)
-            continue
-        var_shadow = leaf_map.get(id(var))
-        if var_shadow is None:
-            # 叶子副本仍需 requires_grad=True：梯度规则按来源是否需要梯度决定
-            # 是否返回梯度，若为 False 会得到 None，导致局部 JVP 无法进行。
-            # 这里它没有 fromvars/_grad_rule，反向仍不会越过当前算子。
-            var_shadow = TN(var._array, requires_grad=True)
-            leaf_map[id(var)] = var_shadow
-        fromvars.append(var_shadow)
-    shadow.fromvars = tuple(fromvars)
-    return shadow
-
-
-def _local_vjp(node: TN, target: TN, i: int) -> TN:
-    """计算第 i 条入边的局部 VJP，即 J_iᵀ g_out。
-
-    梯度规则统一为 (result) -> tuple，按 fromvars 位置返回各来源的梯度。
-    target 可能是影子节点（共享数据、来源换成叶子），因此规则取自真实节点
-    node，而作用对象是 target。
-    """
-    rule = node._grad_rule
-    if rule is None:
-        raise RuntimeError(
-            f"node {type(node).__name__} has no gradient rule; "
-            "cannot compute local JVP"
-        )
-    grads = rule(target)
-    grad = grads[i] if i < len(grads) else None
-    if grad is None:
-        raise RuntimeError(f"gradient rule returned no gradient for source {i}")
-    return grad
-
-
-def _local_jvp_by_basis(node: TN, i: int, target: TN, tangent: TN) -> TN:
-    """梯度规则未建立计算图时的回退：用输出基向量显式构造局部 Jacobian。
-
-    全程使用张量运算（不经过 numpy），因此 CPU/CUDA 都适用：对输出的每个
-    基向量 k 求局部 VJP 得到 J_i 的第 k 列，堆叠为 (numel_in, numel_out) 的
-    转置矩阵，再与 tangent 相乘得到 J_i @ tangent。
-
-    参数:
-        node: 当前算子的输出节点，提供形状、dtype、device 与 numel。
-        i: 入边下标，对应 node.fromvars[i]。
-        target: 调用梯度规则的目标节点（真实节点或影子节点），其 _grad_value
-            会被临时改写为各基向量。
-        tangent: 与第 i 个输入同形的切向量。
-
-    返回:
-        与输出同形的张量：J_i @ tangent。
-    """
-    numel_out = node.numel()
-    basis = eye(numel_out, dtype=node.dtype, device=node.device)
-    cols = []
-    saved = target._grad_value
-    try:
-        for k in range(numel_out):
-            target._grad_value = basis[k].reshape(node.shape)
-            cols.append(_local_vjp(node, target, i).reshape(-1))
-    finally:
-        target._grad_value = saved
-    mat_t = stack(cols, dim=-1)
-    # 局部 VJP 登记的是共轭转置形式（梯度规则中对局部导数取 conj），
-    # 故此处用共轭转置还原 J；实数情形与 T 等价。
-    out = mat_t.mH @ tangent.reshape(-1)
-    return out.reshape(node.shape)
-
-
-def _local_jvp(node: TN, shadow: Optional[TN], i: int, tangent: TN,
-               create_graph: bool) -> TN:
-    """计算单个节点的局部 JVP：J_i @ tangent。
-
-    背景：每个算子只登记了梯度规则 node._grad_rule，它把 node 的余切 g_out
-    （与输出同形）映射为 g_in = J_iᵀ g_out（与输入同形），并没有前向规则。这里用
-    "对局部 VJP 再做一次反向"补出前向结果：
-
-    1. 以零值 g_out 调梯度规则，只为得到 g_in = J_iᵀ g_out 这张小图；
-    2. 小图对应线性映射 L(g) = J_iᵀ g，线性映射的 VJP 就是其转置，
-       (J_iᵀ)ᵀ = J_i；
-    3. 以 tangent 作为 g_in 的余切对 L 反向，得到 Lᵀ tangent = J_i @ tangent。
-
-    注意角色互换：node 的余切始终是 g_out；tangent 只在内层反向里充当 g_in
-    的余切，因此形状与输入一致，与输出同形的 g_out 无关。复数情形梯度规则
-    登记的是 J_iᴴ，两次共轭随两次转置一起抵消，结果同样是 J_i。
-
-    参数:
-        node: 前向图中的当前算子输出节点，node._grad_rule 给出各入边的
-            局部 VJP 规则。
-        shadow: node 的局部影子节点（共享底层数据、fromvars 换成叶子副本），
-            让内层反向只遍历当前算子；为 None 时退化为 node 本身。
-        i: 入边下标，同时索引 node.fromvars[i] 与梯度规则返回值。
-        tangent: 沿该入边传入的切向量，形状与第 i 个输入一致。
-        create_graph: 为 True 时保留内层反向的计算图以支持高阶导数，此时必须
-            使用真实节点（影子节点会与原始输入断链）。
-
-    返回:
-        与第 i 个输入同形的张量，即该条边上的局部 JVP：J_i @ tangent。
-    """
-    # create_graph=True 时必须真实节点上建图：若用影子节点，g_in 与原始输入
-    # 断开连接，高阶导数会丢失。其余情况用影子节点，使局部反传只遍历当前算子，
-    # 不回溯整张计算图。
-    target = node if create_graph else shadow
-    if target is None:
-        target = node
-    # 局部 VJP 关于输出余切是线性的，这里用零值 seed 只为拿到 g_in 的图结构
-    g_out = zeros_like(node, requires_grad=True)
-    saved = target._grad_value
-    target._grad_value = g_out
-    try:
-        g_in = _local_vjp(node, target, i)
-    finally:
-        target._grad_value = saved
-
-    if not isinstance(g_in, TN):
-        raise RuntimeError("gradient rule must return a tensor")
-    if g_in.requires_grad:
-        # 常规路径：梯度规则建了图，再反传一次即得 J_i @ tangent
-        return _grad(g_in, [g_out], grad_outputs=tangent,
-                     create_graph=create_graph, allow_unused=True)[0]
-    # 回退路径：梯度规则未建图（如梯度开关关闭），只能显式构造局部 Jacobian
-    return _local_jvp_by_basis(node, i, target, tangent)
-
 
 def _graph_topological_order(
         outputs: Union[TN, list, tuple]) -> list:
@@ -663,188 +519,8 @@ def _graph_topological_order(
     return order
 
 
-def _prepare_forward(run, primals, create_graph: bool):
-    """执行一次前向求值，并缓存可复用的计算图结构。
-
-    jacfwd 的每个输入基向量共享同一次前向与同一批影子节点，
-    从而避免为每个基向量重复构造相同的计算图。
-
-    参数:
-        run: 无参可调用对象，执行真实的 func 前向并返回单个 TN 或 TN 序列。
-        primals: 参与播种的可微输入张量序列（叶子在前）。
-        create_graph: 为 False 时预先构建影子节点；为 True 时跳过（局部 JVP 需要
-            在真实节点上建图）。
-
-    返回:
-        dict，键为：
-        primals: 参与播种的（可微）叶子张量
-        out_list / is_single_output: 前向输出
-        order: 拓扑序（叶子在前、输出在后）
-        shadow_map: id(node) -> 局部影子节点（仅 create_graph=False 时构建）
-    """
-    out_list, is_single_output = _call_and_split(run, ())
-
-    order = _graph_topological_order(out_list)
-    shadow_map = None
-    if not create_graph:
-        # create_graph=True 时不能建影子：局部 JVP 必须在真实节点上建图，
-        # 否则梯度与原始输入断开，高阶导数失效。
-        # leaf_map 保证同一原始张量只生成一个叶子副本，
-        # 使影子节点内部对同一输入的多处引用保持一致。
-        leaf_map = {}
-        shadow_map = {}
-        for node in order:
-            if node.fromvars:
-                shadow_map[id(node)] = _make_shadow(node, leaf_map)
-    return {
-        'primals': list(primals),
-        'out_list': out_list,
-        'is_single_output': is_single_output,
-        'order': order,
-        'shadow_map': shadow_map,
-    }
-
-
-def _jvp_with_prepared(prepared, tangents, create_graph: bool, strict: bool):
-    """在已准备好的前向计算图上传播一组 tangent。
-
-    tangents 与 prepared['primals'] 一一对应，元素为 None 表示该输入的
-    tangent 为零（跳过，不做任何传播）。
-
-    参数:
-        prepared: _prepare_forward 的返回值（前向输出、拓扑序、影子节点等）。
-        tangents: 切向量序列，与 prepared['primals'] 一一对应；None 表示零方向。
-        create_graph: 是否为高阶导数保留内层反向的计算图。
-        strict: 为 True 时，若某输出与某输入完全不连通则报错。
-
-    返回:
-        单输出时返回 (输出张量, tangent 张量)；多输出时返回
-        (tuple[输出], tuple[tangent])，与输入输出数量对应。
-    """
-    primals = prepared['primals']
-    out_list = prepared['out_list']
-    shadow_map = prepared['shadow_map']
-
-    # 播种：同一个张量对象可能占据多个输入位置（如 f(x, x)），
-    # 此时 tangent 必须相加；seed_mask 的第 k 位记录“该节点依赖第 k 个输入”，
-    # 供 strict 独立性检查使用。
-    seed_tangent = {}
-    seed_mask = {}
-    for k, (inp, vec) in enumerate(zip(primals, tangents)):
-        if vec is None:
-            continue
-        inp_id = id(inp)
-        if inp_id in seed_tangent:
-            seed_tangent[inp_id] = seed_tangent[inp_id] + vec
-            seed_mask[inp_id] |= 1 << k
-        else:
-            seed_tangent[inp_id] = vec
-            seed_mask[inp_id] = 1 << k
-
-    # 沿拓扑序（叶子 -> 输出）正向传播；每个节点的 tangent 由其各条入边
-    # 的局部 JVP 结果累加得到（链式法则在多入边时表现为求和）。
-    # node_mask 是依赖关系位掩码：只要任一输入的 bit 被置位，输出就继承。
-    node_tangent = {}
-    node_mask = {}
-    for node in prepared['order']:
-        node_id = id(node)
-        if node_id in seed_tangent:
-            node_tangent[node_id] = seed_tangent[node_id]
-            node_mask[node_id] = seed_mask[node_id]
-            continue
-
-        acc = None
-        mask = 0
-        if node.fromvars:
-            shadow = None if shadow_map is None else shadow_map.get(node_id)
-            for i, var in enumerate(node.fromvars):
-                if not isinstance(var, TN):
-                    continue
-                var_id = id(var)
-                mask |= node_mask.get(var_id, 0)
-                tangent = node_tangent.get(var_id)
-                if tangent is None:
-                    # 该入边 tangent 为零：跳过，不必构造 zeros_like 参与运算
-                    continue
-                local = _local_jvp(node, shadow, i, tangent, create_graph)
-                acc = local if acc is None else acc + local
-        node_tangent[node_id] = acc
-        node_mask[node_id] = mask
-
-    if strict:
-        # strict 语义（与 torch.func 一致）：某个输出对某个输入完全不依赖时报错。
-        # 这里用“输出节点的依赖位掩码中第 k 位是否为 1”来判断。
-        for k in range(len(primals)):
-            for j, out in enumerate(out_list):
-                if not (node_mask.get(id(out), 0) >> k) & 1:
-                    raise RuntimeError(
-                        f"Output {j} is independent of input {k}")
-
-    # 与输入无关的输出，其 tangent 为零张量
-    results = []
-    for out in out_list:
-        tangent = node_tangent.get(id(out))
-        results.append(zeros_like(out) if tangent is None else tangent)
-
-    if prepared['is_single_output']:
-        return out_list[0], results[0]
-    return tuple(out_list), tuple(results)
-
-
-def jvp2(func: Callable[..., Union[TN, tuple[TN, ...]]],
-         primals: Union[TN, list[TN], tuple[TN, ...]],
-         tangents: Union[TN, list[TN], tuple[TN, ...]],
-         create_graph: bool = False,
-         strict: bool = False) -> tuple[Union[TN, tuple[TN, ...]], Union[TN, tuple[TN, ...]]]:
-    """Jacobian-vector 积（前向模式，基于局部 VJP 转置的旧实现）。
-
-    先执行 func 的前向计算，再沿计算图从输入到输出正向传播 tangent，
-    得到 J(x)·v。返回 (输出值, JVP 结果)。
-
-    参数:
-        func: 待求方向导数的函数，输入为 TN，输出为单个 TN 或 TN 序列。
-        primals: 求值点输入，单个 TN 或 TN 序列，顺序与 func 的入参一致。
-        tangents: 切向量，结构须与 primals 一致；仅当 primals 为单个输入时可传
-            None，等价于以全 1 向量作为方向（0 维输入即标量 1.0）。
-        create_graph: 为 True 时保留计算图，JVP 结果可继续求导（高阶导数）。
-        strict: 为 True 时，若某输出与某输入完全不连通则抛 RuntimeError。
-
-    返回:
-        (输出值, JVP 结果)。输出值结构与 func 的返回一致（单输出为 TN，
-        多输出为 tuple）；JVP 结果即 J(x)·v，结构与输出值一致。
-    """
-    is_single_input = not isinstance(primals, (list, tuple))
-    if is_single_input:
-        primals = [primals]
-        if tangents is None:
-            # 全 1 方向：0 维输入即标量 1.0，向量输入则逐元素为 1
-            tangents = [ones_like(primals[0], requires_grad=create_graph)]
-        else:
-            tangents = [tangents]
-    else:
-        primals = list(primals)
-        if tangents is None:
-            raise RuntimeError("v must be provided when func has multiple inputs")
-        tangents = list(tangents)
-
-    if len(primals) != len(tangents):
-        raise RuntimeError(f"Expected {len(primals)} tangents, got {len(tangents)}")
-    for i, (inp, vec) in enumerate(zip(primals, tangents)):
-        if not isinstance(inp, TN):
-            raise RuntimeError(f"Input {i} must be a tensor")
-        if not isinstance(vec, TN):
-            raise RuntimeError(f"v[{i}] must be a tensor")
-        if inp.shape != vec.shape:
-            raise RuntimeError(
-                f"Shapes of input {i} ({inp.shape}) and v[{i}] ({vec.shape}) do not match")
-
-    traceable = _ensure_traceable(primals)
-    prepared = _prepare_forward(lambda: func(*traceable), traceable, create_graph)
-    return _jvp_with_prepared(prepared, tangents, create_graph, strict)
-
-
 def _seed_primals_for_jvp(primals, create_graph):
-    """为 jvp 准备输入：按 create_graph 决定是否把输入转成可微叶子。
+    """为前向模式（jvp/jacfwd）准备输入：按 create_graph 决定是否把输入转成可微叶子。
 
     背景：一次 jvp 分两个阶段——PRIMAL 阶段记录原函数的图，TANGENT 阶段
     传播切向量。前向请求存在期间始终记录计算图（见 forward_ad_trace_active），
@@ -855,6 +531,11 @@ def _seed_primals_for_jvp(primals, create_graph):
         该表达式的 TN 节点也不会 requires_grad，之后无法再用 func.grad 等
         求二阶导；把 x 换成 requires_grad=True 的叶子后，这些节点才会按普通
         反向图规则记录 fromvars/_grad_rule，tangent 即可继续求导。
+
+    调用时机：
+      必须在压入本次 JVPFrame 之前调用（见 _record_primal）。分支 3 依赖
+      forward_ad_trace_active() 判断是否存在外层前向上下文；若压栈后再调用，
+      本次请求会被误判为“外层”，从而跳过播种，导致嵌套/高阶结果错误。
 
     分支逻辑：
       1. create_graph=False：原样返回。tangent 只做纯数值传播，不改变输入
@@ -1123,6 +804,26 @@ def _prune_zero_tangent(vec):
     return None if not bool(vec._array.any()) else vec
 
 
+@contextmanager
+def _tangent_phase(frame):
+    """在 TANGENT 阶段把 frame 压入前向栈，退出时出栈并清空中间表。
+
+    传播期间栈保持非空，jvp_rule 内部构造的 tangent 表达式才会继续记录图，
+    使结果可再求导；退出时清空 node_tangent/dependency_mask，避免 frame 被
+    长期引用（linearize 闭包、原地步骤表都持有 frame 身份）时留住整张图。
+    """
+    frame.node_tangent.clear()
+    frame.dependency_mask.clear()
+    set_jvp_phase(frame, TANGENT)
+    token = push_jvp_frame(frame)
+    try:
+        yield frame
+    finally:
+        frame.node_tangent.clear()
+        frame.dependency_mask.clear()
+        pop_jvp_frame(token)
+
+
 def _jvp_with_primal_graph(state, tangents, strict: bool):
     """在已记录的 primal 图上传播一组 tangent，多个方向可反复调用。
 
@@ -1144,23 +845,11 @@ def _jvp_with_primal_graph(state, tangents, strict: bool):
     if not strict:
         tangents = [_prune_zero_tangent(vec) for vec in tangents]
     frame = state['frame']
-    frame.node_tangent.clear()
-    frame.dependency_mask.clear()
     # 切到 TANGENT 后栈仍非空，trace 保持为真：jvp_rule 内部构造的 TN 运算
     # 会继续记录 fromvars/_jvp_rule，使 tangent 表达式可再求导。
-    set_jvp_phase(frame, TANGENT)
-    token = push_jvp_frame(frame)
-    try:
+    with _tangent_phase(frame):
         return _propagate_jvp(frame, state['order'], state['inputs'],
                               tangents, strict, state['out_list'])
-    finally:
-        pop_jvp_frame(token)
-        # 传播结果已全部物化进返回值，这里立即清空本方向的中间表：下次方向
-        # 开头同样会清空，提前释放可避免 frame 被长期引用（linearize 闭包、
-        # 原地步骤 node._inplace_jvp_steps 都持有 frame 身份）时，把整张图的
-        # tangent 及其数据一起留住。
-        frame.node_tangent.clear()
-        frame.dependency_mask.clear()
 
 
 def jvp(func: Callable[..., Union[TN, tuple[TN, ...]]],
@@ -1328,23 +1017,32 @@ def linearize(func: Callable[..., Union[TN, tuple[TN, ...]]],
     前向只求值一次并记录 primal 图；随后可用不同的切向量多次调用 linear_fn，
     每次沿同一张图传播 tangent，得到 J(x)·v。等价于对 func 做一次前向 AD 的
     “常量项 + 线性项”分解：``func(x + v) ≈ primal_out + linear_fn(v)``
-    （忽略高阶项）。与 torch.func.linearize 对齐。
+    （忽略高阶项）。接口与 torch.func.linearize 对齐，行为差异见“注意”。
 
     参数:
-        func: 待线性化的函数，输入为 TN，输出为单个 TN 或 TN 序列。
-        *primals: 求值点输入，按 func 的位置参数顺序给出，必须都是 TN。
+        func: 待线性化的纯函数（无随机性或副作用），输入为 TN，输出为单个
+            TN 或 TN 序列。前向只执行一次，副作用/随机数不会被后续
+            linear_fn 调用重复触发。
+        *primals: 求值点输入，按 func 的位置参数顺序给出，必须都是 TN；
+            至少需要一个（torch.func.linearize 允许零输入，这里不支持）。
 
     返回:
         (primal_out, linear_fn)：
             - primal_out 与 func 的返回结构一致（单输出为 TN，多输出为 tuple）；
             - linear_fn(*tangents) 返回 J(x)·v，结构同 primal_out；
               tangents 的个数与形状必须和 primals 一一对应，元素可为 None
-              （表示该输入方向为零，传播时跳过其整棵子树）。
+              （表示该输入方向为零，传播时跳过其整棵子树；torch.func 不支持
+              传 None）。
 
     注意:
-        linear_fn 对 tangents 是线性映射（只保留一阶依赖），因此结果可再求
-        一阶导；对 linear_fn 再求二阶导恒为零张量（与 torch.func 一致）。
-        需要真实高阶导数请对原始 func 使用 ``jvp`` / ``grad``。
+        - linear_fn 对 tangents 是线性映射：当 tangent 或 primals 本身可微时，
+          结果可继续求导；而对 tangents 再求二阶导恒为零张量（与 torch.func
+          一致）。
+        - 当 primals 本身 requires_grad=True 时，Riemann 的 linear_fn 输出仍与
+          primals 相连，可继续对 primals 求导得到 H(x)·v；torch.func.linearize
+          会切断这一依赖（对 primals 求导时报 unused）。这是与 torch 的行为差异。
+        - 需要真实的高阶导数（尤其是对 primals 的二阶及以上）请对原始 func
+          使用 ``jvp`` / ``grad``，不要把 linearize 当作通用的高阶求导入口。
     """
     if not primals:
         raise RuntimeError("linearize requires at least one input")
@@ -1379,7 +1077,8 @@ def linearize(func: Callable[..., Union[TN, tuple[TN, ...]]],
 def _identity_basis(numel: int, shape, dtype, device) -> TN:
     """构造 numel 个标准基向量，形状为 (numel,) + shape。
 
-    用一次 eye 填充整个 (numel, numel) 平面，避免 numel 次逐元素赋值。
+    一次向量化写入对角线，不额外分配 numel×numel 的 eye 矩阵，
+    也避免 numel 次逐元素赋值。
 
     参数:
         numel: 展平后的元素个数，也是基向量个数。
@@ -1392,7 +1091,9 @@ def _identity_basis(numel: int, shape, dtype, device) -> TN:
     """
     basis = zeros(numel, *shape, dtype=dtype, device=device)
     arrlib = basis._get_array_lib()
-    basis._array.reshape(numel, numel)[...] = arrlib.eye(numel, dtype=dtype)
+    flat = basis._array.reshape(numel, numel)
+    idx = arrlib.arange(numel)
+    flat[idx, idx] = 1
     return basis
 
 
@@ -1416,8 +1117,10 @@ def _identity_basis_chunk(start: int, count: int, flat_numel: int,
     """
     basis = zeros(count, *shape, dtype=dtype, device=device)
     flat = basis._array.reshape(count, flat_numel)
-    for i in range(count):
-        flat[i, start + i] = 1
+    # 一次高级索引写入 count 个对角元素；逐行赋值在 CUDA 上会变成
+    # count 次 kernel 启动。
+    idx = basis._get_array_lib().arange(count)
+    flat[idx, start + idx] = 1
     return basis
 
 
@@ -1511,8 +1214,7 @@ def _basis_column(inp: TN, k: int) -> TN:
     return basis
 
 
-def _jacobian_via_jvp(func, args, positions,
-                      chunk_size: Optional[int] = None):
+def _jacobian_via_jvp(func, args, positions):
     """用直接前向规则的 jvp 原语计算 Jacobian：对每个输入基向量做一次 JVP。
 
     等价于 vmap(jvp)，并按 linearize 方式复用 primal 图：``func`` 只前向
@@ -1526,8 +1228,6 @@ def _jacobian_via_jvp(func, args, positions,
         func: 待求 Jacobian 的函数。
         args: 完整实参序列（含非张量参数，非张量原样透传）。
         positions: 需要求导的参数位置序列。
-        chunk_size: 每次处理多少个输入基向量；None 表示一次性处理全部。
-            分块只影响列的堆叠方式，结果与不分块一致。
 
     返回:
         (blocks, is_single_output)。blocks[k][j] 是第 k 个被选中输入对第 j 个
@@ -1553,37 +1253,38 @@ def _jacobian_via_jvp(func, args, positions,
     # primal 图只建一次，所有列（含多个 argnums 位置）共享
     state = _record_primal(_func_from_primals, primals, True, False)
     out_list = state['out_list']
-    n_primals = len(primals)
+    inputs = state['inputs']
+    order = state['order']
+    n_primals = len(inputs)
 
     blocks = []
-    for slot in slots:
-        inp = primals[slot]
-        numel = inp.numel()
-        if numel == 0:
-            blocks.append([zeros(out.shape + inp.shape, dtype=out.dtype,
-                                 device=out.device) for out in out_list])
-            continue
+    # 所有列共用同一个 TANGENT 上下文，避免逐列重复 push/pop ContextVar。
+    # 基向量确定非零，直接调用 _propagate_jvp，跳过 _prune_zero_tangent 扫描。
+    with _tangent_phase(state['frame']) as frame:
+        for slot in slots:
+            inp = inputs[slot]
+            numel = inp.numel()
+            if numel == 0:
+                blocks.append([zeros(out.shape + inp.shape, dtype=out.dtype,
+                                     device=out.device) for out in out_list])
+                continue
 
-        cols = [[] for _ in out_list]
-        step = numel if chunk_size is None else chunk_size
-        for start in range(0, numel, step):
-            stop = builtins.min(start + step, numel)
-            local = [[] for _ in out_list]
-            for k in range(start, stop):
+            cols = [[] for _ in out_list]
+            for k in range(numel):
+                # 每个方向独立：清空上一列的 tangent 表
+                frame.node_tangent.clear()
+                frame.dependency_mask.clear()
                 tangents = [None] * n_primals
                 tangents[slot] = _basis_column(inp, k)
-                results = _jvp_with_primal_graph(state, tangents, False)
+                results = _propagate_jvp(frame, order, inputs, tangents,
+                                         False, out_list)
                 for j, res in enumerate(results):
-                    local[j].append(res)
-            # 每块内沿最后一维堆叠为 (*out.shape, count)，块间再沿最后一维拼接
-            for j, chunk in enumerate(local):
-                cols[j].append(stack(chunk, dim=-1))
+                    cols[j].append(res)
 
-        # 每列结果的形状与 out 相同；沿最后一维堆叠得到 (*out.shape, numel)，
-        # 再 reshape 成 (*out.shape, *inp.shape)，即第 k 个输入维度在末尾。
-        blocks.append([(col[0] if len(col) == 1 else cat(col, dim=-1)
-                        ).reshape(out.shape + inp.shape)
-                       for col, out in zip(cols, out_list)])
+            # 每列结果的形状与 out 相同；沿最后一维堆叠得到 (*out.shape, numel)，
+            # 再 reshape 成 (*out.shape, *inp.shape)，即第 k 个输入维度在末尾。
+            blocks.append([stack(col, dim=-1).reshape(out.shape + inp.shape)
+                           for col, out in zip(cols, out_list)])
 
     return blocks, state['is_single_output']
 
@@ -1624,7 +1325,7 @@ def _make_jacobian(compute_blocks, func, argnums, allow_none: bool,
         argnums: 需要求导的参数位置，int、tuple[int, ...]；allow_none 时可为 None。
         allow_none: 是否允许 None 表示全部参数（jacfwd 支持，与 torch.func 一致）。
         has_aux: 为 True 时 func 返回 (output, aux)，结果返回 (jacobian, aux)。
-        **opts: 透传给 compute_blocks 的选项（strict / chunk_size）。
+        **opts: 透传给 compute_blocks 的选项（如 strict / chunk_size）。
 
     返回:
         Callable：接受与 func 相同的参数，返回 _format_jacobian 整理后的结果。
@@ -1863,8 +1564,8 @@ def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
         randomness: 仅占位，接受 'error' / 'different' / 'same'（非法值在创建
              包裹函数时抛 RuntimeError，错误信息与 torch.func 一致）；当前不做
              随机性重参数化。
-        chunk_size: 关键字参数。每次处理的批次样本数；None 表示一次处理整个批次。
-             分块只改变循环与堆叠的粒度，结果与不分块一致。
+        chunk_size: 关键字参数。每批参与执行与堆叠的样本数；None 表示一次处理
+             整个批次。分块可限制中间样本的峰值内存，结果与不分块一致。
 
     返回:
         包裹函数，接受批次输入，返回批次输出。
@@ -1873,7 +1574,10 @@ def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
         - 切片使用内部 _batch_slice：等价于 inputs[batch_idx]，但跳过通用索引分派
         - 批次维通常是 dim=0；若指定 dim>0，切片索引为 (slice(None),)*d + (b,) + ...
         - 非批处理输入（in_dims 对应元素为 None）直接透传给底层 func
-        - 输出需要梯度时用 stack 保留拼接的梯度边；纯前向时预分配缓冲写入
+        - 需要反向梯度或处于前向追踪时用 stack 保留拼接的梯度/JVP 边；
+          纯前向时预分配最终输出并逐样本写入，避免保留整批样本
+        - 批量维长度为 0 时抛 ValueError：loop 式实现无法在不执行 func 的
+          情况下推断输出形状
     """
     _check_randomness(randomness)
     if chunk_size is not None and (not isinstance(chunk_size, int) or chunk_size <= 0):
@@ -1964,6 +1668,11 @@ def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
                 f"dimension, got sizes {sizes} for the mapped dimension")
         batch_size = sizes[0] if sizes else None
 
+        if batch_size == 0:
+            raise ValueError(
+                "vmap: batch size 0 is not supported by the loop-based "
+                "implementation (cannot infer output shape without executing func)")
+
         if batch_size is None:
             # 没有批处理维度 — 直接调用 func
             return func(*args, **kwargs)
@@ -1979,9 +1688,9 @@ def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
                 ndim, d = plan
                 prefixes.append((full * d, full * (ndim - d - 1)))
 
-        outputs_list = []
         sliced_args = list(args)   # 复用容器，循环内只替换需要切片的元素
-        for b in range(batch_size):
+
+        def _run_sample(b):
             for k, plan in enumerate(plans):
                 if plan is None:
                     sliced_args[k] = args[k]
@@ -1989,62 +1698,78 @@ def vmap(func: Callable[..., Union[TN, tuple[TN, ...]]],
                     pre, post = prefixes[k]
                     # _batch_slice 等价于 a[idx]，但跳过通用索引分派
                     sliced_args[k] = _batch_slice(args[k], pre + (b,) + post)
-            outputs_list.append(func(*sliced_args, **kwargs))
+            return func(*sliced_args, **kwargs)
 
-        # 按 chunk_size 切分批次结果；None 表示整批一个 chunk
-        step = batch_size if chunk_size is None else chunk_size
-        chunks = [outputs_list[s:s + step] for s in range(0, batch_size, step)]
-
-        # 堆叠结果
-        first_out = chunks[0][0]
+        # 先执行首个样本，确定输出结构与批次维位置
+        first_out = _run_sample(0)
         is_single = isinstance(first_out, TN)
-        out_dims_list = _normalize_out_dims(out_dims, 1 if is_single else len(first_out))
+        first_outs = [first_out] if is_single else list(first_out)
+        out_dims_list = _normalize_out_dims(out_dims, len(first_outs))
 
-        def _stack_result(items, out_dim):
-            axis = out_dim if out_dim is not None else 0
-            # 存在梯度需求时必须用 stack：它登记了拼接的梯度边，
-            # 否则 grad/vjp 无法回传到批输入。
-            if any(it.requires_grad for it in items):
-                return stack(items, dim=axis)
-            # 纯前向场景：预分配输出缓冲并逐样本写入，省去 stack 的
-            # 逐项校验与拼接开销。形状/dtype 不一致时回退到 stack。
-            first = items[0]
-            ref_shape, ref_dtype = first.shape, first.dtype
-            if any(it.shape != ref_shape or it.dtype != ref_dtype for it in items):
-                return stack(items, dim=axis)
-            ndim = len(ref_shape) + 1
-            ax = axis if axis >= 0 else ndim + axis
-            shape = list(ref_shape)
-            shape.insert(ax, len(items))
-            buf = zeros(tuple(shape), dtype=ref_dtype, device=first.device)
-            prefix = (slice(None),) * ax
-            for b, it in enumerate(items):
-                buf._array[prefix + (b,)] = it._array
-            return buf
+        for oi, sample in enumerate(first_outs):
+            if not isinstance(sample, TN):
+                raise ValueError(
+                    f"vmap: output {oi} must be a Tensor, got {type(sample)}")
+            ndim = sample.ndim + 1
+            od = out_dims_list[oi]
+            if od < -ndim or od >= ndim:
+                raise ValueError(
+                    f"vmap: out_dim={od} is out of range for output {oi} "
+                    f"with dimensionality {sample.ndim}; expected "
+                    f"-{ndim} <= out_dim <= {ndim - 1}")
 
-        def _stack_chunks(per_chunk, out_dim, sample_ndim):
-            """先逐 chunk 堆叠，再把多个 chunk 沿同一批次维拼接。"""
-            stacked = [_stack_result(items, out_dim) for items in per_chunk]
-            if len(stacked) == 1:
-                return stacked[0]
-            ndim = sample_ndim + 1
-            ax = (out_dim if out_dim is not None else 0)
-            if ax < 0:
-                ax += ndim
-            return cat(stacked, dim=ax)
+        def _axis(oi):
+            """输出 oi 的批次维在结果中的非负下标。"""
+            ndim = first_outs[oi].ndim + 1
+            od = out_dims_list[oi]
+            return od if od >= 0 else od + ndim
 
-        if is_single:
-            return _stack_chunks(chunks, out_dims_list[0], len(first_out.shape))
-        else:
-            n_out = len(first_out)
-            result = []
-            for oi in range(n_out):
-                per_chunk = [[out[oi] for out in items] for items in chunks]
-                result.append(_stack_chunks(
-                    per_chunk,
-                    out_dims_list[oi] if oi < len(out_dims_list) else 0,
-                    len(first_out[oi].shape)))
-            return tuple(result)
+        # 反向梯度或前向追踪都必须经 stack 建边，否则无法回传到批输入
+        needs_graph = forward_ad_trace_active() or builtins.any(
+            o.requires_grad for o in first_outs)
+
+        if not needs_graph:
+            # 纯前向：预分配最终输出并逐样本直接写入，不保留整批样本
+            bufs, write_prefixes = [], []
+            for oi, sample in enumerate(first_outs):
+                ax = _axis(oi)
+                shape = list(sample.shape)
+                shape.insert(ax, batch_size)
+                bufs.append(zeros(tuple(shape), dtype=sample.dtype,
+                                  device=sample.device))
+                write_prefixes.append((slice(None),) * ax)
+                bufs[oi]._array[write_prefixes[oi] + (0,)] = sample._array
+
+            n_out = len(first_outs)
+            for b in range(1, batch_size):
+                out_b = _run_sample(b)
+                outs_b = [out_b] if is_single else out_b
+                for oi in range(n_out):
+                    sample, ref = outs_b[oi], first_outs[oi]
+                    if sample.shape != ref.shape or sample.dtype != ref.dtype:
+                        raise ValueError(
+                            "vmap: all outputs must have the same shape and dtype "
+                            f"across the batch; output {oi} changed at index {b}")
+                    bufs[oi]._array[write_prefixes[oi] + (b,)] = sample._array
+            return bufs[0] if is_single else tuple(bufs)
+
+        # 需要建图：按 chunk 执行并堆叠，样本只在当前 chunk 内驻留
+        step = batch_size if chunk_size is None else builtins.min(chunk_size, batch_size)
+        stacked = [[] for _ in first_outs]
+        for start in range(0, batch_size, step):
+            stop = builtins.min(start + step, batch_size)
+            items = [first_out] if start == 0 else []
+            for b in range(start + (1 if start == 0 else 0), stop):
+                items.append(_run_sample(b))
+            for oi in range(len(first_outs)):
+                parts = [it if is_single else it[oi] for it in items]
+                stacked[oi].append(stack(parts, dim=_axis(oi)))
+
+        results = []
+        for oi, parts in enumerate(stacked):
+            results.append(parts[0] if len(parts) == 1
+                           else cat(parts, dim=_axis(oi)))
+        return results[0] if is_single else tuple(results)
 
     return _wrapper
 
@@ -2203,7 +1928,8 @@ def functional_call(module: Any,
              如 "weight"、"l1.bias"；参数与缓冲区可放在同一个字典里，也可以
              传入多个互不重叠的字典。传 None 表示使用 module 自身状态。
              为兼容旧用法，也接受按 named_parameters() 顺序排列的 TN / TN 序列。
-        args: forward 的位置参数；None 表示无参数，单个 TN 不会被解包
+        args: forward 的位置参数；None 表示无参数。与 torch 一致，非 tuple 入参
+             （单个 TN、list 等）会整体作为一个位置参数传入，不会被展开。
         kwargs: forward 的关键字参数
         tie_weights: 为 True 时尊重模块中原有的权重绑定：只提供绑定组中的一个
              名字也会同步更新同组的其他名字；若同一组给出不同对象则报错。
@@ -2217,39 +1943,23 @@ def functional_call(module: Any,
     if kwargs is None:
         kwargs = {}
 
-    # 归一化 args：None -> ()；单个 TN 不被解包；list 视为位置参数序列
+    # 归一化 args：None -> ()；其余非 tuple 入参（单个 TN、list 等）
+    # 与 torch 一致，整体作为单个位置参数传入
     if args is None:
         args = ()
-    elif isinstance(args, TN):
+    elif not isinstance(args, tuple):
         args = (args,)
-    elif isinstance(args, list):
-        args = tuple(args)
 
     forward = getattr(module, "forward", None) or module
 
     params, buffers = _named_state(module)
     if parameter_and_buffer_dicts is None:
         return forward(*args, **kwargs)
-    if not params and not buffers:
-        return forward(*args, **kwargs)
 
     state = _normalize_state_dicts(parameter_and_buffer_dicts, params)
 
-    all_names = [n for n, _ in params] + [n for n, _ in buffers]
-    if strict:
-        missing = sorted(set(all_names) - set(state))
-        unexpected = sorted(set(state) - set(all_names))
-        if missing or unexpected:
-            msgs = []
-            if unexpected:
-                msgs.append(f"Unexpected key(s): {', '.join(map(repr, unexpected))}.")
-            if missing:
-                msgs.append(f"Missing key(s): {', '.join(map(repr, missing))}.")
-            raise RuntimeError(
-                "Error(s) in reparametrizing for {}:\n\t{}".format(
-                    type(module).__name__, "\n\t".join(msgs)))
-
-    # 权重绑定：同一底层张量对应多个名字时补齐未提供的名字，并检查冲突值
+    # 权重绑定先补齐：这样 strict 校验可把"绑定组中任一名已提供"视为满足
+    # （与 torch 一致），冲突值也会先于 missing/unexpected 报出。
     if tie_weights:
         groups = {}
         for name, tensor in list(params) + list(buffers):
@@ -2268,6 +1978,20 @@ def functional_call(module: Any,
                         "which are tied. Consider using tie_weights=False")
             for n in names:
                 state[n] = first_value
+
+    all_names = [n for n, _ in params] + [n for n, _ in buffers]
+    if strict:
+        missing = sorted(set(all_names) - set(state))
+        unexpected = sorted(set(state) - set(all_names))
+        if missing or unexpected:
+            msgs = []
+            if unexpected:
+                msgs.append(f"Unexpected key(s): {', '.join(map(repr, unexpected))}.")
+            if missing:
+                msgs.append(f"Missing key(s): {', '.join(map(repr, missing))}.")
+            raise RuntimeError(
+                "Error(s) in reparametrizing for {}:\n\t{}".format(
+                    type(module).__name__, "\n\t".join(msgs)))
 
     # 临时替换并记录原值；finally 中恢复，保证前向抛异常也不污染模块
     slots = []
@@ -2292,6 +2016,8 @@ def stack_module_state(models: Any):
 
     与 torch.func.stack_module_state 对齐：返回 (params, buffers) 两个
     {名称: 堆叠张量} 字典，可直接配合 functional_call 在 vmap 下做模型集成。
+    与 torch 一致，绑定（同一对象）的多个名字只保留首次出现的名字；堆叠后的
+    字典可交给 functional_call（默认 tie_weights=True）重新补齐其余别名。
 
     参数:
         models: Module 序列或 ModuleList，至少一个；所有模型必须同类、同
@@ -2316,6 +2042,22 @@ def stack_module_state(models: Any):
         raise RuntimeError(
             "stack_module_state: Expected all models to be of the same class.")
 
+    def _named_unique(module, kind):
+        # 与 torch 的 remove_duplicate=True 一致：绑定（同一对象）的多个名字
+        # 只保留首次出现的名字，避免堆叠后变成彼此独立的新张量。
+        if kind == "parameter":
+            items = module.named_parameters()
+        else:
+            items = (module.named_buffers()
+                     if hasattr(module, "named_buffers") else ())
+        unique, seen = {}, set()
+        for name, tensor in items:
+            if id(tensor) in seen:
+                continue
+            seen.add(id(tensor))
+            unique[name] = tensor
+        return unique
+
     def _stack_named(dicts, kind):
         names = list(dicts[0])
         expected = set(names)
@@ -2338,7 +2080,6 @@ def stack_module_state(models: Any):
             stacked[name] = value
         return stacked
 
-    all_params = [dict(m.named_parameters()) for m in models]
-    all_buffers = [dict(m.named_buffers()) if hasattr(m, "named_buffers") else {}
-                   for m in models]
+    all_params = [_named_unique(m, "parameter") for m in models]
+    all_buffers = [_named_unique(m, "buffer") for m in models]
     return _stack_named(all_params, "parameter"), _stack_named(all_buffers, "buffer")

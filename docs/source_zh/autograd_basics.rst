@@ -1,7 +1,7 @@
 自动求导基础
 ============
 
-Riemann 的自动求导引擎能够自动记录张量计算的过程，形成计算图，并通过反向传播算法高效地计算导数。这对于训练神经网络和其他优化任务至关重要。
+Riemann 的自动求导引擎能够自动记录张量计算的过程，形成计算图，并可通过反向传播（反向模式）或前向传播方向导数（前向模式）高效地计算导数。下文详述反向模式——神经网络框架训练所采用的机制；前向模式以雅可比-向量积的形式由 ``func.jvp`` 与 ``autograd.functional.jvp`` 提供。两种模式均支持高阶求导。这对于训练神经网络和其他优化任务至关重要。
 
 **核心概念**
 
@@ -19,7 +19,7 @@ Riemann 的自动求导引擎能够自动记录张量计算的过程，形成计
 
 **梯度计算方法**
 
-Riemann 提供了两种计算梯度的方法：
+反向模式下，Riemann 提供了两种计算梯度的方法：
 
 1. **backward() 方法**: 适合一次求出多个张量的梯度。调用后，所有参与计算的叶子节点张量的梯度会被计算并存储在各自的 ``grad`` 属性中。
 
@@ -703,7 +703,7 @@ Riemann 支持通过设置 ``create_graph=True`` 来计算高阶导数：
 
     print(f.d(x))                 # 梯度向量 [3, 12, 27]
     print(f.d(x, x))              # Hessian 矩阵 diag([6, 12, 18])
-    print(f.d((x, 3)))            # 三阶张量 shape=(3,3,3)，对角线 [24, 48, 72]
+    print(f.d((x, 3)))            # 三阶张量 shape=(3,3,3)，对角线 [6, 6, 6]
 
     # === 多向量混合偏导 ===
     x = rm.tensor([1., 2.], requires_grad=True)
@@ -1935,13 +1935,17 @@ func 模块求导函数
 
 **参数**: 
 
-- func：待线性化的函数，输入为张量，输出为单个张量或张量元组
-- primals：求值点输入，按 ``func`` 的位置参数顺序给出，必须都是张量
+- func：待线性化的纯函数（无随机性或副作用），输入为张量，输出为单个张量或张量元组。前向只执行一次，副作用/随机数不会被后续 ``linear_fn`` 调用重复触发
+- primals：求值点输入，按 ``func`` 的位置参数顺序给出，必须都是张量；至少需要一个（``torch.func.linearize`` 允许零输入，Riemann 不支持）
 
 **返回**: ``(primal_out, linear_fn)``。``primal_out`` 与 ``func`` 的返回结构一致；
-``linear_fn(*tangents)`` 返回 ``J(x)·v``，tangent 的个数与形状必须和 ``primals`` 一一对应
+``linear_fn(*tangents)`` 返回 ``J(x)·v``，tangent 的个数与形状必须和 ``primals`` 一一对应；
+元素可为 ``None``（表示该输入方向为零，传播时跳过其整棵子树；``torch.func`` 不支持传 ``None``）
 
-``linear_fn`` 对 tangent 是线性映射（只保留一阶依赖），因此其结果可再求一阶导，而对 ``linear_fn`` 再求二阶导恒为**零张量**（与 ``torch.func`` 一致）。需要真实高阶导数请对原始 ``func`` 使用 ``grad`` / ``jvp``。
+``linear_fn`` 对 tangent 是线性映射：tangent 或 primals 本身可微时结果可继续求导，而对 tangents 再求二阶导恒为**零张量**（与 ``torch.func`` 一致）。注意：
+
+- 当 ``primals`` 本身 ``requires_grad=True`` 时，Riemann 的 ``linear_fn`` 输出仍与 primals 相连，可继续对 primals 求导得到 ``H(x)·v``；``torch.func.linearize`` 会切断这一依赖（对 primals 求导时报 unused）——这是与 torch 的行为差异
+- 需要真实的高阶导数（尤其是对 primals 的二阶及以上）请对原始 ``func`` 使用 ``grad`` / ``jvp``，不要把 ``linearize`` 当作通用高阶入口
 
 **示例**: 
 
@@ -1997,7 +2001,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     # 标量输出 f: R^3 -> R，Jacobian 形状为 (1, 3) — 等价于梯度
     f = lambda x: (x ** 3).sum()
     jac = func.jacrev(f)(rm.tensor([1., 2., 3.], requires_grad=True))
-    print(jac.shape)  # (3,) —— 单元素输入被 unwrap
+    print(jac.shape)  # (3,) —— 标量输出被 unwrap（去掉输出维度）
     print(jac)        # [3., 12., 27.]
 
     # 向量输出 f: R^3 -> R^2，Jacobian 形状为 (2, 3)
@@ -2071,7 +2075,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
   - ``tuple[int|None, ...]``：每个输入各自的维度位置，长度必须与输入个数一致；``None`` 表示该输入不批处理（直接透传，适合模型参数等共享量）。顶层 ``in_dims=None`` 非法（与 ``torch.func`` 一致）
 - out_dims：每个输出的批次维度，默认 ``0``，语义同 ``in_dims``；给 tuple 时长度必须与输出个数一致，元素不能为 ``None``
 - randomness（str，默认 ``'error'``）：取值 ``'error'`` / ``'different'`` / ``'same'``，非法值在创建包裹函数时抛 ``RuntimeError``（与 ``torch.func`` 一致）；当前不做随机性重参数化
-- chunk_size（int 或 ``None``，默认 ``None``，keyword-only）：每次处理的批次样本数，用于控制循环与堆叠粒度；``None`` 表示一次处理整个批次。结果与不分块一致，非法值（``<= 0`` 或非整数）抛 ``ValueError``
+- chunk_size（int 或 ``None``，默认 ``None``，keyword-only）：每批参与执行与堆叠的样本数，用于限制中间样本的峰值内存；``None`` 表示一次处理整个批次。需要建图时按 chunk 执行并堆叠，纯前向则直接预分配最终输出；结果与不分块一致，非法值（``<= 0`` 或非整数）抛 ``ValueError``
 
 **返回**: 一个包裹函数，接受带批次维的输入，返回带批次维的输出。单输出时返回单个张量，多输出（tuple）时返回与之结构相同的元组
 
@@ -2101,7 +2105,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
     # 多输入 + in_dims=None 某输入不批处理（广播语义）
     y_single = rm.tensor([10., 20.], requires_grad=True)
     batched_g2 = func.vmap(g, in_dims=(0, None))
-    print(batched_g2(x_batch, y_single))  # [30., 110.] —— y_single 被每个样本共享
+    print(batched_g2(x_batch, y_single))  # [50., 110.] —— y_single 被每个样本共享
 
     # 与 jacrev 组合：批量求 Jacobian
     def scalar_fn(x):
@@ -2109,7 +2113,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
     batched_jac = func.vmap(func.jacrev(scalar_fn))
     jac_batch = batched_jac(x_batch)
-    print(jac_batch.shape)  # (2, 3) —— 每个样本的 ∇f = 2x
+    print(jac_batch.shape)  # (2, 2) —— 每个样本的 ∇f = 2x
 
 **注意事项**: 
 
@@ -2117,6 +2121,9 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
   但与 ``jacrev`` / ``hessian`` 等组合时能正确追踪梯度
 - 批次维通常是 ``dim=0``；若指定负维度（如 ``dim=-1``），会自动规范化
 - 返回 tuple 输出的函数也支持 vmap，每个输出沿 ``out_dims`` 独立堆叠
+- 纯前向（无梯度需求、无前向追踪）时预分配最终输出并逐样本写入；需要反向梯度或前向追踪（如 ``linearize``）时用 ``stack`` 保留拼接的梯度/JVP 边
+- 批量维长度为 0 时抛 ``ValueError``：loop 式实现无法在不执行 ``func`` 的情况下推断输出形状（``torch.func`` 依靠 BatchedTensor 可返回空批次）
+- ``out_dims`` 越界（不在 ``[-(sample.ndim+1), sample.ndim]`` 范围内）抛 ``ValueError``
 
 ``functional_call()`` — 无状态 Module 调用
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2137,11 +2144,11 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 **参数**: 
 
 - module：带有 ``forward`` 和 ``named_parameters`` 方法的对象（通常是 ``riemann.nn.Module``）
-- parameter_and_buffer_dicts：``{名称: 张量}``，名称遵循 state_dict 约定（如 ``"weight"``、``"l1.bias"``），参数与缓冲区可放在同一个字典里，也可传入多个互不重叠的字典。为 ``None`` 时直接使用 Module 自身状态（退化为普通 ``forward`` 调用）。为兼容旧用法，也接受按 ``named_parameters()`` 顺序排列的张量序列
-- args：传给 ``forward`` 的位置参数；传入单个张量时会自动包装成单元素元组，传入 list 会转成 tuple，``None`` 表示无参数
+- parameter_and_buffer_dicts：``{名称: 张量}``，名称遵循 state_dict 约定（如 ``"weight"``、``"l1.bias"``），参数与缓冲区可放在同一个字典里，也可传入多个互不重叠的字典。为 ``None`` 时直接使用 Module 自身状态（退化为普通 ``forward`` 调用；``torch.func`` 不接受 ``None``）。为兼容旧用法，也接受按 ``named_parameters()`` 顺序排列的张量序列
+- args：传给 ``forward`` 的位置参数；``None`` 表示无参数。与 ``torch.func`` 一致，非 tuple 入参（单个张量、list 等）会整体作为**单个位置参数**传入，不会被展开
 - kwargs（dict，可选，默认 ``None``）：传给 ``forward`` 的关键字参数字典
-- tie_weights（bool，默认 ``True``）：尊重模块原有的权重绑定。只提供绑定组中的一个名字时，同组的其他名字同步更新；同一组给出不同对象则抛 ``ValueError``。设为 ``False`` 时只替换显式给出的名字
-- strict（bool，默认 ``False``）：为 ``True`` 时提供的名称必须与模块的参数/缓冲区名称完全一致，缺失或多出都抛 ``RuntimeError``
+- tie_weights（bool，默认 ``True``）：尊重模块原有的权重绑定。只提供绑定组中的一个名字时，同组的其他名字同步更新；同一组给出不同对象则抛 ``ValueError``（先于 strict 的 missing/unexpected 检查）。设为 ``False`` 时只替换显式给出的名字
+- strict（bool，默认 ``False``）：为 ``True`` 时提供的名称必须与模块的参数/缓冲区名称完全一致，缺失或多出都抛 ``RuntimeError``。绑定补齐在校验之前完成，因此绑定组只提供一个名字即视为满足（与 ``torch.func`` 一致）
 
 **返回**: ``module.forward(*args, **kwargs)`` 的返回值（单输出为张量，多输出为元组，具体由 Module 自身的 ``forward`` 决定）
 
@@ -2177,7 +2184,8 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 - 名称遵循 state_dict 约定，嵌套模块用点号连接（如 ``"l1.weight"``）；支持替换缓冲区（如 BatchNorm 的 running_mean）
 - 调用结束后 Module 的参数与缓冲区会**自动恢复原值**（内部使用 try-finally）
-- 对于没有参数的 Module，直接执行普通 ``forward`` 调用
+- 对于没有参数的 Module，仍会先执行 strict 校验再调用 ``forward``；``strict=True`` 时多余键会报 ``Unexpected key(s)``
+- 权重绑定按张量对象身份识别；典型的 ``b.weight = a.weight`` 可以识别，``torch.func`` 还支持"同 storage、不同对象"的绑定形态
 - 内部实现是“临时替换 + 恢复”，因此不是线程安全的，也不具备 ``vmap`` 的真正并行能力；跨模型批处理请配合 ``stack_module_state``
 
 ``stack_module_state()`` — 堆叠多个 Module 的状态
@@ -2196,7 +2204,7 @@ Jacobian 形状为 ``(y1, y2, ..., x1, x2, ...)``。
 
 - models：Module 序列或 ModuleList，至少一个；所有模型必须同类、同 training/eval 模式，且参数/缓冲区名称一致（否则抛 ``RuntimeError``）
 
-**返回**: ``(params, buffers)``，两个 ``{名称: 堆叠张量}`` 字典；参数张量保持原有的 ``requires_grad`` 语义
+**返回**: ``(params, buffers)``，两个 ``{名称: 堆叠张量}`` 字典；参数张量保持原有的 ``requires_grad`` 语义。与 ``torch`` 一致，绑定（同一对象）的多个名字只保留首次出现的名字，其余别名由 ``functional_call`` 的 ``tie_weights`` 自动补齐
 
 **示例**: 
 
@@ -2357,7 +2365,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
    - **返回值**: 返回一个 tuple，按 ``grad_func`` 签名中的 TN 参数顺序给出每个输入张量的梯度
    - **元组元素**: 只有 TN 参数占位，非 TN 参数（标量、布尔值等）不占位；
      不需要梯度的 TN 参数对应位置返回 ``None``
-   - **链式法则**: 返回值必须已包含上游梯度，可通过 ``result.grad_value`` 获取；
+   - **链式法则**: 返回值必须已包含上游梯度，可通过 ``result._grad_value`` 获取；
      同时可以读取 ``result`` 的其他属性（shape、dtype、device 等）
    - **调用顺序无关**: 内部通过 ``inspect.signature`` 建立“参数名 → 实参值”的映射，
      因此调用时关键字参数顺序、位置参数与关键字参数混用都不会影响梯度对应关系
@@ -2372,7 +2380,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        def sigmoid_derivative(result, x):
            """sigmoid 函数的梯度：返回包含一个元素的元组"""
            # result 即 sigmoid 输出，直接复用可省去重复计算
-           return (result.grad_value * result * (1. - result),)
+           return (result._grad_value * result * (1. - result),)
        
        @rm.register_grad_rule(sigmoid_derivative)
        def custom_sigmoid(x):
@@ -2397,8 +2405,8 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        def divide_derivative(result, x, y):
            """除法梯度：d(x/y)/dx = 1/y, d(x/y)/dy = -x/y²"""
            return (
-               result.grad_value / y,
-               result.grad_value * (-x / y**2.),
+               result._grad_value / y,
+               result._grad_value * (-x / y**2.),
            )
        
        @rm.register_grad_rule(divide_derivative)
@@ -2425,7 +2433,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        def scaled_pow_derivative(result, x, scale=1.0, exponent=2.0):
            """d(scale * x^n)/dx = scale * n * x^(n-1)"""
            local = exponent * x ** (exponent - 1.)
-           return (result.grad_value * scale * local,)
+           return (result._grad_value * scale * local,)
        
        @rm.register_grad_rule(scaled_pow_derivative)
        def scaled_pow(x, scale=1.0, exponent=2.0):
@@ -2447,7 +2455,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        
        # *args：每个输入的梯度都是上游梯度
        def sum_derivative(result, *args):
-           return tuple(result.grad_value for _ in args)
+           return tuple(result._grad_value for _ in args)
        
        @rm.register_grad_rule(sum_derivative)
        def custom_sum(*xs):
@@ -2463,7 +2471,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        WEIGHTS = {"a": 2.0, "b": 3.0}
        
        def weighted_sum_derivative(result, **kwargs):
-           return tuple(result.grad_value * WEIGHTS[name] for name in kwargs)
+           return tuple(result._grad_value * WEIGHTS[name] for name in kwargs)
        
        @rm.register_grad_rule(weighted_sum_derivative)
        def custom_weighted_sum(**kwargs):
@@ -2482,7 +2490,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        import riemann as rm
        
        def add_derivative(result, x, y):
-           return (result.grad_value, result.grad_value)
+           return (result._grad_value, result._grad_value)
        
        @rm.register_grad_rule(add_derivative)
        def custom_add(x, y):
@@ -2506,7 +2514,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
        
        def matmul_derivative(result, x, y):
            """矩阵乘反向：dL/dx = dL/dY @ Yᵀ, dL/dY = Xᵀ @ dL/dY"""
-           g = result.grad_value
+           g = result._grad_value
            return (g @ y.T, x.T @ g)
        
        @rm.register_grad_rule(matmul_derivative)
@@ -2522,7 +2530,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
 
    **注意事项：**
 
-   - 梯度函数返回的是“已经乘以上游梯度的最终梯度”，漏乘 ``result.grad_value`` 会丢失链式法则的上游部分
+   - 梯度函数返回的是“已经乘以上游梯度的最终梯度”，漏乘 ``result._grad_value`` 会丢失链式法则的上游部分
    - 元组顺序只由 ``grad_func`` 签名决定，与调用时的传参顺序无关；非 TN 参数不占位
    - ``backward`` 每次调用都会按当前上游梯度重新计算 ``grad_func``，
      因此支持 ``retain_graph=True`` 下的重复反向传播
@@ -2567,7 +2575,7 @@ Riemann 提供三种方式来实现带梯度跟踪的自定义函数：
            return rm.tanh(x)
 
        x = rm.tensor([1., 2.], requires_grad=True)
-       out, tan = rm.func.jvp(my_tanh, x, rm.tensor([0.5, -0.5]))
+       out, tan = rm.func.jvp(my_tanh, (x,), (rm.tensor([0.5, -0.5]),))
        print(tan)  # (1 - tanh(x)^2) * v
 
    **注意事项：**
@@ -2795,19 +2803,19 @@ map_value_connect_grad 函数
             idx = it.multi_index
             old_val = x_flat[idx]
             x_flat[idx] = old_val + eps
-            f_plus = func(rm.tensor(x_flat.astype(np.float32))).item()
+            f_plus = func(rm.tensor(x_flat)).item()
             x_flat[idx] = old_val - eps
-            f_minus = func(rm.tensor(x_flat.astype(np.float32))).item()
+            f_minus = func(rm.tensor(x_flat)).item()
             x_flat[idx] = old_val
             grad_flat[idx] = (f_plus - f_minus) / (2 * eps)
             it.iternext()
-        return rm.tensor(grad_flat.astype(np.float32))
+        return rm.tensor(grad_flat)
 
     # 定义一个简单函数测试
     def f(x):
         return (x ** 3).sum()
 
-    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    x = rm.tensor([1., 2., 3.], requires_grad=True, dtype=rm.float64)
     y = f(x)
     y.backward()
 
@@ -2817,7 +2825,7 @@ map_value_connect_grad 函数
     print(f"最大误差: {(x.grad - num_grad).abs().max()}")
     # 最大误差应小于 1e-4
 
-Gradcheck 通过比较解析梯度和有限差分法计算的数值梯度来验证梯度计算的正确性。Riemann 目前未提供内置的 ``gradcheck`` 函数，可使用上述数值梯度检查方法代替。
+Gradcheck 通过比较解析梯度和有限差分法计算的数值梯度来验证梯度计算的正确性。Riemann 提供了内置的 ``rm.autograd.gradcheck()``（见上文 ``gradcheck()`` 函数一节），实际使用请优先调用它；上面的手动实现仅用于说明有限差分的基本原理。
 
 梯度计算技巧
 -------------------------

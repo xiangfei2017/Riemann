@@ -2464,11 +2464,21 @@ Data Conversion
 
    Convert the tensor to a specified data type and/or device.
 
+   Positional arguments accept device and dtype in either order (e.g.
+   ``x.to('cuda:0', rm.float64)`` or ``x.to(rm.float64, 'cuda:0')``); another
+   tensor can also be passed as ``x.to(other)``.
+
+   :param other: Another tensor whose dtype and device are used as the target
+   :type other: riemann.TN, optional
    :param dtype: Target data type
    :type dtype: dtype, optional
    :param device: Target device
    :type device: str, Device, optional
-   :return: Converted tensor
+   :param non_blocking: Whether a CPU→GPU transfer is asynchronous; if False (default), returns after the copy finishes. GPU→CPU is always synchronous
+   :type non_blocking: bool, optional
+   :param copy: Always return a copy even if dtype and device are unchanged
+   :type copy: bool, optional
+   :return: Converted tensor; the tensor itself is returned when dtype, device and copy are all unchanged
    :rtype: riemann.TN
 
 .. method:: riemann.TN.type(dtype=None)
@@ -3037,7 +3047,7 @@ Gradient Computation
                     the first parameter ``result`` is the output tensor of the forward function, and the remaining
                     parameters match the forward function. It returns a tuple containing gradients for each input
                     tensor, already including the upstream gradient from the chain rule (accessible via
-                    ``result.grad_value``). Tuple elements follow the ``grad_func`` signature order; non-TN
+                    ``result._grad_value``). Tuple elements follow the ``grad_func`` signature order; non-TN
                     parameters do not occupy a position, and tensors that don't require gradients should have
                     ``None`` at their position. Keyword argument order at call time does not affect gradient
                     alignment.
@@ -3054,7 +3064,7 @@ Gradient Computation
       
       # Define single-input derivative function (d/dx log(x) = 1/x)
       def _log_derivative(result, x):
-          return (result.grad_value * (1. / x.conj()),)
+          return (result._grad_value * (1. / x.conj()),)
       
       # Use register_grad_rule decorator to create automatic differentiation-supported log function
       @register_grad_rule(_log_derivative)
@@ -3069,7 +3079,7 @@ Gradient Computation
       
       # Define multi-input derivative function (d/dx (x + y) = 1, d/dy (x + y) = 1)
       def _add_derivative(result, x, y):
-          return (result.grad_value, result.grad_value)
+          return (result._grad_value, result._grad_value)
       
       # Use register_grad_rule decorator to create automatic differentiation-supported addition function
       @register_grad_rule(_add_derivative)
@@ -3213,11 +3223,20 @@ disconnected inputs/outputs yield zero blocks.
 
 .. function:: riemann.func.linearize(func, *primals)
 
-   Linearize ``func`` at ``primals``: the forward pass runs once and records the primal
-   graph, returning ``(primal_out, linear_fn)`` where ``linear_fn(*tangents)`` reuses the
-   same graph to compute J(x)·v. ``linear_fn`` keeps its tangent dependence only to first
-   order, so a second derivative of ``linear_fn`` yields a zero tensor (consistent with
-   ``torch.func``).
+   Linearize a pure ``func`` at ``primals``: the forward pass runs once and records the
+   primal graph, returning ``(primal_out, linear_fn)`` where ``linear_fn(*tangents)``
+   reuses the same graph to compute J(x)·v. ``linear_fn`` is linear in the tangents, so a
+   second derivative with respect to the tangents yields a zero tensor (consistent with
+   ``torch.func``); however, when the ``primals`` themselves have ``requires_grad=True``
+   the output stays connected to them (yielding H(x)·v), which differs from
+   ``torch.func.linearize``.
+
+   :param func: Pure function to linearize (no randomness/side effects); the forward
+                pass runs only once
+   :param primals: Evaluation-point inputs; at least one is required (``torch.func``
+                   allows zero inputs, this raises ``RuntimeError``)
+   :return: ``(primal_out, linear_fn)``; tangent elements may be ``None`` (zero
+            direction; a Riemann extension not supported by ``torch.func``)
 
 .. function:: riemann.func.jacrev(func, argnums=0, *, has_aux=False, chunk_size=None)
 
@@ -3264,8 +3283,13 @@ disconnected inputs/outputs yield zero blocks.
    :param randomness: Accepts ``'error'`` / ``'different'`` / ``'same'``; invalid values
                       raise ``RuntimeError`` when the wrapped function is created
                       (matching ``torch.func``)
-   :param chunk_size: Keyword-only. Batch samples per chunk; None processes the whole batch.
-                      Invalid values raise ``ValueError``.
+   :param chunk_size: Keyword-only. Samples executed and stacked per chunk; None
+                      processes the whole batch. Chunking bounds the peak memory of
+                      intermediate samples. Invalid values raise ``ValueError``.
+
+   A batch dimension of length 0 raises ``ValueError`` (the loop-based implementation
+   cannot infer the output shape without executing ``func``); an out-of-range
+   ``out_dims`` raises ``ValueError``.
 
 .. function:: riemann.func.functional_call(module, parameter_and_buffer_dicts, args=None, kwargs=None, *, tie_weights=True, strict=False)
 
@@ -3280,10 +3304,14 @@ disconnected inputs/outputs yield zero blocks.
                                       state; for backward compatibility, a tensor (or a
                                       sequence of tensors) ordered like
                                       ``named_parameters()`` is also accepted
-   :param args: Positional arguments for ``forward``; None means no arguments
+   :param args: Positional arguments for ``forward``; None means no arguments. Non-tuple
+                values (a single tensor, a list, etc.) are passed as one positional
+                argument, matching ``torch.func``
    :param kwargs: Keyword arguments for ``forward``
-   :param tie_weights: Keyword-only. When True, the original weight-tying semantics are kept;
+   :param tie_weights: Keyword-only. When True, the original weight-tying semantics are
+                       kept (any provided name of a tied group satisfies strict);
                        conflicting objects for one tied group raise ``ValueError``
+                       (before the missing/unexpected check)
    :param strict: Keyword-only. When True, names must exactly match the module's
                   parameters/buffers (missing or unexpected keys raise ``RuntimeError``)
    :return: Whatever ``module.forward(*args, **kwargs)`` returns
@@ -3292,7 +3320,9 @@ disconnected inputs/outputs yield zero blocks.
 
    Stack the parameters and buffers of several isomorphic Modules along a new leading
    dimension 0 and return two ``{name: stacked tensor}`` dictionaries ``(params, buffers)``
-   that plug directly into ``functional_call`` + ``vmap`` for model ensembling.
+   that plug directly into ``functional_call`` + ``vmap`` for model ensembling. As in
+   ``torch``, tied aliases (the same object under multiple names) are deduplicated,
+   keeping the first name, and ``functional_call`` refills them via ``tie_weights``.
 
    :param models: Sequence or ModuleList of Modules, at least one; all must share the same
                   class, training/eval mode, parameter/buffer names, and ``requires_grad``

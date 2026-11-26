@@ -11,7 +11,7 @@
 - **多维数组结构**：支持0维（标量）、1维（向量）、2维（矩阵）以及更高维度的数组表示
 - **数学运算支持**：支持加减乘除、内积等基本数学运算，以及各种常见数学函数
 - **形状变换能力**：支持张量形状重塑、维度扩缩、索引和切片等操作
-- **自动梯度跟踪**：内置自动求导机制，支持梯度计算和反向传播
+- **自动梯度跟踪**：内置双模式自动求导机制，支持反向模式（反向传播梯度）与前向模式（方向导数，JVP），二者均支持高阶求导
 - **设备兼容性**：支持在CPU和GPU等不同设备上运行
 
 张量是构建神经网络和梯度下降类算法的基础。您熟悉的数学中的0维标量、1维向量、2维矩阵都是张量的特殊形式。
@@ -228,15 +228,15 @@ tensor函数参数详解
 
     # 获取当前默认设备
     default_device = rm.get_default_device()
-    print(default_device)  # 默认为 device(type='cpu', index=None)
+    print(default_device)  # cpu
     
     # 设置默认设备
     rm.set_default_device('cuda')
-    print(rm.get_default_device())  # 现在为 device(type='cuda', index=0)
+    print(rm.get_default_device())  # cuda:0
     
-    # 设置指定CUDA设备为默认设备
-    rm.set_default_device('cuda:1')
-    print(rm.get_default_device())  # 现在为 device(type='cuda', index=1)
+    # 设置指定CUDA设备为默认设备（有第二块 GPU 时可用 'cuda:1'）
+    rm.set_default_device('cuda:0')
+    print(rm.get_default_device())  # cuda:0
 
 **示例：使用默认设置创建张量**:
 
@@ -292,12 +292,12 @@ Riemann的Device对象可以通过以下方式初始化：
     device = rm.device('cuda:0')
     
     # 使用整数索引（仅CUDA）
-    device = rm.device(0)  # 等价于 'cuda:0'
+    device = rm.Device('cuda', 0)  # 等价于 'cuda:0'
     
     # 通过Device构造函数
     from riemann import Device
     device = Device('cpu')
-    device = Device('cuda:1')
+    device = Device('cuda:0')
 
 **Device对象属性**:
 
@@ -397,7 +397,7 @@ Riemann 提供了丰富的特殊张量创建函数，下表列出了所有支持
       - ``empty_like(x)``
     * - ``full``
       - 创建指定形状并填充指定值的张量
-      - ``full((2, 3), 5)``
+      - ``full(2, 3, fill_value=5)``
     * - ``full_like``
       - 创建与给定张量形状相同并填充指定值的张量
       - ``full_like(x, 5)``
@@ -447,7 +447,7 @@ Riemann 提供了丰富的特殊张量创建函数，下表列出了所有支持
     x = rm.rand(2, 3)   # 均匀分布 [0, 1)
 
     # 填充张量
-    x = rm.full((2, 3), 5)  # 创建值为 5 的 2x3 张量
+    x = rm.full(2, 3, fill_value=5)  # 创建值为 5 的 2x3 张量
 
     # 序列张量
     x = rm.arange(0, 10, 2)  # 0, 2, 4, 6, 8
@@ -1185,12 +1185,12 @@ Riemann 支持多种张量乘积运算，每种运算有不同的数学含义和
     b = rm.tensor([4., 5., 6.])
     
     # 使用 cross 函数
-    result = rm.cross(a, b)  # tensor([-3., 6., -3.])
+    result = rm.linalg.cross(a, b)  # tensor([-3., 6., -3.])
     
     # 批量矢量积
     a_batch = rm.tensor([[1., 2., 3.], [4., 5., 6.]])
     b_batch = rm.tensor([[4., 5., 6.], [1., 2., 3.]])
-    result = rm.cross(a_batch, b_batch)  # shape: (2, 3)
+    result = rm.linalg.cross(a_batch, b_batch)  # shape: (2, 3)
 
 **乘积运算对比表**
 
@@ -1456,10 +1456,10 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
     - ``rm.argsort(x)``
   * - ``argmax``
     - 返回最大值的索引
-    - ``rm.argmax(x)``
+    - ``x.argmax()``
   * - ``argmin``
     - 返回最小值的索引
-    - ``rm.argmin(x)``
+    - ``x.argmin()``
   * - ``prod``
     - 计算张量元素的乘积
     - ``rm.prod(x)``
@@ -1918,7 +1918,7 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
 
     # 使用 sumall（更高效）
     print("\n使用 sumall:")
-    result_sumall = rm.sumall(x, y, z, w)
+    result_sumall = rm.sumall(x, y, z, w).sum()
     result_sumall.backward()
     print("x.grad:", x.grad)
     print("y.grad:", y.grad)
@@ -1933,7 +1933,7 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
 
     # 使用加法运算符（效率较低）
     print("\n使用加法运算符:")
-    result_addition = x + y + z + w
+    result_addition = (x + y + z + w).sum()
     result_addition.backward()
     print("x.grad:", x.grad)
     print("y.grad:", y.grad)
@@ -1959,8 +1959,8 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
 
     # 2. argmax 函数
     print("\n2. argmax 函数:")
-    print("最大值的索引:", rm.argmax(x))
-    print("沿轴 0 的最大值索引:", rm.argmax(x, dim=0))
+    print("最大值的索引:", x.argmax())
+    print("沿轴 0 的最大值索引:", x.argmax(dim=0))
 
     # 3. maximum 函数
     print("\n3. maximum 函数:")
@@ -1969,7 +1969,7 @@ Riemann 提供了多种张量统计函数，用于张量分析。以下是常用
 
     # 4. sort 和 argsort 函数
     print("\n4. sort 和 argsort 函数:")
-    sorted_x, indices = rm.sort(x, dim=1, return_indices=True)
+    sorted_x, indices = rm.sort(x, dim=1)
     print("沿轴 1 排序:", sorted_x)
     print("排序索引:", indices)
     
@@ -2192,10 +2192,10 @@ Riemann 提供了多种张量检查和比较函数，用于检查张量的属性
     - 示例
   * - ``all``
     - 检查张量所有元素是否为真
-    - ``rm.all(x)``
+    - ``x.all()``
   * - ``any``
     - 检查张量是否有任何元素为真
-    - ``rm.any(x)``
+    - ``x.any()``
   * - ``allclose``
     - 检查两个张量是否在容差范围内相等
     - ``rm.allclose(x, y, rtol=1e-05, atol=1e-08)``
@@ -2231,8 +2231,8 @@ Riemann 提供了多种张量检查和比较函数，用于检查张量的属性
 
     # 检查函数
     print("\n1. 检查函数:")
-    print("all(x):", rm.all(x))
-    print("any(y):", rm.any(y))
+    print("all(x):", x.all())
+    print("any(y):", y.any())
 
     # 比较函数
     print("\n2. 比较函数:")
@@ -2415,7 +2415,7 @@ Riemann 提供了多种函数用于张量类型转换，包括数据类型转换
     - None
   * - ``non_blocking``
     - bool
-    - 如果为True且数据在固定内存中，则复制到GPU可以与主机计算异步进行。仅适用于CPU -> GPU的传输
+    - CPU→GPU 传输是否异步。True 时拷贝在 CUDA 流上异步完成并尽快返回；False（默认）时返回前等待拷贝完成。GPU→CPU 始终同步
     - False
   * - ``copy``
     - bool
@@ -2456,6 +2456,18 @@ Riemann 提供了多种函数用于张量类型转换，包括数据类型转换
     # 强制复制
     y = x.to(copy=True)
 
+    # 位置参数：device 与 dtype 的先后顺序均可
+    base = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float32, device='cpu')
+    y1 = base.to('cuda:0', rm.float64)
+    y2 = base.to(rm.float64, 'cuda:0')
+
+    # device 也可传整数索引或 Device 对象
+    y3 = base.to(0)
+    y4 = base.to(rm.cuda.Device('cuda:0'))
+
+    # 目标 dtype 与 device 均未变化且 copy=False 时，返回张量自身
+    assert base.to('cpu', rm.float32) is base
+
 **non_blocking 参数使用示例**
 
 .. code-block:: python
@@ -2465,21 +2477,23 @@ Riemann 提供了多种函数用于张量类型转换，包括数据类型转换
     # 创建CPU上的张量
     x = rm.tensor([1.0, 2.0, 3.0], device='cpu')
 
-    # 异步传输到GPU
-    # 注意：异步传输需要数据在固定内存中
-    # 实际使用中，建议在传输后同步设备以确保数据已传输完成
+    # 异步传输到GPU：non_blocking=True 时拷贝在 CUDA 流上排队后尽快返回
+    # 注意：普通 NumPy 源不是固定（pinned）内存，驱动仍需同步暂存一段数据，
+    # 因此并非完全零阻塞；只有 pinned 源才能获得真正的异步 H2D 拷贝
     y = x.to('cuda', non_blocking=True)
 
-    # 执行一些CPU计算
-    # 这些计算可以与数据传输并行进行
+    # 传输期间主机可以继续做其它计算
     cpu_result = x * 2
 
-    # 同步设备，确保数据传输完成
-    # 在访问GPU上的张量之前必须同步
+    # 后续同流 GPU 操作与拷贝天然有序，可直接使用 y
+    gpu_result = y * 2
+
+    # 主机直接读取（numpy()/asnumpy）或跨流使用前需要同步设备
     rm.cuda.synchronize()
 
-    # 现在可以安全地使用GPU上的张量
-    gpu_result = y * 2
+    # non_blocking=False（默认）返回时拷贝已完成，无需额外同步
+    z = x.to('cuda', non_blocking=False)
+    cpu_copy = z.to('cpu')
 
 **类型转换示例**
 
@@ -2516,8 +2530,8 @@ Riemann 提供了多种函数用于张量类型转换，包括数据类型转换
     print("\n3. 复数相关转换:")
     z = rm.tensor([1+2j, 3+4j], dtype=rm.complex64)
     print("复数张量:", z)
-    print("实部:", z.real())
-    print("虚部:", z.imag())
+    print("实部:", z.real)
+    print("虚部:", z.imag)
     print("共轭:", z.conj())
 
     # 4. 设备切换（如果有 CUDA 可用）

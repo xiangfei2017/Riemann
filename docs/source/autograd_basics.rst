@@ -1,7 +1,7 @@
 Automatic Differentiation Basics
 ================================
 
-Riemann's automatic differentiation engine automatically records tensor computations, building a computation graph, and efficiently computes derivatives through backpropagation. This is essential for training neural networks and other optimization tasks.
+Riemann's automatic differentiation engine automatically records tensor computations, building a computation graph, and efficiently computes derivatives either by backpropagation (reverse mode) or by forward propagation of directional derivatives (forward mode). Reverse mode — the mechanism used by the neural network framework for training — is covered in detail below; forward mode is exposed as Jacobian-vector products through ``func.jvp`` and ``autograd.functional.jvp``. Both modes support higher-order differentiation. This is essential for training neural networks and other optimization tasks.
 
 **Core Concepts**
 
@@ -19,7 +19,7 @@ Riemann's automatic differentiation engine automatically records tensor computat
 
 **Gradient Computation Methods**
 
-Riemann provides two methods for computing gradients:
+For reverse mode, Riemann provides two methods for computing gradients:
 
 1. **backward() method**: Suitable for computing gradients of multiple tensors at once. After calling, gradients for all participating leaf node tensors are computed and stored in their respective ``grad`` attributes.
 
@@ -708,7 +708,7 @@ Returns:
 
     print(f.d(x))                 # gradient vector [3, 12, 27]
     print(f.d(x, x))              # Hessian matrix diag([6, 12, 18])
-    print(f.d((x, 3)))            # third-order tensor shape=(3,3,3), diagonal [24, 48, 72]
+    print(f.d((x, 3)))            # third-order tensor shape=(3,3,3), diagonal [6, 6, 6]
 
     # === Multi-vector mixed partial ===
     x = rm.tensor([1., 2.], requires_grad=True)
@@ -1718,9 +1718,6 @@ composable — they can be freely nested with ``vmap``, higher-order ``grad``,
 and other primitives to build compound transformations like
 ``vmap(jacrev(grad(f)))``.
 
-Key Differences from autograd.functional
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 .. list-table::
    :header-rows: 1
    :widths: auto
@@ -2012,17 +2009,32 @@ used internally by ``jacfwd``: a constant term plus a linear term, i.e.
 
 **Parameters**:
 
-- **func**: Function to linearize; takes tensors and returns one tensor or a tuple of tensors
-- **primals**: Evaluation-point inputs, in the same positional order as ``func``; all must be tensors
+- **func**: Pure function to linearize (no randomness or side effects); takes tensors and
+  returns one tensor or a tuple of tensors. The forward pass runs only once, so side
+  effects/random draws are not repeated by later ``linear_fn`` calls
+- **primals**: Evaluation-point inputs, in the same positional order as ``func``; all must
+  be tensors, and at least one is required (``torch.func.linearize`` allows zero inputs;
+  Riemann does not)
 
 **Returns**: ``(primal_out, linear_fn)``. ``primal_out`` has the same structure as
 ``func``'s output; ``linear_fn(*tangents)`` returns ``J(x)·v``, and the number and
-shapes of the tangents must match ``primals``.
+shapes of the tangents must match ``primals``. A tangent element may be ``None``
+(zero direction; its whole subtree is skipped). ``None`` tangents are a Riemann
+extension that ``torch.func`` does not support.
 
-``linear_fn`` is linear in the tangents (it keeps only first-order dependence), so its
-result can be differentiated once more, while a second derivative of ``linear_fn`` is
-always a **zero tensor** (consistent with ``torch.func``). For genuine higher-order
-derivatives, differentiate the original ``func`` with ``grad`` / ``jvp``.
+``linear_fn`` is linear in the tangents: when a tangent or the primals are themselves
+differentiable, the result can be differentiated further, while a second derivative
+with respect to the tangents is always a **zero tensor** (consistent with
+``torch.func``). Note:
+
+- When ``primals`` themselves have ``requires_grad=True``, Riemann's ``linear_fn``
+  output stays connected to the primals, so differentiating with respect to the
+  primals yields ``H(x)·v``; ``torch.func.linearize`` severs this dependence (it reports
+  "unused" when differentiating with respect to the primals). This is a behavioral
+  difference from torch.
+- For genuine higher-order derivatives (especially second order and above with respect
+  to the primals), differentiate the original ``func`` with ``grad`` / ``jvp`` instead
+  of treating ``linearize`` as a general higher-order entry point.
 
 **Example**:
 
@@ -2080,7 +2092,7 @@ Two ways to compute the Jacobian matrix:
     # Scalar output f: R^3 -> R, Jacobian shape (1, 3) — equivalent to gradient
     f = lambda x: (x ** 3).sum()
     jac = func.jacrev(f)(rm.tensor([1., 2., 3.], requires_grad=True))
-    print(jac.shape)  # (3,) — unwrapped for single input
+    print(jac.shape)  # (3,) — scalar output is unwrapped
     print(jac)        # [3., 12., 27.]
 
     # Vector output f: R^3 -> R^2, Jacobian shape (2, 3)
@@ -2164,8 +2176,10 @@ primitives like ``jacrev``.
 - **randomness**: Accepts ``'error'`` / ``'different'`` / ``'same'``; invalid values raise
   ``RuntimeError`` when the wrapped function is created (matching ``torch.func``); no
   randomness re-parameterization is performed
-- **chunk_size** (keyword-only): Number of batch samples processed per chunk, controlling loop and
-  stacking granularity; ``None`` means the whole batch at once. The result is
+- **chunk_size** (keyword-only): Number of samples executed and stacked per chunk, which
+  bounds the peak memory of intermediate samples; ``None`` processes the whole batch at
+  once. When the graph must be built, samples are executed and stacked chunk by chunk;
+  in pure forward mode the final output is preallocated directly. The result is
   identical to the unchunked computation; non-positive or non-int values raise ``ValueError``
 
 **Example**:
@@ -2194,7 +2208,7 @@ primitives like ``jacrev``.
     # Multi-input with in_dims=None for broadcast semantics
     y_single = rm.tensor([10., 20.], requires_grad=True)
     batched_g2 = func.vmap(g, in_dims=(0, None))
-    print(batched_g2(x_batch, y_single))  # [30., 110.]
+    print(batched_g2(x_batch, y_single))  # [50., 110.]
 
     # Composition with jacrev: batched Jacobian
     def scalar_fn(x):
@@ -2202,7 +2216,7 @@ primitives like ``jacrev``.
 
     batched_jac = func.vmap(func.jacrev(scalar_fn))
     jac_batch = batched_jac(x_batch)
-    print(jac_batch.shape)  # (2, 3) — ∇f = 2x per sample
+    print(jac_batch.shape)  # (2, 2) — ∇f = 2x per sample
 
 **Notes**:
 
@@ -2213,6 +2227,15 @@ primitives like ``jacrev``.
   ``dim=-1``) are normalized automatically
 - Functions returning tuple outputs are also supported; each output is
   stacked independently along ``out_dims``
+- In pure forward mode (no gradient requirement, no forward tracing) the final output is
+  preallocated and filled sample by sample; when reverse gradients or forward tracing
+  (e.g. ``linearize``) require it, ``stack`` is used to preserve the concatenation's
+  gradient/JVP edges
+- A batch dimension of length 0 raises ``ValueError``: the loop-based implementation
+  cannot infer the output shape without executing ``func`` (``torch.func`` can return an
+  empty batch via BatchedTensor)
+- An out-of-range ``out_dims`` (outside ``[-(sample.ndim+1), sample.ndim]``) raises
+  ``ValueError``
 
 ``functional_call()`` — Stateless Module Invocation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2239,14 +2262,20 @@ The API matches ``torch.func.functional_call``.
 - **parameter_and_buffer_dicts**: ``{name: tensor}`` following state_dict naming
   (e.g. ``"weight"``, ``"l1.bias"``). Parameters and buffers may live in the same
   dict, or be split across multiple disjoint dicts. ``None`` falls back to the
-  Module's own state. A positional tensor sequence in ``named_parameters()`` order
-  is still accepted for backward compatibility
-- **args** / **kwargs**: Positional and keyword arguments for ``forward``
+  Module's own state (``torch.func`` rejects ``None``). A positional tensor sequence in
+  ``named_parameters()`` order is still accepted for backward compatibility
+- **args**: Positional arguments for ``forward``; ``None`` means no arguments. Matching
+  ``torch.func``, any non-tuple value (a single tensor, a list, etc.) is passed as
+  **one positional argument** and is never expanded
+- **kwargs**: Keyword arguments for ``forward``
 - **tie_weights**: When ``True`` (default), tied weights are respected: providing
   one name of a tied group updates the whole group, and conflicting objects raise
-  ``ValueError``. When ``False``, only explicitly given names are replaced
+  ``ValueError`` (before the strict missing/unexpected check). When ``False``, only
+  explicitly given names are replaced
 - **strict**: When ``True``, the provided names must exactly match the Module's
-  parameter/buffer names; missing or extra keys raise ``RuntimeError``
+  parameter/buffer names; missing or extra keys raise ``RuntimeError``. Tied names are
+  filled in before validation, so a tied group with any name provided satisfies strict
+  (matching ``torch.func``)
 
 **Example**:
 
@@ -2280,7 +2309,11 @@ The API matches ``torch.func.functional_call``.
 - Names follow state_dict conventions with dotted paths for nested modules
   (e.g. ``"l1.weight"``); buffers such as BatchNorm ``running_mean`` are supported
 - Parameters and buffers are **automatically restored** after the call (try-finally)
-- For parameterless modules, a regular ``forward`` call is performed
+- For parameterless modules, strict validation still runs first; with ``strict=True``
+  extra keys raise ``Unexpected key(s)``
+- Tied weights are detected by tensor object identity; the common
+  ``b.weight = a.weight`` form is supported, while ``torch.func`` also recognizes
+  shared-storage-but-distinct-object ties
 - The implementation temporarily swaps and restores state, so it is not
   thread-safe and does not truly parallelize under ``vmap``; use
   ``stack_module_state`` for cross-model batching
@@ -2305,7 +2338,10 @@ dimension 0, returning ``(params, buffers)`` for use with
   names (otherwise ``RuntimeError`` is raised)
 
 **Returns**: ``(params, buffers)``, two ``{name: stacked tensor}`` dicts;
-``requires_grad`` semantics of the original parameters are preserved
+``requires_grad`` semantics of the original parameters are preserved. As in
+``torch``, tied aliases (the same object under multiple names) are deduplicated,
+keeping the first name; ``functional_call`` refills the remaining aliases through
+``tie_weights``
 
 **Example**:
 
@@ -2406,9 +2442,6 @@ making them freely composable. Here are common higher-order patterns:
     third = func.grad(lambda a: h(a).sum())(x)
     print(third)
 
-func Module vs autograd.functional: When to Use Which?
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 .. list-table::
    :header-rows: 1
    :widths: auto
@@ -2470,7 +2503,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
    - **Return Value**: Must return a ``tuple`` containing the gradient for each input tensor, ordered by the TN parameters in the ``grad_func`` signature
    - **Tuple Elements**: Only TN parameters occupy a position; non-TN parameters (scalars, booleans, etc.) do not.
      For TN tensors that don't require gradients, return ``None`` for that position
-   - **Chain Rule**: Returned gradients must already include the upstream gradient from the chain rule, available via ``result.grad_value``.
+   - **Chain Rule**: Returned gradients must already include the upstream gradient from the chain rule, available via ``result._grad_value``.
      Other attributes of ``result`` (shape, dtype, device, etc.) can also be used
    - **Call Order Independent**: The decorator builds a "parameter name → argument value" mapping via ``inspect.signature``,
      so keyword argument order and mixing positional/keyword arguments do not affect gradient alignment
@@ -2485,7 +2518,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
        def sigmoid_derivative(result, x):
            """Gradient function for sigmoid: returns tuple with one element"""
            # result is the sigmoid output; reuse it to avoid recomputation
-           return (result.grad_value * result * (1. - result),)
+           return (result._grad_value * result * (1. - result),)
        
        @rm.register_grad_rule(sigmoid_derivative)
        def custom_sigmoid(x):
@@ -2510,8 +2543,8 @@ Riemann provides three ways to implement custom functions with gradient tracking
        def divide_derivative(result, x, y):
            """Division gradients: d(x/y)/dx = 1/y, d(x/y)/dy = -x/y²"""
            return (
-               result.grad_value / y,
-               result.grad_value * (-x / y**2.),
+               result._grad_value / y,
+               result._grad_value * (-x / y**2.),
            )
        
        @rm.register_grad_rule(divide_derivative)
@@ -2539,7 +2572,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
        def scaled_pow_derivative(result, x, scale=1.0, exponent=2.0):
            """d(scale * x^n)/dx = scale * n * x^(n-1)"""
            local = exponent * x ** (exponent - 1.)
-           return (result.grad_value * scale * local,)
+           return (result._grad_value * scale * local,)
        
        @rm.register_grad_rule(scaled_pow_derivative)
        def scaled_pow(x, scale=1.0, exponent=2.0):
@@ -2562,7 +2595,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
        
        # *args: every input gets the upstream gradient
        def sum_derivative(result, *args):
-           return tuple(result.grad_value for _ in args)
+           return tuple(result._grad_value for _ in args)
        
        @rm.register_grad_rule(sum_derivative)
        def custom_sum(*xs):
@@ -2578,7 +2611,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
        WEIGHTS = {"a": 2.0, "b": 3.0}
        
        def weighted_sum_derivative(result, **kwargs):
-           return tuple(result.grad_value * WEIGHTS[name] for name in kwargs)
+           return tuple(result._grad_value * WEIGHTS[name] for name in kwargs)
        
        @rm.register_grad_rule(weighted_sum_derivative)
        def custom_weighted_sum(**kwargs):
@@ -2597,7 +2630,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
        import riemann as rm
        
        def add_derivative(result, x, y):
-           return (result.grad_value, result.grad_value)
+           return (result._grad_value, result._grad_value)
        
        @rm.register_grad_rule(add_derivative)
        def custom_add(x, y):
@@ -2622,7 +2655,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
        
        def matmul_derivative(result, x, y):
            """Matrix multiplication backward: dL/dX = dL/dY @ Yᵀ, dL/dY = Xᵀ @ dL/dY"""
-           g = result.grad_value
+           g = result._grad_value
            return (g @ y.T, x.T @ g)
        
        @rm.register_grad_rule(matmul_derivative)
@@ -2639,7 +2672,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
    **Notes:**
 
    - The gradient function must return the final gradient *including* the upstream gradient;
-     omitting ``result.grad_value`` loses the upstream part of the chain rule
+     omitting ``result._grad_value`` loses the upstream part of the chain rule
    - Tuple order is determined solely by the ``grad_func`` signature, never by call order;
      non-TN parameters do not occupy a position
    - Each ``backward`` call recomputes ``grad_func`` with the current upstream gradient,
@@ -2691,7 +2724,7 @@ Riemann provides three ways to implement custom functions with gradient tracking
            return rm.tanh(x)
 
        x = rm.tensor([1., 2.], requires_grad=True)
-       out, tan = rm.func.jvp(my_tanh, x, rm.tensor([0.5, -0.5]))
+       out, tan = rm.func.jvp(my_tanh, (x,), (rm.tensor([0.5, -0.5]),))
        print(tan)  # (1 - tanh(x)^2) * v
 
    **Notes:**
@@ -2930,19 +2963,19 @@ You can manually verify custom gradient functions using the finite difference me
             idx = it.multi_index
             old_val = x_flat[idx]
             x_flat[idx] = old_val + eps
-            f_plus = func(rm.tensor(x_flat.astype(np.float32))).item()
+            f_plus = func(rm.tensor(x_flat)).item()
             x_flat[idx] = old_val - eps
-            f_minus = func(rm.tensor(x_flat.astype(np.float32))).item()
+            f_minus = func(rm.tensor(x_flat)).item()
             x_flat[idx] = old_val
             grad_flat[idx] = (f_plus - f_minus) / (2 * eps)
             it.iternext()
-        return rm.tensor(grad_flat.astype(np.float32))
+        return rm.tensor(grad_flat)
 
     # Test with a simple function
     def f(x):
         return (x ** 3).sum()
 
-    x = rm.tensor([1., 2., 3.], requires_grad=True)
+    x = rm.tensor([1., 2., 3.], requires_grad=True, dtype=rm.float64)
     y = f(x)
     y.backward()
 
@@ -2952,7 +2985,7 @@ You can manually verify custom gradient functions using the finite difference me
     print(f"Max error:        {(x.grad - num_grad).abs().max()}")
     # Max error should be < 1e-4
 
-Gradcheck verifies that your analytical gradient computation matches the numerical gradient computed using finite differences. Riemann does not yet provide a built-in ``gradcheck`` function; use the numerical gradient check above instead.
+Gradcheck verifies that your analytical gradient computation matches the numerical gradient computed using finite differences. Riemann provides a built-in ``rm.autograd.gradcheck()`` (see the ``gradcheck()`` Function section above) for this purpose; the manual check above only illustrates the underlying finite-difference principle.
 
 Gradient Computation Tips
 -------------------------

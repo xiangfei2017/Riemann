@@ -3770,11 +3770,11 @@ Riemann 提供了完整的 Transformer 模型，包含编码器和解码器。
             memory = self.transformer.encoder(src_emb)
             
             # 自回归生成
-            tgt = rm.full((src.shape[0], 1), start_token, dtype=rm.int64)
+            tgt = rm.full(src.shape[0], 1, fill_value=start_token, dtype=rm.int64)
             
             for _ in range(max_len):
                 # 生成因果掩码（上三角为True，防止关注未来位置）
-                tgt_mask = rm.full((tgt.shape[1], tgt.shape[1]), float('-inf'))
+                tgt_mask = rm.full(tgt.shape[1], tgt.shape[1], fill_value=float('-inf'))
                 tgt_mask = tgt_mask.triu(diagonal=1)  # 上三角（不包括对角线）设为-inf
                 
                 # 解码

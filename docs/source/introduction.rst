@@ -10,7 +10,7 @@ What Can Riemann Do?
 ~~~~~~~~~~~~~~~~~~~~
 
 - **Tensor Computation**: Support mathematical operations for 0 to multi-dimensional tensors, complex tensors, and CPU/GPU heterogeneous computing
-- **Automatic Differentiation**: Automatic gradient tracking based on backpropagation algorithm, support for custom gradient functions
+- **Automatic Differentiation**: Dual-mode automatic differentiation — reverse-mode gradient tracking via backpropagation (used by the neural network framework for training) and forward-mode directional derivatives (JVP); both support higher-order derivatives and user-defined rules
 - **Neural Networks**: Common components for building neural networks (layers, activation functions, loss functions, optimizers, etc.)
 - **Computer Vision**: Image dataset loading and image transformation functions
 - **Linear Algebra**: Matrix decomposition, eigenvalue computation, linear equation solving, etc.
@@ -32,13 +32,15 @@ Tensor Operations
 Automatic Differentiation
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
+- **Reverse mode (backpropagation)**: Records a dynamic computation graph and computes gradients with ``backward()`` / ``grad()``; this is the mechanism used by the neural network framework for training
+- **Forward mode (directional derivatives)**: Computes Jacobian-vector products (``jvp``) driven by per-operator forward rules, well suited to functions with many outputs and few inputs
+- **Higher-order differentiation**: Both modes can retain the computation graph as needed, so derivatives of arbitrary order are obtained by nesting (e.g. the Hessian via ``jacrev(grad(f))``, plus ``hvp`` / ``vhp`` in ``autograd.functional``)
 - **backward method**: Triggers backpropagation to compute gradients
 - **grad function**: Computes gradients of functions with respect to inputs
 - **func module**: torch.func-style functional autodiff API — curried ``grad``, ``jvp``, ``vjp``, ``linearize``, ``jacrev``, ``jacfwd``, ``hessian``, ``vmap``, ``functional_call``, ``stack_module_state``, suitable for chained higher-order derivatives; ``jvp`` is driven by direct forward rules
 - **register_grad_rule decorator**: Use ``@register_grad_rule`` decorator to customize gradient tracking functions (Riemann-specific)
 - **register_jvp_rule decorator**: Use ``@register_jvp_rule`` to register direct forward (JVP) rules; usable alone or together with ``register_grad_rule`` (Riemann-specific)
 - **Function class**: Customize forward and backward propagation, plus optional forward-mode (``jvp``) rules, with ``setup_context`` and ``save_for_forward`` support (Riemann-specific)
-- **Jacobian and Hessian Matrices**: Supports Jacobian matrix computation for multi-input multi-output functions, and Hessian matrix computation for multi-input functions
 
 Linear Algebra Module
 ~~~~~~~~~~~~~~~~~~~~~

@@ -11,7 +11,7 @@ In Riemann, tensors have the following characteristics:
 - **Multi-dimensional array structure**: Supports 0-dimensional (scalar), 1-dimensional (vector), 2-dimensional (matrix), and higher-dimensional array representations
 - **Mathematical operation support**: Supports basic mathematical operations such as addition, subtraction, multiplication, division, inner product, and various common mathematical functions
 - **Shape transformation capabilities**: Supports tensor shape reshaping, dimension expansion/reduction, indexing and slicing operations
-- **Automatic gradient tracking**: Built-in automatic differentiation mechanism that supports gradient calculation and backpropagation
+- **Automatic gradient tracking**: Built-in dual-mode automatic differentiation mechanism that supports reverse-mode backpropagation gradients and forward-mode directional derivatives (JVP), both with higher-order support
 - **Device compatibility**: Supports running on different devices such as CPU and GPU
 
 Tensors are the foundation for building neural networks and gradient descent algorithms. The 0-dimensional scalars, 1-dimensional vectors, and 2-dimensional matrices you are familiar with in mathematics are all special forms of tensors.
@@ -228,15 +228,15 @@ Tensor Function Parameters
 
     # Get current default device
     default_device = rm.get_default_device()
-    print(default_device)  # Default is device(type='cpu', index=None)
+    print(default_device)  # cpu
     
     # Set default device
     rm.set_default_device('cuda')
-    print(rm.get_default_device())  # Now device(type='cuda', index=0)
+    print(rm.get_default_device())  # cuda:0
     
-    # Set specific CUDA device as default
-    rm.set_default_device('cuda:1')
-    print(rm.get_default_device())  # Now device(type='cuda', index=1)
+    # Set a specific CUDA device as default (use 'cuda:1' with a second GPU)
+    rm.set_default_device('cuda:0')
+    print(rm.get_default_device())  # cuda:0
 
 **Example: Creating tensors with default settings**:
 
@@ -292,12 +292,12 @@ Riemann's Device object can be initialized in the following ways:
     device = rm.device('cuda:0')
     
     # Using integer index (CUDA only)
-    device = rm.device(0)  # Equivalent to 'cuda:0'
+    device = rm.Device('cuda', 0)  # Equivalent to 'cuda:0'
     
     # Through Device constructor
     from riemann import Device
     device = Device('cpu')
-    device = Device('cuda:1')
+    device = Device('cuda:0')
 
 **Device object attributes**:
 
@@ -397,7 +397,7 @@ Riemann provides a rich set of special tensor creation functions. The table belo
       - ``empty_like(x)``
     * - ``full``
       - Creates a tensor filled with a specified value
-      - ``full((2, 3), 5)``
+      - ``full(2, 3, fill_value=5)``
     * - ``full_like``
       - Creates a tensor filled with a specified value, with the same shape as the input
       - ``full_like(x, 5)``
@@ -447,7 +447,7 @@ Riemann provides a rich set of special tensor creation functions. The table belo
     x = rm.rand(2, 3)   # Uniform distribution [0, 1)
     
     # Filled tensor
-    x = rm.full((2, 3), 5)  # Creates 2x3 tensor filled with 5
+    x = rm.full(2, 3, fill_value=5)  # Creates 2x3 tensor filled with 5
     
     # Sequence tensors
     x = rm.arange(0, 10, 2)  # 0, 2, 4, 6, 8
@@ -1188,12 +1188,12 @@ The cross product of two 3D vectors is a vector perpendicular to both input vect
     b = rm.tensor([4., 5., 6.])
     
     # Using cross function
-    result = rm.cross(a, b)  # tensor([-3., 6., -3.])
+    result = rm.linalg.cross(a, b)  # tensor([-3., 6., -3.])
     
     # Batch cross product
     a_batch = rm.tensor([[1., 2., 3.], [4., 5., 6.]])
     b_batch = rm.tensor([[4., 5., 6.], [1., 2., 3.]])
-    result = rm.cross(a_batch, b_batch)  # shape: (2, 3)
+    result = rm.linalg.cross(a_batch, b_batch)  # shape: (2, 3)
 
 **Product Operations Comparison Table**
 
@@ -1459,10 +1459,10 @@ Riemann provides various statistical functions for tensor analysis. Here are the
     - ``rm.argsort(x)``
   * - ``argmax``
     - Return index of maximum value
-    - ``rm.argmax(x)``
+    - ``x.argmax()``
   * - ``argmin``
     - Return index of minimum value
-    - ``rm.argmin(x)``
+    - ``x.argmin()``
   * - ``prod``
     - Compute product of tensor elements
     - ``rm.prod(x)``
@@ -1921,7 +1921,7 @@ Riemann provides various statistical functions for tensor analysis. Here are the
 
     # Using sumall (more efficient)
     print("\nUsing sumall:")
-    result_sumall = rm.sumall(x, y, z, w)
+    result_sumall = rm.sumall(x, y, z, w).sum()
     result_sumall.backward()
     print("x.grad:", x.grad)
     print("y.grad:", y.grad)
@@ -1936,7 +1936,7 @@ Riemann provides various statistical functions for tensor analysis. Here are the
 
     # Using addition operators (less efficient)
     print("\nUsing addition operators:")
-    result_addition = x + y + z + w
+    result_addition = (x + y + z + w).sum()
     result_addition.backward()
     print("x.grad:", x.grad)
     print("y.grad:", y.grad)
@@ -1962,8 +1962,8 @@ Riemann provides various statistical functions for tensor analysis. Here are the
 
     # 2. argmax function
     print("\n2. argmax function:")
-    print("Index of maximum value:", rm.argmax(x))
-    print("Indices of maximum along axis 0:", rm.argmax(x, dim=0))
+    print("Index of maximum value:", x.argmax())
+    print("Indices of maximum along axis 0:", x.argmax(dim=0))
 
     # 3. maximum function
     print("\n3. maximum function:")
@@ -1972,7 +1972,7 @@ Riemann provides various statistical functions for tensor analysis. Here are the
 
     # 4. sort and argsort functions
     print("\n4. sort and argsort functions:")
-    sorted_x, indices = rm.sort(x, dim=1, return_indices=True)
+    sorted_x, indices = rm.sort(x, dim=1)
     print("Sorted along axis 1:", sorted_x)
     print("Sort indices:", indices)
     
@@ -2196,10 +2196,10 @@ Riemann provides various tensor check and comparison functions for checking tens
     - Example
   * - ``all``
     - Check if all elements are true
-    - ``rm.all(x)``
+    - ``x.all()``
   * - ``any``
     - Check if any element is true
-    - ``rm.any(x)``
+    - ``x.any()``
   * - ``allclose``
     - Check if two tensors are equal within tolerance
     - ``rm.allclose(x, y, rtol=1e-05, atol=1e-08)``
@@ -2235,8 +2235,8 @@ Riemann provides various tensor check and comparison functions for checking tens
 
     # Check functions
     print("\n1. Check functions:")
-    print("all(x):", rm.all(x))
-    print("any(y):", rm.any(y))
+    print("all(x):", x.all())
+    print("any(y):", y.any())
 
     # Comparison functions
     print("\n2. Comparison functions:")
@@ -2419,7 +2419,7 @@ Riemann provides various functions for tensor type conversion, including data ty
     - None
   * - ``non_blocking``
     - bool
-    - If True and data is in pinned memory, copying to GPU can be asynchronous with host computation. Only applicable for CPU -> GPU transfers
+    - Whether a CPU→GPU transfer is asynchronous. If True, the copy completes asynchronously on the CUDA stream and returns early; if False (default), returns after the copy finishes. GPU→CPU is always synchronous
     - False
   * - ``copy``
     - bool
@@ -2460,6 +2460,18 @@ Riemann provides various functions for tensor type conversion, including data ty
     # Force copy
     y = x.to(copy=True)
 
+    # Positional arguments: device and dtype may appear in either order
+    base = rm.tensor([1.0, 2.0, 3.0], dtype=rm.float32, device='cpu')
+    y1 = base.to('cuda:0', rm.float64)
+    y2 = base.to(rm.float64, 'cuda:0')
+
+    # device may also be an integer index or a Device object
+    y3 = base.to(0)
+    y4 = base.to(rm.cuda.Device('cuda:0'))
+
+    # If neither dtype nor device changes and copy=False, the tensor itself is returned
+    assert base.to('cpu', rm.float32) is base
+
 **non_blocking Parameter Usage Example**
 
 .. code-block:: python
@@ -2469,21 +2481,24 @@ Riemann provides various functions for tensor type conversion, including data ty
     # Create tensor on CPU
     x = rm.tensor([1.0, 2.0, 3.0], device='cpu')
 
-    # Asynchronous transfer to GPU
-    # Note: Asynchronous transfer requires data to be in pinned memory
-    # In practice, it's recommended to synchronize device after transfer to ensure completion
+    # Asynchronous transfer to GPU: with non_blocking=True the copy is queued on
+    # the CUDA stream and the call returns early
+    # Note: a plain NumPy source is not pinned memory, so the driver still stages
+    # part of the copy synchronously; only pinned sources are truly non-blocking
     y = x.to('cuda', non_blocking=True)
 
-    # Perform some CPU computations
-    # These can run in parallel with data transfer
+    # The host can keep working while the transfer is in flight
     cpu_result = x * 2
 
-    # Synchronize device to ensure data transfer is complete
-    # Must synchronize before accessing the GPU tensor
+    # Later GPU operations on the same stream are ordered after the copy, so y is usable
+    gpu_result = y * 2
+
+    # Synchronize before host-side reads (numpy()/asnumpy) or cross-stream use
     rm.cuda.synchronize()
 
-    # Now it's safe to use the GPU tensor
-    gpu_result = y * 2
+    # non_blocking=False (default) returns only after the copy has completed
+    z = x.to('cuda', non_blocking=False)
+    cpu_copy = z.to('cpu')
 
 **Type Conversion Examples**
 
@@ -2520,8 +2535,8 @@ Riemann provides various functions for tensor type conversion, including data ty
     print("\n3. Complex number related conversions:")
     z = rm.tensor([1+2j, 3+4j], dtype=rm.complex64)
     print("Complex tensor:", z)
-    print("Real part:", z.real())
-    print("Imaginary part:", z.imag())
+    print("Real part:", z.real)
+    print("Imaginary part:", z.imag)
     print("Conjugate:", z.conj())
 
     # 4. Device switching (if CUDA is available)

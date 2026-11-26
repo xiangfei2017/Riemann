@@ -769,10 +769,9 @@ class TN:
         Args:
             dtype (optional): 目标数据类型，可以是Python类型、NumPy dtype、字符串或Riemann dtype
             device (optional): 目标设备，可以是字符串（如'cpu'、'cuda'）或Device对象
-            non_blocking (bool, optional): 如果为True且数据在固定内存中，则复制到GPU可以与主机计算异步进行。
-                                          默认为False。仅适用于CPU -> GPU的传输。
-            copy (bool, optional): 如果为True，则总是返回副本，即使设备和数据类型相同。
-                                  默认为False。
+            non_blocking (bool, optional): CPU→GPU 传输是否异步。True 时拷贝在CUDA 流上异步完成并尽快返回；
+                                          False（默认）时返回前等待拷贝完成。GPU→CPU 始终同步。
+            copy (bool, optional): 如果为True，则总是返回副本，即使设备和数据类型相同。默认为False。
             
         Returns:
             TN: 指定数据类型和/或设备的新张量，或原张量（如果已匹配且copy=False）
@@ -799,120 +798,86 @@ class TN:
             >>> # 异步传输
             >>> y = x.to('cuda', non_blocking=True)
         """
-        # 解析参数
-        dtype = kwargs.get('dtype', None)
-        device = kwargs.get('device', None)
+        dtype = kwargs.get('dtype')
+        device = kwargs.get('device')
         copy = kwargs.get('copy', False)
+        non_blocking = kwargs.get('non_blocking', False)
         
-        # 处理位置参数
-        if len(args) > 0:
+        if args:
             if isinstance(args[0], TN):
-                # 参数是另一个张量，复制其dtype和device
+                # x.to(other_tensor)：沿用另一个张量的 dtype 与 device
                 other = args[0]
                 dtype = other.dtype
                 device = other.device
             else:
-                # 处理第一个位置参数
                 first_arg = args[0]
                 
-                # 检查第一个参数是否是device（字符串形式）
-                if isinstance(first_arg, str):
-                    # 字符串参数可能是device或dtype
-                    # 先尝试识别为device，如果失败再作为dtype
-                    try:
-                        # 尝试创建device对象并直接赋值
-                        device = _get_device(first_arg)
-                        # 检查第二个参数是否是dtype
-                        if len(args) > 1:
-                            dtype = args[1]
-                    except Exception:
-                        # 不是有效的device字符串，作为dtype处理
-                        dtype = first_arg
-                        # 检查第二个参数是否是device
-                        if len(args) > 1:
-                            second_arg = args[1]
-                            if isinstance(second_arg, (int, str, Device)):
-                                device = second_arg
-                elif isinstance(first_arg, (int, Device)):
-                    # 整数或Device对象，作为device处理
+                if isinstance(first_arg, (int, Device)):
                     device = first_arg
-                    # 检查第二个参数是否是dtype
                     if len(args) > 1:
                         dtype = args[1]
-                else:
-                    # 其他类型，作为dtype处理
+                elif not isinstance(first_arg, str):
+                    # 非字符串、非 device 的参数一律作为 dtype
                     dtype = first_arg
-                    # 检查第二个参数是否是device
-                    if len(args) > 1:
-                        second_arg = args[1]
-                        if isinstance(second_arg, (int, str, Device)):
-                            device = second_arg
+                    if len(args) > 1 and isinstance(args[1], (int, str, Device)):
+                        device = args[1]
+                else:
+                    # 字符串既可能是 device（'cuda:0'）也可能是 dtype（'float64'）：
+                    # 先按 device 解析，失败则作为 dtype，并把第二个参数视作 device
+                    try:
+                        device = _get_device(first_arg)
+                        if len(args) > 1:
+                            dtype = args[1]
+                    except (ValueError, RuntimeError):
+                        dtype = first_arg
+                        if len(args) > 1 and isinstance(args[1], (int, str, Device)):
+                            device = args[1]
                 
-                # 检查是否有更多参数
                 if len(args) > 2:
-                    # 不支持超过2个位置参数
                     raise TypeError(f"to() takes at most 2 positional arguments but {len(args)} were given")
         
-        # 解析device参数，确定是否使用CUDA
-        target_device = self.device if device is None else _get_device(device)
-                
-        # 处理数据类型转换
-        target_dtype = self.dtype if dtype is None else _get_dtype(dtype)
-        
-        # 检查当前类型和设备是否已经匹配
-        dtype_not_change = (self.dtype == target_dtype)
-        device_not_change = (self.device == target_device)
-        
-        # 如果类型和设备都相同，且不需要复制，则返回自身
-        if dtype_not_change and device_not_change and not copy:
+        target_device = self.device if device is None else _get_device(device)                
+        target_dtype = self.dtype if dtype is None else _get_dtype(dtype)        
+        need_copy = copy or self.dtype != target_dtype or self.device != target_device
+
+        if not need_copy:
             return self
         
-        # 处理设备迁移、数据转换
-        if device_not_change:
-            # 设备相同，只需要转换数据类型（或强制复制）
+        if self.device == target_device:
+            # 同设备：只做 dtype 转换，或按 copy=True 强制复制
             if is_complex(self.dtype) and not is_complex(target_dtype):
-                # 复数向非复数转换时，为避免warning，不用astype直接转，取real后再转换
+                # 复数转非复数：先取实部，避免 astype 的丢弃虚部警告
                 ret = type(self)._from_array(self._array.real.astype(target_dtype, copy=False))
             else:
-                # 如果copy=True, 数据复制，否则仅数据类型变化时复制
-                ret = type(self)._from_array(self._array.astype(target_dtype, copy = copy))            
+                ret = type(self)._from_array(self._array.astype(target_dtype, copy=copy))
         else:
-            # 设备不同，需要转换设备
-            if target_device.type=='cuda':
-                # CPU -> CUDA
-                # 利用cp.asarray()支持dtype参数的特性，一步完成转换
+            if target_device.type == 'cuda':
+                # CPU -> CUDA：cp.asarray 支持直接指定 dtype，一步完成转换
                 if is_complex(self.dtype) and not is_complex(target_dtype):
-                    # 复数向非复数转换时，先取real
                     source_data = self._array.real
                 else:
                     source_data = self._array
-                
-                # 拷贝统一走当前流：cupy 的拷贝都排在当前流上，与后续同流操作天然有序。
-                # 旧实现为 non_blocking 单独创建了一条流，该流与默认流之间没有同步点，
-                # 返回后立即使用数据会产生竞态。non_blocking 只有在源数据位于固定
-                # (pinned) 内存时才会真正异步，且异步拷贝同样排在当前流上，因此无需建流。
+
+                # 拷贝排在目标设备的当前流上，后续同流操作天然有序；只有源为
+                # pinned 内存时 CuPy 才会真正异步，普通 NumPy 源仍有同步暂存开销。
                 ret = type(self)._from_array(_to_device_array(source_data, target_device.index, target_dtype))
+                if not non_blocking:
+                    with cp.cuda.Device(target_device.index):
+                        cp.cuda.get_current_stream().synchronize()
             else:
-                # CUDA -> CPU
-                # 注意：non_blocking 参数主要适用于 CPU -> GPU 传输
-                # GPU -> CPU 使用 cp.asnumpy()，这是同步操作
-                # 如果需要异步 GPU -> CPU 传输，需要更复杂的实现（使用 pinned memory + 异步拷贝）
+                # CUDA -> CPU：cp.asnumpy 是同步拷贝，non_blocking 不适用
                 if is_complex(self.dtype) and not is_complex(target_dtype):
-                    # 复数向非复数转换时，先取real
-                    ret = type(self)._from_array(cp.asnumpy(self._array.real).astype(target_dtype,copy=False))
+                    ret = type(self)._from_array(cp.asnumpy(self._array.real).astype(target_dtype, copy=False))
                 else:
-                    ret = type(self)._from_array(cp.asnumpy(self._array).astype(target_dtype,copy=False))
+                    ret = type(self)._from_array(cp.asnumpy(self._array).astype(target_dtype, copy=False))
         
         # 设置梯度跟踪信息
         if is_float_or_complex(target_dtype):
-            ret.requires_grad = (is_grad_enabled() and self.requires_grad)
-            
+            ret.requires_grad = (is_grad_enabled() and self.requires_grad)            
             if ret.requires_grad or forward_ad_trace_active():
-                # 设置计算图相关属性
-                ret.fromvars = (self,)                
-                # 保存原始数据类型和设备信息用于反向传播
-                ret.parms = ((self.dtype,self.device),)                
-                # 梯度需转换回原始数据类型和设备
+                ret.fromvars = (self,)
+                # 保存原始 dtype/device，反向时把梯度转回去
+                ret.parms = ((self.dtype, self.device),)
                 ret._grad_rule = lambda result: (
                     result._grad_value.to(
                         dtype=result.parms[0][0],

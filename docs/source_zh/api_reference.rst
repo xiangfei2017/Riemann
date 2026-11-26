@@ -2454,11 +2454,20 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
 
    将张量转换为指定的数据类型和/或设备。
 
+   位置参数支持 device 与 dtype 两种顺序（如 ``x.to('cuda:0', rm.float64)``
+   或 ``x.to(rm.float64, 'cuda:0')``），也可传入另一个张量 ``x.to(other)``。
+
+   :param other: 另一个张量，使用其 dtype 和 device 作为目标
+   :type other: riemann.TN, optional
    :param dtype: 目标数据类型
    :type dtype: dtype, optional
    :param device: 目标设备
    :type device: str, Device, optional
-   :return: 转换后的张量
+   :param non_blocking: CPU→GPU 传输是否异步；False（默认）时返回前等待拷贝完成。GPU→CPU 始终同步
+   :type non_blocking: bool, optional
+   :param copy: 即使 dtype 与 device 均未变化也强制返回副本
+   :type copy: bool, optional
+   :return: 转换后的张量；若目标 dtype 和 device 均未变化且 copy=False，返回张量自身
    :rtype: riemann.TN
 
 .. method:: riemann.TN.type(dtype=None)
@@ -3126,7 +3135,7 @@ CUDA支持
    :param grad_func: 梯度计算函数，签名为 ``grad_func(result, *args, **kwargs)``：
                     第一个参数 result 为前向函数的输出张量，其后参数与前向函数一致；
                     返回一个元组，包含每个输入张量对应的梯度（已包含链式法则的上游梯度，
-                    可通过 result.grad_value 获取）。元组内元素按 grad_func 的参数签名顺序排列，
+                    可通过 result._grad_value 获取）。元组内元素按 grad_func 的参数签名顺序排列，
                     非 TN 参数不占用位置，对于不需要梯度的张量，对应的梯度值应为 None；
                     调用时关键字参数的顺序不影响梯度对应关系
    :type grad_func: callable
@@ -3142,7 +3151,7 @@ CUDA支持
       
       # 定义单输入导数函数（d/dx log(x) = 1/x）
       def _log_derivative(result, x):
-          return (result.grad_value * (1. / x.conj()),)
+          return (result._grad_value * (1. / x.conj()),)
       
       # 使用register_grad_rule修饰器创建支持自动求导的对数函数
       @register_grad_rule(_log_derivative)
@@ -3157,7 +3166,7 @@ CUDA支持
       
       # 定义多输入导数函数（d/dx (x + y) = 1, d/dy (x + y) = 1）
       def _add_derivative(result, x, y):
-          return (result.grad_value, result.grad_value)
+          return (result._grad_value, result._grad_value)
       
       # 使用register_grad_rule修饰器创建支持自动求导的加法函数
       @register_grad_rule(_add_derivative)
@@ -3305,10 +3314,16 @@ CUDA支持
 
 .. function:: riemann.func.linearize(func, *primals)
 
-   在 ``primals`` 处线性化 ``func``：前向只求值一次并记录 primal 图，返回
+   在 ``primals`` 处线性化纯函数 ``func``：前向只求值一次并记录 primal 图，返回
    ``(primal_out, linear_fn)``；``linear_fn(*tangents)`` 复用同一张图计算 J(x)·v。
-   ``linear_fn`` 的 tangent 依赖仅保留到一阶，对 ``linear_fn`` 再求二阶导返回零张量
-   （与 ``torch.func`` 一致）。
+   ``linear_fn`` 对 tangent 是线性映射，对 tangents 再求二阶导返回零张量（与
+   ``torch.func`` 一致）；但当 ``primals`` 本身 ``requires_grad=True`` 时，其输出仍
+   与 primals 相连（可得到 H(x)·v），这一点与 ``torch.func.linearize`` 不同。
+
+   :param func: 待线性化的纯函数（无随机性/副作用），前向只执行一次
+   :param primals: 求值点输入，至少一个；``torch.func`` 允许零输入，此处抛 ``RuntimeError``
+   :return: 返回 ``(primal_out, linear_fn)``；tangent 元素可为 ``None``（零方向，
+            为 Riemann 扩展，``torch.func`` 不支持）
 
 .. function:: riemann.func.jacrev(func, argnums=0, *, has_aux=False, chunk_size=None)
 
@@ -3348,8 +3363,11 @@ CUDA支持
                    一致，元素不能为 None
    :param randomness: 取值 ``'error'`` / ``'different'`` / ``'same'``；非法值在创建
                       包裹函数时抛 ``RuntimeError``（与 ``torch.func`` 一致）
-   :param chunk_size: 关键字参数。每次处理的批次样本数，None 表示一次处理全部；非法值
-                      抛 ``ValueError``
+   :param chunk_size: 关键字参数。每批参与执行与堆叠的样本数，None 表示一次处理全部；
+                      分块可限制中间样本的峰值内存。非法值抛 ``ValueError``
+
+   批量维长度为 0 时抛 ``ValueError``（loop 式实现无法在不执行 ``func`` 的情况下
+   推断输出形状）；``out_dims`` 越界时抛 ``ValueError``。
 
 .. function:: riemann.func.functional_call(module, parameter_and_buffer_dicts, args=None, kwargs=None, *, tie_weights=True, strict=False)
 
@@ -3361,10 +3379,12 @@ CUDA支持
                                       序列；名称遵循 state_dict 约定（如 ``l1.weight``）。
                                       为 ``None`` 时使用模块自身状态；为兼容旧用法，也接受
                                       按 ``named_parameters()`` 顺序排列的张量（或张量序列）
-   :param args: ``forward`` 的位置参数；None 表示无参数
+   :param args: ``forward`` 的位置参数；None 表示无参数。非 tuple 入参（单个张量、
+                list 等）整体作为一个位置参数传入，与 ``torch.func`` 一致
    :param kwargs: ``forward`` 的关键字参数
-   :param tie_weights: 关键字参数。为 True 时保留原有的权重绑定语义；同一绑定组给出
-                       不同对象时抛 ``ValueError``
+   :param tie_weights: 关键字参数。为 True 时保留原有的权重绑定语义（绑定组任一名
+                       已提供即视为满足 strict）；同一绑定组给出不同对象时抛
+                       ``ValueError``，且该检查先于 missing/unexpected 检查
    :param strict: 关键字参数。为 True 时名称必须与模块参数/缓冲区完全一致，
                   缺失或多出都抛 ``RuntimeError``
    :return: ``module.forward(*args, **kwargs)`` 的返回值
@@ -3373,7 +3393,8 @@ CUDA支持
 
    把多个同构 Module 的参数与缓冲区沿新维度 0 堆叠，返回 ``(params, buffers)``
    两个 ``{名称: 堆叠张量}`` 字典，可直接配合 ``functional_call`` + ``vmap``
-   做模型集成（ensemble）。
+   做模型集成（ensemble）。与 ``torch`` 一致，绑定（同一对象）的多个名字只保留
+   首次出现的名字，其余别名可由 ``functional_call`` 的 ``tie_weights`` 补齐。
 
    :param models: Module 序列或 ModuleList，至少一个；须同类、同 training/eval 模式、
                   参数/缓冲区名称一致，且同名张量的 ``requires_grad`` 一致，
