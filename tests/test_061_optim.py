@@ -2303,6 +2303,59 @@ class TestOptimizedOptimizer(unittest.TestCase):
             # 断言确保测试通过
             self.assertTrue(passed, f"LBFGS测试失败: {case_name}")
         
+        # 0 维标量参数测试：LBFGS 展平/回写参数时不能把 _array 退化成数组标量，
+        # 否则后续张量运算的设备判断（按底层数组类型）会误报 cpu/cpu 设备不一致
+        print(f"\n{Colors.BOLD}LBFGS优化器0维标量参数测试{Colors.ENDC}")
+        case_name = "LBFGS - 0维标量参数"
+        start_time = time.time()
+        try:
+            x = tensor(-1.2, requires_grad=True)
+            y = tensor(1.0, requires_grad=True)
+
+            optimizer = LBFGS(
+                [x, y],
+                lr=1.0,
+                max_iter=20,
+                max_eval=25,
+                tolerance_grad=1e-4,
+                tolerance_change=1e-9,
+                history_size=20
+            )
+
+            def closure():
+                optimizer.zero_grad(True)
+                loss = 100. * (y - x**2.)**2. + (1. - x)**2.
+                loss.backward()
+                return loss
+
+            initial_x = x.item()
+            loss = optimizer.step(closure)
+
+            # 回写后底层存储必须仍是 0 维数组（而非 numpy/cupy 标量）
+            self.assertIsInstance(x._array, np.ndarray)
+            self.assertIsInstance(y._array, np.ndarray)
+            self.assertEqual(x._array.shape, ())
+            self.assertEqual(y._array.shape, ())
+            # 参数被实际更新且数值有限
+            self.assertNotEqual(x.item(), initial_x)
+            self.assertTrue(np.isfinite(x.item()))
+            self.assertTrue(np.isfinite(y.item()))
+
+            passed = True
+
+        except Exception as e:
+            passed = False
+            print(f"  错误: {str(e)}")
+
+        time_taken = time.time() - start_time
+
+        if IS_RUNNING_AS_SCRIPT:
+            stats.add_result(case_name, passed)
+            status = "通过" if passed else "失败"
+            print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+
+        self.assertTrue(passed, f"LBFGS测试失败: {case_name}")
+
         # 运行状态字典测试
         print(f"\n{Colors.BOLD}LBFGS优化器状态字典测试{Colors.ENDC}")
         for case in state_dict_cases:

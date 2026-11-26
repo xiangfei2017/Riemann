@@ -1110,7 +1110,9 @@ class LBFGS(Optimizer):
                 numel = info['numel']
                 shape = info['shape']
                 if len(shape) == 0:  # 标量参数
-                    p._array = vec[offset]
+                    # vec[offset] 是数组标量，直接赋值会让 _array 退化为标量而非
+                    # 0 维数组，破坏 TN 底层存储类型不变量，故先转回 0 维数组
+                    p._array = arrlib.asarray(vec[offset])
                 else:
                     p._array = vec[offset:offset + numel].reshape(shape)
         
