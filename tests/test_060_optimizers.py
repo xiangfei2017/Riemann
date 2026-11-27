@@ -174,6 +174,39 @@ OPTIMIZER_CONFIGS = {
         'ackley_params': {'lr': 0.5, 'initial_accumulator_value': 0.1, 'eps': 1e-7},
         'ackley_max_iter': 5000
     },
+    'Adamax': {
+        'class': optim.Adamax,
+        'params': {'lr': 0.05, 'betas': (0.9, 0.999), 'eps': 1e-8},
+        'max_iter': 1000,
+        'tolerance': 1e-6,
+        # 为Rosenbrock函数单独设置参数
+        'rosenbrock_params': {'lr': 0.01, 'betas': (0.9, 0.999), 'eps': 1e-8},
+        'rosenbrock_max_iter': 10000,
+        # 为Rastrigin函数单独设置参数
+        'rastrigin_params': {'lr': 0.01, 'betas': (0.9, 0.999), 'eps': 1e-8},
+        'rastrigin_max_iter': 10000,
+        # 为Ackley函数单独设置参数
+        'ackley_params': {'lr': 0.2, 'betas': (0.9, 0.999), 'eps': 1e-8},
+        'ackley_max_iter': 10000
+    },
+    'Adadelta': {
+        'class': optim.Adadelta,
+        'params': {'lr': 1.0, 'rho': 0.9, 'eps': 1e-6},
+        'max_iter': 2000,
+        'tolerance': 1e-6,
+        # Rosenbrock是窄长谷，eps决定逼近谷底时的步长下限：默认1e-6会提前封顶（损失停在~0.18）
+        'rosenbrock_params': {'lr': 1.0, 'rho': 0.9, 'eps': 1e-10},
+        'rosenbrock_max_iter': 20000,
+        # Beale需要更激进的步长：lr=2.0配eps=1e-8，默认配置下损失停在~0.25
+        'beale_params': {'lr': 2.0, 'rho': 0.9, 'eps': 1e-8},
+        'beale_max_iter': 2000,
+        # 为Rastrigin函数单独设置参数
+        'rastrigin_params': {'lr': 1.0, 'rho': 0.9, 'eps': 1e-6},
+        'rastrigin_max_iter': 10000,
+        # 为Ackley函数单独设置参数
+        'ackley_params': {'lr': 1.0, 'rho': 0.9, 'eps': 1e-6},
+        'ackley_max_iter': 10000
+    },
     'LBFGS': {
         'class': optim.LBFGS,
         'params': {'lr': 1.0, 'max_iter': 50, 'max_eval': 50, 
@@ -209,22 +242,13 @@ class OptimizerTestBase:
         params = [x, y]
         # print(f'x.dtype={x.dtype},y.dtype={y.dtype}')
         
-        # 检查是否为特定函数，如果是，使用专门的参数配置
-        if test_function_name == 'Rosenbrock' and 'rosenbrock_params' in optimizer_config:
-            optimizer = optimizer_config['class'](params, **optimizer_config['rosenbrock_params'])
-            max_iterations = optimizer_config.get('rosenbrock_max_iter', optimizer_config['max_iter'])
+        # 检查该测试函数是否有专用参数配置，如有则使用
+        func_key = test_function_name.lower()
+        if f'{func_key}_params' in optimizer_config:
+            optimizer = optimizer_config['class'](params, **optimizer_config[f'{func_key}_params'])
+            max_iterations = optimizer_config.get(f'{func_key}_max_iter', optimizer_config['max_iter'])
             tolerance = optimizer_config['tolerance']
-            print(f"使用Rosenbrock专用参数: {optimizer_config['rosenbrock_params']}, 迭代次数: {max_iterations}")
-        elif test_function_name == 'Rastrigin' and 'rastrigin_params' in optimizer_config:
-            optimizer = optimizer_config['class'](params, **optimizer_config['rastrigin_params'])
-            max_iterations = optimizer_config.get('rastrigin_max_iter', optimizer_config['max_iter'])
-            tolerance = optimizer_config['tolerance']
-            print(f"使用Rastrigin专用参数: {optimizer_config['rastrigin_params']}, 迭代次数: {max_iterations}")
-        elif test_function_name == 'Ackley' and 'ackley_params' in optimizer_config:
-            optimizer = optimizer_config['class'](params, **optimizer_config['ackley_params'])
-            max_iterations = optimizer_config.get('ackley_max_iter', optimizer_config['max_iter'])
-            tolerance = optimizer_config['tolerance']
-            print(f"使用Ackley专用参数: {optimizer_config['ackley_params']}, 迭代次数: {max_iterations}")
+            print(f"使用{test_function_name}专用参数: {optimizer_config[f'{func_key}_params']}, 迭代次数: {max_iterations}")
         else:
             # 创建优化器
             optimizer = optimizer_config['class'](params, **optimizer_config['params'])
@@ -476,6 +500,36 @@ class TestOptimizers(unittest.TestCase, OptimizerTestBase):
         # 验证至少有一个测试成功
         self.assertTrue(any(r['success'] for r in results), "Adagrad优化器所有测试都失败")
     
+    def test_optimizer_adamax(self):
+        """测试Adamax优化器在所有测试函数上的性能"""
+        print(f"\n=== 测试Adamax优化器 ===")
+        results = []
+        
+        for func_name, func_config in TEST_FUNCTIONS.items():
+            result = self.run_optimizer_test('Adamax', OPTIMIZER_CONFIGS['Adamax'], func_name, func_config)
+            results.append(result)
+        
+        # 打印表格形式的结果汇总
+        self._print_optimizer_results_table('Adamax', results)
+        
+        # 验证至少有一个测试成功
+        self.assertTrue(any(r['success'] for r in results), "Adamax优化器所有测试都失败")
+    
+    def test_optimizer_adadelta(self):
+        """测试Adadelta优化器在所有测试函数上的性能"""
+        print(f"\n=== 测试Adadelta优化器 ===")
+        results = []
+        
+        for func_name, func_config in TEST_FUNCTIONS.items():
+            result = self.run_optimizer_test('Adadelta', OPTIMIZER_CONFIGS['Adadelta'], func_name, func_config)
+            results.append(result)
+        
+        # 打印表格形式的结果汇总
+        self._print_optimizer_results_table('Adadelta', results)
+        
+        # 验证至少有一个测试成功
+        self.assertTrue(any(r['success'] for r in results), "Adadelta优化器所有测试都失败")
+    
     def test_optimizer_lbfgs(self):
         """测试LBFGS优化器在所有测试函数上的性能"""
         print(f"\n=== 测试LBFGS优化器 ===")
@@ -511,6 +565,8 @@ def run_all_tests():
     suite.addTest(TestOptimizers('test_optimizer_sgd'))
     suite.addTest(TestOptimizers('test_optimizer_adam'))
     suite.addTest(TestOptimizers('test_optimizer_adagrad'))
+    suite.addTest(TestOptimizers('test_optimizer_adamax'))
+    suite.addTest(TestOptimizers('test_optimizer_adadelta'))
     suite.addTest(TestOptimizers('test_optimizer_lbfgs'))
     
     # 运行测试

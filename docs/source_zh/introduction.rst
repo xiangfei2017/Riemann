@@ -60,7 +60,7 @@ Riemann 的核心价值在于其**简洁性**和**可学习性**——代码结�
 - 卷积池化（Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, AdaptivePool 等）
 - Transformer（MultiheadAttention, TransformerEncoder, TransformerDecoder, Transformer等）
 - KAN网络（KAN, KANLinear等）
-- 优化器（SGD, Adam, Adagrad, AdamW, RMSprop, LBFGS 等）
+- 优化器（GD, SGD, Adam, AdamW, Adamax, Adagrad, RMSprop, Adadelta, LBFGS 等）
 - 学习率调度器（StepLR, ExponentialLR, CosineAnnealingLR 等）
 - 网络模块容器（Sequential, ModuleList, ModuleDict 等）
 
@@ -203,7 +203,7 @@ Riemann 作为轻量级框架，以下 PyTorch 的高级特性**暂不支持**�
 - **量化**：不支持模型量化（INT8 等）
 - **ONNX 导出**：不支持导出为 ONNX 格式
 - **移动端部署**：不支持 TorchMobile、Core ML 等移动端部署
-- **高级优化器**：部分高级优化器（如 Adamax、SparseAdam）暂不支持
+- **高级优化器**：部分优化器尚未实现（如 SparseAdam、NAdam、RAdam、Rprop、ASGD、Adafactor、Muon）
 - **动态图高级特性**：如某些复杂的控制流和动态形状操作
 
 Riemann 特有功能

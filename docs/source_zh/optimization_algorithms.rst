@@ -101,10 +101,11 @@ SGD 是梯度下降的一种变体，它在每次迭代中使用数据子集更�
 
 **算法说明：**
 
-1. 在小批量数据上计算梯度：`∇θL(θ)`
-2. 应用权重衰减：`θ = θ * (1 - η * weight_decay)`
-3. 更新参数：`θ = θ - η * ∇θL(θ)`
-4. 可选：应用动量和/或 Nesterov 动量
+1. 在小批量数据上计算梯度：`g = ∇θL(θ)`
+2. 若启用权重衰减，先把 `weight_decay*θ` 并入梯度（L2 正则，与 torch 一致）：`g = g + weight_decay*θ`
+3. 若启用动量：`b = momentum*b + (1-dampening)*g`（首个 step 直接取 `b = g`，`dampening` 从第 2 步起生效）
+4. 若启用 Nesterov 动量，更新方向取 `g + momentum*b`；否则取 `b`（未启用动量时取 `g`）
+5. 更新参数：`θ = θ - η*更新方向`
 
 **优点：**
 
@@ -187,7 +188,7 @@ Nesterov 动量是动量的一种变体，通过在动量向量方向上向前�
 带 closure 参数的 SGD
 ~~~~~~~~~~~~~~~~~~~~~
 
-SGD 优化器支持 ``closure`` 参数，这是一个重新评估模型并返回损失的函数。这在需要在每个优化步骤中多次计算损失的算法中很有用，或者用于自定义优化逻辑。
+SGD 优化器支持 ``closure`` 参数，这是一个重新评估模型并返回损失的函数。SGD 会在更新参数前调用它一次，并把返回值作为 ``step()`` 的返回值，这样可以保持与需要多次评估的算法（如 LBFGS）一致的调用接口。
 
 .. code-block:: python
 
@@ -227,10 +228,10 @@ Adam 结合了 AdaGrad 和 RMSProp 算法的最佳特性，提供了一个能够
 
 **算法说明：**
 
-1. 计算一阶矩估计：`m = β1*m + (1-β1)*∇θL(θ)`
-2. 计算二阶矩估计：`v = β2*v + (1-β2)*(∇θL(θ))²`
-3. 应用偏差校正：`m̂ = m/(1-β1^t)`，`v̂ = v/(1-β2^t)`
-4. 应用权重衰减：`θ = θ * (1 - η * weight_decay)`
+1. 若启用权重衰减，先把 `weight_decay*θ` 并入梯度（L2 正则，与 torch 一致）
+2. 计算一阶矩估计：`m = β1*m + (1-β1)*∇θL(θ)`
+3. 计算二阶矩估计：`v = β2*v + (1-β2)*(∇θL(θ))²`
+4. 应用偏差校正：`m̂ = m/(1-β1^t)`，`v̂ = v/(1-β2^t)`
 5. 更新参数：`θ = θ - η*m̂/(√v̂ + ε)`
 
 **优点：**
@@ -295,11 +296,11 @@ AdaGrad 根据参数调整学习率，对与频繁出现特征相关的参数执
 
 **算法说明：**
 
-1. 计算梯度：`∇θL(θ)`
-2. 累积平方梯度：`G = G + (∇θL(θ))²`
-3. 应用权重衰减：`θ = θ * (1 - η * weight_decay)`
-4. 更新参数：`θ = θ - η*∇θL(θ)/(√G + ε)`
-5. 可选：应用学习率衰减
+1. 计算梯度：`g = ∇θL(θ)`
+2. 若启用权重衰减，先把 `weight_decay*θ` 并入梯度（L2 正则，与 torch 一致）
+3. 累积平方梯度（累加器从 `initial_accumulator_value` 开始）：`G = G + g²`
+4. 计算衰减后的学习率：`η_t = η/(1 + (t-1)*lr_decay)`
+5. 更新参数：`θ = θ - η_t*g/(√G + ε)`
 
 **优点：**
 
@@ -341,12 +342,12 @@ LBFGS 是一种拟牛顿法，它使用有限的内存来近似 BFGS 算法。�
 
 **算法说明：**
 
-1. 使用闭包函数计算梯度
-2. 维护最近的（位置，梯度）对历史
-3. 使用此历史近似逆 Hessian 矩阵
-4. 基于近似逆 Hessian 计算搜索方向
-5. 执行线搜索以找到最佳步长
-6. 更新参数并重复
+1. 调用闭包函数，得到当前点的损失与梯度
+2. 用最近 `history_size` 组 (s, y) 做两循环递归（two-loop recursion），隐式乘上近似逆 Hessian，得到搜索方向 `d = -lr*H*∇θL(θ)`
+3. 沿 `d` 做线搜索（默认 Armijo 回溯；`line_search_fn='strong_wolfe'` 时改用强 Wolfe 的括号+二分搜索）
+4. 用被接受的步长更新参数，并记录本次 step 内的最佳点
+5. 用新点的 `s = θ_new - θ_old`、`y = g_new - g_old` 更新历史队列（曲率非正的对会被过滤），检查收敛条件
+6. 在 `max_iter` / `max_eval` 预算内重复，结束后回滚到最佳点并返回最终损失
 
 **优点：**
 
@@ -365,13 +366,15 @@ LBFGS 是一种拟牛顿法，它使用有限的内存来近似 BFGS 算法。�
 
 **LBFGS 参数详细说明：**
 
-- **lr**: 学习率（默认值：1.0）。与其他优化器不同，LBFGS 将其用作线搜索期间的步长乘数。
-- **max_iter**: 每个优化步骤的最大迭代次数（默认值：20）。控制算法尝试找到最佳步长的次数。
-- **max_eval**: 每个优化步骤的最大函数评估次数（默认值：None）。如果为 None，则默认为 max_iter * 1.25。
-- **tolerance_grad**: 梯度收敛阈值（默认值：1e-05）。当梯度范数低于此阈值时，优化停止。
-- **tolerance_change**: 参数变化收敛阈值（默认值：1e-09）。当参数更新低于此阈值时，优化停止。
-- **history_size**: 历史缓冲区大小（默认值：100）。控制用于近似 Hessian 矩阵的内存量。
-- **line_search_fn**: 线搜索函数（默认值：None）。用于替代默认实现的自定义线搜索函数。
+- **lr**: 学习率（默认值：1.0）。与其他优化器不同，它乘在搜索方向上（`d = -lr*H*g`），用于缩放拟牛顿方向，而不是普通梯度步长。
+- **max_iter**: 单个 `step()` 内的 L-BFGS 迭代上限（默认值：20）。
+- **max_eval**: 单个 `step()` 内闭包调用次数的硬上限（默认值：None）。为 None 时取 `max_iter*5//4 + 2`，保证迭代次数很小时也能完成至少一次线搜索；达到上限后线搜索立即停止。
+- **tolerance_grad**: 梯度收敛阈值（默认值：1e-05）。与梯度分量的最大绝对值 `max|g|` （无穷范数）比较，低于阈值即停止。
+- **tolerance_change**: 参数变化收敛阈值（默认值：1e-09）。与本次 `step()` 中"被接受的单步最大参数变化量"比较，低于阈值即停止。
+- **history_size**: 历史缓冲区大小（默认值：100）。即保留的 (s, y) 对数上限，决定内存占用与逆 Hessian 的近似精度。
+- **line_search_fn**: 线搜索函数（默认值：None）。`None` 表示 Armijo 回溯线搜索，`'strong_wolfe'` 表示强 Wolfe 线搜索；传入其它值会抛出 `ValueError`。
+
+注意：收敛判断只基于本次 `step()` 内被接受的步长；多参数组时所有参数会被拼成一条向量联合优化，超参数与历史取自第一个参数组。
 
 基本 LBFGS
 ~~~~~~~~~~
@@ -439,7 +442,7 @@ LBFGS 参数调优技巧
 - **max_iter**: 对于更复杂的优化问题，增加此值，但要注意计算时间的增加。
 - **history_size**: 较大的值可能会改善收敛性，但会增加内存使用。对于小型模型，100-200 通常足够。
 - **tolerance_grad** 和 **tolerance_change**: 根据所需的精度进行调整。较小的值会导致更精确的优化，但可能需要更多迭代。
-- **line_search_fn**: 仅在有特定线搜索要求时自定义。默认实现对大多数问题效果良好。
+- **line_search_fn**: 只接受 `None`（默认的 Armijo 回溯线搜索）和 `'strong_wolfe'`（强 Wolfe 线搜索），其它值会抛 `ValueError`；一般保持默认即可。
 
 AdamW（Adam with Weight Decay）
 -------------------------------
@@ -451,8 +454,8 @@ AdamW 是 Adam 的改进版本，它将权重衰减作为独立的正则化项�
 1. 计算一阶矩估计：`m = β1*m + (1-β1)*∇θL(θ)`
 2. 计算二阶矩估计：`v = β2*v + (1-β2)*(∇θL(θ))²`
 3. 应用偏差校正：`m̂ = m/(1-β1^t)`，`v̂ = v/(1-β2^t)`
-4. 应用权重衰减：`θ = θ * (1 - η * weight_decay)`
-5. 更新参数：`θ = θ - η*m̂/(√v̂ + ε)`
+4. 解耦权重衰减：`θ = θ*(1 - η*weight_decay)`，直接作用于参数，不进入矩估计、也不被 `√v̂` 缩放
+5. 自适应更新：`θ = θ - η*m̂/(√v̂ + ε)`
 
 **优点：**
 
@@ -506,6 +509,56 @@ AdamW 是 Adam 的改进版本，它将权重衰减作为独立的正则化项�
         loss.backward()
         optimizer.step()
 
+Adamax
+------
+
+Adamax 是 Adam 的 ∞ 范数变体：把二阶矩的 L2 范数换成"指数加权的无穷范数"，每个参数坐标只保留历史上最大的梯度幅值。因为每步是逐元素取 `max` 而不是求和平均，二阶矩不需要偏差校正，对偶发的大梯度也更稳健。
+
+**算法说明：**
+
+1. 若启用权重衰减，先把 `weight_decay*θ` 并入梯度（L2 正则，与 torch 一致，非解耦）
+2. 计算一阶矩估计：`m = β1*m + (1-β1)*∇θL(θ)`
+3. 更新无穷范数：`u = max(β2*u, |∇θL(θ)| + ε)` （`ε` 加在 `|g|` 上，保证 `u > 0`）
+4. 更新参数：`θ = θ - (η/(1-β1^t))*m/u` （只有一阶矩做偏差校正）
+
+**优点：**
+
+- 二阶矩无需偏差校正，数值稳定、实现简单
+- `|g|` 较大时 `u` 随之增长，等效于在该坐标上取近乎恒定幅度的步长，对离群梯度不敏感
+- 默认 `lr=2e-3`、`betas=(0.9, 0.999)`、`eps=1e-8`，与 `torch.optim.Adamax` 一致
+
+**适用场景：**
+
+- 梯度稀疏或梯度分布含较大离群值的任务
+- 希望比 Adam 更稳定的二阶矩估计时
+- 需要与 PyTorch `torch.optim.Adamax` 对齐的复现实验
+
+**主要参数：**
+
+- `lr`：学习率（默认 2e-3）
+- `betas`：一阶矩与无穷范数的系数 `(β1, β2)`（默认 `(0.9, 0.999)`，均需在 [0, 1) 内）
+- `eps`：加在 `|g|` 上的数值稳定项（默认 1e-8）
+- `weight_decay`：L2 正则系数（默认 0）
+
+基本 Adamax
+~~~~~~~~~~~
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+
+    # 创建 Adamax 优化器
+    optimizer = optim.Adamax(model.parameters(), lr=0.002)
+
+    # 训练循环
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
 RMSprop（Root Mean Square Propagation）
 ---------------------------------------
 
@@ -513,9 +566,12 @@ RMSprop 是一种自适应学习率优化算法，它为每个参数维护一个
 
 **算法说明：**
 
-1. 计算梯度平方的移动平均值：`v = α*v + (1-α)*(∇θL(θ))²`
-2. 更新参数：`θ = θ - η*∇θL(θ)/(√v + ε)`
-3. 可选：应用动量和/或使用中心化版本
+1. 计算梯度：`g = ∇θL(θ)`
+2. 若启用权重衰减，先把 `weight_decay*θ` 并入梯度（L2 正则，与 torch 一致）
+3. 更新梯度平方的移动平均：`v = α*v + (1-α)*g²`；`centered=True` 时同时维护梯度均值 `m = α*m + (1-α)*g`，用 `v - m²` 代替 `v`
+4. 归一化：`ĝ = g/(√v + ε)` （eps 加在开方之后）
+5. 若启用动量：`b = momentum*b + ĝ` （首个 step `b = ĝ`），更新方向取 `b`；否则取 `ĝ`
+6. 更新参数：`θ = θ - η*更新方向`
 
 **优点：**
 
@@ -589,6 +645,63 @@ RMSprop 是一种自适应学习率优化算法，它为每个参数维护一个
         loss.backward()
         optimizer.step()
 
+Adadelta
+--------
+
+Adadelta 是 Adagrad 的改进版本：用指数移动平均把梯度平方的统计窗口限制在近期，并用"更新量自身的 RMS"代替手调学习率，使步长随梯度尺度自动调整。
+
+**算法说明：**
+
+1. 若启用权重衰减，先把 `weight_decay*θ` 并入梯度（L2 正则，与 torch 一致）
+2. 更新梯度平方的指数移动平均：`s = ρ*s + (1-ρ)*(∇θL(θ))²`
+3. 计算更新量：`Δ = √(u + ε)/√(s + ε)*∇θL(θ)`
+4. 更新参数：`θ = θ - η*Δ`
+5. 更新更新量平方的指数移动平均：`u = ρ*u + (1-ρ)*Δ²`
+
+**优点：**
+
+- 基本不需要调学习率，`lr` 只作整体缩放（默认 1.0）
+- 分母不会像 Adagrad 那样随迭代单调增长，训练后期不会停滞
+- 对梯度尺度变化较大的问题比较稳健
+
+**适用场景：**
+
+- 不想仔细调学习率的任务
+- 中长训练过程，希望后期仍保留一定步长
+- 需要与 PyTorch `torch.optim.Adadelta` 对齐的复现代码
+
+**主要参数：**
+
+- `lr`：整体步长缩放（默认 1.0）
+- `rho`：平方平均的衰减系数（默认 0.9，需在 [0, 1] 内）
+- `eps`：开方前分别加到 `s` 与 `u` 上的数值稳定项（默认 1e-6）
+- `weight_decay`：L2 正则系数（默认 0）
+
+**调参提示：**
+
+- `eps` 实际控制逼近最优点时的步长下限：`|g|` 很小时 `√(s+ε) ≈ √ε` 主导分母，步长被限制在 `~√ε/√(1-ρ)`。梯度尺度很小的任务应把 `eps` 调小（如 1e-8 ~ 1e-10）。
+- 首步 `u = 0`，更新量约为 `√ε/√(1-ρ)*sign(g)`，因此起步较慢，这是算法固有特性。
+- `lr` 只整体缩放 `Δ`，过大会在窄谷中振荡；`eps` 造成的瓶颈无法靠增大 `lr` 突破。
+
+基本 Adadelta
+~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+
+    # 创建 Adadelta 优化器
+    optimizer = optim.Adadelta(model.parameters(), lr=1.0, rho=0.9, eps=1e-6)
+
+    # 训练循环
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
 优化器方法
 ----------
 
@@ -602,8 +715,11 @@ RMSprop 是一种自适应学习率优化算法，它为每个参数维护一个
     
     optimizer = optim.SGD(model.parameters(), lr=0.01)
     
-    # 清零梯度
+    # 清零梯度（默认 set_to_none=False：把梯度张量原地置零）
     optimizer.zero_grad()
+    
+    # 也可以直接丢弃梯度张量以节省内存（下次反向传播时重新分配）
+    optimizer.zero_grad(set_to_none=True)
 
 步进
 ~~~~
@@ -754,9 +870,11 @@ RMSprop 是一种自适应学习率优化算法，它为每个参数维护一个
 
 当您使用参数组创建优化器时：
 
-1. 优化器会为每个参数组单独维护状态
+1. 优化器会为每个参数组单独维护超参数与状态（LBFGS 例外：它把所有参数组的参数拼成一条向量联合优化，超参数与历史取自第一个参数组）
 2. 在每次 `step()` 调用时，优化器会根据每个参数组的超参数更新相应的参数
 3. 如果某个超参数没有在参数组中指定，优化器会使用构造函数中提供的默认值
+
+``state_dict()`` 中的 ``params`` 是按顺序编号的索引（跨参数组连续），``load_state_dict()`` 按位置匹配参数，因此可以在新建模型或新进程中恢复优化器状态。
 
 最佳实践
 ~~~~~~~~
@@ -1022,31 +1140,37 @@ RMSprop 是一种自适应学习率优化算法，它为每个参数维护一个
     import riemann.optim as optim
     
     class CustomSGD(optim.Optimizer):
-        def __init__(self, params, lr=0.01, momentum=0):
+        def __init__(self, params, lr=0.01, momentum=0.0):
             defaults = dict(lr=lr, momentum=momentum)
-            super(CustomSGD, self).__init__(params, defaults)
+            super().__init__(params, defaults)
         
         def step(self, closure=None):
             loss = None
             if closure is not None:
                 loss = closure()
             
+            arrlib = self.arrlib  # CPU 为 numpy，CUDA 为 cupy
             for group in self.param_groups:
+                lr = group['lr']
+                momentum = group['momentum']
                 for p in group['params']:
                     if p.grad is None:
                         continue
                     
-                    d_p = p.grad.detach()
-                    if group['momentum'] != 0:
-                        param_state = self.state[p]
-                        if 'momentum_buffer' not in param_state:
-                            buf = param_state['momentum_buffer'] = rm.clone(d_p).detach()
-                        else:
-                            buf = param_state['momentum_buffer']
-                            buf.mul_(group['momentum']).add_(d_p)
-                            d_p = buf
+                    # 梯度与参数都是 TN，底层数组通过 ._array 访问
+                    grad = p.grad._array
+                    if momentum != 0:
+                        # 状态以 id(p) 为键，state_dict/load_state_dict 依赖这一约定
+                        state = self.state[id(p)]
+                        if 'momentum_buffer' not in state:
+                            state['momentum_buffer'] = grad.copy()
+                        buf = state['momentum_buffer']
+                        arrlib.multiply(momentum, buf, out=buf)
+                        buf += grad
+                        grad = buf
                     
-                    p.data.add_(-group['lr'] * d_p)
+                    # 原地写回参数，保持 TN 底层存储类型不变
+                    p._array -= lr * grad
             
             return loss
     

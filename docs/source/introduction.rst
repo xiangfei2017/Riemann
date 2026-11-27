@@ -59,7 +59,7 @@ Neural Network Modules
 - Convolution and pooling (Conv1d/2d/3d, MaxPool1d/2d/3d, AvgPool1d/2d/3d, AdaptivePool, etc.)
 - Transformer (MultiheadAttention, TransformerEncoder, TransformerDecoder, Transformer, etc.)
 - KAN Networks (KAN, KANLinear etc.)
-- Optimizers (SGD, Adam, Adagrad, AdamW, RMSprop, LBFGS, etc.)
+- Optimizers (GD, SGD, Adam, AdamW, Adamax, Adagrad, RMSprop, Adadelta, LBFGS, etc.)
 - Learning rate schedulers (StepLR, ExponentialLR, CosineAnnealingLR, etc.)
 - Network module containers (Sequential, ModuleList, ModuleDict, etc.)
 
@@ -202,7 +202,7 @@ As a lightweight framework, Riemann **does not support** the following advanced 
 - **Quantization**: Does not support model quantization (INT8, etc.)
 - **ONNX Export**: Does not support exporting to ONNX format
 - **Mobile Deployment**: Does not support TorchMobile, Core ML, and other mobile deployment
-- **Advanced Optimizers**: Some advanced optimizers (such as Adamax, SparseAdam) are not supported
+- **Advanced Optimizers**: Some optimizers are not implemented yet (e.g. SparseAdam, NAdam, RAdam, Rprop, ASGD, Adafactor, Muon)
 - **Advanced Dynamic Graph Features**: Such as certain complex control flows and dynamic shape operations
 
 Riemann-Specific Features

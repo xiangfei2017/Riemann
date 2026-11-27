@@ -101,10 +101,11 @@ SGD is a variant of gradient descent that updates parameters using a subset of d
 
 **Algorithm Explanation:**
 
-1. Compute gradients on a mini-batch: `∇θL(θ)`
-2. Apply weight decay: `θ = θ * (1 - η * weight_decay)`
-3. Update parameters: `θ = θ - η * ∇θL(θ)`
-4. Optional: Apply momentum and/or Nesterov momentum
+1. Compute gradients on a mini-batch: `g = ∇θL(θ)`
+2. If weight decay is enabled, fold it into the gradient first (L2, same as torch): `g = g + weight_decay*θ`
+3. If momentum is enabled: `b = momentum*b + (1-dampening)*g` (on the first step `b = g`; dampening takes effect from the second step)
+4. With Nesterov momentum the update direction is `g + momentum*b`; otherwise it is `b` (or `g` when momentum is disabled)
+5. Update parameters: `θ = θ - η*update_direction`
 
 **Advantages:**
 
@@ -187,7 +188,7 @@ Nesterov momentum is a variant of momentum that can provide better convergence b
 SGD with Closure Parameter
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The SGD optimizer supports a ``closure`` parameter, which is a function that reevaluates the model and returns the loss. This is useful for algorithms that need to compute the loss multiple times per optimization step, or for custom optimization logic.
+The SGD optimizer supports a ``closure`` parameter, which is a function that reevaluates the model and returns the loss. SGD calls it once before updating the parameters and returns its value from ``step()``, which keeps the calling convention consistent with optimizers that need multiple evaluations (such as LBFGS).
 
 .. code-block:: python
 
@@ -227,10 +228,10 @@ Adam combines the best properties of AdaGrad and RMSProp algorithms to provide a
 
 **Algorithm Explanation:**
 
-1. Compute first moment estimate: `m = β1*m + (1-β1)*∇θL(θ)`
-2. Compute second moment estimate: `v = β2*v + (1-β2)*(∇θL(θ))²`
-3. Apply bias correction: `m̂ = m/(1-β1^t)`, `v̂ = v/(1-β2^t)`
-4. Apply weight decay: `θ = θ * (1 - η * weight_decay)`
+1. If weight decay is enabled, fold `weight_decay*θ` into the gradient first (L2, same as torch)
+2. Compute first moment estimate: `m = β1*m + (1-β1)*∇θL(θ)`
+3. Compute second moment estimate: `v = β2*v + (1-β2)*(∇θL(θ))²`
+4. Apply bias correction: `m̂ = m/(1-β1^t)`, `v̂ = v/(1-β2^t)`
 5. Update parameters: `θ = θ - η*m̂/(√v̂ + ε)`
 
 **Advantages:**
@@ -295,11 +296,11 @@ AdaGrad adapts the learning rate to the parameters, performing smaller updates f
 
 **Algorithm Explanation:**
 
-1. Compute gradients: `∇θL(θ)`
-2. Accumulate squared gradients: `G = G + (∇θL(θ))²`
-3. Apply weight decay: `θ = θ * (1 - η * weight_decay)`
-4. Update parameters: `θ = θ - η*∇θL(θ)/(√G + ε)`
-5. Optional: Apply learning rate decay
+1. Compute gradients: `g = ∇θL(θ)`
+2. If weight decay is enabled, fold `weight_decay*θ` into the gradient first (L2, same as torch)
+3. Accumulate squared gradients (the accumulator starts at `initial_accumulator_value`): `G = G + g²`
+4. Compute the decayed learning rate: `η_t = η/(1 + (t-1)*lr_decay)`
+5. Update parameters: `θ = θ - η_t*g/(√G + ε)`
 
 **Advantages:**
 
@@ -341,12 +342,12 @@ LBFGS is a quasi-Newton method that approximates the BFGS algorithm using a limi
 
 **Algorithm Explanation:**
 
-1. Compute gradients using the closure function
-2. Maintain a history of recent (position, gradient) pairs
-3. Approximate the inverse Hessian matrix using this history
-4. Compute search direction based on the approximate inverse Hessian
-5. Perform line search to find optimal step size
-6. Update parameters and repeat
+1. Call the closure to obtain the loss and gradients at the current point
+2. Run the two-loop recursion over the most recent `history_size` (s, y) pairs to implicitly apply the approximate inverse Hessian, producing the search direction `d = -lr*H*∇θL(θ)`
+3. Run a line search along `d` (Armijo backtracking by default; a bracket + bisection strong-Wolfe search when `line_search_fn='strong_wolfe'`)
+4. Apply the accepted step to the parameters and record the best point seen in this `step()`
+5. Update the history queue with `s = θ_new - θ_old` and `y = g_new - g_old` (pairs with non-positive curvature are filtered out) and check the convergence criteria
+6. Repeat within the `max_iter` / `max_eval` budget, then roll back to the best point and return the final loss
 
 **Advantages:**
 
@@ -365,13 +366,15 @@ LBFGS is a quasi-Newton method that approximates the BFGS algorithm using a limi
 
 **LBFGS Parameters Detailed Explanation:**
 
-- **lr**: Learning rate (default: 1.0). Unlike other optimizers, LBFGS uses this as a step size multiplier during line search.
-- **max_iter**: Maximum number of iterations per optimization step (default: 20). Controls how many times the algorithm will attempt to find an optimal step.
-- **max_eval**: Maximum number of function evaluations per optimization step (default: None). If None, defaults to max_iter * 1.25.
-- **tolerance_grad**: Gradient tolerance for convergence (default: 1e-05). The optimization stops when the gradient norm falls below this threshold.
-- **tolerance_change**: Parameter change tolerance for convergence (default: 1e-09). The optimization stops when parameter updates fall below this threshold.
-- **history_size**: Update history size (default: 100). Controls how much memory is used to approximate the Hessian matrix.
-- **line_search_fn**: Line search function (default: None). Custom line search function to use instead of the default implementation.
+- **lr**: Learning rate (default: 1.0). Unlike other optimizers, it scales the search direction (`d = -lr*H*g`) rather than acting as a plain gradient step size.
+- **max_iter**: Maximum number of L-BFGS iterations inside a single `step()` (default: 20).
+- **max_eval**: Hard cap on closure evaluations inside a single `step()` (default: None). When None it becomes `max_iter*5//4 + 2`, so even a small `max_iter` can still complete at least one line search; the line search stops immediately once the cap is reached.
+- **tolerance_grad**: Gradient tolerance for convergence (default: 1e-05). Compared against the largest absolute gradient component `max|g|` (infinity norm).
+- **tolerance_change**: Parameter-change tolerance for convergence (default: 1e-09). Compared against the largest accepted per-step parameter change within the current `step()`.
+- **history_size**: Size of the history buffer (default: 100). Upper bound on the number of stored (s, y) pairs, which determines memory use and the accuracy of the inverse Hessian approximation.
+- **line_search_fn**: Line search function (default: None). `None` selects Armijo backtracking, `'strong_wolfe'` selects the strong-Wolfe search; any other value raises `ValueError`.
+
+Note: convergence is judged only from the steps accepted inside the current `step()`; with multiple parameter groups all parameters are concatenated into a single vector and optimized jointly, using the hyperparameters and history of the first group.
 
 Basic LBFGS
 ~~~~~~~~~~~
@@ -439,7 +442,7 @@ Parameter Tuning Tips for LBFGS
 - **max_iter**: Increase for more complex optimization problems, but be aware of increased computation time.
 - **history_size**: Larger values may improve convergence but increase memory usage. For small models, 100-200 is typically sufficient.
 - **tolerance_grad** and **tolerance_change**: Adjust based on desired precision. Smaller values lead to more precise optimization but may require more iterations.
-- **line_search_fn**: Only customize if you have specific line search requirements. The default implementation works well for most problems.
+- **line_search_fn**: Accepts only `None` (the default Armijo backtracking search) and `'strong_wolfe'` (strong-Wolfe search); any other value raises `ValueError`. Keep the default for most problems.
 
 AdamW (Adam with Weight Decay)
 -------------------------------
@@ -451,8 +454,8 @@ AdamW is an improved version of Adam that treats weight decay as a separate regu
 1. Compute first moment estimate: `m = β1*m + (1-β1)*∇θL(θ)`
 2. Compute second moment estimate: `v = β2*v + (1-β2)*(∇θL(θ))²`
 3. Apply bias correction: `m̂ = m/(1-β1^t)`, `v̂ = v/(1-β2^t)`
-4. Apply weight decay: `θ = θ * (1 - η * weight_decay)`
-5. Update parameters: `θ = θ - η*m̂/(√v̂ + ε)`
+4. Decoupled weight decay: `θ = θ*(1 - η*weight_decay)`, applied directly to the parameters, never entering the moment estimates and never rescaled by `√v̂`
+5. Adaptive update: `θ = θ - η*m̂/(√v̂ + ε)`
 
 **Advantages:**
 
@@ -506,6 +509,56 @@ AdamW with Custom Betas
         loss.backward()
         optimizer.step()
 
+Adamax
+------
+
+Adamax is the infinity-norm variant of Adam: the second moment's L2 norm is replaced by an exponentially weighted infinity norm, so each coordinate only keeps the largest gradient magnitude seen so far. Because the update is an element-wise `max` instead of a running sum, the second moment needs no bias correction and stays robust to occasional large gradients.
+
+**Algorithm Explanation:**
+
+1. If weight decay is enabled, fold `weight_decay*θ` into the gradient first (L2, not decoupled, same as torch)
+2. Compute first moment estimate: `m = β1*m + (1-β1)*∇θL(θ)`
+3. Update the infinity norm: `u = max(β2*u, |∇θL(θ)| + ε)` (`ε` is added to `|g|`, guaranteeing `u > 0`)
+4. Update parameters: `θ = θ - (η/(1-β1^t))*m/u` (only the first moment is bias-corrected)
+
+**Advantages:**
+
+- No bias correction for the second moment, so it is numerically stable and simple
+- As `|g|` grows, `u` grows with it, giving an almost fixed-magnitude step along that coordinate
+- Defaults `lr=2e-3`, `betas=(0.9, 0.999)`, `eps=1e-8` match `torch.optim.Adamax`
+
+**Suitable Scenarios:**
+
+- Sparse gradients or gradients with large outliers
+- When you want a more stable second moment estimate than Adam
+- Reproducing experiments that align with `torch.optim.Adamax`
+
+**Key Parameters:**
+
+- `lr`: Learning rate (default: 2e-3)
+- `betas`: Coefficients for the first moment and the infinity norm, `(β1, β2)` (default: `(0.9, 0.999)`, both in [0, 1))
+- `eps`: Numerical stability term added to `|g|` (default: 1e-8)
+- `weight_decay`: L2 regularization coefficient (default: 0)
+
+Basic Adamax
+~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+
+    # Create Adamax optimizer
+    optimizer = optim.Adamax(model.parameters(), lr=0.002)
+
+    # Training loop
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
 RMSprop (Root Mean Square Propagation)
 ---------------------------------------
 
@@ -513,9 +566,12 @@ RMSprop is an adaptive learning rate optimization algorithm that maintains a mov
 
 **Algorithm Explanation:**
 
-1. Compute moving average of squared gradients: `v = α*v + (1-α)*(∇θL(θ))²`
-2. Update parameters: `θ = θ - η*∇θL(θ)/(√v + ε)`
-3. Optional: Apply momentum and/or use centered version
+1. Compute gradients: `g = ∇θL(θ)`
+2. If weight decay is enabled, fold `weight_decay*θ` into the gradient first (L2, same as torch)
+3. Update the moving average of squared gradients: `v = α*v + (1-α)*g²`; with `centered=True` also track the gradient mean `m = α*m + (1-α)*g` and use `v - m²` instead of `v`
+4. Normalize: `ĝ = g/(√v + ε)` (eps is added after the square root)
+5. If momentum is enabled: `b = momentum*b + ĝ` (first step `b = ĝ`) and the update direction is `b`; otherwise it is `ĝ`
+6. Update parameters: `θ = θ - η*update_direction`
 
 **Advantages:**
 
@@ -589,6 +645,63 @@ RMSprop with Centered Gradients
         loss.backward()
         optimizer.step()
 
+Adadelta
+--------
+
+Adadelta is an improved version of Adagrad: it keeps the squared-gradient statistics in an exponential moving average window instead of a growing sum, and uses the RMS of the updates themselves instead of a hand-tuned learning rate, so the step size adapts to the gradient scale automatically.
+
+**Algorithm Explanation:**
+
+1. If weight decay is enabled, fold `weight_decay*θ` into the gradient first (L2, same as torch)
+2. Update the moving average of squared gradients: `s = ρ*s + (1-ρ)*(∇θL(θ))²`
+3. Compute the update: `Δ = √(u + ε)/√(s + ε)*∇θL(θ)`
+4. Update parameters: `θ = θ - η*Δ`
+5. Update the moving average of squared updates: `u = ρ*u + (1-ρ)*Δ²`
+
+**Advantages:**
+
+- Practically no learning rate tuning; `lr` only scales the whole update (default 1.0)
+- Unlike Adagrad, the denominator does not grow monotonically, so it does not stall late in training
+- Robust to problems where the gradient scale changes a lot
+
+**Suitable Scenarios:**
+
+- When you do not want to tune the learning rate carefully
+- Medium/long training runs that still need a non-trivial step size late in training
+- Reproducing experiments that align with `torch.optim.Adadelta`
+
+**Key Parameters:**
+
+- `lr`: Global step scale (default: 1.0)
+- `rho`: Decay coefficient of the moving averages (default: 0.9, must be in [0, 1])
+- `eps`: Numerical stability term added to both `s` and `u` before the square root (default: 1e-6)
+- `weight_decay`: L2 regularization coefficient (default: 0)
+
+**Tuning Notes:**
+
+- `eps` effectively sets the lower bound of the step size near the optimum: when `|g|` is small, `√(s+ε) ≈ √ε` dominates the denominator and the step is capped at about `√ε/√(1-ρ)`. For problems with very small gradient scales, reduce `eps` (e.g. 1e-8 to 1e-10).
+- On the first step `u = 0`, so the update is about `√ε/√(1-ρ)*sign(g)`; the slow start is an inherent property of the algorithm.
+- `lr` only scales `Δ`; too large a value oscillates in narrow valleys, and no `lr` can overcome the `eps` bottleneck.
+
+Basic Adadelta
+~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import riemann as rm
+    import riemann.optim as optim
+
+    # Create Adadelta optimizer
+    optimizer = optim.Adadelta(model.parameters(), lr=1.0, rho=0.9, eps=1e-6)
+
+    # Training loop
+    for epoch in range(num_epochs):
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
 Optimizer Methods
 -----------------
 
@@ -602,8 +715,11 @@ Zero Gradients
     
     optimizer = optim.SGD(model.parameters(), lr=0.01)
     
-    # Zero gradients
+    # Zero gradients (default set_to_none=False: zero the gradient tensors in place)
     optimizer.zero_grad()
+    
+    # Alternatively drop the gradient tensors to save memory (they are reallocated on the next backward pass)
+    optimizer.zero_grad(set_to_none=True)
 
 Step
 ~~~~
@@ -754,9 +870,11 @@ How Parameter Groups Work
 
 When you create an optimizer with parameter groups:
 
-1. The optimizer maintains separate states for each parameter group
+1. The optimizer keeps hyperparameters and states separately for each parameter group (LBFGS is the exception: it concatenates all groups into a single vector and optimizes jointly, taking hyperparameters and history from the first group)
 2. During each `step()` call, the optimizer updates parameters according to the hyperparameters of their respective groups
 3. If a hyperparameter is not specified in a parameter group, the optimizer uses the default value provided in the constructor
+
+In ``state_dict()`` the ``params`` entries are sequential indices (continuous across parameter groups), and ``load_state_dict()`` matches parameters by position, so optimizer state can be restored into a newly created model or process.
 
 Best Practices
 ~~~~~~~~~~~~~~
@@ -1023,31 +1141,37 @@ You can create custom optimizers by inheriting from ``optim.Optimizer``.
     import riemann.optim as optim
     
     class CustomSGD(optim.Optimizer):
-        def __init__(self, params, lr=0.01, momentum=0):
+        def __init__(self, params, lr=0.01, momentum=0.0):
             defaults = dict(lr=lr, momentum=momentum)
-            super(CustomSGD, self).__init__(params, defaults)
+            super().__init__(params, defaults)
         
         def step(self, closure=None):
             loss = None
             if closure is not None:
                 loss = closure()
             
+            arrlib = self.arrlib  # numpy on CPU, cupy on CUDA
             for group in self.param_groups:
+                lr = group['lr']
+                momentum = group['momentum']
                 for p in group['params']:
                     if p.grad is None:
                         continue
                     
-                    d_p = p.grad.detach()
-                    if group['momentum'] != 0:
-                        param_state = self.state[p]
-                        if 'momentum_buffer' not in param_state:
-                            buf = param_state['momentum_buffer'] = rm.clone(d_p).detach()
-                        else:
-                            buf = param_state['momentum_buffer']
-                            buf.mul_(group['momentum']).add_(d_p)
-                            d_p = buf
+                    # Gradients and parameters are TNs; the underlying array is reached via ._array
+                    grad = p.grad._array
+                    if momentum != 0:
+                        # State is keyed by id(p), which state_dict/load_state_dict rely on
+                        state = self.state[id(p)]
+                        if 'momentum_buffer' not in state:
+                            state['momentum_buffer'] = grad.copy()
+                        buf = state['momentum_buffer']
+                        arrlib.multiply(momentum, buf, out=buf)
+                        buf += grad
+                        grad = buf
                     
-                    p.data.add_(-group['lr'] * d_p)
+                    # Write back in place so the TN keeps its underlying storage type
+                    p._array -= lr * grad
             
             return loss
     

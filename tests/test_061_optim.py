@@ -15,6 +15,7 @@
 
 import sys
 import os
+import pickle
 import numpy as np
 from pathlib import Path
 import time
@@ -26,7 +27,7 @@ sys.path.insert(0, str(project_root / "src"))
 # 导入riemann模块
 try:
     from riemann import tensor, Parameter
-    from riemann.optim import SGD, Adam, Adagrad, LBFGS, AdamW, RMSprop
+    from riemann.optim import SGD, Adam, Adagrad, LBFGS, AdamW, RMSprop, Adamax, Adadelta
     from riemann.optim.lr_scheduler import (
         StepLR, MultiStepLR, ExponentialLR, CosineAnnealingLR, ReduceLROnPlateau
     )
@@ -1515,6 +1516,282 @@ class TestOptimizedOptimizer(unittest.TestCase):
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("AdamW与PyTorch行为一致性", True)
 
+    def test_adamax_optimizer(self):
+        """测试Adamax优化器的所有功能"""
+        # 基础功能测试用例
+        basic_cases = [
+            {"name": "基础Adamax功能", "lr": 2e-3},
+            {"name": "不同学习率", "lr": 0.05},
+            {"name": "带权重衰减", "lr": 2e-3, "weight_decay": 0.01},
+            {"name": "自定义betas和eps", "lr": 2e-3, "betas": (0.8, 0.99), "eps": 1e-6},
+        ]
+        
+        # 状态字典测试用例
+        state_dict_cases = [
+            {"name": "基础状态字典功能", "lr": 2e-3},
+        ]
+        
+        # 梯度清零功能测试用例
+        zero_grad_cases = [
+            {"name": "基础梯度清零", "set_to_none": False},
+            {"name": "set_to_none=True", "set_to_none": True},
+        ]
+        
+        # 错误处理测试用例
+        error_handling_cases = [
+            {"name": "负学习率", "lr": -1.0},
+            {"name": "负epsilon", "eps": -1.0},
+            {"name": "无效beta1", "betas": (-0.1, 0.999)},
+            {"name": "无效beta2", "betas": (0.9, 1.0)},
+            {"name": "负权重衰减", "weight_decay": -0.1},
+        ]
+        
+        # 运行基础功能测试
+        print(f"\n{Colors.BOLD}Adamax优化器基础功能测试{Colors.ENDC}")
+        for case in basic_cases:
+            case_name = f"Adamax - {case['name']}"
+            start_time = time.time()
+            try:
+                lr = case.get('lr', 2e-3)
+                betas = case.get('betas', (0.9, 0.999))
+                eps = case.get('eps', 1e-8)
+                weight_decay = case.get('weight_decay', 0.0)
+                
+                # 重置模型参数
+                self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+                self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
+                
+                optimizer = Adamax(
+                    self.model.parameters(),
+                    lr=lr, betas=betas, eps=eps, weight_decay=weight_decay
+                )
+                
+                # 检查参数组设置
+                group = optimizer.param_groups[0]
+                self.assertEqual(group['lr'], lr)
+                self.assertEqual(group['betas'], betas)
+                self.assertEqual(group['eps'], eps)
+                self.assertEqual(group['weight_decay'], weight_decay)
+                
+                # 计算梯度并记录更新前的参数
+                weight_before = self.model.weight.copy().numpy()
+                output = self.model(self.x)
+                diff = output - self.y
+                loss = (diff * diff).mean()
+                loss.backward()
+                grad_before = self.model.weight.grad.detach().numpy()
+                
+                optimizer.step()
+                
+                # 参数被更新且数值有限
+                weight_after = self.model.weight.detach().numpy()
+                self.assertFalse(np.allclose(weight_before, weight_after))
+                self.assertTrue(np.all(np.isfinite(weight_after)))
+                
+                # 状态初值与公式一致：m = (1-β1)*g，u = |g| + ε
+                state = optimizer.state[id(self.model.weight)]
+                self.assertEqual(state['step'], 1)
+                grad_used = grad_before
+                if weight_decay > 0:
+                    grad_used = weight_decay * weight_before + grad_before
+                np.testing.assert_allclose(
+                    state['exp_avg'], (1.0 - betas[0]) * grad_used, rtol=1e-6, atol=1e-8)
+                np.testing.assert_allclose(
+                    state['exp_inf'], np.abs(grad_used) + eps, rtol=1e-6, atol=1e-8)
+                
+                optimizer.zero_grad()
+                passed = True
+                
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            
+            time_taken = time.time() - start_time
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            self.assertTrue(passed, f"Adamax基础功能测试失败: {case_name}")
+        
+        # 运行状态字典测试
+        print(f"\n{Colors.BOLD}Adamax优化器状态字典测试{Colors.ENDC}")
+        for case in state_dict_cases:
+            case_name = f"Adamax - {case['name']}"
+            start_time = time.time()
+            try:
+                optimizer = Adamax(self.model.parameters(), lr=case['lr'])
+                
+                # 执行几步优化以产生状态
+                for _ in range(2):
+                    optimizer.zero_grad()
+                    output = self.model(self.x)
+                    diff = output - self.y
+                    loss = (diff * diff).mean()
+                    loss.backward()
+                    optimizer.step()
+                
+                state_dict = optimizer.state_dict()
+                self.assertIn('state', state_dict)
+                self.assertIn('param_groups', state_dict)
+                index0 = state_dict['param_groups'][0]['params'][0]
+                for key in ('step', 'exp_avg', 'exp_inf'):
+                    self.assertIn(key, state_dict['state'][index0])
+                # 状态字典必须可 pickle（不能混入参数引用等不可序列化对象）
+                pickle.dumps(state_dict)
+                
+                # 加载到学习率不同的新优化器：超参数被覆盖，状态按位置恢复
+                new_optimizer = Adamax(self.model.parameters(), lr=0.1)
+                new_optimizer.load_state_dict(state_dict)
+                self.assertEqual(new_optimizer.param_groups[0]['lr'], case['lr'])
+                p = new_optimizer.param_groups[0]['params'][0]
+                self.assertEqual(new_optimizer.state[id(p)]['step'], 2)
+                
+                passed = True
+                
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            
+            time_taken = time.time() - start_time
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            self.assertTrue(passed, f"Adamax状态字典测试失败: {case_name}")
+        
+        # 运行梯度清零功能测试
+        print(f"\n{Colors.BOLD}Adamax优化器梯度清零测试{Colors.ENDC}")
+        for case in zero_grad_cases:
+            case_name = f"Adamax - {case['name']}"
+            start_time = time.time()
+            try:
+                optimizer = Adamax(self.model.parameters(), lr=2e-3)
+                
+                output = self.model(self.x)
+                diff = output - self.y
+                loss = (diff * diff).mean()
+                loss.backward()
+                for param in self.model.parameters():
+                    self.assertIsNotNone(param.grad)
+                
+                optimizer.zero_grad(set_to_none=case['set_to_none'])
+                
+                for param in self.model.parameters():
+                    if case['set_to_none']:
+                        self.assertIsNone(param.grad)
+                    elif param.grad is not None:
+                        self.assertTrue(np.allclose(param.grad, 0))
+                
+                passed = True
+                
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            
+            time_taken = time.time() - start_time
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            self.assertTrue(passed, f"Adamax梯度清零测试失败: {case_name}")
+        
+        # 运行错误处理测试
+        print(f"\n{Colors.BOLD}Adamax优化器错误处理测试{Colors.ENDC}")
+        for case in error_handling_cases:
+            case_name = f"Adamax - {case['name']}"
+            start_time = time.time()
+            try:
+                with self.assertRaises(ValueError):
+                    Adamax(
+                        self.model.parameters(),
+                        lr=case.get('lr', 2e-3),
+                        betas=case.get('betas', (0.9, 0.999)),
+                        eps=case.get('eps', 1e-8),
+                        weight_decay=case.get('weight_decay', 0.0)
+                    )
+                passed = True
+                
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            
+            time_taken = time.time() - start_time
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            self.assertTrue(passed, f"Adamax错误处理测试失败: {case_name}")
+        
+        # 如果PyTorch可用，进行行为一致性比较
+        if TORCH_AVAILABLE:
+            print(f"\n{Colors.BOLD}Adamax优化器与PyTorch行为一致性测试{Colors.ENDC}")
+            
+            # 重置模型参数
+            self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+            self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
+            
+            initial_weight = self.model.weight.copy().numpy()
+            initial_bias = self.model.bias.copy().numpy()
+            
+            rm_optimizer = Adamax(self.model.parameters(), lr=2e-3)
+            
+            import torch.nn as torch_nn
+            
+            class TorchSimpleModel(torch_nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = torch_nn.Parameter(torch.tensor(initial_weight))
+                    self.bias = torch_nn.Parameter(torch.tensor(initial_bias))
+                
+                def forward(self, x):
+                    return x @ self.weight + self.bias
+            
+            torch_model = TorchSimpleModel()
+            torch_optimizer = torch_optim.Adamax(torch_model.parameters(), lr=2e-3)
+            
+            torch_x = torch.tensor(self.x.copy().numpy(), requires_grad=True)
+            torch_y = torch.tensor(self.y.copy().numpy())
+            
+            for step in range(3):
+                output = self.model(self.x)
+                diff = output - self.y
+                loss = (diff * diff).mean()
+                loss.backward()
+                rm_optimizer.step()
+                rm_optimizer.zero_grad()
+                
+                torch_output = torch_model(torch_x)
+                torch_diff = torch_output - torch_y
+                torch_loss = (torch_diff * torch_diff).mean()
+                torch_loss.backward()
+                torch_optimizer.step()
+                torch_optimizer.zero_grad()
+                
+                weight_match = np.allclose(
+                    self.model.weight.detach().numpy(),
+                    torch_model.weight.detach().numpy(), atol=1e-6, rtol=1e-6)
+                bias_match = np.allclose(
+                    self.model.bias.detach().numpy(),
+                    torch_model.bias.detach().numpy(), atol=1e-6, rtol=1e-6)
+                
+                print(f"  Step {step+1}: 权重匹配={weight_match}, 偏置匹配={bias_match}")
+                
+                self.assertTrue(weight_match, f"Adamax与PyTorch权重更新不一致，Step {step+1}")
+                self.assertTrue(bias_match, f"Adamax与PyTorch偏置更新不一致，Step {step+1}")
+            
+            print(f"  测试结果: {Colors.OKGREEN}通过{Colors.ENDC}")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("Adamax与PyTorch行为一致性", True)
+
     def test_rmsprop_optimizer(self):
         """测试RMSprop优化器的所有功能"""
         # 基础功能测试用例
@@ -2196,8 +2473,295 @@ class TestOptimizedOptimizer(unittest.TestCase):
             if IS_RUNNING_AS_SCRIPT:
                 stats.add_result("Adagrad与PyTorch行为一致性", True)
 
+    def test_adadelta_optimizer(self):
+        """测试Adadelta优化器的所有功能"""
+        # 基础功能测试用例
+        basic_cases = [
+            {"name": "基础Adadelta功能", "lr": 1.0},
+            {"name": "不同学习率", "lr": 0.5},
+            {"name": "带权重衰减", "lr": 1.0, "weight_decay": 0.01},
+            {"name": "自定义rho和eps", "lr": 1.0, "rho": 0.8, "eps": 1e-8},
+        ]
+        
+        # 状态字典测试用例
+        state_dict_cases = [
+            {"name": "基础状态字典功能", "lr": 1.0, "rho": 0.9, "eps": 1e-6},
+        ]
+        
+        # 梯度清零功能测试用例
+        zero_grad_cases = [
+            {"name": "基础梯度清零", "set_to_none": False},
+            {"name": "set_to_none=True", "set_to_none": True},
+        ]
+        
+        # 错误处理测试用例
+        error_handling_cases = [
+            {"name": "负学习率", "lr": -1.0},
+            {"name": "负rho", "rho": -0.1},
+            {"name": "rho大于1", "rho": 1.5},
+            {"name": "负epsilon", "eps": -1.0},
+            {"name": "负权重衰减", "weight_decay": -0.1},
+        ]
+        
+        # 运行基础功能测试
+        print(f"\n{Colors.BOLD}Adadelta优化器基础功能测试{Colors.ENDC}")
+        for case in basic_cases:
+            case_name = f"Adadelta - {case['name']}"
+            start_time = time.time()
+            try:
+                lr = case.get('lr', 1.0)
+                rho = case.get('rho', 0.9)
+                eps = case.get('eps', 1e-6)
+                weight_decay = case.get('weight_decay', 0.0)
+                
+                # 重置模型参数
+                self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+                self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
+                
+                optimizer = Adadelta(
+                    self.model.parameters(),
+                    lr=lr, rho=rho, eps=eps, weight_decay=weight_decay
+                )
+                
+                # 检查参数组设置
+                group = optimizer.param_groups[0]
+                self.assertEqual(group['lr'], lr)
+                self.assertEqual(group['rho'], rho)
+                self.assertEqual(group['eps'], eps)
+                self.assertEqual(group['weight_decay'], weight_decay)
+                
+                # 计算梯度并记录更新前的参数
+                weight_before = self.model.weight.copy().numpy()
+                output = self.model(self.x)
+                diff = output - self.y
+                loss = (diff * diff).mean()
+                loss.backward()
+                grad_before = self.model.weight.grad.detach().numpy()
+                
+                optimizer.step()
+                
+                weight_after = self.model.weight.detach().numpy()
+                self.assertFalse(np.allclose(weight_before, weight_after))
+                self.assertTrue(np.all(np.isfinite(weight_after)))
+                
+                # 首步状态与公式一致：
+                # s = (1-ρ)g²，Δ = √(ε)/√(s+ε)·g，θ = θ - ηΔ，u = (1-ρ)Δ²
+                grad_used = grad_before
+                if weight_decay > 0:
+                    grad_used = weight_decay * weight_before + grad_before
+                expected_sq = (1.0 - rho) * grad_used ** 2
+                expected_delta = np.sqrt(eps) / np.sqrt(expected_sq + eps) * grad_used
+                
+                state = optimizer.state[id(self.model.weight)]
+                self.assertEqual(state['step'], 1)
+                np.testing.assert_allclose(state['square_avg'], expected_sq, rtol=1e-5, atol=1e-9)
+                np.testing.assert_allclose(state['acc_delta'], (1.0 - rho) * expected_delta ** 2,
+                                           rtol=1e-5, atol=1e-12)
+                np.testing.assert_allclose(weight_after, weight_before - lr * expected_delta,
+                                           rtol=1e-5, atol=1e-8)
+                
+                optimizer.zero_grad()
+                passed = True
+                
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            
+            time_taken = time.time() - start_time
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            self.assertTrue(passed, f"Adadelta基础功能测试失败: {case_name}")
+        
+        # 运行状态字典测试
+        print(f"\n{Colors.BOLD}Adadelta优化器状态字典测试{Colors.ENDC}")
+        for case in state_dict_cases:
+            case_name = f"Adadelta - {case['name']}"
+            start_time = time.time()
+            try:
+                optimizer = Adadelta(
+                    self.model.parameters(),
+                    lr=case['lr'], rho=case['rho'], eps=case['eps']
+                )
+                
+                # 执行几步优化以产生状态
+                for _ in range(2):
+                    optimizer.zero_grad()
+                    output = self.model(self.x)
+                    diff = output - self.y
+                    loss = (diff * diff).mean()
+                    loss.backward()
+                    optimizer.step()
+                
+                state_dict = optimizer.state_dict()
+                self.assertIn('state', state_dict)
+                self.assertIn('param_groups', state_dict)
+                index0 = state_dict['param_groups'][0]['params'][0]
+                for key in ('step', 'square_avg', 'acc_delta'):
+                    self.assertIn(key, state_dict['state'][index0])
+                pickle.dumps(state_dict)
+                
+                # 加载到超参数不同的新优化器：超参数被覆盖，状态按位置恢复
+                new_optimizer = Adadelta(self.model.parameters(), lr=0.1, rho=0.5)
+                new_optimizer.load_state_dict(state_dict)
+                self.assertEqual(new_optimizer.param_groups[0]['lr'], case['lr'])
+                self.assertEqual(new_optimizer.param_groups[0]['rho'], case['rho'])
+                p = new_optimizer.param_groups[0]['params'][0]
+                self.assertEqual(new_optimizer.state[id(p)]['step'], 2)
+                
+                passed = True
+                
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            
+            time_taken = time.time() - start_time
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            self.assertTrue(passed, f"Adadelta状态字典测试失败: {case_name}")
+        
+        # 运行梯度清零功能测试
+        print(f"\n{Colors.BOLD}Adadelta优化器梯度清零测试{Colors.ENDC}")
+        for case in zero_grad_cases:
+            case_name = f"Adadelta - {case['name']}"
+            start_time = time.time()
+            try:
+                optimizer = Adadelta(self.model.parameters(), lr=1.0)
+                
+                output = self.model(self.x)
+                diff = output - self.y
+                loss = (diff * diff).mean()
+                loss.backward()
+                for param in self.model.parameters():
+                    self.assertIsNotNone(param.grad)
+                
+                optimizer.zero_grad(set_to_none=case['set_to_none'])
+                
+                for param in self.model.parameters():
+                    if case['set_to_none']:
+                        self.assertIsNone(param.grad)
+                    elif param.grad is not None:
+                        self.assertTrue(np.allclose(param.grad, 0))
+                
+                passed = True
+                
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            
+            time_taken = time.time() - start_time
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            self.assertTrue(passed, f"Adadelta梯度清零测试失败: {case_name}")
+        
+        # 运行错误处理测试
+        print(f"\n{Colors.BOLD}Adadelta优化器错误处理测试{Colors.ENDC}")
+        for case in error_handling_cases:
+            case_name = f"Adadelta - {case['name']}"
+            start_time = time.time()
+            try:
+                with self.assertRaises(ValueError):
+                    Adadelta(
+                        self.model.parameters(),
+                        lr=case.get('lr', 1.0),
+                        rho=case.get('rho', 0.9),
+                        eps=case.get('eps', 1e-6),
+                        weight_decay=case.get('weight_decay', 0.0)
+                    )
+                passed = True
+                
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            
+            time_taken = time.time() - start_time
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(case_name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {case_name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            
+            self.assertTrue(passed, f"Adadelta错误处理测试失败: {case_name}")
+        
+        # 如果PyTorch可用，进行行为一致性比较
+        if TORCH_AVAILABLE:
+            print(f"\n{Colors.BOLD}Adadelta优化器与PyTorch行为一致性测试{Colors.ENDC}")
+            
+            # 重置模型参数
+            self.model.weight.detach().copy_(np.random.randn(10, 5).astype(np.float32) * 0.1)
+            self.model.bias.detach().copy_(np.zeros(5).astype(np.float32))
+            
+            initial_weight = self.model.weight.copy().numpy()
+            initial_bias = self.model.bias.copy().numpy()
+            
+            rm_optimizer = Adadelta(self.model.parameters(), lr=1.0)
+            
+            import torch.nn as torch_nn
+            
+            class TorchSimpleModel(torch_nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.weight = torch_nn.Parameter(torch.tensor(initial_weight))
+                    self.bias = torch_nn.Parameter(torch.tensor(initial_bias))
+                
+                def forward(self, x):
+                    return x @ self.weight + self.bias
+            
+            torch_model = TorchSimpleModel()
+            torch_optimizer = torch_optim.Adadelta(torch_model.parameters(), lr=1.0)
+            
+            torch_x = torch.tensor(self.x.copy().numpy(), requires_grad=True)
+            torch_y = torch.tensor(self.y.copy().numpy())
+            
+            for step in range(3):
+                output = self.model(self.x)
+                diff = output - self.y
+                loss = (diff * diff).mean()
+                loss.backward()
+                rm_optimizer.step()
+                rm_optimizer.zero_grad()
+                
+                torch_output = torch_model(torch_x)
+                torch_diff = torch_output - torch_y
+                torch_loss = (torch_diff * torch_diff).mean()
+                torch_loss.backward()
+                torch_optimizer.step()
+                torch_optimizer.zero_grad()
+                
+                weight_match = np.allclose(
+                    self.model.weight.detach().numpy(),
+                    torch_model.weight.detach().numpy(), atol=1e-6, rtol=1e-6)
+                bias_match = np.allclose(
+                    self.model.bias.detach().numpy(),
+                    torch_model.bias.detach().numpy(), atol=1e-6, rtol=1e-6)
+                
+                print(f"  Step {step+1}: 权重匹配={weight_match}, 偏置匹配={bias_match}")
+                
+                self.assertTrue(weight_match, f"Adadelta与PyTorch权重更新不一致，Step {step+1}")
+                self.assertTrue(bias_match, f"Adadelta与PyTorch偏置更新不一致，Step {step+1}")
+            
+            print(f"  测试结果: {Colors.OKGREEN}通过{Colors.ENDC}")
+            
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result("Adadelta与PyTorch行为一致性", True)
+
     def test_lbfgs_optimizer(self):
-        """测试LBFGS优化器的所有功能"""
+        """测试LBFGS优化器的功能与回归场景
+
+        覆盖基础功能、状态字典、梯度清零、参数校验、控制流、线搜索、
+        多参数组与设备推断等场景。
+        """
         # 基础功能测试用例
         basic_cases = [
             {"name": "基础LBFGS功能", "lr": 1.0, "max_iter": 20, "history_size": 100},
@@ -2225,6 +2789,8 @@ class TestOptimizedOptimizer(unittest.TestCase):
             {"name": "负tolerance_grad", "tolerance_grad": -1e-5, "should_raise": True},
             {"name": "负tolerance_change", "tolerance_change": -1e-9, "should_raise": True},
             {"name": "无效history_size", "history_size": 0, "should_raise": True},
+            {"name": "无效line_search_fn", "line_search_fn": "bogus", "should_raise": True},
+            {"name": "strong_wolfe线搜索", "line_search_fn": "strong_wolfe", "should_raise": False},
         ]
         
         # 运行基础功能测试
@@ -2254,7 +2820,7 @@ class TestOptimizedOptimizer(unittest.TestCase):
                 group = optimizer.param_groups[0]
                 self.assertEqual(group['lr'], case.get('lr', 1.0))
                 self.assertEqual(group['max_iter'], case.get('max_iter', 20))
-                self.assertEqual(group['max_eval'], case.get('max_eval', case.get('max_iter', 20) * 5 // 4))
+                self.assertEqual(group['max_eval'], case.get('max_eval', case.get('max_iter', 20) * 5 // 4 + 2))
                 self.assertEqual(group['tolerance_grad'], case.get('tolerance_grad', 1e-5))
                 self.assertEqual(group['tolerance_change'], case.get('tolerance_change', 1e-9))
                 self.assertEqual(group['history_size'], case.get('history_size', 100))
@@ -2614,6 +3180,627 @@ class TestOptimizedOptimizer(unittest.TestCase):
             
             # 断言确保失败不会被统计掩盖
             self.assertTrue(passed, f"LBFGS与PyTorch一致性测试失败: {case_name}")
+
+        results = []
+
+        def run_case(name, fn):
+            start_time = time.time()
+            try:
+                fn()
+                passed = True
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            time_taken = time.time() - start_time
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            results.append((name, passed))
+
+        # --- 回归：控制流（小预算、收敛判据、backward 次数） ---
+        # 1. 小 max_iter 也必须真正走一步
+        def small_budget_steps():
+            for max_iter in (1, 2, 3):
+                x = tensor(np.array([3.0, -2.0], dtype=np.float64), requires_grad=True)
+                opt = LBFGS([x], lr=1.0, max_iter=max_iter)
+
+                def closure():
+                    opt.zero_grad()
+                    loss = (x * x).sum()
+                    loss.backward()
+                    return loss
+
+                loss = opt.step(closure)
+                np.testing.assert_allclose(
+                    x.detach().numpy(), [0.0, 0.0], atol=1e-8,
+                    err_msg=f"max_iter={max_iter} 时 LBFGS 未执行已接受的步")
+                self.assertAlmostEqual(float(loss.numpy()), 0.0, places=8)
+
+        # 2. 参数被移动后，收敛判据不应被历史步长卡死
+        def convergence_after_move():
+            p = tensor(np.array([1e-4], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([p], lr=1.0, tolerance_change=1e-3)
+
+            def closure2():
+                opt.zero_grad()
+                loss = 0.5 * (p * p).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure2)
+            p._array[:] = 5.0
+            loss = opt.step(closure2)
+            np.testing.assert_allclose(p.detach().numpy(), [0.0], atol=1e-6)
+            self.assertAlmostEqual(float(loss.numpy()), 0.0, places=8)
+
+        # 3. 首次 step 的 backward 调用次数应与闭包调用次数一致
+        def no_extra_backward():
+            tensor_cls = type(tensor(1.0))
+            original_backward = tensor_cls.backward
+            counts = {'closure': 0, 'backward': 0}
+
+            def counting_backward(self, *args, **kwargs):
+                counts['backward'] += 1
+                return original_backward(self, *args, **kwargs)
+
+            tensor_cls.backward = counting_backward
+            try:
+                q = tensor(np.array([3.0, -2.0], dtype=np.float64), requires_grad=True)
+                opt3 = LBFGS([q], lr=0.5, max_iter=2)
+
+                def closure3():
+                    counts['closure'] += 1
+                    opt3.zero_grad()
+                    loss = (q * q).sum()
+                    loss.backward()
+                    return loss
+
+                opt3.step(closure3)
+            finally:
+                tensor_cls.backward = original_backward
+
+            self.assertEqual(counts['backward'], counts['closure'],
+                             "LBFGS 首次 step 不应额外调用 backward")
+            self.assertGreater(counts['closure'], 0)
+
+        # --- 回归：参数校验与状态兼容 ---
+        def mixed_dtype_rejected():
+            import warnings
+
+            a = tensor(np.ones(3, dtype=np.float32), requires_grad=True)
+            b = tensor(np.ones(2, dtype=np.float64), requires_grad=True)
+            opt = LBFGS([a, b], lr=1.0)
+
+            def closure():
+                opt.zero_grad()
+                with warnings.catch_warnings():
+                    # 混合 dtype 相加本身会触发框架的 dtype 警告，这里只关注优化器行为
+                    warnings.simplefilter('ignore')
+                    loss = (a * a).sum() + (b * b).sum()
+                    loss.backward()
+                return loss
+
+            with self.assertRaises(ValueError):
+                opt.step(closure)
+            # 参数 dtype 不能被改变
+            self.assertEqual(a._array.dtype, np.float32)
+            self.assertEqual(b._array.dtype, np.float64)
+
+        def tiny_gradient_history():
+            x = tensor(np.array([3e-6, -2e-6], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([x], lr=1.0, max_iter=3,
+                        tolerance_grad=0.0, tolerance_change=0.0)
+
+            def closure():
+                opt.zero_grad()
+                loss = 0.5 * (x * x).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure)
+            group = opt.param_groups[0]
+            self.assertEqual(len(group['old_dirs']), 1,
+                             "曲率对 (y·s≈1.3e-11) 应被相对阈值接受")
+            np.testing.assert_allclose(x.detach().numpy(), [0.0, 0.0], atol=1e-12)
+
+        def state_dict_shape_mismatch():
+            x = tensor(np.array([3.0, -2.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([x], lr=1.0, max_iter=3)
+
+            def closure():
+                opt.zero_grad()
+                loss = (x * x).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure)
+            payload = pickle.dumps(opt.state_dict())
+            self.assertGreater(len(opt.param_groups[0]['old_dirs']), 0)
+
+            y = tensor(np.ones(5, dtype=np.float64), requires_grad=True)
+            opt2 = LBFGS([y], lr=1.0, max_iter=3)
+            opt2.load_state_dict(pickle.loads(payload))
+
+            def closure2():
+                opt2.zero_grad()
+                loss = (y * y).sum()
+                loss.backward()
+                return loss
+
+            with self.assertRaises(ValueError):
+                opt2.step(closure2)
+
+        # --- 回归：参数集合变化与兜底步 ---
+        def fallback_rejected():
+            x = tensor(np.array([1.0, 1.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([x], lr=1.0, max_iter=5)
+
+            def closure():
+                opt.zero_grad()
+                loss = x.sum() * 0 + 1.0  # 常数损失：兜底步不可能降低损失
+                loss.backward()
+                return loss
+
+            # 强制线搜索失败，触发兜底分支
+            original = opt._line_search
+            opt._line_search = lambda *a, **k: (False, None, None, 10, None, None)
+            try:
+                loss = opt.step(closure)
+            finally:
+                opt._line_search = original
+
+            np.testing.assert_allclose(x.detach().numpy(), [1.0, 1.0],
+                                       err_msg="兜底步无改善时应回退到当前点")
+            self.assertAlmostEqual(float(loss.numpy()), 1.0, places=6)
+
+        def gains_grad_later():
+            a = tensor(np.array([1.0, 1.0], dtype=np.float64), requires_grad=True)
+            b = tensor(np.array([1.0, 1.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([a, b], lr=1.0, max_iter=5)
+
+            def closure_a():
+                opt.zero_grad()
+                loss = (a * a).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure_a)
+            np.testing.assert_allclose(b.detach().numpy(), [1.0, 1.0])
+
+            def closure_ab():
+                opt.zero_grad()
+                loss = (a * a).sum() + (b * b).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure_ab)
+            np.testing.assert_allclose(b.detach().numpy(), [0.0, 0.0], atol=1e-8,
+                                       err_msg="后获得梯度的参数应被纳入优化")
+            np.testing.assert_allclose(b.grad.detach().numpy(), [0.0, 0.0], atol=1e-6)
+
+        def replaced_param():
+            p = tensor(np.array([2.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([p], lr=1.0, max_iter=5)
+
+            def closure_p():
+                opt.zero_grad()
+                loss = (p * p).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure_p)
+
+            q = tensor(np.array([4.0], dtype=np.float64), requires_grad=True)
+            opt.param_groups[0]['params'] = [q]
+
+            def closure_q():
+                opt.zero_grad()
+                loss = (q * q).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure_q)
+            np.testing.assert_allclose(q.detach().numpy(), [0.0], atol=1e-8,
+                                       err_msg="替换后的参数对象应被优化")
+            np.testing.assert_allclose(p.detach().numpy(), [0.0])
+
+        # --- 回归：线搜索、评估预算与 repr ---
+        def strong_wolfe_converges():
+            # 二次目标
+            x = tensor(np.array([3.0, -2.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([x], lr=1.0, max_iter=25, line_search_fn='strong_wolfe')
+
+            def closure():
+                opt.zero_grad()
+                loss = (x * x).sum()
+                loss.backward()
+                return loss
+
+            loss = opt.step(closure)
+            np.testing.assert_allclose(x.detach().numpy(), [0.0, 0.0], atol=1e-6)
+            self.assertLess(float(loss.numpy()), 1e-10)
+
+            # 非二次目标：f(y) = (y^2 - 1)^2，应收敛到 ±1
+            y = tensor(np.array([0.5], dtype=np.float64), requires_grad=True)
+            opt2 = LBFGS([y], lr=1.0, max_iter=100, line_search_fn='strong_wolfe')
+
+            def closure2():
+                opt2.zero_grad()
+                diff = y * y - 1.0
+                loss2 = (diff * diff).sum()
+                loss2.backward()
+                return loss2
+
+            opt2.step(closure2)
+            self.assertLess(abs(abs(float(y.detach().numpy()[0])) - 1.0), 1e-4)
+
+        def max_eval_is_hard_cap():
+            calls = {'n': 0}
+            x = tensor(np.array([3.0, -2.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([x], lr=1.0, max_iter=10, max_eval=5)
+
+            def closure():
+                calls['n'] += 1
+                opt.zero_grad()
+                loss = (x * x).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure)
+            self.assertLessEqual(calls['n'], 5,
+                                 f"闭包调用次数 {calls['n']} 超过 max_eval=5")
+
+        def repr_is_compact():
+            x = tensor(np.array([3.0, -2.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([x], lr=1.0, max_iter=5)
+
+            def closure():
+                opt.zero_grad()
+                loss = (x * x).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure)
+            text = repr(opt)
+            self.assertIn('old_dirs', text)
+            self.assertIn('arrays of shape', text)
+            self.assertNotIn('array([', text)
+            self.assertLess(len(text), 2000, "repr 内容过长，可能仍打印了历史数组")
+
+        # --- 回归：多参数组、设备推断与缓存 ---
+        def joint_optimization():
+            a = tensor(np.array([3.0], dtype=np.float64), requires_grad=True)
+            b = tensor(np.array([-4.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([{'params': [a]}, {'params': [b]}], lr=1.0, max_iter=10)
+
+            def closure():
+                opt.zero_grad()
+                loss = (a * a).sum() + (b * b).sum()
+                loss.backward()
+                return loss
+
+            loss = opt.step(closure)
+            np.testing.assert_allclose(a.detach().numpy(), [0.0], atol=1e-8)
+            np.testing.assert_allclose(b.detach().numpy(), [0.0], atol=1e-8)
+            self.assertAlmostEqual(float(loss.numpy()), 0.0, places=8)
+            # 联合优化：历史只存放在第一个参数组
+            self.assertGreater(len(opt.param_groups[0]['old_dirs']), 0)
+            self.assertEqual(len(opt.param_groups[1]['old_dirs']), 0)
+
+        def arrlib_inference():
+            x = tensor(np.array([1.0], dtype=np.float64), requires_grad=True)
+            self.assertIs(LBFGS._infer_arrlib([x]), np)
+
+            class FakeCudaParam:
+                device = type('D', (), {'type': 'cuda'})()
+
+            self.assertIsNot(LBFGS._infer_arrlib([FakeCudaParam()]), np)
+
+        def ys_cache_and_legacy_state():
+            x = tensor(np.array([3.0, -2.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([x], lr=1.0, max_iter=5)
+
+            def closure():
+                opt.zero_grad()
+                loss = (x * x).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure)
+            group = opt.param_groups[0]
+            self.assertEqual(len(group['old_ys']), len(group['old_dirs']))
+            self.assertGreater(len(group['old_dirs']), 0)
+
+            payload = pickle.loads(pickle.dumps(opt.state_dict()))
+            self.assertIn('old_ys', payload['param_groups'][0])
+            # 模拟缺少 old_ys 的旧状态字典
+            payload['param_groups'][0].pop('old_ys')
+
+            y = tensor(np.array([2.0, 2.0], dtype=np.float64), requires_grad=True)
+            opt2 = LBFGS([y], lr=1.0, max_iter=5)
+            opt2.load_state_dict(payload)
+
+            def closure2():
+                opt2.zero_grad()
+                loss = (y * y).sum()
+                loss.backward()
+                return loss
+
+            opt2.step(closure2)
+            np.testing.assert_allclose(y.detach().numpy(), [0.0, 0.0], atol=1e-6)
+            self.assertEqual(len(opt2.param_groups[0]['old_ys']),
+                             len(opt2.param_groups[0]['old_dirs']))
+
+        def grads_dot_consistency():
+            a = tensor(np.array([1.0, 2.0], dtype=np.float64), requires_grad=True)
+            b = tensor(np.array([3.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([a, b], lr=1.0, max_iter=1)
+            (a * a).sum().backward()  # b 无梯度，覆盖 grads_to_vector 的零填充路径
+
+            cache = opt._get_vector_funcs(opt.param_groups[0], [a, b])
+            p2v, _v2p, g2v, gdot = cache['vector_funcs']
+            direction = p2v([a, b])
+            full = float(np.dot(g2v(), direction))
+            direct = float(gdot(direction))
+            self.assertAlmostEqual(full, direct, places=12)
+
+        def closure_return_types():
+            # 闭包返回 Python float / numpy 标量 / 0 维数组都应可用
+            for ret_type in ('float', 'np_scalar', 'zero_dim'):
+                x = tensor(np.array([3.0, -2.0], dtype=np.float64), requires_grad=True)
+                opt = LBFGS([x], lr=1.0, max_iter=5)
+
+                def closure():
+                    opt.zero_grad()
+                    loss = (x * x).sum()
+                    loss.backward()
+                    value = loss.detach().numpy()
+                    if ret_type == 'float':
+                        return float(value)
+                    if ret_type == 'np_scalar':
+                        return np.float32(float(value))
+                    return np.asarray(value).reshape(())
+
+                out = opt.step(closure)
+                np.testing.assert_allclose(x.detach().numpy(), [0.0, 0.0], atol=1e-8)
+                self.assertTrue(hasattr(out, 'numpy'), "step 应返回 Tensor")
+
+        def invalid_ys_filtered():
+            # 旧状态字典可能带有非正曲率：方向计算应跳过这些历史对，仍给出下降方向
+            x = tensor(np.array([2.0, -1.0], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([x], lr=1.0, max_iter=3)
+
+            def closure():
+                opt.zero_grad()
+                loss = (x * x).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure)
+            group = opt.param_groups[0]
+            self.assertGreater(len(group['old_dirs']), 0)
+
+            # 回到梯度非零的点，并用非正曲率模拟旧状态中的异常值
+            x._array[...] = np.array([2.0, -1.0], dtype=np.float64)
+            closure()
+            group['old_ys'][0] = -1.0
+
+            cache = opt._get_vector_funcs(group, [x])
+            _p2v, _v2p, g2v, _gdot = cache['vector_funcs']
+            g = g2v()
+            direction, h_diag = opt._compute_lbfgs_direction(
+                g, group['old_dirs'], group['old_stps'], group['old_ys'],
+                len(group['old_dirs']), group['H_diag'], np)
+            self.assertLess(float(np.dot(g, direction)), 0.0)
+            self.assertEqual(h_diag, 1.0)
+
+        run_case("LBFGS - 小预算执行已接受步", small_budget_steps)
+        run_case("LBFGS - 移动参数后不误判收敛", convergence_after_move)
+        run_case("LBFGS - 首次step无多余backward", no_extra_backward)
+        run_case("LBFGS - 混合dtype报错", mixed_dtype_rejected)
+        run_case("LBFGS - 小曲率对积累历史", tiny_gradient_history)
+        run_case("LBFGS - 状态形状不匹配报错", state_dict_shape_mismatch)
+        run_case("LBFGS - 兜底步无改善回退", fallback_rejected)
+        run_case("LBFGS - 后获梯度参数纳入优化", gains_grad_later)
+        run_case("LBFGS - 替换参数对象后优化新参数", replaced_param)
+        run_case("LBFGS - strong_wolfe收敛", strong_wolfe_converges)
+        run_case("LBFGS - max_eval硬上限", max_eval_is_hard_cap)
+        run_case("LBFGS - repr不打印历史数组", repr_is_compact)
+        run_case("LBFGS - 多参数组联合优化", joint_optimization)
+        run_case("LBFGS - arrlib设备推断", arrlib_inference)
+        run_case("LBFGS - 曲率缓存与旧状态兼容", ys_cache_and_legacy_state)
+        run_case("LBFGS - 线搜索点积一致性", grads_dot_consistency)
+        run_case("LBFGS - 闭包返回非Tensor", closure_return_types)
+        run_case("LBFGS - 异常曲率被过滤", invalid_ys_filtered)
+
+        failed = [name for name, passed in results if not passed]
+        self.assertEqual(failed, [], f"以下用例失败: {failed}")
+
+    def test_torch_parity_regressions(self):
+        """回归测试：SGD/RMSprop/Adam/AdamW 与 torch 的数值一致性，以及状态字典可移植性
+
+        覆盖此前修复的问题：
+        - SGD Nesterov 使用更新后的动量缓存
+        - SGD 首步 dampening 与 torch 一致
+        - SGD 权重衰减不回写 p.grad
+        - RMSprop 动量缓存不折叠学习率（学习率变化时仍与 torch 一致）
+        - Adam/AdamW 的 eps 位置与 torch 一致
+        - load_state_dict 按位置匹配参数，可加载到新建模型/新进程
+        - LBFGS 的 state_dict 可 pickle，且可加载到新模型继续优化
+        """
+        if not TORCH_AVAILABLE:
+            self.skipTest("PyTorch不可用，跳过数值一致性回归测试")
+
+        results = []
+
+        def run_case(name, fn):
+            print(f"\n{Colors.BOLD}{name}{Colors.ENDC}")
+            start_time = time.time()
+            try:
+                fn()
+                passed = True
+            except Exception as e:
+                passed = False
+                print(f"  错误: {str(e)}")
+            time_taken = time.time() - start_time
+
+            if IS_RUNNING_AS_SCRIPT:
+                stats.add_result(name, passed)
+                status = "通过" if passed else "失败"
+                print(f"测试用例: {name} - {Colors.OKGREEN if passed else Colors.FAIL}{status}{Colors.ENDC} ({time_taken:.4f}秒)")
+            results.append((name, passed))
+
+        def torch_parity(name, rm_cls, torch_cls, lrs, steps, **kwargs):
+            """同一初始参数/梯度逐步更新，要求与 torch 逐元素一致。"""
+            rand_state = np.random.RandomState(0)
+            x0 = rand_state.randn(4).astype(np.float64)
+            g0 = np.random.RandomState(1).randn(4).astype(np.float64)
+            rp = tensor(x0.copy(), requires_grad=True)
+            tp = torch.tensor(x0.copy(), dtype=torch.float64, requires_grad=True)
+            rm_opt = rm_cls([rp], **kwargs)
+            torch_opt = torch_cls([tp], **kwargs)
+
+            for i in range(steps):
+                lr = lrs[i] if isinstance(lrs, (list, tuple)) else lrs
+                rm_opt.param_groups[0]['lr'] = lr
+                torch_opt.param_groups[0]['lr'] = lr
+                rp.grad = tensor(g0.copy())
+                tp.grad = torch.tensor(g0.copy(), dtype=torch.float64)
+                rm_opt.step()
+                torch_opt.step()
+
+            np.testing.assert_allclose(
+                rp.detach().numpy(), tp.detach().numpy(),
+                rtol=1e-10, atol=1e-10,
+                err_msg=f"{name}: riemann 与 torch 参数不一致")
+
+        # 1. SGD Nesterov（含权重衰减）
+        run_case("与torch一致 - SGD Nesterov", lambda: torch_parity(
+            "SGD Nesterov", SGD, torch_optim.SGD, 0.1, 3,
+            lr=0.1, momentum=0.9, nesterov=True, weight_decay=0.01))
+
+        # 2. SGD dampening：首个动量缓存直接取梯度，dampening 从第二步起生效
+        run_case("与torch一致 - SGD dampening首步", lambda: torch_parity(
+            "SGD dampening", SGD, torch_optim.SGD, 0.1, 3,
+            lr=0.1, momentum=0.9, dampening=0.5))
+
+        # 3. RMSprop 动量在学习率变化时仍与 torch 一致（缓存不折叠 lr）
+        run_case("与torch一致 - RMSprop动量变学习率", lambda: torch_parity(
+            "RMSprop varying lr", RMSprop, torch_optim.RMSprop,
+            [0.1, 0.05, 0.2, 0.01], 4,
+            lr=0.1, momentum=0.9))
+
+        # 4. Adam eps 位置：eps 较大时旧实现会明显偏离 torch
+        run_case("与torch一致 - Adam eps", lambda: torch_parity(
+            "Adam eps=0.1", Adam, torch_optim.Adam, 0.1, 2,
+            lr=0.1, eps=0.1))
+
+        # 5. AdamW eps + amsgrad + 解耦权重衰减
+        run_case("与torch一致 - AdamW eps+amsgrad", lambda: torch_parity(
+            "AdamW eps=0.1 amsgrad", AdamW, torch_optim.AdamW, 0.1, 2,
+            lr=0.1, eps=0.1, amsgrad=True, weight_decay=0.01))
+
+        # 6. 普通 SGD + 权重衰减（验证算子融合 p*(1-lr*wd) - lr*g 的等价性）
+        run_case("与torch一致 - SGD权重衰减", lambda: torch_parity(
+            "SGD wd", SGD, torch_optim.SGD, 0.1, 3,
+            lr=0.1, weight_decay=0.01))
+
+        # 7. SGD 权重衰减不得原地修改 p.grad
+        def sgd_keeps_grad():
+            x = tensor(np.array([1.0, -2.0], dtype=np.float64), requires_grad=True)
+            grad = np.array([0.5, 0.25], dtype=np.float64)
+            x.grad = tensor(grad.copy())
+            SGD([x], lr=0.1, weight_decay=0.01).step()
+            np.testing.assert_allclose(
+                x.grad.numpy(), grad,
+                err_msg="SGD 权重衰减不应回写 p.grad")
+
+        run_case("SGD权重衰减不回写梯度", sgd_keeps_grad)
+
+        # 7. load_state_dict 按位置匹配：可加载到新参数对象，并正确续训
+        def state_dict_portable():
+            p1 = tensor(np.array([1.0, 2.0], dtype=np.float64), requires_grad=True)
+            opt1 = SGD([p1], lr=0.1, momentum=0.9)
+            p1.grad = tensor(np.array([1.0, 1.0], dtype=np.float64))
+            opt1.step()
+            state_dict = opt1.state_dict()
+
+            # 保存的 params 为位置索引，state 以索引为键
+            self.assertEqual(state_dict['param_groups'][0]['params'], [0])
+            self.assertIn(0, state_dict['state'])
+
+            # 新建参数对象（模拟新建模型/新进程）后加载（pickle 往返模拟落盘再读取）
+            p2 = tensor(p1.detach().numpy().copy(), requires_grad=True)
+            opt2 = SGD([p2], lr=0.5, momentum=0.5)
+            opt2.load_state_dict(pickle.loads(pickle.dumps(state_dict)))
+
+            self.assertEqual(opt2.param_groups[0]['lr'], 0.1)
+            np.testing.assert_allclose(
+                opt2.state[id(p2)]['velocity'], opt1.state[id(p1)]['velocity'])
+
+            # 新旧优化器各续一步，参数应一致
+            p1.grad = tensor(np.array([1.0, 1.0], dtype=np.float64))
+            p2.grad = tensor(np.array([1.0, 1.0], dtype=np.float64))
+            opt1.step()
+            opt2.step()
+            np.testing.assert_allclose(
+                p2.detach().numpy(), p1.detach().numpy(),
+                err_msg="加载状态后续训结果应与原优化器一致")
+
+            # 参数数量不匹配时应报错
+            with self.assertRaises(ValueError):
+                SGD([tensor(np.array([1.0]), requires_grad=True),
+                     tensor(np.array([2.0]), requires_grad=True)], lr=0.1).load_state_dict(state_dict)
+
+        run_case("状态字典按位置匹配", state_dict_portable)
+
+        # 8. LBFGS state_dict 可 pickle，且可加载到新模型继续优化
+        def lbfgs_state_dict_picklable():
+            x = tensor(np.array([0.0, 0.0], dtype=np.float64), requires_grad=True)
+            y = tensor(np.array([0.5], dtype=np.float64), requires_grad=True)
+            opt = LBFGS([x, y], lr=1.0, max_iter=10,
+                        tolerance_grad=1e-9, tolerance_change=0.0)
+
+            def closure():
+                opt.zero_grad()
+                loss = ((x - 1.0) ** 2 + (y + 2.0) ** 2).sum()
+                loss.backward()
+                return loss
+
+            opt.step(closure)
+            state_dict = opt.state_dict()
+
+            # 参数组中不应再出现参数引用与局部闭包
+            group_keys = set(state_dict['param_groups'][0].keys())
+            for internal_key in ('param_info', 'vector_funcs', 'total_params'):
+                self.assertNotIn(internal_key, group_keys)
+
+            payload = pickle.dumps(state_dict)
+            self.assertGreater(len(payload), 0)
+
+            # 反序列化后加载到新模型，继续优化应收敛到同一最优点
+            x2 = tensor(np.array([5.0, 5.0], dtype=np.float64), requires_grad=True)
+            y2 = tensor(np.array([5.0], dtype=np.float64), requires_grad=True)
+            opt2 = LBFGS([x2, y2], lr=1.0, max_iter=10,
+                         tolerance_grad=1e-9, tolerance_change=0.0)
+            opt2.load_state_dict(pickle.loads(payload))
+
+            def closure2():
+                opt2.zero_grad()
+                loss = ((x2 - 1.0) ** 2 + (y2 + 2.0) ** 2).sum()
+                loss.backward()
+                return loss
+
+            opt2.step(closure2)
+            np.testing.assert_allclose(x2.detach().numpy(), [1.0, 1.0], atol=1e-4)
+            np.testing.assert_allclose(y2.detach().numpy(), [-2.0], atol=1e-4)
+
+        run_case("LBFGS状态字典可pickle", lbfgs_state_dict_picklable)
+
+        failed = [name for name, passed in results if not passed]
+        self.assertEqual(failed, [], f"以下回归用例失败: {failed}")
 
 if __name__ == '__main__':
     # 设置为独立脚本运行模式
