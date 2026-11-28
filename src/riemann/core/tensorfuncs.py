@@ -3978,21 +3978,45 @@ def _subat_inplace_grad(result_tensor:TN):
     return right_var_grad
 
 
-def _mulat_grad(result_tensor:TN):
-    """非原地 mulat 的融合反向：返回 (左值梯度, 右值梯度)。
-
-    左值：用右值的共轭修正索引位置的梯度；
-    右值：索引位置梯度乘左值（按索引）的共轭。
-
-    调用者: mulat（作为 grad_rule 实参传入 _non_inplace_oper_at）
-    """
-    left_var = result_tensor.fromvars[0]
-    right_var = result_tensor.fromvars[1]
+def _product_at_cofactors(result_tensor: TN):
+    """返回乘积归约中排除各候选自身后的乘积，兼容重复索引和零因子。"""
     index = result_tensor.parms[0]
+    left, right = result_tensor.fromvars
+    left_at = left[index]
+    result_at = result_tensor[index]
+    left_zero = left_at == 0
+    right_zero = right == 0
 
-    left_var_grad = result_tensor._grad_value[index] * right_var.conj()
-    right_var_grad = result_tensor._grad_value[index] * left_var[index].conj()
-    return (result_tensor._grad_value.setat(index,left_var_grad), right_var_grad)
+    safe_left = where(left_zero, 1, left_at)
+    safe_right = where(right_zero, 1, right)
+    right_nonzero_product = ones_like(left).mulat(index, safe_right)
+    all_nonzero_at = right_nonzero_product[index] * safe_left
+
+    # 左值在每个目标位置只计一次，右值按出现次数累计。
+    zero_count = zeros_like(left).setat(index, left_zero)
+    zero_count_at = zero_count.addat(index, right_zero)[index]
+    left_cofactor = where(
+        left_zero,
+        where(zero_count_at == 1, all_nonzero_at, 0),
+        result_at / safe_left,
+    )
+    right_cofactor = where(
+        right_zero,
+        where(zero_count_at == 1, all_nonzero_at, 0),
+        result_at / safe_right,
+    )
+    return index, left, right, left_cofactor, right_cofactor
+
+
+def _mulat_grad(result_tensor:TN):
+    """非原地 mulat 的反向，按目标位置处理重复索引的完整乘积。"""
+    index, _, _, left_cofactor, right_cofactor = _product_at_cofactors(result_tensor)
+    grad_at = result_tensor._grad_value[index]
+    left_grad = result_tensor._grad_value.setat(
+        index, grad_at * left_cofactor.conj()
+    )
+    right_grad = grad_at * right_cofactor.conj()
+    return left_grad, right_grad
 
 
 def _mulat_inplace_grad(result_tensor: TN):
@@ -4570,21 +4594,21 @@ def _subat_jvp(frame, result_tensor:TN):
 
 
 def _mulat_jvp(frame, result_tensor:TN):
-    """mulat 的 JVP：d(l*r) = l_t*r + l*r_t。"""
-    index = result_tensor.parms[0]
-    left, right = result_tensor.fromvars
-    lt = frame.tangent(left)
-    local = None
-    t = _jvp_region(lt, index)
-    if t is not None:
-        local = t * right
-    dy = frame.tangent(right)
-    if dy is not None:
-        term = _jvp_region(left, index) * dy
-        local = term if local is None else local + term
-    if local is None:
-        return lt
-    return _jvp_merge(result_tensor, index, lt, local, False)
+    """mulat 的 JVP：按完整乘积规则传播，并累加重复索引的右值项。"""
+    index, left, right, left_cofactor, right_cofactor = \
+        _product_at_cofactors(result_tensor)
+    left_tangent = frame.tangent(left)
+    right_tangent = frame.tangent(right)
+
+    if left_tangent is None:
+        local_left = zeros_like(result_tensor[index])
+    else:
+        local_left = left_tangent[index] * left_cofactor
+    base = left_tangent if left_tangent is not None else zeros_like(result_tensor)
+    tangent = base.setat(index, local_left)
+    if right_tangent is not None:
+        tangent = tangent.addat(index, right_tangent * right_cofactor)
+    return tangent
 
 
 def _divat_jvp(frame, result_tensor:TN):
@@ -4644,6 +4668,52 @@ def _floordivat_jvp(frame, result_tensor:TN):
     raise RuntimeError('derivative for aten::floor_divide is not implemented')
 
 
+def _extreme_at_winner_data(result_tensor: TN):
+    """返回 maxat/minat 共享的获胜掩码及每个目标位置的获胜者数量。"""
+    index = result_tensor.parms[0]
+    left, right = result_tensor.fromvars
+    result_at = result_tensor[index]
+    left_winner = left[index] == result_at
+    right_winner = right == result_at
+
+    # 左值在每个目标位置只参与一次；重复索引上的左值掩码相同，可用 setat 写入。
+    # 右值则可能多次命中同一目标，必须用 addat 累计。
+    counts = zeros_like(result_tensor).setat(index, left_winner)
+    counts = counts.addat(index, right_winner)
+    return index, left, right, left_winner, right_winner, counts[index]
+
+
+def _extreme_at_grad(result_tensor: TN):
+    """maxat/minat 的反向：梯度在所有并列获胜者之间平均分配。"""
+    index, _, _, left_winner, right_winner, counts_at = \
+        _extreme_at_winner_data(result_tensor)
+    grad = result_tensor._grad_value
+    grad_at = grad[index]
+    left_grad = grad.setat(index, grad_at * left_winner / counts_at)
+    right_grad = grad_at * right_winner / counts_at
+    return left_grad, right_grad
+
+
+def _extreme_at_jvp(frame, result_tensor: TN):
+    """maxat/minat 的 JVP：对获胜候选的 tangent 求平均并累加重复索引。"""
+    index, left, right, left_winner, right_winner, counts_at = \
+        _extreme_at_winner_data(result_tensor)
+    left_tangent = frame.tangent(left)
+    right_tangent = frame.tangent(right)
+
+    if left_tangent is None:
+        local_left = zeros_like(result_tensor[index])
+    else:
+        local_left = left_tangent[index] * left_winner / counts_at
+    base = left_tangent if left_tangent is not None else zeros_like(result_tensor)
+    tangent = base.setat(index, local_left)
+
+    if right_tangent is not None:
+        local_right = right_tangent * right_winner / counts_at
+        tangent = tangent.addat(index, local_right)
+    return tangent
+
+
 # 非原地 grad_rule 名 -> 前向规则；_non_inplace_oper_at 据此挂接 _jvp_rule。
 _NON_INPLACE_AT_JVP = {
     '_setat_grad': _setat_jvp,
@@ -4654,6 +4724,7 @@ _NON_INPLACE_AT_JVP = {
     '_powat_grad': _powat_jvp,
     '_modat_grad': _modat_jvp,
     '_floordivat_grad': _floordivat_jvp,
+    '_extreme_at_grad': _extreme_at_jvp,
 }
 
 
@@ -4829,7 +4900,7 @@ def _inplace_oper_at_(input:TN, index, val, oper_func, grad_rule, vector_func=No
 def _non_inplace_oper_at(input:TN, index, val, oper_func, grad_rule):
     """在 input 的副本上按索引执行运算并返回新张量，input 本身不变。
 
-    调用者: setat、addat、subat、mulat、divat、powat、floordivat、modat
+    调用者: setat、addat、subat、mulat、divat、powat、floordivat、modat、maxat、minat
     """
     # 将索引规范化为numpy索引
     index_val = _convert_TNindex_to_numpy(index)
@@ -5083,6 +5154,22 @@ def modat(input:TN, index, val):
     else:
         oper_func = np.remainder.at
     return _non_inplace_oper_at(input, index, val, oper_func, _modat_grad)
+
+
+@api_registry.register
+def maxat(input: TN, index, val):
+    """非原地执行索引最大值归约，重复索引上的所有 val 均参与归约。"""
+    _reject_complex("maxat", input, val)
+    arrlib = input._get_array_lib()
+    return _non_inplace_oper_at(input, index, val, arrlib.maximum.at, _extreme_at_grad)
+
+
+@api_registry.register
+def minat(input: TN, index, val):
+    """非原地执行索引最小值归约，重复索引上的所有 val 均参与归约。"""
+    _reject_complex("minat", input, val)
+    arrlib = input._get_array_lib()
+    return _non_inplace_oper_at(input, index, val, arrlib.minimum.at, _extreme_at_grad)
 
 
 @api_registry.register
@@ -5552,6 +5639,55 @@ def take(input: TN, index: TN) -> TN:
     return result
 
 
+def _normalize_index_dim(input: TN, dim: int) -> int:
+    """规范化索引写回操作的维度。"""
+    if dim < 0:
+        dim += input.ndim
+    if dim < 0 or dim >= input.ndim:
+        raise IndexError(
+            f"Dimension out of range (expected to be in range of "
+            f"[{-input.ndim}, {input.ndim - 1}], got {dim})"
+        )
+    return dim
+
+
+def _prepare_dim_index(input: TN, dim: int, index, name: str,
+                       allow_negative: bool = False):
+    """把 index_* 接口的一维索引转换为 setat/addat 可用的直接索引。"""
+    dim = _normalize_index_dim(input, dim)
+    index = as_tensor(index, dtype=int64, device=input.device)
+    if index.ndim != 1:
+        raise RuntimeError(f"{name}(): index must be a vector")
+
+    dim_size = input.shape[dim]
+    index_data = index._array
+    arrlib = index._get_array_lib()
+    lower = -dim_size if allow_negative else 0
+    if index_data.size and bool(arrlib.any(
+        (index_data < lower) | (index_data >= dim_size)
+    )):
+        raise IndexError(
+            f"{name}(): index out of range for dimension {dim} with size {dim_size}"
+        )
+
+    direct_index = [slice(None)] * input.ndim
+    direct_index[dim] = index
+    return dim, index, tuple(direct_index)
+
+
+def _prepare_index_write_source(input: TN, source, name: str) -> TN:
+    """转换索引写回的来源张量，并保持 torch 的 dtype 一致性要求。"""
+    if not isinstance(source, TN):
+        source = as_tensor(source, dtype=input.dtype, device=input.device)
+    if source.dtype != input.dtype:
+        raise RuntimeError(
+            f"{name}(): Expected input.dtype to be equal to source.dtype"
+        )
+    if not _same_device(source, input):
+        raise ValueError(f"{name}(): source and input must be on the same device")
+    return source
+
+
 @api_registry.register
 def index_put_(input, indices, values, accumulate: bool = False) -> 'TN':
     """
@@ -5582,6 +5718,152 @@ def index_put_(input, indices, values, accumulate: bool = False) -> 'TN':
     if accumulate:
         return addat_(input, indices, values)
     return setat_(input, indices, values)
+
+
+@api_registry.register
+def index_put(input: TN, indices, values: TN, accumulate: bool = False) -> TN:
+    """按索引把 values 写入输入副本，与 torch.index_put 语义一致。"""
+    if isinstance(values, TN) and values.dtype != input.dtype:
+        raise RuntimeError(
+            f"Index put requires the source and destination dtypes match, "
+            f"got {input.dtype} for the destination and {values.dtype} for the source."
+        )
+    if isinstance(indices, list):
+        indices = tuple(indices)
+    if accumulate:
+        return addat(input, indices, values)
+    return setat(input, indices, values)
+
+
+@api_registry.register
+def index_copy(input: TN, dim: int, index: TN, source: TN, *, out: TN = None) -> TN:
+    """沿 dim 将 source 覆盖写入 index 指定的位置，返回新张量。"""
+    dim, index, direct_index = _prepare_dim_index(input, dim, index, "index_copy")
+    source = _prepare_index_write_source(input, source, "index_copy")
+    expected_shape = input.shape[:dim] + (index.numel(),) + input.shape[dim + 1:]
+    if source.shape != expected_shape:
+        raise RuntimeError(
+            f"index_copy(): source shape {source.shape} does not match "
+            f"expected shape {expected_shape}"
+        )
+    result = setat(input, direct_index, source)
+    return _apply_out(out, result, (input, source), "index_copy")
+
+
+@api_registry.register
+def index_add(input: TN, dim: int, index: TN, source: TN, *,
+              alpha=1, out: TN = None) -> TN:
+    """沿 dim 将 alpha * source 累加到 index 指定的位置，返回新张量。"""
+    dim, index, direct_index = _prepare_dim_index(input, dim, index, "index_add")
+    source = _prepare_index_write_source(input, source, "index_add")
+    expected_shape = input.shape[:dim] + (index.numel(),) + input.shape[dim + 1:]
+    if source.shape != expected_shape:
+        raise RuntimeError(
+            f"index_add(): source shape {source.shape} does not match "
+            f"expected shape {expected_shape}"
+        )
+    scaled_source = source if alpha == 1 else source * alpha
+    result = addat(input, direct_index, scaled_source)
+    return _apply_out(out, result, (input, source), "index_add")
+
+
+@api_registry.register
+def index_fill(input: TN, dim: int, index: TN, value) -> TN:
+    """沿 dim 将 index 指定的位置填充为标量 value，返回新张量。"""
+    _, _, direct_index = _prepare_dim_index(
+        input, dim, index, "index_fill", allow_negative=True
+    )
+    if isinstance(value, TN) and value.ndim != 0:
+        raise RuntimeError("index_fill(): value must be a 0-dimension tensor")
+    return setat(input, direct_index, value)
+
+
+@api_registry.register
+def put(input: TN, index: TN, source: TN, accumulate: bool = False) -> TN:
+    """把输入视为一维张量，按 index 覆盖或累加 source，返回原形状的新张量。"""
+    index = as_tensor(index, dtype=int64, device=input.device)
+    source = _prepare_index_write_source(input, source, "put")
+    if index.numel() != source.numel():
+        raise RuntimeError(
+            f"put(): index and source must have the same number of elements, "
+            f"got {index.numel()} and {source.numel()}"
+        )
+    flat_input = input.reshape(-1)
+    if accumulate:
+        result = addat(flat_input, index, source)
+    else:
+        result = setat(flat_input, index, source)
+    return result.reshape(input.shape)
+
+
+@api_registry.register
+def select_scatter(input: TN, src: TN, dim: int, index: int) -> TN:
+    """将 src 覆盖写入 input.select(dim, index) 对应的位置。"""
+    dim = _normalize_index_dim(input, dim)
+    dim_size = input.shape[dim]
+    if index < 0:
+        index += dim_size
+    if index < 0 or index >= dim_size:
+        raise IndexError(
+            f"select_scatter(): index {index} is out of range for dimension "
+            f"{dim} with size {dim_size}"
+        )
+    src = _prepare_index_write_source(input, src, "select_scatter")
+    expected_shape = input.shape[:dim] + input.shape[dim + 1:]
+    if src.shape != expected_shape:
+        raise RuntimeError(
+            f"select_scatter(): src shape {src.shape} does not match "
+            f"expected shape {expected_shape}"
+        )
+    direct_index = [slice(None)] * input.ndim
+    direct_index[dim] = index
+    return setat(input, tuple(direct_index), src)
+
+
+@api_registry.register
+def slice_scatter(input: TN, src: TN, dim: int = 0, start=None, end=None,
+                  step: int = 1, *, out: TN = None) -> TN:
+    """将 src 覆盖写入 input 在指定维度上的切片，返回新张量。"""
+    dim = _normalize_index_dim(input, dim)
+    src = _prepare_index_write_source(input, src, "slice_scatter")
+    direct_index = [slice(None)] * input.ndim
+    direct_index[dim] = slice(start, end, step)
+    direct_index = tuple(direct_index)
+    expected_shape = input._array[direct_index].shape
+    if src.shape != expected_shape:
+        raise RuntimeError(
+            f"slice_scatter(): src shape {src.shape} does not match "
+            f"expected shape {expected_shape}"
+        )
+    result = setat(input, direct_index, src)
+    return _apply_out(out, result, (input, src), "slice_scatter")
+
+
+@api_registry.register
+def masked_scatter(input: TN, mask: TN, source: TN) -> TN:
+    """按广播后的布尔 mask 顺序写入 source 的前缀，返回新张量。"""
+    mask = as_tensor(mask, device=input.device)
+    if mask.dtype != np.bool_:
+        raise RuntimeError("masked_scatter(): mask must be a boolean tensor")
+    source = _prepare_index_write_source(input, source, "masked_scatter")
+    try:
+        output_shape = np.broadcast_shapes(input.shape, mask.shape)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"masked_scatter(): input shape {input.shape} and mask shape "
+            f"{mask.shape} are not broadcastable"
+        ) from exc
+
+    broadcast_input = input.broadcast_to(output_shape)
+    broadcast_mask = mask.broadcast_to(output_shape)
+    count = int(broadcast_mask.sum().item())
+    flat_source = source.reshape(-1)
+    if flat_source.numel() < count:
+        raise RuntimeError(
+            f"masked_scatter(): source must have at least {count} elements, "
+            f"got {flat_source.numel()}"
+        )
+    return setat(broadcast_input, broadcast_mask, flat_source[:count])
 
 
 @api_registry.register
@@ -5923,6 +6205,91 @@ def scatter_add(input, dim, index, src):
     # 直接调用原地操作的addat_函数
     return input.addat(full_index, src)
 # end of scatter_add
+
+
+def _indexed_reduction_identity(input: TN, reduce: str):
+    """返回 include_self=False 时选中位置应写入的归约单位元。"""
+    if reduce in ("sum", "mean"):
+        return 0
+    if reduce == "prod":
+        return 1
+    if input.dtype.kind == "f":
+        return -np.inf if reduce == "amax" else np.inf
+    if input.dtype.kind == "b":
+        return False if reduce == "amax" else True
+    limits = np.iinfo(input.dtype)
+    return limits.min if reduce == "amax" else limits.max
+
+
+def _apply_indexed_reduction(input: TN, direct_index, src: TN,
+                             reduce: str, include_self: bool) -> TN:
+    """在直接索引上执行 scatter/index 共用的非原地归约。"""
+    if not include_self:
+        input = setat(input, direct_index, _indexed_reduction_identity(input, reduce))
+
+    if reduce == "sum":
+        return addat(input, direct_index, src)
+    if reduce == "prod":
+        return mulat(input, direct_index, src)
+    if reduce == "amax":
+        return maxat(input, direct_index, src)
+    if reduce == "amin":
+        return minat(input, direct_index, src)
+
+    summed = addat(input, direct_index, src)
+    counts = addat(zeros_like(input), direct_index, ones_like(src))
+    if include_self:
+        return summed / (counts + 1)
+    return summed / where(counts > 0, counts, 1)
+
+
+@api_registry.register
+def scatter_reduce(input: TN, dim: int, index: TN, src: TN, reduce: str,
+                   *, include_self: bool = True) -> TN:
+    """按 index 将 src 归约到输入副本，支持 sum/prod/mean/amax/amin。"""
+    if reduce not in ("sum", "prod", "mean", "amax", "amin"):
+        raise ValueError(f"scatter_reduce(): unsupported reduction {reduce!r}")
+    src = _prepare_index_write_source(input, src, "scatter_reduce")
+    index = as_tensor(index, dtype=int64, device=input.device)
+    dim = _normalize_index_dim(input, dim)
+    if index.ndim != input.ndim or src.ndim != input.ndim:
+        raise ValueError("scatter_reduce(): input, index and src must have the same rank")
+    if any(index.shape[d] > src.shape[d] for d in range(input.ndim)):
+        raise ValueError("scatter_reduce(): index size must not exceed src size on any dimension")
+    if any(index.shape[d] > input.shape[d] for d in range(input.ndim) if d != dim):
+        raise ValueError("scatter_reduce(): index size exceeds input size outside dim")
+    if reduce in ("amax", "amin"):
+        _reject_complex("scatter_reduce", input, src)
+    if reduce == "mean" and input.dtype.kind not in ("f", "c"):
+        raise RuntimeError("scatter_reduce(): mean only supports floating point and complex tensors")
+
+    # PyTorch 允许 src 大于 index，仅消费各维前缀对应的来源区域。
+    if src.shape != index.shape:
+        src = src[tuple(slice(0, size) for size in index.shape)]
+    direct_index = _compute_to_direct_indices(input, dim, index._array)
+    return _apply_indexed_reduction(input, direct_index, src, reduce, include_self)
+
+
+@api_registry.register
+def index_reduce(input: TN, dim: int, index: TN, source: TN, reduce: str, *,
+                 include_self: bool = True, out: TN = None) -> TN:
+    """沿 dim 对 source 执行一维索引归约，支持 prod/mean/amax/amin。"""
+    if reduce not in ("prod", "mean", "amax", "amin"):
+        raise ValueError(f"index_reduce(): unsupported reduction {reduce!r}")
+    if input.dtype.kind != "f":
+        raise RuntimeError("index_reduce(): only floating point tensors are supported")
+    dim, index, direct_index = _prepare_dim_index(input, dim, index, "index_reduce")
+    source = _prepare_index_write_source(input, source, "index_reduce")
+    expected_shape = input.shape[:dim] + (index.numel(),) + input.shape[dim + 1:]
+    if source.shape != expected_shape:
+        raise RuntimeError(
+            f"index_reduce(): source shape {source.shape} does not match "
+            f"expected shape {expected_shape}"
+        )
+    if reduce in ("amax", "amin"):
+        _reject_complex("index_reduce", input, source)
+    result = _apply_indexed_reduction(input, direct_index, source, reduce, include_self)
+    return _apply_out(out, result, (input, source), "index_reduce")
 
 
 # ===========================================================================

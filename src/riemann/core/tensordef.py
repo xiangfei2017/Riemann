@@ -1050,6 +1050,14 @@ class TN:
         """非原地执行 self[index] %= val，返回新张量。"""
         return api_registry.modat(self, index, val)
 
+    def maxat(self, index, val):
+        """非原地执行索引最大值归约，返回新张量。"""
+        return api_registry.maxat(self, index, val)
+
+    def minat(self, index, val):
+        """非原地执行索引最小值归约，返回新张量。"""
+        return api_registry.minat(self, index, val)
+
     def gather(self, dim: int, index:TN):
         """
         根据指定的 ​维度和​索引收集元素，
@@ -1087,6 +1095,46 @@ class TN:
             原地修改后的张量（self）
         """
         return api_registry.index_put_(self, indices, values, accumulate)
+
+    def index_put(self, indices, values, accumulate: bool = False) -> 'TN':
+        """非原地按索引写入 values，等价于 riemann.index_put(self, ...)。"""
+        return api_registry.index_put(self, indices, values, accumulate)
+
+    def index_copy(self, dim: int, index: TN, source: TN) -> 'TN':
+        """沿 dim 覆盖写入 source，返回新张量。"""
+        return api_registry.index_copy(self, dim, index, source)
+
+    def index_add(self, dim: int, index: TN, source: TN, *, alpha=1) -> 'TN':
+        """沿 dim 累加 alpha * source，返回新张量。"""
+        return api_registry.index_add(self, dim, index, source, alpha=alpha)
+
+    def index_reduce(self, dim: int, index: TN, source: TN, reduce: str, *,
+                     include_self: bool = True) -> 'TN':
+        """沿 dim 执行一维索引归约，返回新张量。"""
+        return api_registry.index_reduce(
+            self, dim, index, source, reduce, include_self=include_self
+        )
+
+    def index_fill(self, dim: int, index: TN, value) -> 'TN':
+        """沿 dim 填充标量 value，返回新张量。"""
+        return api_registry.index_fill(self, dim, index, value)
+
+    def put(self, index: TN, source: TN, accumulate: bool = False) -> 'TN':
+        """将自身视为一维张量，非原地覆盖或累加 source。"""
+        return api_registry.put(self, index, source, accumulate)
+
+    def select_scatter(self, src: TN, dim: int, index: int) -> 'TN':
+        """将 src 非原地写入 select(dim, index) 对应的位置。"""
+        return api_registry.select_scatter(self, src, dim, index)
+
+    def slice_scatter(self, src: TN, dim: int = 0, start=None, end=None,
+                      step: int = 1) -> 'TN':
+        """将 src 非原地写入指定维度上的切片。"""
+        return api_registry.slice_scatter(self, src, dim, start, end, step)
+
+    def masked_scatter(self, mask: TN, source: TN) -> 'TN':
+        """按广播后的布尔 mask 非原地写入 source。"""
+        return api_registry.masked_scatter(self, mask, source)
 
     def scatter(self, dim, index, src=None, *, value=None):
         """
@@ -1131,6 +1179,13 @@ class TN:
             原地修改后的张量（self）
         """
         return api_registry.scatter_add(self, dim, index, src)
+
+    def scatter_reduce(self, dim, index, src, reduce: str, *,
+                       include_self: bool = True):
+        """按 index 非原地归约 src，支持 sum/prod/mean/amax/amin。"""
+        return api_registry.scatter_reduce(
+            self, dim, index, src, reduce, include_self=include_self
+        )
 
     def scatter_add_(self, dim, index, src):
         """

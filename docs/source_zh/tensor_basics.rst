@@ -2986,7 +2986,7 @@ Riemann 提供两种等价写法：
 按索引写入
 ~~~~~~~~~~~
 
-写入操作按定位方式分为两类，每个函数都同时提供非原地与原地（函数名以 ``_`` 结尾）两种形式：非原地版本返回新张量、原张量不变；原地版本直接修改张量本身并返回 ``self``。
+写入操作按定位方式分类。非原地版本返回新张量、原张量不变；原地版本（函数名以 ``_`` 结尾）直接修改张量本身并返回 ``self``。基础 ``setat``/``scatter`` 函数通常同时提供两种形式，PyTorch 兼容的部分写接口以及 ``maxat``/``minat`` 当前仅提供非原地形式，具体见下表。
 
 - ``setat`` 家族：用 NumPy 风格索引表达式定位，与 ``x[idx] = val`` 语法一致；
 - ``scatter`` 家族：用 ``dim`` + ``index`` 定位，与 ``torch.scatter``/``torch.scatter_add`` 语义一致。
@@ -3025,6 +3025,14 @@ Riemann 提供两种等价写法：
     - 在指定位置上做幂运算
     - ``powat_``
     - ``x[idx] **= val``
+  * - ``maxat``
+    - 将指定位置与 ``val`` 做最大值归约
+    - 无
+    - ``out[idx] = max(out[idx], val)`` （示意）
+  * - ``minat``
+    - 将指定位置与 ``val`` 做最小值归约
+    - 无
+    - ``out[idx] = min(out[idx], val)`` （示意）
 
 **参数说明**
 
@@ -3035,6 +3043,7 @@ Riemann 提供两种等价写法：
 
 - ``setat`` 是覆盖语义：同一个位置被多次写入时，最后写入的值生效；
 - ``addat`` 使用 ``numpy.add.at`` 语义：同一个位置被多次写入时累加，因此天然适合重复索引；``subat``/``mulat``/``divat``/``powat`` 同理，按对应运算逐次作用到目标位置。
+- ``maxat``/``minat`` 分别类似 ``numpy.maximum.at``/``numpy.minimum.at``：同一目标被重复索引时，原值与所有对应的 ``val`` 共同参与最值归约，而不是相互覆盖；未被索引的位置保持不变。
 
 .. code-block:: python
 
@@ -3085,14 +3094,19 @@ Riemann 提供两种等价写法：
     - 按 index 把 src 累加到指定维度
     - ``scatter_add_``
     - 累加
+  * - ``scatter_reduce``
+    - 按 index 对 src 执行 sum/prod/mean/amax/amin 归约
+    - 无
+    - 按 reduce 规则归约所有来源值
 
 **参数说明**
 
 - ``dim``：沿哪个维度散射，支持负数；
 - ``index``：索引张量（``riemann.TN``），dtype 会被规范化为 int64；**维数必须与 ``self`` 相同**；其形状决定实际写入的范围；
-- ``src``：源数据，可以是标量，也可以是形状与 ``index`` 相同的 ``TN``；dtype 必须与 ``self`` 相同，否则抛 ``RuntimeError``；与 ``value`` 互斥（``scatter_add``/``scatter_add_`` 只接受 ``src``，不接受 ``value``）；
+- ``src``：源数据，可以是标量，也可以是形状与 ``index`` 相同的 ``TN``；dtype 必须与 ``self`` 相同，否则抛 ``RuntimeError``；与 ``value`` 互斥（``scatter_add``/``scatter_add_`` 只接受 ``src``，不接受 ``value``）。``scatter_reduce`` 还允许 ``src`` 各维大于 ``index``，此时只消费 ``index`` 覆盖的前缀区域；
 - ``value``：标量（int/float/complex、NumPy 标量；作为命名参数时也接受 0 维 ``TN``），与 ``src`` 互斥；内部会构造与 ``index`` 同形状、全部填 ``value`` 的源张量。也可以把标量作为第三个位置参数传入，此时它同样被当作 ``value`` 使用；位置参数形式仅支持 int/float/complex 与 NumPy 标量；
-- 返回：``scatter``/``scatter_add`` 返回与 ``self`` 同形状的新张量，``scatter_``/``scatter_add_`` 返回 ``self``。
+- ``reduce`` 与 ``include_self``：``scatter_reduce`` 的归约类型及是否把输入原值纳入归约，详见下一小节；
+- 返回：``scatter``/``scatter_add``/``scatter_reduce`` 返回与 ``self`` 同形状的新张量，``scatter_``/``scatter_add_`` 返回 ``self``。
 
 **行为规则**
 
@@ -3103,7 +3117,8 @@ Riemann 提供两种等价写法：
 - ``index`` 在 ``dim`` 维上的取值必须在 ``[0, self.shape[dim])`` 内，越界抛 ``IndexError``；
 - ``index`` 的形状可以小于 ``self`` 的形状，此时只写入 ``index`` 覆盖到的区域，其余位置保持原值；
 - ``scatter`` 为覆盖语义，同一目标被写多次时最后写入生效；``scatter_add`` 为累加语义，同一目标被写多次时累加；
-- 内部实现是“把间接索引换算成直接索引，再调用 ``setat``/``addat``”，因此 ``setat`` 家族的所有规则在 ``scatter`` 中同样成立。
+- ``scatter_reduce`` 对同一目标的所有来源执行指定归约：``sum`` 求和、``prod`` 求积、``mean`` 求平均、``amax``/``amin`` 求最大/最小值；
+- 内部实现是“把间接索引换算成直接索引，再调用 ``setat``/``addat`` 等函数”，因此 ``setat`` 家族的索引规则在 ``scatter`` 中同样成立。
 
 .. code-block:: python
 
@@ -3153,7 +3168,48 @@ Riemann 提供两种等价写法：
 - 词表/嵌入重建：把 batch 中的向量写回全局表格；
 - 图神经网络、注意力池化等“消息聚合”场景，用 ``scatter_add`` 对同一目标的多个来源求和。
 
-**3. 原地写入语法与限制**
+**3. PyTorch 兼容的非原地索引写函数**
+
+以下接口与对应的 PyTorch 非原地函数对齐，均返回新张量，不修改 ``input``，并支持反向自动微分与 JVP。模块级函数和同名 ``TN`` 方法均可使用；``out`` 仅在模块级 ``index_copy``/``index_add``/``index_reduce`` 中提供，使用 ``out`` 时不支持自动微分。
+
+.. list-table:: 非原地索引写函数
+  :widths: 20 48 32
+  :header-rows: 1
+
+  * - 函数
+    - 签名
+    - 语义
+  * - ``index_put``
+    - ``index_put(input, indices, values, accumulate=False)``
+    - 用索引元组写入；``False`` 覆盖，``True`` 累加并正确处理重复索引
+  * - ``index_copy``
+    - ``index_copy(input, dim, index, source, *, out=None)``
+    - 沿 ``dim`` 将一维 ``index`` 选中的位置覆盖为 ``source``
+  * - ``index_add``
+    - ``index_add(input, dim, index, source, *, alpha=1, out=None)``
+    - 沿 ``dim`` 将 ``alpha * source`` 累加到选中位置，重复索引累加
+  * - ``index_fill``
+    - ``index_fill(input, dim, index, value)``
+    - 沿 ``dim`` 将选中位置填充为标量或 0 维张量 ``value``
+  * - ``put``
+    - ``put(input, index, source, accumulate=False)``
+    - 将输入按行主序展平后写入，再恢复原形状；支持覆盖或累加
+  * - ``select_scatter``
+    - ``select_scatter(input, src, dim, index)``
+    - 将 ``src`` 写入 ``input.select(dim, index)`` 对应的位置
+  * - ``slice_scatter``
+    - ``slice_scatter(input, src, dim=0, start=None, end=None, step=1)``
+    - 将 ``src`` 写入指定维度上的切片区域
+  * - ``masked_scatter``
+    - ``masked_scatter(input, mask, source)``
+    - ``input`` 与布尔 ``mask`` 可双向广播，结果采用广播后的形状；按行主序消费 ``source``，允许来源有多余元素
+  * - ``index_reduce``
+    - ``index_reduce(input, dim, index, source, reduce, *, include_self=True, out=None)``
+    - 沿 ``dim`` 对一维索引执行 ``prod``/``mean``/``amax``/``amin`` 归约
+
+``scatter_reduce(input, dim, index, src, reduce, *, include_self=True)`` 与 ``index_reduce`` 都是归约写接口，其中 ``index_reduce`` 仅支持浮点输入。``include_self=True`` 时，每个命中位置的原输入值参与一次归约；``False`` 时排除命中位置的原值，只对来源值归约，未命中位置仍保持原值。``mean`` 的分母相应为“来源数量 + 1”或“来源数量”。极值归约中同一位置有多个并列最值时，梯度在获胜的输入和来源元素之间分配。
+
+**4. 原地写入语法与限制**
 
 ``x[idx] = val``、``x[idx] += val`` 等语法等价于对应的 ``setat_``/``addat_`` 系列，属于原地写入。原地写入有两条限制：
 
@@ -3171,10 +3227,11 @@ Riemann 提供两种等价写法：
 
 **写入操作的梯度跟踪**
 
-非原地写函数（``setat``、``addat``、``subat``、``mulat``、``divat``、``powat``、``scatter``、``scatter_add``）均支持自动微分，求解过程等价于“读取 + 运算 + 回写”，梯度会同时回传给被写入的张量和右值：
+上述所有非原地写函数均支持反向自动微分和 JVP，求解过程等价于“读取 + 运算 + 回写”，微分会同时传递给被写入的张量和右值：
 
 - 对**被写入的张量**：``setat``/``scatter`` 中被覆盖的位置不再参与前向计算，这些位置的梯度为 0，未被写入的位置梯度与上游梯度一致；``addat``/``scatter_add`` 中原值仍参与计算，所有位置都保留梯度；
-- 对**右值**（``val`` 或 ``src``）：每个被写入的元素得到对应位置的上游梯度；``addat``/``scatter_add`` 中同一位置被写入多次时梯度累加。
+- 对**右值**（``val``、``src``、``values`` 或 ``source``）：每个被写入的元素得到对应位置的上游梯度；``addat``/``scatter_add`` 中同一位置被写入多次时梯度累加；
+- 对**归约写入**：``sum``/``prod``/``mean`` 按相应归约规则求导，``amax``/``amin`` 只向最终取得最值的输入或来源元素传递微分；``include_self=False`` 时，命中位置的原输入不参与归约。
 
 需要注意 ``setat`` 的重复索引：前向取“最后写入值”，反向却会把梯度回传给所有被重复写入的右值元素，前后不一致。含重复索引的写入请使用 ``addat``/``scatter_add``。
 
@@ -3266,10 +3323,46 @@ Riemann 提供两种等价写法：
     - ``take(input, index)``；``x.take(index)``
     - 无
     - 按行主序展平后的下标选择，返回与 index 同形状的张量；支持梯度
-  * - ``index_put_``
-    - ``x.index_put_(indices, values, accumulate=False)``
-    - 无（仅原地）
-    - 按索引元组写入值，覆盖或累加；支持 values 的梯度
+  * - ``index_put``
+    - ``x.index_put(indices, values, accumulate=False)``
+    - ``index_put_``
+    - 按索引元组覆盖或累加写入；支持梯度
+  * - ``index_copy``
+    - ``x.index_copy(dim, index, source)``
+    - 无
+    - 沿维度按一维索引覆盖写入；支持梯度
+  * - ``index_add``
+    - ``x.index_add(dim, index, source, *, alpha=1)``
+    - 无
+    - 沿维度累加 alpha * source，重复索引累加；支持梯度
+  * - ``index_fill``
+    - ``x.index_fill(dim, index, value)``
+    - 无
+    - 沿维度填充标量或 0 维张量；支持梯度
+  * - ``index_reduce``
+    - ``x.index_reduce(dim, index, source, reduce, *, include_self=True)``
+    - 无
+    - 沿维度执行 prod/mean/amax/amin 归约；支持梯度
+  * - ``put``
+    - ``x.put(index, source, accumulate=False)``
+    - 无
+    - 按展平后的下标覆盖或累加写入；支持梯度
+  * - ``select_scatter``
+    - ``x.select_scatter(src, dim, index)``
+    - 无
+    - 写入 select 选择的切片；支持梯度
+  * - ``slice_scatter``
+    - ``x.slice_scatter(src, dim=0, start=None, end=None, step=1)``
+    - 无
+    - 写入指定维度上的切片区域；支持梯度
+  * - ``masked_scatter``
+    - ``x.masked_scatter(mask, source)``
+    - 无
+    - 按广播后的布尔掩码顺序写入来源元素；支持梯度
+  * - ``masked_fill``
+    - ``masked_fill(input, mask, value)``；``x.masked_fill(mask, value)``
+    - ``masked_fill_``
+    - 按可广播的布尔掩码填充标量或 0 维张量；支持梯度（非原地）
   * - ``scatter``
     - ``x.scatter(dim, index, src=None, *, value=None)``
     - ``scatter_``
@@ -3278,6 +3371,10 @@ Riemann 提供两种等价写法：
     - ``x.scatter_add(dim, index, src)``
     - ``scatter_add_``
     - 按维度累加写入，重复索引累加；支持梯度（非原地）
+  * - ``scatter_reduce``
+    - ``x.scatter_reduce(dim, index, src, reduce, *, include_self=True)``
+    - 无
+    - 按维度执行 sum/prod/mean/amax/amin 归约；支持梯度
   * - ``setat``
     - ``x.setat(indices, val)``
     - ``setat_``
@@ -3298,10 +3395,26 @@ Riemann 提供两种等价写法：
     - ``x.divat(indices, val)``
     - ``divat_``
     - 按 NumPy 索引相除；支持梯度（非原地）
+  * - ``floordivat``
+    - ``x.floordivat(indices, val)``
+    - ``floordivat_``
+    - 按 NumPy 索引做向下整除；不可微
+  * - ``modat``
+    - ``x.modat(indices, val)``
+    - ``modat_``
+    - 按 NumPy 索引做取余归约；支持梯度（非原地）
   * - ``powat``
     - ``x.powat(indices, val)``
     - ``powat_``
     - 按 NumPy 索引做幂运算；支持梯度（非原地）
+  * - ``maxat``
+    - ``x.maxat(indices, val)``
+    - 无
+    - 按 NumPy 索引做最大值归约，重复索引共同归约；支持梯度
+  * - ``minat``
+    - ``x.minat(indices, val)``
+    - 无
+    - 按 NumPy 索引做最小值归约，重复索引共同归约；支持梯度
 
 **相关函数**
 

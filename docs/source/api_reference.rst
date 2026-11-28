@@ -511,9 +511,9 @@ Tensor Shape Operations
    :return: Gathered tensor
    :rtype: riemann.TN
 
-.. function:: riemann.scatter(input, dim, index, src)
+.. function:: riemann.scatter(input, dim, index, src=None, *, value=None)
 
-   Scatter elements from the source tensor into the target tensor along a specified dimension.
+   Overwrite elements in a copy of the input along a specified dimension; ``input.scatter(dim, index, src, value=value)`` is also available.
 
    :param input: Target tensor
    :type input: riemann.TN
@@ -521,9 +521,167 @@ Tensor Shape Operations
    :type dim: int
    :param index: Index tensor
    :type index: riemann.TN
+   :param src: Source tensor, mutually exclusive with value
+   :type src: riemann.TN, optional
+   :param value: Scalar fill value, mutually exclusive with src
+   :return: New tensor after writing
+   :rtype: riemann.TN
+
+.. function:: riemann.scatter_add(input, dim, index, src)
+
+   Add ``src`` into a copy of the input along a dimension; all sources with duplicate indices are accumulated. The same-named ``TN`` method is also available.
+
+   :param input: Input tensor
+   :param dim: Dimension along which to add
+   :param index: Index tensor
    :param src: Source tensor
-   :type src: riemann.TN
-   :return: Scattered tensor
+   :return: New tensor after accumulation
+   :rtype: riemann.TN
+
+.. function:: riemann.scatter_reduce(input, dim, index, src, reduce, *, include_self=True)
+
+   Perform non-in-place reduction writes along a dimension, including duplicate indices; the same-named ``TN`` method is also available.
+
+   :param input: Input tensor
+   :param dim: Reduction dimension
+   :param index: Index tensor with the same rank as input
+   :param src: Source tensor whose dimensions are at least as large as those of index
+   :param reduce: ``sum``, ``prod``, ``mean``, ``amax`` or ``amin``
+   :param include_self: Whether to include the original value at each selected target once; unselected positions remain unchanged when False
+   :return: New tensor shaped like input, with reverse-mode automatic differentiation and JVP support
+   :rtype: riemann.TN
+
+.. function:: riemann.index_put(input, indices, values, accumulate=False)
+
+   Write ``values`` through an index tuple without modifying the input. ``accumulate=False`` overwrites, while True accumulates duplicate indices. ``input.index_put(...)`` is also available; the in-place variant is ``index_put_``.
+
+   :param indices: Integer index tensor or tuple of index tensors
+   :param values: Values broadcastable to the selected region, with the same dtype as input
+   :param accumulate: Whether to accumulate instead of overwrite
+   :return: New tensor after writing, with gradients and JVP for input and values
+   :rtype: riemann.TN
+
+.. function:: riemann.index_copy(input, dim, index, source, *, out=None)
+
+   Overwrite positions selected by a 1-D index along ``dim`` with ``source``. The same-named ``TN`` method is available without ``out``.
+
+   :param dim: Write dimension
+   :param index: One-dimensional integer index tensor
+   :param source: Source tensor shaped like the selected region
+   :param out: Optional output tensor; automatic differentiation is unsupported when provided
+   :return: New tensor after overwriting
+   :rtype: riemann.TN
+
+.. function:: riemann.index_add(input, dim, index, source, *, alpha=1, out=None)
+
+   Add ``alpha * source`` to positions selected by a 1-D index along ``dim``, accumulating duplicate indices. The same-named ``TN`` method is available without ``out``.
+
+   :param dim: Write dimension
+   :param index: One-dimensional integer index tensor
+   :param source: Source tensor
+   :param alpha: Multiplier for source
+   :param out: Optional output tensor; automatic differentiation is unsupported when provided
+   :return: New tensor after accumulation
+   :rtype: riemann.TN
+
+.. function:: riemann.index_fill(input, dim, index, value)
+
+   Fill positions selected by a 1-D index along ``dim`` with a scalar or 0-d tensor ``value``. The same-named ``TN`` method is also available.
+
+   :param dim: Write dimension
+   :param index: One-dimensional integer index tensor
+   :param value: Scalar or 0-d tensor with the same dtype as input
+   :return: New tensor after filling, with gradient and JVP support
+   :rtype: riemann.TN
+
+.. function:: riemann.index_reduce(input, dim, index, source, reduce, *, include_self=True, out=None)
+
+   Perform non-in-place reductions with a 1-D index along ``dim``; floating-point inputs only. The same-named ``TN`` method is available without ``out``.
+
+   :param dim: Reduction dimension
+   :param index: One-dimensional integer index tensor
+   :param source: Source tensor with the shape required by the indexing rules
+   :param reduce: ``prod``, ``mean``, ``amax`` or ``amin``
+   :param include_self: Whether to include the original value at each selected target once
+   :param out: Optional output tensor; automatic differentiation is unsupported when provided
+   :return: New tensor shaped like input, with reverse-mode automatic differentiation and JVP support
+   :rtype: riemann.TN
+
+.. function:: riemann.put(input, index, source, accumulate=False)
+
+   Write ``source`` into row-major flattened positions and restore the input shape. Supports overwrite or accumulation with duplicate indices; the same-named ``TN`` method is also available.
+
+   :param index: Integer indices into the flattened input
+   :param source: Source tensor broadcastable to the index shape
+   :param accumulate: Whether to accumulate instead of overwrite
+   :return: New tensor shaped like input
+   :rtype: riemann.TN
+
+.. function:: riemann.select_scatter(input, src, dim, index)
+
+   Write ``src`` without modifying the input into the positions corresponding to ``input.select(dim, index)``; the same-named ``TN`` method is also available.
+
+   :param src: Source tensor shaped like the selected slice
+   :param dim: Selection dimension
+   :param index: Integer position; negative indices are supported
+   :return: New tensor shaped like input
+   :rtype: riemann.TN
+
+.. function:: riemann.slice_scatter(input, src, dim=0, start=None, end=None, step=1)
+
+   Write ``src`` without modifying the input into a slice along the specified dimension; the same-named ``TN`` method is also available.
+
+   :param src: Source tensor shaped like the target slice
+   :param dim: Slice dimension
+   :param start: Slice start, defaulting to None
+   :param end: Slice end, defaulting to None
+   :param step: Slice step, defaulting to 1
+   :return: New tensor shaped like input
+   :rtype: riemann.TN
+
+.. function:: riemann.masked_scatter(input, mask, source)
+
+   Write source elements through a boolean mask without modifying the input. ``input`` and ``mask`` can broadcast in either direction and the result uses the broadcast shape. ``source`` is consumed in row-major order and may contain excess elements. The same-named ``TN`` method is also available.
+
+   :param mask: Broadcastable boolean mask
+   :param source: Source tensor with at least as many elements as there are True mask entries
+   :return: New tensor after writing, with gradients and JVP for input and source
+   :rtype: riemann.TN
+
+.. function:: riemann.floordivat(input, index, val)
+
+   Apply non-in-place floor division using NumPy-style indices. The same-named ``TN`` method and the in-place ``floordivat_`` variant are also available. This operation is not differentiable.
+
+   :param index: Integer, slice, integer array, boolean mask or a tuple thereof
+   :param val: Right-hand value broadcastable to the selected region
+   :return: New tensor after the operation
+   :rtype: riemann.TN
+
+.. function:: riemann.modat(input, index, val)
+
+   Apply non-in-place remainder reduction using NumPy-style indices. The same-named ``TN`` method and the in-place ``modat_`` variant are also available.
+
+   :param index: Integer, slice, integer array, boolean mask or a tuple thereof
+   :param val: Right-hand value broadcastable to the selected region
+   :return: New tensor after the operation, with gradient and JVP support
+   :rtype: riemann.TN
+
+.. function:: riemann.maxat(input, index, val)
+
+   Perform a non-in-place maximum reduction using NumPy-style indices. For duplicate targets, the original value and all source values participate in the reduction. The same-named ``TN`` method is also available.
+
+   :param index: Integer, slice, integer array, boolean mask or a tuple thereof
+   :param val: Right-hand value participating in the maximum reduction
+   :return: New reduced tensor, with gradient and JVP support; complex tensors are unsupported
+   :rtype: riemann.TN
+
+.. function:: riemann.minat(input, index, val)
+
+   Perform a non-in-place minimum reduction using NumPy-style indices. For duplicate targets, the original value and all source values participate in the reduction. The same-named ``TN`` method is also available.
+
+   :param index: Integer, slice, integer array, boolean mask or a tuple thereof
+   :param val: Right-hand value participating in the minimum reduction
+   :return: New reduced tensor, with gradient and JVP support; complex tensors are unsupported
    :rtype: riemann.TN
 
 .. function:: riemann.broadcast_to(input, size)
@@ -1743,14 +1901,14 @@ Mathematical Operations
 
 .. function:: riemann.masked_fill(input, mask, value)
 
-   Fill values into the tensor according to a mask.
+   Fill values according to a mask and return a new tensor without modifying the input; ``input.masked_fill(mask, value)`` is also available.
 
    :param input: Input tensor
    :type input: riemann.TN
-   :param mask: Mask tensor, same shape as input tensor
+   :param mask: Boolean mask tensor broadcastable to the input shape
    :type mask: riemann.TN
-   :param value: Value to fill
-   :type value: scalar
+   :param value: Value to fill; a scalar or 0-d tensor
+   :type value: scalar or 0-d riemann.TN
    :return: Filled tensor
    :rtype: riemann.TN
 
@@ -2325,14 +2483,14 @@ In-place Operations
 
 .. function:: riemann.masked_fill_(input, mask, value)
 
-   In-place version of masked_fill function, fill values into the tensor according to a mask.
+   In-place version of masked_fill; ``input.masked_fill_(mask, value)`` is also available.
 
    :param input: Input tensor
    :type input: riemann.TN
-   :param mask: Mask tensor, same shape as input tensor
+   :param mask: Boolean mask tensor broadcastable to the input shape
    :type mask: riemann.TN
-   :param value: Value to fill
-   :type value: scalar
+   :param value: Value to fill; a scalar or 0-d tensor
+   :type value: scalar or 0-d riemann.TN
    :return: In-place modified tensor
    :rtype: riemann.TN
 

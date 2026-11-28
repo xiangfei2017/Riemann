@@ -511,9 +511,9 @@ API 参考
    :return: 收集后的张量
    :rtype: riemann.TN
 
-.. function:: riemann.scatter(input, dim, index, src)
+.. function:: riemann.scatter(input, dim, index, src=None, *, value=None)
 
-   沿指定维度将源张量中的元素分散到目标张量中。
+   沿指定维度将源张量中的元素覆盖写入输入副本；也可使用 ``input.scatter(dim, index, src, value=value)``。
 
    :param input: 目标张量
    :type input: riemann.TN
@@ -521,9 +521,167 @@ API 参考
    :type dim: int
    :param index: 索引张量
    :type index: riemann.TN
-   :param src: 源张量
-   :type src: riemann.TN
-   :return: 分散后的张量
+   :param src: 源张量，与 value 互斥
+   :type src: riemann.TN, optional
+   :param value: 标量填充值，与 src 互斥
+   :return: 写入后的新张量
+   :rtype: riemann.TN
+
+.. function:: riemann.scatter_add(input, dim, index, src)
+
+   沿指定维度将 ``src`` 累加到输入副本，重复索引对应的来源值全部累加；也可使用同名 ``TN`` 方法。
+
+   :param input: 输入张量
+   :param dim: 累加的维度
+   :param index: 索引张量
+   :param src: 来源张量
+   :return: 累加后的新张量
+   :rtype: riemann.TN
+
+.. function:: riemann.scatter_reduce(input, dim, index, src, reduce, *, include_self=True)
+
+   沿指定维度对来源值执行非原地归约写入，支持重复索引；也可使用同名 ``TN`` 方法。
+
+   :param input: 输入张量
+   :param dim: 归约维度
+   :param index: 与输入维数相同的索引张量
+   :param src: 来源张量，各维大小不得小于 index
+   :param reduce: ``sum``、``prod``、``mean``、``amax`` 或 ``amin``
+   :param include_self: 是否将命中位置的原输入值纳入一次归约；为 False 时未命中位置仍保持原值
+   :return: 与输入同形状的新张量，支持反向自动微分和 JVP
+   :rtype: riemann.TN
+
+.. function:: riemann.index_put(input, indices, values, accumulate=False)
+
+   按索引元组非原地写入 ``values``；``accumulate=False`` 时覆盖，为 True 时累加重复索引。也可使用 ``input.index_put(...)``，原地版本为 ``index_put_``。
+
+   :param indices: 整数索引张量或其元组
+   :param values: 写入值，须可广播到选中区域，dtype 与输入一致
+   :param accumulate: 是否累加而非覆盖
+   :return: 写入后的新张量，支持输入和 values 的梯度及 JVP
+   :rtype: riemann.TN
+
+.. function:: riemann.index_copy(input, dim, index, source, *, out=None)
+
+   沿 ``dim`` 将一维索引选中的位置覆盖为 ``source``；也可使用同名 ``TN`` 方法（方法不提供 out）。
+
+   :param dim: 写入维度
+   :param index: 一维整数索引张量
+   :param source: 与选中区域形状一致的来源张量
+   :param out: 可选输出张量；使用时不支持自动微分
+   :return: 覆盖写入后的新张量
+   :rtype: riemann.TN
+
+.. function:: riemann.index_add(input, dim, index, source, *, alpha=1, out=None)
+
+   沿 ``dim`` 将 ``alpha * source`` 累加到一维索引选中的位置，重复索引累加；也可使用同名 ``TN`` 方法（方法不提供 out）。
+
+   :param dim: 写入维度
+   :param index: 一维整数索引张量
+   :param source: 来源张量
+   :param alpha: 来源乘数
+   :param out: 可选输出张量；使用时不支持自动微分
+   :return: 累加后的新张量
+   :rtype: riemann.TN
+
+.. function:: riemann.index_fill(input, dim, index, value)
+
+   沿 ``dim`` 将一维索引选中的位置填充为标量或 0 维张量 ``value``；也可使用同名 ``TN`` 方法。
+
+   :param dim: 写入维度
+   :param index: 一维整数索引张量
+   :param value: 标量或 0 维张量，dtype 与输入一致
+   :return: 填充后的新张量，支持梯度及 JVP
+   :rtype: riemann.TN
+
+.. function:: riemann.index_reduce(input, dim, index, source, reduce, *, include_self=True, out=None)
+
+   沿 ``dim`` 对一维索引执行非原地归约，仅支持浮点输入；也可使用同名 ``TN`` 方法（方法不提供 out）。
+
+   :param dim: 归约维度
+   :param index: 一维整数索引张量
+   :param source: 来源张量，其形状须与索引规则一致
+   :param reduce: ``prod``、``mean``、``amax`` 或 ``amin``
+   :param include_self: 是否将命中位置的原输入值纳入一次归约
+   :param out: 可选输出张量；使用时不支持自动微分
+   :return: 与输入同形状的新张量，支持反向自动微分和 JVP
+   :rtype: riemann.TN
+
+.. function:: riemann.put(input, index, source, accumulate=False)
+
+   将输入按行主序展平后按 ``index`` 写入 ``source``，再恢复原形状；支持覆盖或重复索引累加，也可使用同名 ``TN`` 方法。
+
+   :param index: 展平后的整数下标
+   :param source: 来源张量，须可广播到 index 的形状
+   :param accumulate: 是否累加而非覆盖
+   :return: 与输入同形状的新张量
+   :rtype: riemann.TN
+
+.. function:: riemann.select_scatter(input, src, dim, index)
+
+   将 ``src`` 非原地写入 ``input.select(dim, index)`` 对应的位置；也可使用同名 ``TN`` 方法。
+
+   :param src: 与目标切片形状一致的来源张量
+   :param dim: 选择维度
+   :param index: 整数位置，支持负索引
+   :return: 与输入同形状的新张量
+   :rtype: riemann.TN
+
+.. function:: riemann.slice_scatter(input, src, dim=0, start=None, end=None, step=1)
+
+   将 ``src`` 非原地写入指定维度上的切片区域；也可使用同名 ``TN`` 方法。
+
+   :param src: 与目标切片形状一致的来源张量
+   :param dim: 切片维度
+   :param start: 切片起点，默认为 None
+   :param end: 切片终点，默认为 None
+   :param step: 切片步长，默认为 1
+   :return: 与输入同形状的新张量
+   :rtype: riemann.TN
+
+.. function:: riemann.masked_scatter(input, mask, source)
+
+   按布尔掩码非原地写入来源元素。``input`` 与 ``mask`` 可双向广播，结果采用广播后的形状；``source`` 按行主序消费，允许存在多余元素。也可使用同名 ``TN`` 方法。
+
+   :param mask: 可广播的布尔掩码
+   :param source: 来源张量，元素数不得少于掩码中 True 的数量
+   :return: 写入后的新张量，支持输入和 source 的梯度及 JVP
+   :rtype: riemann.TN
+
+.. function:: riemann.floordivat(input, index, val)
+
+   按 NumPy 风格索引非原地执行向下整除归约；同名 ``TN`` 方法及原地版本 ``floordivat_`` 亦可用。该运算不可微。
+
+   :param index: 整数、切片、整数数组、布尔掩码或其元组
+   :param val: 右值，须可广播到选中区域
+   :return: 运算后的新张量
+   :rtype: riemann.TN
+
+.. function:: riemann.modat(input, index, val)
+
+   按 NumPy 风格索引非原地执行取余归约；同名 ``TN`` 方法及原地版本 ``modat_`` 亦可用。
+
+   :param index: 整数、切片、整数数组、布尔掩码或其元组
+   :param val: 右值，须可广播到选中区域
+   :return: 运算后的新张量，支持梯度及 JVP
+   :rtype: riemann.TN
+
+.. function:: riemann.maxat(input, index, val)
+
+   按 NumPy 风格索引执行非原地最大值归约；同一目标被重复索引时，原值与所有来源值共同归约。也可使用同名 ``TN`` 方法。
+
+   :param index: 整数、切片、整数数组、布尔掩码或其元组
+   :param val: 参与最大值归约的右值
+   :return: 归约后的新张量，支持梯度及 JVP；不支持复数
+   :rtype: riemann.TN
+
+.. function:: riemann.minat(input, index, val)
+
+   按 NumPy 风格索引执行非原地最小值归约；同一目标被重复索引时，原值与所有来源值共同归约。也可使用同名 ``TN`` 方法。
+
+   :param index: 整数、切片、整数数组、布尔掩码或其元组
+   :param val: 参与最小值归约的右值
+   :return: 归约后的新张量，支持梯度及 JVP；不支持复数
    :rtype: riemann.TN
 
 .. function:: riemann.broadcast_to(input, size)
@@ -1735,14 +1893,14 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
 
 .. function:: riemann.masked_fill(input, mask, value)
 
-   根据掩码填充值到张量中。
+   根据掩码填充值并返回新张量，不修改输入；也可使用 ``input.masked_fill(mask, value)``。
 
    :param input: 输入张量
    :type input: riemann.TN
-   :param mask: 掩码张量，形状与输入张量相同
+   :param mask: 布尔掩码张量，形状须可广播到输入张量
    :type mask: riemann.TN
-   :param value: 填充的值
-   :type value: scalar
+   :param value: 填充的值，支持标量或 0 维张量
+   :type value: scalar or 0-d riemann.TN
    :return: 填充后的张量
    :rtype: riemann.TN
 
@@ -2316,14 +2474,14 @@ Riemann框架支持丰富的张量运算符，包括算术运算符、比较运�
 
 .. function:: riemann.masked_fill_(input, mask, value)
 
-   原地版本的 masked_fill 函数，根据掩码填充值到张量中。
+   原地版本的 masked_fill 函数，根据掩码填充值到张量中；也可使用 ``input.masked_fill_(mask, value)``。
 
    :param input: 输入张量
    :type input: riemann.TN
-   :param mask: 掩码张量，形状与输入张量相同
+   :param mask: 布尔掩码张量，形状须可广播到输入张量
    :type mask: riemann.TN
-   :param value: 填充的值
-   :type value: scalar
+   :param value: 填充的值，支持标量或 0 维张量
+   :type value: scalar or 0-d riemann.TN
    :return: 原地修改后的张量
    :rtype: riemann.TN
 

@@ -212,7 +212,66 @@ Riemann provides some features that PyTorch does not have:
 
 - **KAN Network Support**: Kolmogorov-Arnold Networks (KAN) implementation, including KAN, KANLinear modules
 - **Custom Gradient and JVP Rule Decorators** (``@register_grad_rule`` / ``@register_jvp_rule``): Quickly add automatic differentiation support to functions using decorators, without defining a complete Function class
-- **New functions**: ``sumall`` (add multiple tensors or non-tensors and return the total sum), ``isum`` (intelligent sum function that automatically selects the appropriate summation method based on parameters), ``d()`` (tensor method for chaining variables to compute higher-order mixed partial derivatives), etc. These are all Riemann-specific interfaces.
+- **New functions**: The Riemann-specific interfaces are listed in the table below.
+
+.. list-table:: Riemann-Specific Functions
+   :widths: 30 50 20
+   :header-rows: 1
+
+   * - Function
+     - Description
+     - In-place version
+   * - ``sumall``
+     - Add multiple tensors or non-tensors and return the total sum
+     - None
+   * - ``isum``
+     - Intelligent summation that automatically selects the appropriate method based on the arguments
+     - None
+   * - ``batch_diag``
+     - Convert batched vectors shaped ``(*, n)`` into batched diagonal matrices shaped ``(*, n, n)``
+     - None
+   * - ``batch_outer``
+     - Compute batched vector outer products from ``(..., M)`` and ``(..., N)`` to ``(..., M, N)``
+     - None
+   * - ``TN.d(*args, create_graph=False)``
+     - Tensor method for chained higher-order or mixed partial derivatives, including ``(variable, order)`` arguments
+     - None
+   * - ``autograd.diff(tensor, *args, create_graph=False)``
+     - Functional form of ``TN.d()`` for higher-order or mixed partial derivatives with respect to the given variables
+     - None
+   * - ``autograd.functional.derivative(func, create_graph=False)``
+     - Return the derivative of a function, with support for constructing differentiable results
+     - None
+   * - ``setat``
+     - Overwrite NumPy-style indexed positions and return a new tensor
+     - ``setat_``
+   * - ``addat``
+     - Add right-hand values at indexed positions, accumulating every duplicate index
+     - ``addat_``
+   * - ``subat``
+     - Subtract right-hand values from indexed positions
+     - ``subat_``
+   * - ``mulat``
+     - Multiply indexed positions by right-hand values, using the full product reduction for duplicate indices
+     - ``mulat_``
+   * - ``divat``
+     - Divide indexed positions by right-hand values
+     - ``divat_``
+   * - ``powat``
+     - Raise indexed positions to right-hand exponents using repeated reduction for duplicate indices
+     - ``powat_``
+   * - ``maxat``
+     - Maximum reduction at indexed positions; duplicate targets include the original and all right-hand values
+     - None (non-in-place only)
+   * - ``minat``
+     - Minimum reduction at indexed positions; duplicate targets include the original and all right-hand values
+     - None (non-in-place only)
+   * - ``modat``
+     - Remainder reduction at indexed positions
+     - ``modat_``
+   * - ``floordivat``
+     - Floor-division reduction at indexed positions; not differentiable
+     - ``floordivat_``
 
 Installation Guide
 ------------------

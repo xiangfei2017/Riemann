@@ -479,9 +479,9 @@ class TestJVPvsTorch(unittest.TestCase):
             f_tt=lambda a: torch.logsumexp(a, -1)))
 
     # ---------------------------------------------------------------
-    # 4. 形状与索引
+    # 4. 形状变换
     # ---------------------------------------------------------------
-    def test_shape_and_index_ops(self):
+    def test_shape_ops(self):
         _run_case("reshape", lambda: _cmp_jvp(
             lambda a: a.reshape(3, 2), [A], [VA],
             f_tt=lambda a: a.reshape(3, 2)))
@@ -509,9 +509,6 @@ class TestJVPvsTorch(unittest.TestCase):
         _run_case("flip", lambda: _cmp_jvp(
             lambda a: rm.flip(a, (0, 1)), [A], [VA],
             f_tt=lambda a: torch.flip(a, (0, 1))))
-        _run_case("getitem - 切片", lambda: _cmp_jvp(
-            lambda a: a[0:2, 1:3], [A], [VA],
-            f_tt=lambda a: a[0:2, 1:3]))
         _run_case("repeat", lambda: _cmp_jvp(
             lambda a: rm.repeat(a, (2, 1)), [A], [VA],
             f_tt=lambda a: a.repeat(2, 1)))
@@ -530,6 +527,133 @@ class TestJVPvsTorch(unittest.TestCase):
         _run_case("triu", lambda: _cmp_jvp(
             lambda a: rm.triu(a, diagonal=1), [A], [VA],
             f_tt=lambda a: torch.triu(a, diagonal=1)))
+
+    def test_index_read_ops(self):
+        rindex = lambda v: rm.tensor(v, dtype=np.int64)
+        tindex = lambda v: torch.tensor(v, dtype=torch.int64)
+        mask = np.array([[True, False, True], [False, True, True]])
+
+        _run_case("__getitem__ - 切片", lambda: _cmp_jvp(
+            lambda a: a[0:2, 1:3], [A], [VA],
+            f_tt=lambda a: a[0:2, 1:3]))
+        _run_case("__getitem__ - 高级索引/重复读取", lambda: _cmp_jvp(
+            lambda a: a[rindex([0, 1, 0]), rindex([2, 0, 1])], [A], [VA],
+            f_tt=lambda a: a[tindex([0, 1, 0]), tindex([2, 0, 1])]))
+        _run_case("index_select - 重复索引", lambda: _cmp_jvp(
+            lambda a: rm.index_select(a, 0, rindex([1, 0, 1])), [A], [VA],
+            f_tt=lambda a: torch.index_select(a, 0, tindex([1, 0, 1]))))
+        _run_case("masked_select", lambda: _cmp_jvp(
+            lambda a: rm.masked_select(a, rm.tensor(mask)), [A], [VA],
+            f_tt=lambda a: torch.masked_select(a, torch.tensor(mask))))
+        _run_case("take", lambda: _cmp_jvp(
+            lambda a: rm.take(a, rindex([5, 0, 4])), [A], [VA],
+            f_tt=lambda a: torch.take(a, tindex([5, 0, 4]))))
+        _run_case("gather - 重复读取", lambda: _cmp_jvp(
+            lambda a: rm.gather(a, 1, rindex([[2, 0], [1, 1]])), [A], [VA],
+            f_tt=lambda a: torch.gather(a, 1, tindex([[2, 0], [1, 1]]))))
+
+    def test_non_inplace_index_write_ops(self):
+        rindex = lambda v: rm.tensor(v, dtype=np.int64)
+        tindex = lambda v: torch.tensor(v, dtype=torch.int64)
+        values = np.array([0.5, -1.0, 2.0])
+        values_t = np.array([0.2, 0.4, -0.6])
+        copy_src = np.array([[0.2, -0.4], [0.6, -0.8]])
+        copy_src_t = np.array([[0.1, 0.3], [-0.2, 0.5]])
+        add_src = np.arange(1.0, 10.0).reshape(3, 3) / 10.0
+        add_src_t = np.linspace(-0.3, 0.3, 9).reshape(3, 3)
+
+        _run_case("index_put - 覆盖", lambda: _cmp_jvp(
+            lambda a, v: rm.index_put(
+                a, (rindex([0, 1, 0]), rindex([2, 0, 1])), v),
+            [A, values], [VA, values_t],
+            f_tt=lambda a, v: torch.index_put(
+                a, (tindex([0, 1, 0]), tindex([2, 0, 1])), v)))
+        _run_case("index_put - 重复索引累加", lambda: _cmp_jvp(
+            lambda a, v: rm.index_put(
+                a, (rindex([0, 0, 1]), rindex([1, 1, 2])), v, accumulate=True),
+            [A, values], [VA, values_t],
+            f_tt=lambda a, v: torch.index_put(
+                a, (tindex([0, 0, 1]), tindex([1, 1, 2])), v, accumulate=True)))
+        _run_case("index_copy", lambda: _cmp_jvp(
+            lambda a, s: rm.index_copy(a, 1, rindex([2, 0]), s),
+            [A, copy_src], [VA, copy_src_t],
+            f_tt=lambda a, s: torch.index_copy(a, 1, tindex([2, 0]), s)))
+        _run_case("index_add - alpha/重复索引", lambda: _cmp_jvp(
+            lambda a, s: rm.index_add(a, 0, rindex([1, 0, 1]), s, alpha=-0.5),
+            [A, add_src], [VA, add_src_t],
+            f_tt=lambda a, s: torch.index_add(
+                a, 0, tindex([1, 0, 1]), s, alpha=-0.5)))
+        _run_case("index_fill - 0维张量值", lambda: _cmp_jvp(
+            lambda a, v: rm.index_fill(a, 1, rindex([0, -1]), v),
+            [A, np.array(0.75)], [VA, np.array(-0.2)],
+            f_tt=lambda a, v: torch.index_fill(a, 1, tindex([0, -1]), v)))
+        _run_case("put - 覆盖", lambda: _cmp_jvp(
+            lambda a, s: rm.put(a, rindex([4, 0, 2]), s),
+            [A, values.reshape(1, 3)], [VA, values_t.reshape(1, 3)],
+            f_tt=lambda a, s: torch.put(a, tindex([4, 0, 2]), s)))
+        _run_case("put - 重复索引累加", lambda: _cmp_jvp(
+            lambda a, s: rm.put(a, rindex([5, 1, 5]), s, accumulate=True),
+            [A, values.reshape(1, 3)], [VA, values_t.reshape(1, 3)],
+            f_tt=lambda a, s: torch.put(a, tindex([5, 1, 5]), s, accumulate=True)))
+        _run_case("select_scatter - 负索引", lambda: _cmp_jvp(
+            lambda a, s: rm.select_scatter(a, s, 1, -1),
+            [A, np.array([0.7, -0.8])], [VA, np.array([0.2, 0.5])],
+            f_tt=lambda a, s: torch.select_scatter(a, s, 1, -1)))
+        _run_case("slice_scatter", lambda: _cmp_jvp(
+            lambda a, s: rm.slice_scatter(a, s, 1, 0, 3, 2),
+            [A, copy_src], [VA, copy_src_t],
+            f_tt=lambda a, s: torch.slice_scatter(a, s, 1, 0, 3, 2)))
+        _run_case("scatter - src", lambda: _cmp_jvp(
+            lambda a, s: rm.scatter(a, 1, rindex([[2, 0], [1, 2]]), s),
+            [A, copy_src], [VA, copy_src_t],
+            f_tt=lambda a, s: torch.scatter(a, 1, tindex([[2, 0], [1, 2]]), s)))
+        _run_case("scatter_add - 重复索引", lambda: _cmp_jvp(
+            lambda a, s: rm.scatter_add(a, 1, rindex([[1, 1], [2, 0]]), s),
+            [A, copy_src], [VA, copy_src_t],
+            f_tt=lambda a, s: torch.scatter_add(a, 1, tindex([[1, 1], [2, 0]]), s)))
+
+        for reduce in ("sum", "prod", "mean", "amax", "amin"):
+            for include_self in (True, False):
+                _run_case(
+                    f"scatter_reduce - {reduce}/include_self={include_self}",
+                    lambda reduce=reduce, include_self=include_self: _cmp_jvp(
+                        lambda a, s: rm.scatter_reduce(
+                            a, 1, rindex([[1, 1], [2, 0]]), s, reduce,
+                            include_self=include_self),
+                        [A, copy_src], [VA, copy_src_t],
+                        f_tt=lambda a, s: torch.scatter_reduce(
+                            a, 1, tindex([[1, 1], [2, 0]]), s, reduce,
+                            include_self=include_self)))
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message=r"index_reduce\(\) is in beta.*",
+                category=UserWarning)
+            for reduce in ("prod", "mean", "amax", "amin"):
+                for include_self in (True, False):
+                    _run_case(
+                        f"index_reduce - {reduce}/include_self={include_self}",
+                        lambda reduce=reduce, include_self=include_self: _cmp_jvp(
+                            lambda a, s: rm.index_reduce(
+                                a, 0, rindex([1, 0, 1]), s, reduce,
+                                include_self=include_self),
+                            [A, add_src], [VA, add_src_t],
+                            f_tt=lambda a, s: torch.index_reduce(
+                                a, 0, tindex([1, 0, 1]), s, reduce,
+                                include_self=include_self)))
+
+        mask = np.array([[True, False, True], [False, True, True]])
+        mask_input = np.array([1.0, -2.0, 3.0])
+        mask_input_t = np.array([0.1, 0.2, 0.3])
+        mask_src = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+        mask_src_t = np.array([-0.1, 0.2, -0.3, 0.4, -0.5, 0.6])
+        _run_case("masked_scatter - 双向广播/多余来源", lambda: _cmp_jvp(
+            lambda a, s: rm.masked_scatter(a, rm.tensor(mask), s),
+            [mask_input, mask_src], [mask_input_t, mask_src_t],
+            f_tt=lambda a, s: torch.masked_scatter(a, torch.tensor(mask), s)))
+        _run_case("masked_fill - mask广播/0维值", lambda: _cmp_jvp(
+            lambda a, v: rm.masked_fill(a, rm.tensor(mask[:1]), v),
+            [A, np.array(0.75)], [VA, np.array(-0.2)],
+            f_tt=lambda a, v: torch.masked_fill(a, torch.tensor(mask[:1]), v)))
 
     # ---------------------------------------------------------------
     # 5. 线性代数
@@ -703,9 +827,15 @@ class TestJVPvsTorch(unittest.TestCase):
             f_tt=torch.asin))
 
     # ---------------------------------------------------------------
-    # 8. 原地操作
+    # 8. 原地写操作
     # ---------------------------------------------------------------
-    def test_inplace_ops(self):
+    def test_inplace_write_ops(self):
+        rindex = lambda v: rm.tensor(v, dtype=np.int64)
+        tindex = lambda v: torch.tensor(v, dtype=torch.int64)
+        values = np.array([0.5, -1.0, 2.0])
+        values_t = np.array([0.2, 0.4, -0.6])
+        mask = np.array([[True, False, True]])
+
         _run_case("add_ - 张量", lambda: _cmp_jvp(
             lambda a, b: a.clone().add_(b), [A, B], [VA, VB]))
         _run_case("add_ - 常量", lambda: _cmp_jvp(
@@ -730,6 +860,22 @@ class TestJVPvsTorch(unittest.TestCase):
             lambda a: a.clone().abs_(), [A], [VA]))
         _run_case("neg_ - 取负", lambda: _cmp_jvp(
             lambda a: a.clone().neg_(), [A], [VA]))
+        _run_case("masked_fill_ - mask广播/0维值", lambda: _cmp_jvp(
+            lambda a, v: a.clone().masked_fill_(rm.tensor(mask), v),
+            [A, np.array(0.75)], [VA, np.array(-0.2)],
+            f_tt=lambda a, v: a.clone().masked_fill_(torch.tensor(mask), v)))
+        _run_case("index_put_ - 覆盖", lambda: _cmp_jvp(
+            lambda a, v: a.clone().index_put_(
+                (rindex([0, 1, 0]), rindex([2, 0, 1])), v),
+            [A, values], [VA, values_t],
+            f_tt=lambda a, v: a.clone().index_put_(
+                (tindex([0, 1, 0]), tindex([2, 0, 1])), v)))
+        _run_case("index_put_ - 重复索引累加", lambda: _cmp_jvp(
+            lambda a, v: a.clone().index_put_(
+                (rindex([0, 0, 1]), rindex([1, 1, 2])), v, accumulate=True),
+            [A, values], [VA, values_t],
+            f_tt=lambda a, v: a.clone().index_put_(
+                (tindex([0, 0, 1]), tindex([1, 1, 2])), v, accumulate=True)))
         _run_case("setitem - 切片赋值", lambda: _cmp_jvp(
             lambda a, b: self._setitem(a, b, compound=False),
             [A, np.array([[1.0, 2.0], [3.0, 4.0]])],

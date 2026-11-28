@@ -2991,7 +2991,7 @@ The result of ``x[idx]`` can take part in automatic differentiation whether it i
 Writing by Index
 ~~~~~~~~~~~~~~~~
 
-Write operations are grouped by how the target positions are specified. Every function comes in a non-in-place form and an in-place form (suffixed with ``_``): the non-in-place version returns a new tensor and leaves the original untouched, whereas the in-place version modifies the tensor itself and returns ``self``.
+Write operations are grouped by how the target positions are specified. Non-in-place versions return a new tensor and leave the original untouched, whereas in-place versions (suffixed with ``_``) modify the tensor itself and return ``self``. The basic ``setat``/``scatter`` functions usually provide both forms; some PyTorch-compatible writers and ``maxat``/``minat`` currently provide only non-in-place forms, as detailed below.
 
 - the ``setat`` family: positions are given by NumPy-style index expressions, matching the ``x[idx] = val`` syntax;
 - the ``scatter`` family: positions are given by ``dim`` + ``index``, matching ``torch.scatter``/``torch.scatter_add`` semantics.
@@ -3030,6 +3030,14 @@ Write operations are grouped by how the target positions are specified. Every fu
     - Raise the given positions to a power
     - ``powat_``
     - ``x[idx] **= val``
+  * - ``maxat``
+    - Reduce the given positions and val by maximum
+    - None
+    - ``out[idx] = max(out[idx], val)`` (schematic)
+  * - ``minat``
+    - Reduce the given positions and val by minimum
+    - None
+    - ``out[idx] = min(out[idx], val)`` (schematic)
 
 **Parameters**
 
@@ -3040,6 +3048,7 @@ Write operations are grouped by how the target positions are specified. Every fu
 
 - ``setat`` follows overwrite semantics: when the same position is written multiple times, the last write wins;
 - ``addat`` follows ``numpy.add.at`` semantics: repeated writes to the same position accumulate, which makes it the natural choice for duplicate indices; ``subat``/``mulat``/``divat``/``powat`` behave likewise, applying the corresponding operation to the target position each time.
+- ``maxat``/``minat`` resemble ``numpy.maximum.at``/``numpy.minimum.at``: when a target is indexed repeatedly, its original value and all corresponding ``val`` elements participate in the extremum reduction instead of overwriting one another; positions not selected by the index remain unchanged.
 
 .. code-block:: python
 
@@ -3090,14 +3099,19 @@ The ``scatter`` family describes the target positions by ``dim`` + ``index``, ma
     - Add src along dim according to index
     - ``scatter_add_``
     - Accumulate
+  * - ``scatter_reduce``
+    - Reduce src by sum/prod/mean/amax/amin according to index
+    - None
+    - Reduce all source values according to reduce
 
 **Parameters**
 
 - ``dim``: dimension to scatter along, negative values are accepted;
 - ``index``: index tensor (``riemann.TN``) whose dtype is normalized to int64; **its number of dimensions must equal that of ``self``**; its shape determines the region actually written;
-- ``src``: source data, either a scalar or a ``TN`` with the same shape as ``index``; its dtype must equal that of ``self``, otherwise ``RuntimeError`` is raised; mutually exclusive with ``value`` (``scatter_add``/``scatter_add_`` only accept ``src`` and have no ``value``);
+- ``src``: source data, either a scalar or a ``TN`` with the same shape as ``index``; its dtype must equal that of ``self``, otherwise ``RuntimeError`` is raised; mutually exclusive with ``value`` (``scatter_add``/``scatter_add_`` only accept ``src`` and have no ``value``). ``scatter_reduce`` also accepts a ``src`` whose dimensions are larger than those of ``index`` and consumes only the prefix region covered by ``index``;
 - ``value``: a scalar (int/float/complex or a NumPy scalar; a 0-d ``TN`` is also accepted when passed as a keyword argument), mutually exclusive with ``src``; internally a source tensor of the same shape as ``index`` filled with ``value`` is created. A scalar may also be passed as the third positional argument, in which case it is treated as ``value``; the positional form only accepts int/float/complex and NumPy scalars;
-- returns: ``scatter``/``scatter_add`` return a new tensor with the same shape as ``self``, while ``scatter_``/``scatter_add_`` return ``self``.
+- ``reduce`` and ``include_self``: the reduction and whether ``scatter_reduce`` includes the original input values, as detailed in the next subsection;
+- returns: ``scatter``/``scatter_add``/``scatter_reduce`` return a new tensor with the same shape as ``self``, while ``scatter_``/``scatter_add_`` return ``self``.
 
 **Behavior**
 
@@ -3108,7 +3122,8 @@ Each position ``i`` of ``index`` corresponds to one write. The target position i
 - values of ``index`` along ``dim`` must lie in ``[0, self.shape[dim])``, otherwise ``IndexError`` is raised;
 - the shape of ``index`` may be smaller than that of ``self``, in which case only the region covered by ``index`` is written and the rest keeps its original values;
 - ``scatter`` overwrites, so multiple writes to the same target let the last write win, whereas ``scatter_add`` accumulates;
-- internally the implementation converts indirect indices into direct indices and then calls ``setat``/``addat``, so all rules of the ``setat`` family apply to ``scatter`` as well.
+- ``scatter_reduce`` applies the requested reduction to all sources for each target: ``sum`` adds, ``prod`` multiplies, ``mean`` averages, and ``amax``/``amin`` select the maximum/minimum;
+- internally the implementation converts indirect indices into direct indices and then calls functions such as ``setat``/``addat``, so the indexing rules of the ``setat`` family apply to ``scatter`` as well.
 
 .. code-block:: python
 
@@ -3158,7 +3173,48 @@ Each position ``i`` of ``index`` corresponds to one write. The target position i
 - rebuilding vocabularies/embeddings by writing batch vectors back into a global table;
 - message aggregation in graph neural networks and attention pooling, where ``scatter_add`` sums several sources targeting the same position.
 
-**3. In-place Assignment Syntax and Limits**
+**3. PyTorch-Compatible Non-In-Place Index Writers**
+
+The following interfaces match their PyTorch non-in-place counterparts. They return a new tensor without modifying ``input`` and support both reverse-mode automatic differentiation and JVP. Both module-level functions and same-named ``TN`` methods are available; ``out`` is provided only by the module-level ``index_copy``/``index_add``/``index_reduce`` functions and does not support automatic differentiation.
+
+.. list-table:: Non-In-Place Index Writers
+  :widths: 20 48 32
+  :header-rows: 1
+
+  * - Function
+    - Signature
+    - Semantics
+  * - ``index_put``
+    - ``index_put(input, indices, values, accumulate=False)``
+    - Writes through an index tuple; ``False`` overwrites, while ``True`` accumulates duplicate indices
+  * - ``index_copy``
+    - ``index_copy(input, dim, index, source, *, out=None)``
+    - Overwrites positions selected by the 1-D ``index`` along ``dim`` with ``source``
+  * - ``index_add``
+    - ``index_add(input, dim, index, source, *, alpha=1, out=None)``
+    - Adds ``alpha * source`` along ``dim``, accumulating duplicate indices
+  * - ``index_fill``
+    - ``index_fill(input, dim, index, value)``
+    - Fills selected positions along ``dim`` with a scalar or 0-d tensor ``value``
+  * - ``put``
+    - ``put(input, index, source, accumulate=False)``
+    - Writes into row-major flattened positions and restores the input shape; supports overwrite or accumulation
+  * - ``select_scatter``
+    - ``select_scatter(input, src, dim, index)``
+    - Writes ``src`` into the positions corresponding to ``input.select(dim, index)``
+  * - ``slice_scatter``
+    - ``slice_scatter(input, src, dim=0, start=None, end=None, step=1)``
+    - Writes ``src`` into a slice along the specified dimension
+  * - ``masked_scatter``
+    - ``masked_scatter(input, mask, source)``
+    - Broadcasts ``input`` and the boolean ``mask`` in either direction and uses the broadcast result shape; consumes ``source`` in row-major order, allowing excess elements
+  * - ``index_reduce``
+    - ``index_reduce(input, dim, index, source, reduce, *, include_self=True, out=None)``
+    - Reduces along ``dim`` with a 1-D index using ``prod``/``mean``/``amax``/``amin``
+
+``scatter_reduce(input, dim, index, src, reduce, *, include_self=True)`` and ``index_reduce`` are reduction writers; ``index_reduce`` supports floating-point inputs only. With ``include_self=True``, the original input value at each selected target participates once; with ``False``, original values at selected targets are excluded and only source values are reduced, while unselected positions remain unchanged. The denominator of ``mean`` is consequently the source count plus one or just the source count. For extrema, if several elements tie at a target, gradients are distributed among the winning input and source elements.
+
+**4. In-place Assignment Syntax and Limits**
 
 ``x[idx] = val``, ``x[idx] += val`` and similar syntax are equivalent to the corresponding ``setat_``/``addat_`` series and count as in-place writes, which come with two limits:
 
@@ -3176,10 +3232,11 @@ Each position ``i`` of ``index`` corresponds to one write. The target position i
 
 **Gradient Tracking for Index Writes**
 
-The non-in-place writers (``setat``, ``addat``, ``subat``, ``mulat``, ``divat``, ``powat``, ``scatter``, ``scatter_add``) all support automatic differentiation; they behave like "read + compute + write back", so gradients flow to both the written tensor and the right-hand value:
+All the non-in-place writers above support reverse-mode automatic differentiation and JVP; they behave like "read + compute + write back", so derivatives flow to both the written tensor and the right-hand value:
 
 - for the **written tensor**: positions overwritten by ``setat``/``scatter`` no longer contribute to the forward result, hence their gradients are zero while untouched positions keep the upstream gradient; ``addat``/``scatter_add`` keep the original values in the computation, so every position keeps its gradient;
-- for the **right-hand value** (``val`` or ``src``): each written element receives the upstream gradient of its position; with ``addat``/``scatter_add`` repeated writes to the same position accumulate gradients.
+- for the **right-hand value** (``val``, ``src``, ``values`` or ``source``): each written element receives the upstream gradient of its position; with ``addat``/``scatter_add`` repeated writes to the same position accumulate gradients;
+- for **reduction writes**: ``sum``/``prod``/``mean`` follow their respective reduction derivatives, while ``amax``/``amin`` propagate derivatives only to input or source elements attaining the final extremum; with ``include_self=False``, original input values at selected positions do not participate in the reduction.
 
 Note the duplicate-index subtlety of ``setat``: the forward pass keeps only the last written value, while the backward pass sends gradients back to every duplicated right-hand element, so the two are inconsistent. Use ``addat``/``scatter_add`` whenever duplicate indices are possible.
 
@@ -3271,10 +3328,46 @@ The table below summarizes Riemann's indexing functions. The "In-place" column l
     - ``take(input, index)``; ``x.take(index)``
     - None
     - Selects by a flattened row-major index, returns a tensor shaped like index; gradients supported
-  * - ``index_put_``
-    - ``x.index_put_(indices, values, accumulate=False)``
-    - None (in-place only)
-    - Writes values by an index tuple, overwriting or accumulating; gradients supported for values
+  * - ``index_put``
+    - ``x.index_put(indices, values, accumulate=False)``
+    - ``index_put_``
+    - Overwrites or accumulates through an index tuple; gradients supported
+  * - ``index_copy``
+    - ``x.index_copy(dim, index, source)``
+    - None
+    - Overwrites along a dimension using a 1-D index; gradients supported
+  * - ``index_add``
+    - ``x.index_add(dim, index, source, *, alpha=1)``
+    - None
+    - Adds alpha * source along a dimension, accumulating duplicate indices; gradients supported
+  * - ``index_fill``
+    - ``x.index_fill(dim, index, value)``
+    - None
+    - Fills along a dimension with a scalar or 0-d tensor; gradients supported
+  * - ``index_reduce``
+    - ``x.index_reduce(dim, index, source, reduce, *, include_self=True)``
+    - None
+    - Performs prod/mean/amax/amin reductions along a dimension; gradients supported
+  * - ``put``
+    - ``x.put(index, source, accumulate=False)``
+    - None
+    - Overwrites or accumulates by flattened indices; gradients supported
+  * - ``select_scatter``
+    - ``x.select_scatter(src, dim, index)``
+    - None
+    - Writes into the slice chosen by select; gradients supported
+  * - ``slice_scatter``
+    - ``x.slice_scatter(src, dim=0, start=None, end=None, step=1)``
+    - None
+    - Writes into a slice along a dimension; gradients supported
+  * - ``masked_scatter``
+    - ``x.masked_scatter(mask, source)``
+    - None
+    - Writes source elements in order through a broadcast boolean mask; gradients supported
+  * - ``masked_fill``
+    - ``masked_fill(input, mask, value)``; ``x.masked_fill(mask, value)``
+    - ``masked_fill_``
+    - Fills a scalar or 0-d tensor through a broadcastable boolean mask; gradients supported (non-in-place)
   * - ``scatter``
     - ``x.scatter(dim, index, src=None, *, value=None)``
     - ``scatter_``
@@ -3283,6 +3376,10 @@ The table below summarizes Riemann's indexing functions. The "In-place" column l
     - ``x.scatter_add(dim, index, src)``
     - ``scatter_add_``
     - Adds along a dimension, accumulating duplicate indices; gradients supported (non-in-place)
+  * - ``scatter_reduce``
+    - ``x.scatter_reduce(dim, index, src, reduce, *, include_self=True)``
+    - None
+    - Performs sum/prod/mean/amax/amin reductions along a dimension; gradients supported
   * - ``setat``
     - ``x.setat(indices, val)``
     - ``setat_``
@@ -3303,10 +3400,26 @@ The table below summarizes Riemann's indexing functions. The "In-place" column l
     - ``x.divat(indices, val)``
     - ``divat_``
     - Divides by NumPy index expression; gradients supported (non-in-place)
+  * - ``floordivat``
+    - ``x.floordivat(indices, val)``
+    - ``floordivat_``
+    - Floor-divides by NumPy index expression; not differentiable
+  * - ``modat``
+    - ``x.modat(indices, val)``
+    - ``modat_``
+    - Applies remainder by NumPy index expression; gradients supported (non-in-place)
   * - ``powat``
     - ``x.powat(indices, val)``
     - ``powat_``
     - Raises positions to a power by NumPy index expression; gradients supported (non-in-place)
+  * - ``maxat``
+    - ``x.maxat(indices, val)``
+    - None
+    - Maximum reduction by NumPy index expression, including duplicate indices; gradients supported
+  * - ``minat``
+    - ``x.minat(indices, val)``
+    - None
+    - Minimum reduction by NumPy index expression, including duplicate indices; gradients supported
 
 **Related Functions**
 
